@@ -6,7 +6,7 @@ struct StrataMark: View {
     var body: some View {
         VStack(spacing: size * 0.095) {
             Capsule().fill(StrataTheme.ink).frame(width: size * 0.54)
-            Capsule().fill(StrataTheme.accent).frame(width: size * 0.79)
+            Capsule().fill(StrataTheme.logoMint).frame(width: size * 0.79)
             Capsule().fill(StrataTheme.ink).frame(width: size * 0.54)
         }
         .frame(width: size, height: size * 0.64)
@@ -24,23 +24,22 @@ struct StrataHeader: View {
         HStack(spacing: 7) {
             StrataMark()
             Text("strata")
-                .font(.system(size: 27, weight: .bold, design: .rounded))
+                .font(.system(.title2, weight: .bold))
                 .tracking(-1)
                 .foregroundStyle(StrataTheme.ink)
             Spacer()
             Button(action: onConnection) {
                 HStack(spacing: 6) {
                     Circle()
-                        .fill(isOnline ? StrataTheme.accent : StrataTheme.secondaryInk.opacity(0.45))
+                        .fill(isOnline ? StrataTheme.success : StrataTheme.secondaryInk.opacity(0.45))
                         .frame(width: 6, height: 6)
                     Text(isOnline ? "Connected" : isPaired ? "Paired" : "Not paired")
                         .font(.system(.caption, weight: .medium))
                 }
                 .foregroundStyle(StrataTheme.secondaryInk)
                 .padding(.horizontal, 11)
-                .padding(.vertical, 9)
-                .background(StrataTheme.surface, in: Capsule())
-                .overlay(Capsule().strokeBorder(StrataTheme.line, lineWidth: 0.7))
+                .frame(minHeight: 44)
+                .strataChrome(radius: 22)
             }
             .accessibilityIdentifier("connectionStatus")
             .accessibilityLabel("Connection: \(isOnline ? "connected" : isPaired ? "paired" : "not paired")")
@@ -57,11 +56,11 @@ struct PageHeading: View {
         VStack(alignment: .leading, spacing: 9) {
             Text(eyebrow.uppercased())
                 .font(.system(.caption2, weight: .bold))
-                .tracking(2.3)
-                .foregroundStyle(StrataTheme.accentText)
+                .tracking(1.1)
+                .foregroundStyle(StrataTheme.secondaryInk)
             Text(title)
-                .font(.system(.largeTitle, design: .rounded, weight: .bold))
-                .tracking(-1.3)
+                .font(.system(.largeTitle, weight: .bold))
+                .tracking(-0.8)
                 .foregroundStyle(StrataTheme.ink)
                 .fixedSize(horizontal: false, vertical: true)
             if let subtitle {
@@ -148,13 +147,13 @@ struct ConnectionNeededView: View {
     var body: some View {
         VStack(spacing: 21) {
             Image(systemName: icon)
-                .font(.system(size: 31, weight: .light))
+                .font(.system(size: 30, weight: .regular))
                 .foregroundStyle(StrataTheme.accentText)
                 .frame(width: 80, height: 80)
-                .background(StrataTheme.accentTint, in: RoundedRectangle(cornerRadius: 25))
+                .background(StrataTheme.grouped, in: RoundedRectangle(cornerRadius: 22))
             VStack(spacing: 9) {
                 Text(title)
-                    .font(.system(.title2, design: .rounded, weight: .bold))
+                    .font(.title2.weight(.bold))
                     .foregroundStyle(StrataTheme.ink)
                 Text(message)
                     .font(.subheadline)
@@ -193,5 +192,24 @@ struct DetailRow: View {
             .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+
+struct StrataTeamAvatars: View {
+    let bots: [CompanionBot]
+    var size: CGFloat = 48
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: size * 0.3).fill(StrataTheme.grouped)
+            if bots.isEmpty { Image(systemName: "person.3").foregroundStyle(StrataTheme.ink) }
+            else {
+                ForEach(Array(bots.prefix(3).enumerated()), id: \.element.id) { index, bot in
+                    AvatarBadge(bot.face, size: size * 0.58)
+                        .offset(x: index == 0 ? -size * 0.17 : index == 1 ? size * 0.17 : 0,
+                                y: index == 2 ? size * 0.14 : -size * 0.12)
+                }
+            }
+        }.frame(width: size, height: size).accessibilityHidden(true)
     }
 }

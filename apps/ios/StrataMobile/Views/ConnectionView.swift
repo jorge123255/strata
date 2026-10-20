@@ -5,6 +5,7 @@ struct ConnectionView: View {
     let pair: () -> Void
     @State private var showingDisconnect = false
     @State private var showingForget = false
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         ScrollView {
@@ -17,7 +18,7 @@ struct ConnectionView: View {
                         PairingIllustration(compact: true)
                         VStack(spacing: 8) {
                             Text("Your Mac is the missing piece.")
-                                .font(.system(.title3, design: .rounded, weight: .bold))
+                                .font(.title3.weight(.semibold))
                                 .foregroundStyle(StrataTheme.ink)
                                 .multilineTextAlignment(.center)
                             Text("Scan a pairing code to bring your\nStrata workspace to your phone.")
@@ -42,7 +43,7 @@ struct ConnectionView: View {
                     DetailRow(icon: "lock.shield", title: "A trusted connection", detail: "A one-time code pairs your phone. Your Mac’s certificate is checked on every connection.")
                     DetailRow(icon: "desktopcomputer", title: "Your workspace, connected", detail: "Use models and API connections configured on your Mac. Selected providers may run remotely.")
                 }
-                .padding(.horizontal, 2)
+                .strataCard(padding: 18)
                 HStack {
                     StrataMark(size: 22)
                     Text("Strata for iPhone").font(.caption)
@@ -53,8 +54,8 @@ struct ConnectionView: View {
                 .foregroundStyle(StrataTheme.secondaryInk)
                 .padding(.top, 12)
             }
-            .padding(.horizontal, 24)
-            .padding(.top, 27)
+            .padding(.horizontal, 20)
+            .padding(.top, 20)
             .padding(.bottom, 30)
         }
         .background(StrataTheme.background)
@@ -76,24 +77,24 @@ struct ConnectionView: View {
 
     private var connectedCard: some View {
         VStack(alignment: .leading, spacing: 20) {
-            HStack(spacing: 14) {
+            (typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 14)) : AnyLayout(HStackLayout(spacing: 14))) {
                 Image(systemName: "desktopcomputer")
                     .font(.system(size: 27, weight: .light))
                     .foregroundStyle(StrataTheme.accentText)
-                    .frame(width: 57, height: 57)
-                    .background(StrataTheme.accentTint, in: RoundedRectangle(cornerRadius: 17))
+                    .frame(width: 56, height: 56)
+                    .background(StrataTheme.grouped, in: RoundedRectangle(cornerRadius: 18))
                 VStack(alignment: .leading, spacing: 6) {
                     Text(store.status?.macName ?? store.connection?.macName ?? "Your Mac")
-                        .font(.system(.title3, design: .rounded, weight: .bold))
+                        .font(.title3.weight(.semibold))
                         .foregroundStyle(StrataTheme.ink)
                     HStack(spacing: 6) {
-                        Circle().fill(store.status?.hostConnected == true ? StrataTheme.accent : StrataTheme.secondaryInk).frame(width: 6, height: 6)
+                        Circle().fill(store.status?.hostConnected == true ? StrataTheme.success : StrataTheme.secondaryInk).frame(width: 6, height: 6)
                         Text(store.status?.hostConnected == true ? "Connected" : "Paired · Mac unavailable")
                             .font(.caption)
                             .foregroundStyle(StrataTheme.secondaryInk)
                     }
                 }
-                Spacer(minLength: 0)
+                if !typeSize.isAccessibilitySize { Spacer(minLength: 0) }
             }
             Divider().overlay(StrataTheme.line)
             if let address = store.connection?.baseURL.host {
@@ -121,13 +122,11 @@ struct ConnectionView: View {
             .accessibilityIdentifier("pairAgainButton")
             Button("Disconnect Mac", role: .destructive) { showingDisconnect = true }
                 .font(.system(.subheadline, weight: .medium))
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 5)
+                .frame(maxWidth: .infinity, minHeight: 44)
                 .accessibilityIdentifier("disconnectMacButton")
             Button("Forget this Mac", role: .destructive) { showingForget = true }
                 .font(.system(.caption, weight: .medium))
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 5)
+                .frame(maxWidth: .infinity, minHeight: 44)
                 .accessibilityIdentifier("forgetMacButton")
         }
         .strataCard()
@@ -236,7 +235,7 @@ struct PairMacView: View {
                     }
                     .padding(.horizontal, 2)
                 }
-                .padding(.horizontal, 24)
+                .padding(.horizontal, 20)
                 .padding(.top, 20)
                 .padding(.bottom, 30)
             }

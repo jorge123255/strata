@@ -34,12 +34,12 @@ struct BotTeamsSection: View {
                     BotTeamDetailView(store: store, workspace: workspace, teamId: team.id, openChat: openChat)
                 } label: {
                     HStack(spacing: 12) {
-                        Image(systemName: "person.3.sequence.fill").font(.title3).foregroundStyle(StrataTheme.accentText).frame(width: 44)
+                        StrataTeamAvatars(bots: team.memberIds.compactMap { id in store.botCatalog?.bots.first(where: { $0.id == id }) })
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(team.name).font(.headline)
+                            Text(team.name).font(.body.weight(.semibold))
                             Text("\(team.memberIds.count) bots · " + (team.enabled ? "Enabled" : "Ready for review")).font(.caption).foregroundStyle(.secondary)
                         }
-                    }.padding(.vertical, 5)
+                    }.padding(.vertical, 8)
                 }.accessibilityIdentifier("team-\(team.id)")
             }
             Button(action: createTeam) { Label("Create team", systemImage: "plus") }
@@ -124,7 +124,13 @@ private struct BotTeamDetailView: View {
         List {
             if let team {
                 Section {
-                    Label(team.name, systemImage: "person.3.sequence.fill").font(.title3.weight(.semibold))
+                    HStack(spacing: 14) {
+                        StrataTeamAvatars(bots: team.memberIds.compactMap { id in store.botCatalog?.bots.first(where: { $0.id == id }) }, size: 58)
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(team.name).font(.title2.weight(.bold))
+                            StrataStatusPill(title: team.enabled ? "Enabled" : "Ready for review", tone: team.enabled ? .success : .neutral)
+                        }
+                    }.padding(.vertical, 8)
                     ForEach(team.memberIds, id: \.self) { id in
                         let bot = store.botCatalog?.bots.first { $0.id == id }
                         HStack { AvatarBadge(bot?.face ?? .default(for: "Bot"), size: 34); Text(bot?.name ?? "Unavailable bot"); Spacer(); if id == team.coordinatorId { Text("Coordinator").font(.caption).foregroundStyle(.secondary) } }
@@ -164,11 +170,11 @@ private struct BotTeamDetailView: View {
                             if let detail = run.detail { Text(detail).font(.caption).foregroundStyle(.secondary) }
                             BotSharedConversationButton(store: store, chatId: run.rootChatId, title: "Open shared conversation", openChat: openChat)
                             if run.isActive { Button("Stop team task", role: .destructive) { confirmingStop = run }.buttonStyle(.borderless).disabled(workspace.mutation != nil).accessibilityIdentifier("stopBotTeamRun-\(run.id)") }
-                        }.padding(.vertical, 5)
+                        }.padding(.vertical, 8)
                     }
                 }
             } else { Text("This team is no longer available. Refresh Bots.").foregroundStyle(.secondary) }
-        }.navigationTitle(team?.name ?? "Team").navigationBarTitleDisplayMode(.inline)
+        }.strataList().navigationTitle(team?.name ?? "Team").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItemGroup(placement: .keyboard) { if taskFocused { Spacer(); Button("Done") { taskFocused = false }.accessibilityIdentifier("dismissBotTeamTaskKeyboardButton") } } }
             .refreshable { await workspace.refreshTeams() }
             .onAppear { visible = true }
@@ -200,14 +206,21 @@ private struct BotActivityView: View {
                 if workspace.activity.isEmpty, !workspace.loading.contains("activity"), workspace.messages["activity"] == nil { Text("Team tasks, bot messages and subagents will appear here.").foregroundStyle(.secondary) }
                 ForEach(workspace.activity) { item in
                     VStack(alignment: .leading, spacing: 8) {
-                        Label(item.title, systemImage: item.icon).font(.headline)
-                        Text(item.state.replacingOccurrences(of: "_", with: " ").capitalized).font(.caption).foregroundStyle(.secondary)
+                        HStack(alignment: .top, spacing: 12) {
+                            Image(systemName: item.icon).font(.subheadline).frame(width: 36, height: 36)
+                                .background(StrataTheme.grouped, in: RoundedRectangle(cornerRadius: 12))
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(item.title).font(.body.weight(.semibold))
+                                StrataStatusPill(title: item.state.replacingOccurrences(of: "_", with: " ").capitalized,
+                                    tone: ["running", "working"].contains(item.state) ? .success : ["queued", "pending"].contains(item.state) ? .attention : .neutral)
+                            }
+                        }
                         if let from = item.fromBotId, let to = item.toBotId { Text(botName(from) + " → " + botName(to)).font(.subheadline) }
                         if let detail = item.detail { Text(detail).font(.caption).foregroundStyle(.secondary) }
                         if let chatId = item.chatId ?? workspace.teams?.runs.first(where: { $0.id == item.runId })?.rootChatId {
                             BotSharedConversationButton(store: store, chatId: chatId, title: "Open conversation", openChat: openChat)
                         }
-                    }.padding(.vertical, 5).accessibilityIdentifier("botActivity-\(item.id)")
+                    }.padding(.vertical, 8).accessibilityIdentifier("botActivity-\(item.id)")
                 }
                 BotWorkspaceMessage(workspace: workspace, key: "activity")
             } header: { Text("Team activity") }
@@ -217,7 +230,7 @@ private struct BotActivityView: View {
                 }
                 Text("Open a conversation to review its current approval requests or stop that exact task.").font(.caption).foregroundStyle(.secondary)
             }
-        }.scrollContentBackground(.hidden).background(StrataTheme.background)
+        }.strataList()
             .refreshable { await workspace.refreshActivity(); await workspace.refreshTeams(); await store.refresh(silently: true) }
             .onAppear { visible = true }
             .onDisappear { visible = false }
@@ -265,7 +278,7 @@ private struct BotSkillsView: View {
                 }
                 BotWorkspaceMessage(workspace: workspace, key: "skills")
             }
-        }.scrollContentBackground(.hidden).background(StrataTheme.background)
+        }.strataList()
             .task(id: ObjectIdentifier(workspace)) { await workspace.refreshSkills() }
             .refreshable { await workspace.refreshSkills() }
             .sheet(isPresented: $creating) { BotSkillEditor(workspace: workspace) }
@@ -307,7 +320,7 @@ private struct BotSkillDetailView: View {
             } else if workspace.loading.contains("skills") { ProgressView("Loading skill…") }
             else { Text("This skill is no longer available.").foregroundStyle(.secondary) }
             BotWorkspaceMessage(workspace: workspace, key: "skills")
-        }.navigationTitle(skill?.name ?? "Skill").navigationBarTitleDisplayMode(.inline)
+        }.strataList().navigationTitle(skill?.name ?? "Skill").navigationBarTitleDisplayMode(.inline)
             .task { await workspace.refreshSkills(); if workspace.messages["skills"] == nil { reviewedDigest = skill?.digest } }
             .sheet(isPresented: $editing) { if let skill { BotSkillEditor(workspace: workspace, skill: skill) } }
     }
@@ -376,15 +389,19 @@ private struct BotConnectionsView: View {
                     NavigationLink {
                         BotConnectionDetailView(store: store, workspace: workspace, connectionId: connection.id)
                     } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(connection.name).font(.headline)
-                            Text(connection.statusLabel + " · \(connection.tools.count) tools").font(.caption).foregroundStyle(.secondary)
-                        }
+                        HStack(spacing: 12) {
+                            Image(systemName: connection.transport == "stdio" ? "terminal" : "network")
+                                .font(.title3).frame(width: 42, height: 42).background(StrataTheme.grouped, in: RoundedRectangle(cornerRadius: 14))
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(connection.name).font(.body.weight(.semibold))
+                                Text(connection.statusLabel + " · \(connection.tools.count) tools").font(.caption).foregroundStyle(StrataTheme.secondaryInk)
+                            }
+                        }.padding(.vertical, 4)
                     }.accessibilityIdentifier("botConnection-\(connection.id)")
                 }
                 BotWorkspaceMessage(workspace: workspace, key: "connections")
             }
-        }.scrollContentBackground(.hidden).background(StrataTheme.background)
+        }.strataList()
             .task(id: ObjectIdentifier(workspace)) { await workspace.refreshConnections() }
             .refreshable { await workspace.refreshConnections() }
     }
@@ -436,7 +453,7 @@ private struct BotConnectionDetailView: View {
                 }
             } else { Text("This connection is no longer available.").foregroundStyle(.secondary) }
             BotWorkspaceMessage(workspace: workspace, key: "connections")
-        }.navigationTitle(connection?.name ?? "Connection").navigationBarTitleDisplayMode(.inline)
+        }.strataList().navigationTitle(connection?.name ?? "Connection").navigationBarTitleDisplayMode(.inline)
             .task { await reload() }
             .confirmationDialog("Check this saved connection on your Mac?", isPresented: $confirmingCheck) {
                 if let connection { Button("Check saved connection") { Task { await workspace.checkConnection(connection); await reload() } } }

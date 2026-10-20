@@ -9,13 +9,13 @@ struct MacThinkingView: View {
         VStack(alignment: .leading, spacing: 9) {
             Button { expanded.toggle() } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: "sparkle").font(.caption).foregroundStyle(StrataTheme.accentText)
+                    Image(systemName: "sparkle").font(.caption.weight(.semibold)).foregroundStyle(StrataTheme.ink).frame(width: 28, height: 28).background(StrataTheme.grouped, in: Circle())
                     Text(message.thinkingTitle(isLive: isLive)).font(.subheadline.weight(.medium))
-                    if isLive { Circle().fill(StrataTheme.accent).frame(width: 6, height: 6).accessibilityLabel("Live thinking") }
+                    if isLive { Circle().fill(StrataTheme.success).frame(width: 6, height: 6).accessibilityLabel("Live thinking") }
                     Spacer(minLength: 4)
                     Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.caption2)
                 }
-                .foregroundStyle(StrataTheme.secondaryInk).contentShape(Rectangle())
+                .foregroundStyle(StrataTheme.secondaryInk).frame(minHeight: 44).contentShape(Rectangle())
             }
             .buttonStyle(.plain).accessibilityIdentifier("thinkingDisclosure-" + message.id)
             .accessibilityValue(isLive ? "Thinking live" : "Recorded thinking")
@@ -30,7 +30,8 @@ struct MacThinkingView: View {
                     .accessibilityIdentifier("thinkingPreview-" + message.id)
             }
         }
-        .padding(13).background(StrataTheme.surfaceSecondary.opacity(0.7), in: RoundedRectangle(cornerRadius: 13))
+        .padding(12).background(StrataTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(StrataTheme.line, lineWidth: 0.7))
     }
 }
 
@@ -68,16 +69,16 @@ struct MacActivityGroupView<Content: View>: View {
             if showChevron {
                 Image(systemName: "chevron.right").font(.caption2.weight(.semibold)).rotationEffect(.degrees(expanded ? 90 : 0))
             }
-            Text(group.displayTitle).font(.subheadline).multilineTextAlignment(.leading)
+            Text(group.displayTitle).font(.subheadline.weight(.medium)).multilineTextAlignment(.leading)
             if isLive, !group.closed {
-                Circle().fill(StrataTheme.accent).frame(width: 6, height: 6)
+                Circle().fill(StrataTheme.success).frame(width: 6, height: 6)
                     .accessibilityLabel("Live activity").accessibilityIdentifier("liveActivityGroup-" + group.id)
             }
             Spacer(minLength: 0)
             if let added = group.added, added > 0 { Text("+" + added.formatted(.number.precision(.fractionLength(0)))).foregroundStyle(StrataTheme.accentText) }
             if let removed = group.removed, removed > 0 { Text("−" + removed.formatted(.number.precision(.fractionLength(0)))).foregroundStyle(StrataTheme.warning) }
         }
-        .font(.caption.monospaced()).foregroundStyle(StrataTheme.secondaryInk).contentShape(Rectangle())
+        .font(.caption.monospaced()).foregroundStyle(StrataTheme.secondaryInk).frame(minHeight: showChevron ? 44 : 20).contentShape(Rectangle())
     }
 
 }

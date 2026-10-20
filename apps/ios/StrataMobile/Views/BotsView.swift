@@ -48,12 +48,12 @@ struct BotsView: View {
             if store.isPaired {
                 Picker("Bots workspace", selection: $destination) {
                     ForEach(BotWorkspaceDestination.allCases) { item in Text(item.rawValue).tag(item) }
-                }.pickerStyle(.segmented).padding(.horizontal, 20).padding(.vertical, 10)
+                }.pickerStyle(.segmented).padding(.horizontal, 16).padding(.vertical, 12)
                     .background(StrataTheme.background).accessibilityIdentifier("botsWorkspacePicker")
             }
         }
-        .scrollContentBackground(.hidden).background(StrataTheme.background)
-        .navigationTitle("Bots").toolbar(.visible, for: .navigationBar)
+        .strataList()
+        .navigationTitle("Bots").navigationBarTitleDisplayMode(.inline).toolbar(.visible, for: .navigationBar)
         .refreshable { await store.refresh(silently: true); await store.refreshBots() }
         .sheet(isPresented: $creatingTeam) { if let workspace { BotTeamEditor(store: store, workspace: workspace) } }
         .task(id: store.pairingGeneration) {
@@ -69,7 +69,7 @@ struct BotsView: View {
     private var emptyBots: some View {
         VStack(alignment: .leading, spacing: 13) {
             Image(systemName: "sparkles.rectangle.stack").font(.system(size: 32, weight: .light)).foregroundStyle(StrataTheme.accentText)
-            Text("Your team starts on Mac").font(.system(.title3, design: .rounded, weight: .semibold)).foregroundStyle(StrataTheme.ink)
+            Text("Your team starts on Mac").font(.title3.weight(.semibold)).foregroundStyle(StrataTheme.ink)
             Text("Create a coding bot, a computer-control bot, or one that can do both. Its conversations will appear here.")
                 .font(.subheadline).foregroundStyle(StrataTheme.secondaryInk).lineSpacing(4)
         }.frame(maxWidth: .infinity, alignment: .leading).strataCard(padding: 24)
@@ -80,19 +80,20 @@ struct BotsView: View {
         let conversations = store.botConversations(bot)
         let active = conversations.contains { $0.active }
         return HStack(spacing: 12) {
-            KoalaAvatar(bot.face, mood: active ? .working : .idle).frame(width: 44, height: 44)
+            KoalaAvatar(bot.face, mood: active ? .working : .idle).frame(width: 48, height: 48)
+                .padding(5).background(StrataTheme.grouped, in: RoundedRectangle(cornerRadius: 18))
             VStack(alignment: .leading, spacing: 2) {
-                Text(bot.name).font(.headline).foregroundStyle(StrataTheme.ink)
+                Text(bot.name).font(.body.weight(.semibold)).foregroundStyle(StrataTheme.ink)
                 Text(conversations.first?.preview ?? bot.capabilityLabel)
                     .font(.subheadline).foregroundStyle(StrataTheme.secondaryInk).lineLimit(1)
             }
             Spacer()
-            if bot.paused == true { Image(systemName: "pause.circle").foregroundStyle(.secondary).accessibilityLabel("Paused") }
+            if bot.paused == true { StrataStatusPill(title: "Paused", icon: "pause.fill", tone: .attention) }
             else if active { ProgressView().controlSize(.small) }
             else if catalog.providers.first(where: { $0.id == bot.provider })?.available == false {
-                Image(systemName: "exclamationmark.circle").foregroundStyle(StrataTheme.warning)
+                StrataStatusPill(title: "Setup", icon: "exclamationmark.circle", tone: .attention)
             }
-        }.padding(.vertical, 4)
+        }.padding(.vertical, 8)
     }
 
 }
@@ -114,7 +115,7 @@ private struct BotDetailView: View {
                     VStack(spacing: 6) {
                         Button { showingAvatar = true } label: { AvatarBadge(bot.face, size: 96, editable: true) }
                             .buttonStyle(.plain).accessibilityLabel("Customize avatar").accessibilityIdentifier("customizeBotAvatarButton")
-                        Text(bot.name).font(.title2.weight(.semibold))
+                        Text(bot.name).font(.title2.weight(.bold))
                         Text(bot.capabilityLabel).font(.subheadline).foregroundStyle(.secondary)
                         if bot.paused == true { Label("Paused", systemImage: "pause.circle").font(.subheadline).foregroundStyle(.secondary) }
                     }.frame(maxWidth: .infinity).listRowBackground(Color.clear)
@@ -171,7 +172,8 @@ private struct BotDetailView: View {
                 Text("This bot is no longer available. Check Strata on your Mac.").foregroundStyle(.secondary)
             }
         }
-        .scrollContentBackground(.hidden).background(StrataTheme.background)
+        .strataList()
+        .strataList()
         .navigationTitle(bot?.name ?? "Bot").navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
         .refreshable { await store.refresh(silently: true); await store.refreshBots() }
@@ -279,7 +281,7 @@ private struct BotConversationSetupView: View {
                     HStack(spacing: 12) {
                         AvatarBadge(bot.face, size: 72)
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(bot.name).font(.headline)
+                            Text(bot.name).font(.body.weight(.semibold))
                             Text(bot.capabilityLabel).font(.caption).foregroundStyle(StrataTheme.secondaryInk)
                         }
                     }
@@ -370,7 +372,7 @@ private struct BotConversationSetupView: View {
                 }
             }
             .disabled(isBusy)
-            .scrollContentBackground(.hidden).background(StrataTheme.background)
+            .strataList()
             .navigationTitle("New conversation").navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(isBusy) }

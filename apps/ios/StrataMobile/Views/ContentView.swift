@@ -14,7 +14,7 @@ struct ContentView: View {
             NavigationStack {
                 OverviewView(store: store, pair: { showingPairing = true }, open: { selection = $0 })
             }
-            .tabItem { Label("Home", systemImage: "square.grid.2x2") }
+            .tabItem { Label("Home", systemImage: "house") }
             .tag(CompanionTab.overview)
             .accessibilityIdentifier("homeTab")
 
@@ -28,7 +28,7 @@ struct ContentView: View {
             NavigationStack {
                 BotsView(store: store, pair: { showingPairing = true }, openChat: { selection = .chat })
             }
-            .tabItem { Label("Bots", systemImage: "sparkles.rectangle.stack") }
+            .tabItem { Label("Bots", systemImage: "person.2") }
             .tag(CompanionTab.bots)
             .accessibilityIdentifier("botsTab")
 

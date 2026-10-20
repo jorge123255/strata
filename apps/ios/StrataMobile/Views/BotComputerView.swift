@@ -18,9 +18,9 @@ struct BotComputerView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 VStack(alignment: .leading, spacing: 7) {
-                    Text(session.state?.computerName ?? name).font(.system(.title2, design: .rounded, weight: .bold)).foregroundStyle(StrataTheme.ink)
-                    Label(session.hasControl ? "You have control" : "View only", systemImage: session.hasControl ? "hand.point.up.left.fill" : "eye")
-                        .font(.subheadline.weight(.semibold)).foregroundStyle(StrataTheme.accentText).accessibilityIdentifier("computerControlState")
+                    Text(session.state?.computerName ?? name).font(.title2.weight(.bold)).foregroundStyle(StrataTheme.ink)
+                    StrataStatusPill(title: session.hasControl ? "You have control" : "View only", icon: session.hasControl ? "hand.point.up.left.fill" : "eye", tone: session.hasControl ? .success : .neutral)
+                        .accessibilityIdentifier("computerControlState")
                     Text("Snapshots refresh while this screen is open. Start the computer explicitly if it isn’t running.")
                         .font(.caption).foregroundStyle(StrataTheme.secondaryInk)
                 }
@@ -47,17 +47,17 @@ struct BotComputerView: View {
                         Button("Start computer") { Task { await session.start() } }
                             .buttonStyle(StrataPrimaryButtonStyle()).accessibilityIdentifier("startBotComputerButton")
                     }
-                    Button { Task { await session.refresh() } } label: { Image(systemName: "arrow.clockwise").frame(width: 40, height: 44) }
+                    Button { Task { await session.refresh() } } label: { Image(systemName: "arrow.clockwise").frame(width: 44, height: 44).strataChrome() }
                         .accessibilityLabel("Refresh computer view")
                 }.disabled(session.isBusy)
                 if session.isRunning || session.state?.cleanupConfirmed == false {
                     Button(role: .destructive) { confirmingStop = true } label: {
                         Label("Stop isolated computer", systemImage: "power")
-                    }.font(.subheadline).disabled(session.isBusy).accessibilityIdentifier("stopBotComputerButton")
+                    }.font(.subheadline.weight(.semibold)).frame(minHeight: 44).disabled(session.isBusy).accessibilityIdentifier("stopBotComputerButton")
                 }
                 Text("Releasing control leaves the bot stopped. Return to its conversation when you’re ready to give it more work.")
                     .font(.caption).foregroundStyle(StrataTheme.secondaryInk)
-            }.padding(24)
+            }.padding(20)
         }
         .background(StrataTheme.background)
         .navigationTitle("Computer view").navigationBarTitleDisplayMode(.inline)
@@ -78,7 +78,7 @@ struct BotComputerView: View {
     private var canvas: some View {
         GeometryReader { geometry in
             ZStack {
-                RoundedRectangle(cornerRadius: 15).fill(Color.black.opacity(0.92))
+                RoundedRectangle(cornerRadius: 20).fill(Color.black.opacity(0.92))
                 if let image = session.image, let state = session.state, let width = state.width, let height = state.height {
                     Image(uiImage: image).resizable().scaledToFit().accessibilityLabel("Isolated computer screenshot")
                     Color.clear.contentShape(Rectangle())
@@ -96,7 +96,7 @@ struct BotComputerView: View {
                             .font(.subheadline).multilineTextAlignment(.center)
                     }.foregroundStyle(.white.opacity(0.8)).padding(20)
                 }
-            }.clipShape(RoundedRectangle(cornerRadius: 15))
+            }.clipShape(RoundedRectangle(cornerRadius: 20))
         }
         .frame(height: 250)
         .accessibilityIdentifier("botComputerCanvas")
@@ -108,21 +108,22 @@ struct BotComputerView: View {
             HStack(alignment: .top, spacing: 10) {
                 TextField("Text for the computer", text: $text, axis: .vertical)
                     .lineLimit(1...4).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    .padding(12).background(StrataTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+                    .padding(12).background(StrataTheme.grouped, in: RoundedRectangle(cornerRadius: 14))
                     .focused($typing).accessibilityIdentifier("computerTypeField")
                 Button("Type") { let value = text; typing = false; Task { await session.type(value); if session.error == nil { text = "" } } }
-                    .font(.subheadline.weight(.semibold)).padding(.top, 12)
-                    .disabled(text.isEmpty || text.utf16.count > 4_000).accessibilityIdentifier("computerTypeButton")
+                    .font(.subheadline.weight(.semibold)).frame(minHeight: 44).padding(.horizontal, 14)
+                    .foregroundStyle(StrataTheme.primaryInk).background(StrataTheme.primaryFill, in: RoundedRectangle(cornerRadius: 14))
+                    .disabled(text.isEmpty || text.utf16.count > 4_000).opacity(session.isBusy || text.isEmpty || text.utf16.count > 4_000 ? 0.42 : 1).accessibilityIdentifier("computerTypeButton")
             }
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(["Enter", "Tab", "Escape", "Backspace", "Control+L"], id: \.self) { key in
                         Button(key == "Control+L" ? "Address bar" : key) { typing = false; Task { await session.key(key) } }
-                            .font(.caption.weight(.semibold)).padding(.horizontal, 12).padding(.vertical, 10)
-                            .background(StrataTheme.accentTint, in: Capsule()).accessibilityIdentifier("computerKey-\(key)")
+                            .font(.caption.weight(.semibold)).padding(.horizontal, 14).frame(minHeight: 44)
+                            .background(StrataTheme.grouped, in: Capsule()).accessibilityIdentifier("computerKey-\(key)")
                     }
                 }
             }
-        }.foregroundStyle(StrataTheme.ink).disabled(session.isBusy)
+        }.strataCard(padding: 16).foregroundStyle(StrataTheme.ink).disabled(session.isBusy)
     }
 }

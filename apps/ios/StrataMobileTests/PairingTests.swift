@@ -1,4 +1,6 @@
 import XCTest
+import SwiftUI
+import UIKit
 @testable import StrataMobile
 
 final class PairingTests: XCTestCase {
@@ -79,5 +81,37 @@ final class PairingTests: XCTestCase {
         } catch {
             XCTAssertTrue(error is URLError, "The wrong pin must fail before any HTTP response")
         }
+    }
+}
+
+
+final class ThemeAccessibilityTests: XCTestCase {
+    func testBodyColorPairsMeetAAInBothAppearancesAndContrastModes() {
+        let pairs: [(String, Color, Color)] = [
+            ("primary text", StrataTheme.ink, StrataTheme.background),
+            ("secondary text", StrataTheme.secondaryInk, StrataTheme.background),
+            ("secondary card text", StrataTheme.secondaryInk, StrataTheme.surface),
+            ("interactive text", StrataTheme.accentText, StrataTheme.background),
+            ("primary action", StrataTheme.primaryInk, StrataTheme.primaryFill),
+            ("user message", StrataTheme.userBubbleInk, StrataTheme.userBubble),
+            ("success badge", StrataTheme.success, StrataTheme.successTint),
+            ("approval badge", StrataTheme.warning, StrataTheme.warningTint)
+        ]
+        for style in [UIUserInterfaceStyle.light, .dark] {
+            for contrast in [UIAccessibilityContrast.normal, .high] {
+                let traits = UITraitCollection(traitsFrom: [UITraitCollection(userInterfaceStyle: style), UITraitCollection(accessibilityContrast: contrast)])
+                for (name, foreground, background) in pairs {
+                    let a = luminance(UIColor(foreground).resolvedColor(with: traits))
+                    let b = luminance(UIColor(background).resolvedColor(with: traits))
+                    XCTAssertGreaterThanOrEqual((max(a, b) + 0.05) / (min(a, b) + 0.05), 4.5, name)
+                }
+            }
+        }
+    }
+    private func luminance(_ color: UIColor) -> Double {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        color.getRed(&r, green: &g, blue: &b, alpha: &a)
+        func linear(_ value: CGFloat) -> Double { let v = Double(value); return v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4) }
+        return linear(r) * 0.2126 + linear(g) * 0.7152 + linear(b) * 0.0722
     }
 }

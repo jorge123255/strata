@@ -20,7 +20,7 @@ struct ModelsView: View {
                             .font(.system(size: 34, weight: .light))
                             .foregroundStyle(StrataTheme.accentText)
                         Text(store.isLoading ? "Checking your library…" : "Your library is waiting")
-                            .font(.system(.title3, design: .rounded, weight: .semibold))
+                            .font(.title3.weight(.semibold))
                             .foregroundStyle(StrataTheme.ink)
                         Text("Download a model below, or add an API connection in Strata on your Mac. Ready models appear here.")
                             .font(.subheadline)
@@ -60,8 +60,8 @@ struct ModelsView: View {
                         .padding(.horizontal, 2)
                 }
             }
-            .padding(.horizontal, 24)
-            .padding(.top, 27)
+            .padding(.horizontal, 20)
+            .padding(.top, 20)
             .padding(.bottom, 30)
         }
         .background(StrataTheme.background)
@@ -86,12 +86,12 @@ struct ModelsView: View {
             HStack(alignment: .top, spacing: 13) {
                 Image(systemName: "cube.transparent")
                     .font(.system(size: 25, weight: .light))
-                    .foregroundStyle(active ? StrataTheme.accentText : StrataTheme.ink)
+                    .foregroundStyle(active ? StrataTheme.success : StrataTheme.ink)
                     .frame(width: 47, height: 47)
-                    .background(active ? StrataTheme.accentTint : StrataTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: 14))
+                    .background(active ? StrataTheme.successTint : StrataTheme.grouped, in: RoundedRectangle(cornerRadius: 14))
                 VStack(alignment: .leading, spacing: 5) {
                     Text(model.name)
-                        .font(.system(.headline, design: .rounded))
+                        .font(.headline)
                         .foregroundStyle(StrataTheme.ink)
                         .fixedSize(horizontal: false, vertical: true)
                     HStack(spacing: 7) {
@@ -100,9 +100,10 @@ struct ModelsView: View {
                         Text(active ? "In use" : loaded ? "Loaded on Mac" : model.state.capitalized)
                     }
                     .font(.caption)
-                    .foregroundStyle(active ? StrataTheme.accentText : StrataTheme.secondaryInk)
+                    .foregroundStyle(active ? StrataTheme.success : StrataTheme.secondaryInk)
                 }
                 Spacer(minLength: 0)
+                StrataStatusPill(title: apiModel ? "API" : "Local", icon: apiModel ? "network" : "internaldrive")
             }
             if let detail = model.detail, !detail.isEmpty {
                 Text(detail).font(.caption).foregroundStyle(StrataTheme.secondaryInk).lineSpacing(3)
@@ -134,7 +135,7 @@ struct ModelsView: View {
     private var downloadSection: some View {
         VStack(alignment: .leading, spacing: 17) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Downloads").font(.system(.title2, design: .rounded, weight: .bold)).foregroundStyle(StrataTheme.ink)
+                Text("Downloads").font(.title2.weight(.semibold)).foregroundStyle(StrataTheme.ink)
                 Text("Get model files on your computer. Nothing is downloaded to this iPhone.")
                     .font(.subheadline).foregroundStyle(StrataTheme.secondaryInk).lineSpacing(3)
             }
@@ -148,6 +149,8 @@ struct ModelsView: View {
                     }
                 }
                 .pickerStyle(.menu).tint(StrataTheme.accentText)
+                .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                .background(StrataTheme.grouped, in: RoundedRectangle(cornerRadius: 14))
                 .disabled(store.isModelDownloadBusy)
                 .accessibilityIdentifier("modelDownloadTargetPicker")
             }
@@ -267,7 +270,7 @@ private struct ModelDownloadReviewView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 21) {
                     Text(store.reviewingModelDownload?.name ?? "Model download")
-                        .font(.system(.title2, design: .rounded, weight: .bold)).foregroundStyle(StrataTheme.ink)
+                        .font(.title2.weight(.semibold)).foregroundStyle(StrataTheme.ink)
                     if store.isPlanningModelDownload {
                         ProgressView("Checking size, storage, and required steps…").tint(StrataTheme.accentText)
                             .foregroundStyle(StrataTheme.secondaryInk).font(.subheadline)

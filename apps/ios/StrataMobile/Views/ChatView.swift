@@ -33,30 +33,34 @@ struct ChatView: View {
     private var header: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Chat").font(.system(.largeTitle, design: .rounded, weight: .bold)).tracking(-1.3).foregroundStyle(StrataTheme.ink)
+                Text("Chat").font(.title2.weight(.bold)).tracking(-0.5).foregroundStyle(StrataTheme.ink)
                 Text(chatSubtitle).font(.caption).foregroundStyle(StrataTheme.secondaryInk).lineLimit(1)
             }
             Spacer(minLength: 12)
             if store.isPaired {
                 Button { showingHistory = true; Task { await store.refresh(silently: true) } } label: {
-                    Image(systemName: "sidebar.left").font(.system(size: 19)).frame(width: 40, height: 44)
+                    Image(systemName: "sidebar.left").font(.system(size: 18, weight: .medium)).frame(width: 44, height: 44).strataChrome()
                 }
                 .disabled(store.isSending)
                 .accessibilityLabel("Conversation history").accessibilityIdentifier("chatHistoryButton")
                 Button { store.newChat(); composerFocused = false } label: {
-                    Image(systemName: "square.and.pencil").font(.system(size: 20)).frame(width: 40, height: 44)
+                    Image(systemName: "square.and.pencil").font(.system(size: 18, weight: .medium)).frame(width: 44, height: 44).strataChrome()
                 }
                 .disabled(store.isSubmittingMessage || store.isSending)
                 .accessibilityLabel("New conversation").accessibilityIdentifier("newChatButton")
             }
         }
         .foregroundStyle(StrataTheme.ink)
-        .padding(.horizontal, 24).padding(.top, 27).padding(.bottom, 16)
+        .padding(.horizontal, 20).padding(.top, 10).padding(.bottom, 14)
     }
 
     private func contextBar(_ value: MacConversation) -> some View {
         HStack(alignment: .top, spacing: 9) {
-            Image(systemName: "desktopcomputer").foregroundStyle(StrataTheme.accentText).padding(.top, 2)
+            Group {
+                if value.botId != nil {
+                    BotAvatarView(avatar: value.botAvatar ?? "🤖", size: 32, config: value.botAvatarConfig ?? conversationBot?.avatarConfig, name: conversationBotName ?? "Bot")
+                } else { Image(systemName: "desktopcomputer").font(.subheadline).frame(width: 32, height: 32).background(StrataTheme.grouped, in: RoundedRectangle(cornerRadius: 10)) }
+            }.foregroundStyle(StrataTheme.ink)
             VStack(alignment: .leading, spacing: 3) {
                 Text(value.title).font(.subheadline.weight(.semibold)).foregroundStyle(StrataTheme.ink).lineLimit(2)
                     .accessibilityIdentifier("macConversationTitle")
@@ -72,12 +76,13 @@ struct ChatView: View {
                     .accessibilityLabel("Computer view").accessibilityIdentifier("chatComputerViewButton")
             }
             if value.active {
-                Label("Live", systemImage: "circle.fill").font(.caption2.weight(.semibold)).foregroundStyle(StrataTheme.accentText)
+                StrataStatusPill(title: "Live", icon: "circle.fill", tone: .success)
                     .accessibilityElement(children: .combine).accessibilityIdentifier("macConversationLiveBadge")
             }
         }
-        .padding(.horizontal, 18).padding(.vertical, 12)
-        .background(StrataTheme.accentTint)
+        .padding(14)
+        .background(StrataTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: 18))
+        .padding(.horizontal, 16).padding(.bottom, 8)
     }
 
     private var visibleMessages: [MacChatMessage] {
@@ -95,7 +100,7 @@ struct ChatView: View {
                         Button { followsLatest = true; scrollToBottom(proxy) } label: {
                             Label("Latest", systemImage: "arrow.down").font(.caption.weight(.semibold))
                                 .padding(.horizontal, 13).padding(.vertical, 9)
-                                .foregroundStyle(StrataTheme.accentInk).background(StrataTheme.accent, in: Capsule())
+                                .foregroundStyle(StrataTheme.primaryInk).background(StrataTheme.primaryFill, in: Capsule())
                         }
                         .padding(14).accessibilityIdentifier("followLatestMessagesButton")
                     }
@@ -125,7 +130,7 @@ struct ChatView: View {
                     if store.isWorking { workingIndicator }
                     Color.clear.frame(height: 1).id("conversationBottom")
                 }
-                .padding(.horizontal, 24).padding(.top, 20).padding(.bottom, 22)
+                .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 22)
             }
         }
     }
@@ -194,7 +199,7 @@ struct ChatView: View {
         VStack(alignment: .leading, spacing: 26) {
             StrataMark(size: 52).padding(.bottom, 5)
             Text("Pick up where\nyou left off.")
-                .font(.system(.largeTitle, design: .rounded, weight: .bold)).tracking(-1).foregroundStyle(StrataTheme.ink)
+                .font(.largeTitle.weight(.bold)).tracking(-0.8).foregroundStyle(StrataTheme.ink)
             Text("Open a Mac conversation to see its history, continue the work, and follow browser and tool activity as it happens.")
                 .font(.subheadline).foregroundStyle(StrataTheme.secondaryInk).lineSpacing(4)
             if !store.conversations.isEmpty {
@@ -220,7 +225,7 @@ struct ChatView: View {
                                           config: store.currentConversation?.botAvatarConfig ?? conversationBot?.avatarConfig,
                                           name: conversationBotName ?? "Bot")
                         } else { StrataMark(size: 22) }
-                        Text(conversationBotName?.uppercased() ?? "STRATA").font(.system(.caption2, weight: .bold)).tracking(1.5).foregroundStyle(StrataTheme.secondaryInk)
+                        Text(conversationBotName ?? "Strata").font(.caption.weight(.semibold)).foregroundStyle(StrataTheme.secondaryInk)
                     }
                 }
                 if message.role == "assistant", message.thinkingText != nil {
@@ -252,9 +257,13 @@ struct ChatView: View {
     }
 
     private func messageText(_ text: String, isUser: Bool) -> some View {
-        Text(.init(text)).font(.body).foregroundStyle(StrataTheme.ink).lineSpacing(5).textSelection(.enabled)
-            .padding(isUser ? 15 : 0).frame(maxWidth: .infinity, alignment: .leading)
-            .background(isUser ? StrataTheme.accentTint : .clear, in: RoundedRectangle(cornerRadius: 19))
+        // Timeline paragraph boundaries may contain separator newlines. Keep
+        // internal Markdown and indentation, without empty space in a bubble.
+        let displayed = isUser ? text : text.trimmingCharacters(in: .newlines)
+        return Text(.init(displayed)).font(.body).foregroundStyle(isUser ? StrataTheme.userBubbleInk : StrataTheme.ink).lineSpacing(4).textSelection(.enabled)
+            .tint(isUser ? StrataTheme.userBubbleInk : StrataTheme.accentText)
+            .padding(15).frame(maxWidth: .infinity, alignment: .leading)
+            .background(isUser ? StrataTheme.userBubble : StrataTheme.assistantBubble, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
             .accessibilityIdentifier(isUser ? "userMessage" : "assistantMessage")
     }
 
@@ -273,8 +282,8 @@ struct ChatView: View {
                     .padding(.vertical, 12).padding(.leading, 16).accessibilityIdentifier("messageInput")
                 if store.isWorking {
                     Button { Task { await store.cancelMessage() } } label: {
-                        Image(systemName: "stop.fill").font(.system(size: 13, weight: .bold)).foregroundStyle(StrataTheme.accentInk)
-                            .frame(width: 37, height: 37).background(StrataTheme.accent, in: Circle())
+                        Image(systemName: "stop.fill").font(.system(size: 13, weight: .bold)).foregroundStyle(StrataTheme.primaryInk)
+                            .frame(width: 44, height: 44).background(StrataTheme.primaryFill, in: Circle())
                     }
                     .padding(6).disabled(store.isSubmittingMessage)
                     .accessibilityLabel("Stop response").accessibilityIdentifier("stopMessageButton")
@@ -284,17 +293,16 @@ struct ChatView: View {
                             if store.isSubmittingMessage { ProgressView().controlSize(.small) }
                             else { Image(systemName: "arrow.up").font(.system(size: 18, weight: .semibold)) }
                         }
-                        .foregroundStyle(canSend ? StrataTheme.accentInk : StrataTheme.secondaryInk)
-                        .frame(width: 37, height: 37).background(canSend ? StrataTheme.accent : StrataTheme.surfaceSecondary, in: Circle())
+                        .foregroundStyle(canSend ? StrataTheme.primaryInk : StrataTheme.secondaryInk)
+                        .frame(width: 44, height: 44).background(canSend ? StrataTheme.primaryFill : StrataTheme.grouped, in: Circle())
                     }
                     .padding(6).disabled(!canSend).accessibilityLabel("Send message").accessibilityIdentifier("sendMessageButton")
                 }
             }
-            .background(StrataTheme.surface, in: RoundedRectangle(cornerRadius: 25))
-            .overlay(RoundedRectangle(cornerRadius: 25).strokeBorder(StrataTheme.line, lineWidth: 1))
-            Text(composerNote).font(.system(size: 10)).foregroundStyle(StrataTheme.secondaryInk)
+            .strataChrome(radius: 26)
+            Text(composerNote).font(.caption2).foregroundStyle(StrataTheme.secondaryInk).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
         }
-        .padding(.horizontal, 20).padding(.top, 10).padding(.bottom, 10).background(StrataTheme.background)
+        .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 8).background(StrataTheme.background)
     }
 
     private var canSend: Bool {
@@ -377,7 +385,7 @@ struct ChatView: View {
             }
             .refreshable { await store.refresh(silently: true) }
             .searchable(text: $historyQuery, prompt: "Search conversations")
-            .scrollContentBackground(.hidden).background(StrataTheme.background)
+            .strataList()
             .navigationTitle("Conversations").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { showingHistory = false } } }
         }

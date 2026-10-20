@@ -3,6 +3,8 @@
 
 import SwiftUI
 
+// Strata presentation adapts spacing, contrast and Dynamic Type; geometry is unchanged.
+
 // MARK: - Avatar
 
 /// The koala avatar in a size, with an optional pencil badge.
@@ -48,7 +50,7 @@ public struct AvatarPicker: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             section("Character") {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 58), spacing: 8)], spacing: 8) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 70), spacing: 10)], spacing: 8) {
                     ForEach(AvatarKind.allCases) { kind in
                         option(selected: avatar.kind == kind, label: kind.name, identifier: "avatar-character-\(kind.rawValue)") {
                             avatar.kind = kind
@@ -59,14 +61,15 @@ public struct AvatarPicker: View {
                 }
             }
             section("Color") {
-                HStack(spacing: 10) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 44), spacing: 8)], spacing: 8) {
                     ForEach(BotColor.allCases) { c in
                         Button { avatar.color = c } label: {
                             Circle().fill(c.face)
                                 .overlay(Circle().strokeBorder(.primary.opacity(0.12)))
                                 .frame(width: 26, height: 26)
-                                .padding(3)
-                                .overlay(Circle().strokeBorder(avatar.color == c ? Color.accentColor : .clear, lineWidth: 2))
+                                .padding(4)
+                                .overlay(Circle().strokeBorder(avatar.color == c ? StrataTheme.accentText : .clear, lineWidth: 2))
+                                .frame(width: 44, height: 44).contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                         .help(c.name)
@@ -77,7 +80,7 @@ public struct AvatarPicker: View {
                 }
             }
             section("Eyes") {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 58), spacing: 8)], spacing: 8) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 70), spacing: 10)], spacing: 8) {
                     ForEach(EyeStyle.allCases) { e in
                         option(selected: avatar.eyes == e, label: e.name, identifier: "avatar-eyes-\(e.rawValue)") {
                             avatar.eyes = e
@@ -103,7 +106,7 @@ public struct AvatarPicker: View {
 
     private func section<C: View>(_ title: String, @ViewBuilder _ content: () -> C) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(.subheadline.weight(.medium)).foregroundStyle(.secondary)
+            Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(StrataTheme.secondaryInk).accessibilityAddTraits(.isHeader)
             content()
         }
     }
@@ -113,11 +116,11 @@ public struct AvatarPicker: View {
         Button(action: action) {
             VStack(spacing: 4) {
                 content().frame(width: 46, height: 46)
-                Text(label).font(.caption2).foregroundStyle(.secondary)
+                Text(label).font(.caption).foregroundStyle(selected ? StrataTheme.ink : StrataTheme.secondaryInk).fixedSize(horizontal: false, vertical: true)
             }
-            .frame(width: 58, height: 66)
-            .background(RoundedRectangle(cornerRadius: 8).fill(selected ? Color.accentColor.opacity(0.12) : .clear))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(selected ? Color.accentColor : .primary.opacity(0.08)))
+            .frame(maxWidth: .infinity, minHeight: 78).padding(.vertical, 5)
+            .background(RoundedRectangle(cornerRadius: 16).fill(selected ? StrataTheme.accentTint : StrataTheme.surfaceSecondary))
+            .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(selected ? StrataTheme.accentText : StrataTheme.line))
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)

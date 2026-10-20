@@ -6,12 +6,13 @@ struct MacActivityCard: View {
     let deciding: Bool
     let decide: (Bool) -> Void
     @State private var expanded = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 11) {
-            Button { withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() } } label: {
+            Button { withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) { expanded.toggle() } } label: {
                 HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: tool.icon).font(.subheadline).foregroundStyle(StrataTheme.accentText).frame(width: 20)
+                    Image(systemName: tool.icon).font(.subheadline).foregroundStyle(awaitingApproval ? StrataTheme.warning : StrataTheme.ink).frame(width: 32, height: 32).background(awaitingApproval ? StrataTheme.warningTint : StrataTheme.grouped, in: RoundedRectangle(cornerRadius: 10))
                     VStack(alignment: .leading, spacing: 4) {
                         Text(tool.title).font(.subheadline.weight(.medium)).foregroundStyle(StrataTheme.ink).multilineTextAlignment(.leading)
                         Text(tool.statusLabel).font(.caption2).foregroundStyle(tool.state == "error" ? StrataTheme.warning : StrataTheme.secondaryInk)
@@ -20,7 +21,7 @@ struct MacActivityCard: View {
                     if tool.isRunning { ProgressView().controlSize(.mini).tint(StrataTheme.accentText) }
                     Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.caption2).foregroundStyle(StrataTheme.secondaryInk)
                 }
-                .contentShape(Rectangle())
+                .frame(minHeight: 44).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("macActivity-" + tool.id)
@@ -43,18 +44,18 @@ struct MacActivityCard: View {
                 if let detail = tool.ask?.detail, !detail.isEmpty { Text(detail).font(.caption).foregroundStyle(StrataTheme.secondaryInk).textSelection(.enabled) }
                 Text("This allows the action on your Mac.").font(.caption2).foregroundStyle(StrataTheme.secondaryInk)
                 HStack(spacing: 10) {
-                    Button { decide(false) } label: { Text("Deny").frame(maxWidth: .infinity).padding(.vertical, 10) }
-                        .foregroundStyle(StrataTheme.ink).background(StrataTheme.surface, in: RoundedRectangle(cornerRadius: 10))
+                    Button { decide(false) } label: { Text("Deny").frame(maxWidth: .infinity).frame(minHeight: 44) }
+                        .foregroundStyle(StrataTheme.ink).background(StrataTheme.grouped, in: RoundedRectangle(cornerRadius: 12))
                         .accessibilityIdentifier("denyMacAction-" + tool.id)
-                    Button { decide(true) } label: { Text("Allow").frame(maxWidth: .infinity).padding(.vertical, 10) }
-                        .foregroundStyle(StrataTheme.accentInk).background(StrataTheme.accent, in: RoundedRectangle(cornerRadius: 10))
+                    Button { decide(true) } label: { Text("Allow").frame(maxWidth: .infinity).frame(minHeight: 44) }
+                        .foregroundStyle(StrataTheme.primaryInk).background(StrataTheme.primaryFill, in: RoundedRectangle(cornerRadius: 12))
                         .accessibilityIdentifier("approveMacAction-" + tool.id)
                 }
                 .font(.subheadline.weight(.semibold)).buttonStyle(.plain).disabled(deciding)
             }
         }
-        .padding(14).background(StrataTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(awaitingApproval ? StrataTheme.accentText.opacity(0.5) : StrataTheme.line.opacity(0.6), lineWidth: 0.7))
+        .padding(14).background(StrataTheme.surface, in: RoundedRectangle(cornerRadius: 18))
+        .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(awaitingApproval ? StrataTheme.warning : StrataTheme.line, lineWidth: 0.7))
     }
 
     @ViewBuilder private var details: some View {
