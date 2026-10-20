@@ -8,7 +8,7 @@ Choose **New team**, give it a name, select its members and choose a coordinator
 
 Write a request and choose **Send to team**. The coordinator receives it in a shared conversation. It can ask a teammate for help or delegate a child task using Strata’s tools. These assignments run asynchronously in separate shared conversations. A completion report returns to the assigning conversation, within the team’s limits.
 
-The default limits are two parallel tasks, two child levels, eight message hops, 24 model turns and ten minutes per request. Team settings expose these limits. A bot does not inherit another member’s private conversation history, memory or credentials. Temporary child work uses a selected existing member’s profile; it does not create an unlimited collection of saved bots.
+The default limits are two parallel tasks, two child levels, eight message hops, 24 conversation turns and ten minutes per request. A conversation turn can include multiple provider requests and tool calls; the time limit applies to the whole team request. Team settings expose these limits. A bot does not inherit another member’s private conversation history, memory or credentials. Temporary child work uses a selected existing member’s profile; it does not create an unlimited collection of saved bots.
 
 **Activity** shows queued, running, completed, failed, interrupted and stopped work. Open a task to follow its actual chat, thinking, tool cards and approvals. **Stop team** cancels queued assignments and requests cancellation of its running work and descendants. Strata shows unconfirmed cleanup instead of reporting success. Restarted work remains in history and is marked interrupted; Strata does not replay it automatically.
 
@@ -18,7 +18,7 @@ Effort controls how much reasoning a supported model uses. It is separate from t
 
 ## Let bots propose skills
 
-A bot can save reusable instructions with `draft_skill`. The result appears in **Skills** as a draft. Review or edit the instructions, choose **Enable skill**, then select the bots that may use it. Editing an enabled draft returns it to review.
+A bot can save reusable instructions with `draft_skill`. The result appears in **Skills** as a draft. Review or edit the instructions, choose **Enable skill**, then select the bots that may use it. Editing an enabled skill returns it to review. You can still remove its existing bot assignments while it is a draft.
 
 You can also assign instructions from Strata’s existing Skills library. These bot assignments are separate from the main chat’s enable toggle; assigning a skill does not change that toggle. Workspace restrictions still apply. Assignments and instruction versions are frozen when a bot conversation is created. Start a new conversation to use a newly assigned or revised skill. Enabling a draft requires the exact version you reviewed. If another device changed it, refresh and review the new instructions first.
 
