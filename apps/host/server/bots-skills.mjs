@@ -45,14 +45,16 @@ export function createBotSkills({ directory, library = () => [], workspacePath =
     extensionKeys(input, ['botId', 'skillIds']);
     if (!hasBot(input.botId)) throw fault(404, 'Choose an existing bot.');
     const ids = extensionIds(input.skillIds, 'skills', 32), selected = ids.map(requireSkill);
-    if (selected.some(s => s.status !== 'enabled')) throw fault(409, 'Review and enable the skill draft before assigning it.');
-    if (selected.reduce((n, s) => n + s.body.length, 0) > 128000) throw fault(400, 'Choose fewer skill instructions for this bot.');
+    const retained = new Set(state.assignments[input.botId] || []);
+    if (selected.some(s => s.status !== 'enabled' && !retained.has(s.id))) throw fault(409, 'Review and enable the skill draft before assigning it.');
+    if (selected.filter(s => s.status === 'enabled').reduce((n, s) => n + s.body.length, 0) > 128000 && ids.some(id => !retained.has(id))) throw fault(400, 'Choose fewer skill instructions for this bot.');
     state.assignments[input.botId] = ids; changed(); return list();
   }
   function list(botId) { return { skills: catalog(), assignments: Object.entries(state.assignments).filter(([id]) => !botId || id === botId).map(([botId, skillIds]) => ({ botId, skillIds: [...skillIds] })) }; }
   function snapshot(bot) {
     const ids = state.assignments[bot.id] || [];
     const selected = catalog().filter(s => ids.includes(s.id) && s.status === 'enabled' && (!s.onlyIn || workspacePath(s.onlyIn) === bot.workspace)).map(({ id, name, description, body, revision, digest }) => ({ id, name, description, body, revision, digest }));
+    if (selected.reduce((n, s) => n + s.body.length, 0) > 128000) throw fault(409, 'The assigned skill revisions are too long for a new conversation. Remove some skill assignments, then try again.');
     return { revision: hash(selected), assignments: selected, instructions: selected.length ? `The owner assigned these reusable instructions to this conversation. They do not grant additional tool permissions.\n${selected.map(s => `\n<assigned-skill name=${JSON.stringify(s.name)}>\n${s.body}\n</assigned-skill>`).join('\n')}` : '' };
   }
   return { list, create, update, assign, snapshot, owns: name => definitions.some(t => t.name === name), tools: () => structuredClone(definitions),

@@ -58,6 +58,24 @@ test('enabling a draft requires the exact reviewed revision and digest across de
   assert.equal(service.list().skills[0].status, 'enabled');
   assert.throws(() => service.update(current.id, { body: 'Stale editor overwrite', expectedRevision: reviewed.revision, expectedDigest: reviewed.digest }), error => error.status === 409);
 });
+test('edited drafts can be revoked without enabling new instructions or dropping another retained draft', t => {
+  const service = createBotSkills(fixture(t)), a = service.create({ name: 'First', body: 'Original first.' }).skill, b = service.create({ name: 'Second', body: 'Original second.' }).skill;
+  reviewAndEnable(service, a.id); reviewAndEnable(service, b.id); service.assign({ botId: id, skillIds: [a.id, b.id] });
+  service.update(a.id, { body: 'Unreviewed first.' }); service.update(b.id, { body: 'Unreviewed second.' });
+  service.assign({ botId: id, skillIds: [b.id] }); assert.deepEqual(service.list(id).assignments[0].skillIds, [b.id]);
+  assert.equal(service.list().skills.find(s => s.id === b.id).status, 'draft'); assert.deepEqual(service.snapshot({ id, workspace: '/workspace' }).assignments, []);
+  assert.throws(() => service.assign({ botId: id, skillIds: [a.id, b.id] }), /Review and enable/);
+  const c = service.create({ name: 'Third', body: 'Reviewed third.' }).skill; reviewAndEnable(service, c.id); service.assign({ botId: id, skillIds: [b.id, c.id] });
+  assert.deepEqual(service.list(id).assignments[0].skillIds, [b.id, c.id]);
+});
+test('larger approved skill revisions cannot overflow a new chat or prevent access reduction', t => {
+  const service = createBotSkills(fixture(t)), ids = [];
+  for (let i = 0; i < 3; i++) { const s = service.create({ name: `Procedure ${i}`, body: 'x'.repeat(42000) }).skill; reviewAndEnable(service, s.id); ids.push(s.id); }
+  service.assign({ botId: id, skillIds: ids });
+  for (const sid of ids) { service.update(sid, { body: 'y'.repeat(64000) }); reviewAndEnable(service, sid); }
+  assert.throws(() => service.snapshot({ id, workspace: '/workspace' }), error => error.status === 409);
+  service.assign({ botId: id, skillIds: ids.slice(1) }); assert.equal(service.snapshot({ id, workspace: '/workspace' }).assignments.length, 2);
+});
 test('private extension stores reject malformed versions and both live and dangling symlinks', t => {
   const f = fixture(t), sentinel = join(f.directory, 'sentinel'); writeFileSync(sentinel, 'unchanged');
   symlinkSync(sentinel, join(f.directory, 'bots-skills.json')); assert.throws(() => createBotSkills(f), /regular file/); assert.equal(readFileSync(sentinel, 'utf8'), 'unchanged');

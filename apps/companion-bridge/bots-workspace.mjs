@@ -142,7 +142,10 @@ export async function handleBotWorkspace({ path, method, req, res, session, host
         if (!selected) throw error(404, 'This skill is no longer available.');
         if (selected.source === 'library') throw error(409, 'Library skills can be assigned but must be edited on Mac.');
         if (body?.expectedRevision !== undefined && body.expectedRevision !== selected.revision || body?.expectedDigest !== undefined && body.expectedDigest !== selected.digest) throw error(409, 'This skill changed. Review its current instructions before saving.');
-      } else if (body.skillIds.some(skillId => !skills.some(skill => skill.id === skillId && skill.status === 'enabled'))) throw error(409, 'Review and enable skills before assigning them.');
+      } else {
+        const prior = new Set((catalog.assignments ?? []).find(assignment => assignment.botId === body.botId)?.skillIds ?? []);
+        if (body.skillIds.some(skillId => !skills.some(skill => skill.id === skillId && (skill.status === 'enabled' || prior.has(skillId))))) throw error(409, 'Review and enable skills before assigning them.');
+      }
     }
     if (route.kind === 'connection') {
       const catalog = await host.json('/api/bots/connections'); requireCurrentSession();

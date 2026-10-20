@@ -159,3 +159,14 @@ test('changed MCP inventory cannot receive stale tool grants', async t => {
   }
   assert.ok(!calls.some(call => call.method === 'PATCH'));
 });
+
+test('removing one edited draft retains other assigned drafts without granting a new draft', async t => {
+  const drafts = ['skill_remove', 'skill_retain', 'skill_new'].map(id => ({ ...skill, id, status: 'draft' }));
+  const { bridge, token, calls } = await fixture(t, path => path === '/api/bots/skills' ? { skills: drafts, assignments: [{ botId: 'bot_coder', skillIds: ['skill_remove', 'skill_retain'] }] } : undefined);
+  const removed = await request(bridge, '/v1/bots/skills/assign', { token, method: 'POST', body: { botId: 'bot_coder', skillIds: ['skill_retain'] } });
+  assert.equal(removed.status, 200); assert.equal(removed.json.saved, true);
+  assert.deepEqual(calls.find(call => call.path.endsWith('/assign')).body.skillIds, ['skill_retain']);
+  const before = calls.filter(call => call.path.endsWith('/assign')).length;
+  const added = await request(bridge, '/v1/bots/skills/assign', { token, method: 'POST', body: { botId: 'bot_coder', skillIds: ['skill_retain', 'skill_new'] } });
+  assert.equal(added.status, 409); assert.equal(calls.filter(call => call.path.endsWith('/assign')).length, before);
+});
