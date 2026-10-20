@@ -40,7 +40,9 @@ const fail = message => { throw new Error(message); };
 export function runCUABridge(python, helper, payload, { signal, env, timeout = 150000 } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error('The bot was stopped.'));
-    const child = spawn(python, ['-I', helper], { env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    // -I ignores PYTHONDONTWRITEBYTECODE. The explicit -B is required when
+    // helpers or the interpreter's standard library live in the signed app.
+    const child = spawn(python, ['-I', '-B', helper], { env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     let output = '', errors = '', cancelled = false, settled = false, forceTimer;
     const end = (error, value) => { if (settled) return; settled = true; clearTimeout(timer); clearTimeout(forceTimer); signal?.removeEventListener('abort', abort); error ? reject(error) : resolve(value); };
     const abort = () => { if (cancelled) return; cancelled = true; child.kill('SIGTERM'); forceTimer = setTimeout(() => { child.kill('SIGKILL'); }, 15000); forceTimer.unref?.(); };
@@ -93,7 +95,7 @@ export function createBotCUATools({ directory, processRunner = runBotProcess, br
       // Reuse a working private venv; on macOS create one from an existing
       // independent Python without changing the app signature or installing
       // a system interpreter. A failed venv is retained for diagnosis.
-      const versionArgs = ['-I', '-c', 'import cua, importlib.metadata; print(importlib.metadata.version("cua"))'];
+      const versionArgs = ['-I', '-B', '-c', 'import cua, importlib.metadata; print(importlib.metadata.version("cua"))'];
       const inspect = async (command, args) => {
         try { return await processRunner(command, args, { signal, timeout: 15000, env: environment() }); }
         catch (error) { if (signal?.aborted) throw error; return null; }
@@ -106,7 +108,7 @@ export function createBotCUATools({ directory, processRunner = runBotProcess, br
         const candidates = pythonCandidates ?? ['/opt/homebrew/bin/python3', '/usr/local/bin/python3', '/Library/Frameworks/Python.framework/Versions/Current/bin/python3'];
         for (const candidate of candidates) {
           if (!await exists(candidate)) continue;
-          const check = await inspect(candidate, ['-I', '-c', 'import sys,venv; sys.exit(0 if (3,10) <= sys.version_info[:2] < (4,0) else 1)']);
+          const check = await inspect(candidate, ['-I', '-B', '-c', 'import sys,venv; sys.exit(0 if (3,10) <= sys.version_info[:2] < (4,0) else 1)']);
           if (check?.code === 0) { creator = candidate; break; }
         }
         if (!creator) fail('CUA on this Mac needs an existing independent Python 3.10 or later with venv support. Strata’s signed Python cannot load the separately signed CUA library. No system software or app signatures were changed.');
@@ -114,16 +116,16 @@ export function createBotCUATools({ directory, processRunner = runBotProcess, br
       }
       if (!await exists(executable)) {
         const disk = await statfs(root); if (Number(disk.bavail) * Number(disk.bsize) < 512 * 1024 * 1024) fail('CUA needs at least 512 MB of free disk space to prepare its private SDK. Choose a remote computer or free disk space.');
-        const make = await processRunner(creator, ['-B', '-m', 'venv', venv], { signal, timeout: 120000, env: environment() }); if (make.code !== 0) fail('Python 3 with venv support is required to prepare CUA.');
+        const make = await processRunner(creator, ['-I', '-B', '-m', 'venv', venv], { signal, timeout: 120000, env: environment() }); if (make.code !== 0) fail('Python 3 with venv support is required to prepare CUA.');
       }
       if (!installed) {
-        const install = await processRunner(executable, ['-I', '-m', 'pip', '--isolated', 'install', '--index-url', 'https://pypi.org/simple', '--disable-pip-version-check', '--no-cache-dir', '--only-binary=:all:', `cua==${CUA_VERSION}`], { signal, timeout: 300000, maxBytes: 2 * 1024 * 1024, env: environment() });
+        const install = await processRunner(executable, ['-I', '-B', '-m', 'pip', '--isolated', 'install', '--index-url', 'https://pypi.org/simple', '--disable-pip-version-check', '--no-cache-dir', '--only-binary=:all:', `cua==${CUA_VERSION}`], { signal, timeout: 300000, maxBytes: 2 * 1024 * 1024, env: environment() });
         if (install.code !== 0) fail(`The private CUA ${CUA_VERSION} SDK could not be installed. This computer needs a supported Python and platform wheel.`);
         const imported = await processRunner(executable, versionArgs, { signal, timeout: 15000, env: environment() });
         if (imported.code !== 0 || imported.stdout.trim() !== CUA_VERSION) fail('The private CUA SDK could not load with this Python interpreter. No app signatures or system permissions were changed.');
       }
       if (platform === 'linux') {
-        const result = await processRunner(executable, ['-I', qemuPrepare, join(root, 'home', '.cua')], { signal, timeout: 420000, maxBytes: 2 * 1024 * 1024, env: environment() });
+        const result = await processRunner(executable, ['-I', '-B', qemuPrepare, join(root, 'home', '.cua')], { signal, timeout: 420000, maxBytes: 2 * 1024 * 1024, env: environment() });
         if (result.code !== 0) { let detail; try { detail = JSON.parse(result.stdout).error; } catch {} fail(detail || 'The private QEMU runtime could not be prepared. No system packages were installed.'); }
       }
       return request('prepare', { signal });

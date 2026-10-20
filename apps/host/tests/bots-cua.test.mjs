@@ -3,9 +3,23 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm, readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createBotCUATools, cuaSandboxName, CUA_IMAGE } from '../server/bots-cua.mjs';
+import { spawnSync } from 'node:child_process';
+import { createBotCUATools, runCUABridge, cuaSandboxName, CUA_IMAGE } from '../server/bots-cua.mjs';
 
 const bot = { id: 'bot-owned', name: 'Builder', computerMode: 'cua', capabilities: 'both', policy: 'manual', workspace: '/host/private/project', execution: { kind: 'local' } };
+const fixtureEnvironment = { PATH: process.env.PATH ?? '/usr/bin:/bin', PYTHONDONTWRITEBYTECODE: '0' };
+const pythonAvailable = spawnSync('python3', ['-I', '-B', '-c', 'pass'], { env: fixtureEnvironment, timeout: 5000, stdio: 'ignore' }).status === 0;
+
+test('isolated bridge imports a sibling helper without adding or replacing bytecode in its sealed-like tree', { skip: !pythonAvailable, timeout: 10000 }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'strata-cua-sealed-helper-')); t.after(() => rm(directory, { recursive: true, force: true }));
+  const helper = join(directory, 'bridge.py'), cache = join(directory, '__pycache__'), retained = join(cache, 'existing.pyc');
+  await mkdir(cache); await writeFile(retained, 'retained sealed cache'); await writeFile(join(directory, 'sibling.py'), 'value = "sibling-imported"\n');
+  await writeFile(helper, 'import importlib.util,json,pathlib,sys\np=pathlib.Path(__file__).with_name("sibling.py")\ns=importlib.util.spec_from_file_location("sibling",p);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)\nrequest=json.load(sys.stdin)\nprint(json.dumps({"value":m.value,"isolated":sys.flags.isolated,"noBytecode":sys.dont_write_bytecode,"operation":request["operation"]}))\n');
+  const before = (await readdir(directory, { recursive: true })).sort();
+  const result = await runCUABridge('python3', helper, { operation: 'owned-fixture' }, { env: fixtureEnvironment, timeout: 5000 });
+  assert.deepEqual(result, { value: 'sibling-imported', isolated: 1, noBytecode: true, operation: 'owned-fixture' });
+  assert.deepEqual((await readdir(directory, { recursive: true })).sort(), before); assert.equal(await readFile(retained, 'utf8'), 'retained sealed cache');
+});
 async function fixture(t, options = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'strata-cua-test-'));
   const path = join(directory, 'cua-runtime', 'venv', 'bin'); await mkdir(path, { recursive: true }); await writeFile(join(path, 'python'), '');
@@ -85,7 +99,8 @@ test('Linux preparation uses only the private SDK helper and scopes QEMU wrapper
   const venv = join(directory, 'cua-runtime', 'venv', 'bin'); await mkdir(venv, { recursive: true }); await writeFile(join(venv, 'python'), '');
   const processes = [], tools = createBotCUATools({ directory, platform: 'linux', processRunner: async (command, args, options) => { processes.push({ command, args, options }); return { code: 0, stdout: args.includes('-c') ? '0.5.0\n' : '{"prepared":true}' }; }, bridge: async () => ({ available: true, prepared: true }) });
   assert.equal((await tools.prepare()).available, true); assert.equal(processes.length, 2);
-  assert.ok(processes[1].args[1].endsWith('/bots-runtime/cua-qemu-prepare.py')); assert.equal(processes[1].args[2], join(directory, 'cua-runtime/home/.cua'));
+  assert.ok(processes[1].args[2].endsWith('/bots-runtime/cua-qemu-prepare.py')); assert.equal(processes[1].args[3], join(directory, 'cua-runtime/home/.cua'));
+  for (const call of processes) assert.deepEqual(call.args.slice(0, 2), ['-I', '-B']);
   assert.equal(processes[1].options.env.PATH.split(':')[0], join(directory, 'cua-runtime/home/.cua/bin'));
   assert.equal(processes[1].command, join(venv, 'python')); await tools.close();
 });
@@ -106,6 +121,7 @@ test('Mac preparation replaces an unloadable signed-Python venv with an existing
   const backup = (await readdir(root)).find(name => name.startsWith('venv-unavailable-')); assert.ok(backup);
   assert.equal(await readFile(join(root, backup, 'bin/python'), 'utf8'), 'signed interpreter');
   assert.ok(processes.some(p => p.args.includes('pip'))); assert.ok(processes.every(p => p.options.env.HOME === join(root, 'home')));
+  for (const call of processes) assert.deepEqual(call.args.slice(0, 2), ['-I', '-B']);
   assert.ok(processes.every(p => p.command !== '/bundled/signed/python'));
   await tools.close();
 });
@@ -114,7 +130,7 @@ test('Mac preparation reuses a working private SDK after restart without selecti
   const directory = await mkdtemp(join(tmpdir(), 'strata-cua-mac-reuse-')); t.after(() => rm(directory, { recursive: true, force: true }));
   const bin = join(directory, 'cua-runtime/venv/bin'); await mkdir(bin, { recursive: true }); await writeFile(join(bin, 'python'), 'working');
   const calls = [], tools = createBotCUATools({ directory, platform: 'darwin', pythonCandidates: [], processRunner: async (command, args) => { calls.push({ command, args }); return { code: 0, stdout: '0.5.0\n' }; }, bridge: async () => ({ available: true }) });
-  await tools.prepare(); assert.equal(calls.length, 1); assert.match(calls[0].args[2], /import cua/); assert.deepEqual(await readdir(join(directory, 'cua-runtime')), ['home', 'venv']); await tools.close();
+  await tools.prepare(); assert.equal(calls.length, 1); assert.match(calls[0].args[3], /import cua/); assert.deepEqual(calls[0].args.slice(0, 2), ['-I', '-B']); assert.deepEqual(await readdir(join(directory, 'cua-runtime')), ['home', 'venv']); await tools.close();
 });
 
 test('Mac preparation with no compatible independent interpreter leaves the failed venv intact and gives an actionable error', async t => {
