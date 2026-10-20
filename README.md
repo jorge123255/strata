@@ -35,6 +35,13 @@ agents. Your chats and files stay on your PC.
 
 Version 0.2.0-beta · engine 0.1.45.3
 
+## iPhone companion in this fork
+
+This branch adds a native [Strata iPhone app](apps/ios/README.md) with matching light and dark colors, streaming chat,
+live status, and model controls. The optional [Strata Companion Mac app](apps/companion-mac/README.md) displays an
+expiring pairing QR code and connects the phone to the existing desktop app over pinned HTTPS. Phone conversations
+are stored separately; configured API providers may run remotely. The desktop app and engine keep their existing defaults.
+
 ## What you need
 
 **You need at least 32 GB of RAM and graphics memory (VRAM) together.** On a Mac or a Ryzen AI Max, that is the unified
