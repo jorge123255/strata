@@ -5,7 +5,7 @@ import { navigate, useLocation } from '../lib/router';
 import { adoptSharedConversation, selectSession, useStore } from '../lib/store';
 import { sessionTitle } from '../lib/session-title';
 import { relTime } from '../lib/format';
-import { blankBot, botComputerSelection, botConversationContext, botConversations, botDraftError, botPolicyLabel, type Bot, type BotDraft, type BotExecution, type BotsSnapshot } from '../lib/bots';
+import { blankBot, botComputerSelection, botConversationContext, botConversations, botDraftError, botPolicyLabel, type Bot, type BotDraft, type BotExecution, type BotsSnapshot, type BotTeamsSnapshot } from '../lib/bots';
 import { botReadiness, type BotComputerReadiness } from '../lib/bot-readiness';
 import type { Session } from '../lib/types';
 import { CuaBotAvatar, CuaBotAvatarPicker, defaultCuaBotAvatar } from '../components/CuaBotAvatar';
@@ -15,6 +15,8 @@ import { Btn, Dialog, ErrorNotice, Icon, IconBtn, Select } from '../components/u
 import { ChatScreen } from './Chat';
 import { ComputerPicker, CuaBotsConfig } from './CuaBotsConfig';
 import { BotMemoryDialog, BotOutputDialog, BotRoutineDialog, BotRulesDialog, BotsWorkView, EMPTY_BOT_WORK, routineScheduleLabel, useBotsWork, type BotRoutine, type BotWorkOutput, type BotsWorkTab } from './CuaBotsWork';
+import { BotTeamActivityView, BotTeamEditor, BotTeamPanel, TeamMark, useBotsResource } from './BotsWorkspace';
+import { BotConnectionsPanel, BotSkillsPanel } from './BotsCapabilities';
 import './Bots.css';
 
 const WORK_TABS: { id: BotsWorkTab; label: string; icon: 'clock' | 'shield' | 'file' }[] = [{ id: 'scheduled', label: 'Scheduled', icon: 'clock' }, { id: 'approvals', label: 'Approvals', icon: 'shield' }, { id: 'outputs', label: 'Outputs', icon: 'file' }];
@@ -30,12 +32,16 @@ export function BotsScreen() {
   const [removing, setRemoving] = useState<Bot | null>(null), [memoryFor, setMemoryFor] = useState<Bot | null>(null), [rulesFor, setRulesFor] = useState<Bot | null>(null);
   const [routineFor, setRoutineFor] = useState<{ bot?: Bot; routine?: BotRoutine } | null>(null), [outputFor, setOutputFor] = useState<{ bot: Bot; output: BotWorkOutput } | null>(null);
   const [readinessRevision, setReadinessRevision] = useState(0);
+  const [newTeam, setNewTeam] = useState(false);
+  const teams = useBotsResource<BotTeamsSnapshot>('/api/bots/teams');
   const [computerReadiness, setComputerReadiness] = useState<{ key: string; computer?: BotComputerReadiness; error?: string; checking?: boolean } | null>(null);
   const generation = useRef(0), navigationRevision = useRef(0), alive = useRef(true);
   const bots = snapshot?.bots ?? [], { work, error: workError, refresh: refreshWork } = useBotsWork(bots);
   const selected = bots.find(bot => bot.id === location.param) ?? (!location.param ? bots[0] : undefined);
   const workTab = WORK_TABS.find(tab => tab.id === location.param)?.id;
-  const route = workTab ?? (location.param === 'new' || !selected ? 'new' : 'bot');
+  const workspaceRoute = ['teams', 'activity', 'skills', 'connections'].includes(location.param ?? '') ? location.param : null;
+  const destination = workTab || workspaceRoute === 'activity' ? 'activity' : workspaceRoute === 'skills' ? 'skills' : workspaceRoute === 'connections' ? 'connections' : 'team';
+  const route = workTab ?? workspaceRoute ?? (location.param === 'new' || !selected ? 'new' : 'bot');
   const chats = selected ? botConversations(sessions, selected.id) : [], chatId = selected ? selectedChats[selected.id] ?? chats[0]?.id : undefined;
   const chat = chats.find(item => item.id === chatId);
   const context = selected ? botConversationContext(selected, chat ?? (chatId ? { id: chatId, preferences: { botId: selected.id } } : undefined), snapshot?.models) : null;
@@ -64,7 +70,7 @@ export function BotsScreen() {
     const timer = setInterval(() => { if (!document.hidden) void refresh(); }, 3000);
     return () => { alive.current = false; generation.current++; navigationRevision.current++; clearInterval(timer); window.removeEventListener('hashchange', navigated); };
   }, []);
-  useEffect(() => { setEditing(null); setOpening(null); setEditorError(''); }, [location.route, location.param]);
+  useEffect(() => { setEditing(null); setOpening(null); setEditorError(''); setNewTeam(false); }, [location.route, location.param, location.query.toString()]);
   useEffect(() => {
     if (route === 'bot' && selected && chat) {
       setSelectedChats(previous => previous[selected.id] ? previous : { ...previous, [selected.id]: chat.id });
@@ -91,6 +97,21 @@ export function BotsScreen() {
   function edit(bot: Bot) { setEditorError(''); setEditing({ bot, draft: draftFor(bot) }); }
   function openChat(bot: Bot, conversation: Session) { navigationRevision.current++; adoptSharedConversation(conversation); setSelectedChats(previous => ({ ...previous, [bot.id]: conversation.id })); selectSession(conversation.id); navigate('bots', bot.id); }
   function chooseChat(bot: Bot) { setChatError(''); setOpening({ bot, execution: { ...bot.execution }, workspace: bot.workspace, modelId: '' }); }
+  async function openSharedConversation(id: string, conversation?: Session) {
+    const revision = navigationRevision.current, hash = window.location.hash;
+    const known = conversation ?? sessions.find(item => item.id === id);
+    if (known) {
+      adoptSharedConversation(known); selectSession(id);
+      const bot = bots.find(item => item.id === known.preferences?.botId);
+      if (bot) openChat(bot, known); else navigate('chat', id);
+      return;
+    }
+    const catalog = await api.get<{ conversations: Session[] }>('/api/companion/conversations');
+    if (!alive.current || revision !== navigationRevision.current || hash !== window.location.hash) return;
+    const found = catalog.conversations.find(item => item.id === id);
+    if (!found) throw new Error('This conversation is no longer available. Refresh the shared history.');
+    await openSharedConversation(id, found);
+  }
   async function save(draft: BotDraft, bot?: Bot) {
     const validation = botDraftError(draft); if (validation) { setEditorError(validation); return; }
     const revision = navigationRevision.current, hash = window.location.hash;
@@ -133,16 +154,22 @@ export function BotsScreen() {
   const checkedComputer = computerReadiness?.key === computerKey ? computerReadiness : null;
   const readiness = selected ? botReadiness(selected, { computerMode: context?.computerMode, conversation: !!chatId, unavailableConversation: !!chatId && !chat, active: chats.some(session => session.active), needsApproval: mood(selected) === 'needsApproval', computer: checkedComputer?.computer, computerError: checkedComputer?.error, checking: !checkedComputer || checkedComputer.checking }) : null;
 
-  return <Screen title="Bots" titleDetail={route === 'new' ? 'New bot' : workTab ? WORK_TABS.find(tab => tab.id === workTab)?.label : selected?.name} bare actions={<IconBtn name="refresh" title="Refresh bots and shared work" disabled={loading || !!pending} onClick={() => { void refresh(true); void refreshWork(); setReadinessRevision(value => value + 1); }}/>}>
-    <div className="cua-bots-shell">
-      <aside className="cua-bots-sidebar" aria-label="Bots navigation"><nav>
+  return <Screen title="Bots" titleDetail={route === 'new' ? 'New bot' : route === 'bot' ? selected?.name : undefined} bare actions={<IconBtn name="refresh" title="Refresh bots and shared work" disabled={loading || !!pending} onClick={() => { void refresh(true); void refreshWork(); void teams.refresh(); setReadinessRevision(value => value + 1); }}/>}>
+    <div className="bots-workspace"><nav className="bots-destinations" aria-label="Bots workspace">{([{id:'team',label:'Team',icon:'experts'},{id:'activity',label:'Activity',icon:'activity'},{id:'skills',label:'Skills',icon:'skills'},{id:'connections',label:'Connections',icon:'link'}] as const).map(tab=><button key={tab.id} aria-current={destination===tab.id?'page':undefined} onClick={()=>navigate('bots',tab.id==='team'?'teams':tab.id)}><Icon name={tab.icon} size={17}/><span>{tab.label}</span>{tab.id==='activity'&&approvals?<b>{approvals}</b>:null}</button>)}</nav>
+    <div className="cua-bots-shell" data-list={destination==='team'||undefined}>
+      {destination==='team'?<aside className="cua-bots-sidebar" aria-label="Bots navigation"><nav>
         <button className="cua-sidebar-item cua-sidebar-new" data-selected={route === 'new' || undefined} onClick={startNew} aria-label="New bot"><Icon name="plus" size={16}/><span>New bot</span></button>
         <h2>Your bots <span>{bots.length}</span></h2><div className="cua-bot-list">{bots.map(bot => <button key={bot.id} className="cua-sidebar-item" aria-label={`Open ${bot.name}`} title={bot.name} data-selected={selected?.id === bot.id && route === 'bot' || undefined} onClick={() => navigate('bots', bot.id)}><CuaBotAvatar config={bot.avatarConfig} name={bot.name} size={29} mood={mood(bot)}/><span>{bot.name}</span>{bot.paused ? <Icon name="pause" size={12}/> : mood(bot) === 'needsApproval' ? <i className="cua-sidebar-dot"/> : null}</button>)}</div>
-        <h2>Work</h2>{WORK_TABS.map(tab => <button key={tab.id} className="cua-sidebar-item" data-selected={route === tab.id || undefined} onClick={() => navigate('bots', tab.id)}><Icon name={tab.icon} size={18}/><span>{tab.label}</span>{tab.id === 'approvals' && approvals ? <b className="cua-sidebar-count">{approvals}</b> : null}</button>)}
-      </nav></aside>
+        <h2>Teams <span>{teams.data?.teams.length ?? '—'}</span></h2><button className="cua-sidebar-item" data-selected={route==='teams'&&!location.query.get('team')||undefined} onClick={()=>navigate('bots','teams')} aria-label="All teams"><Icon name="experts" size={18}/><span>All teams</span></button>{teams.data?.teams.map(team=><button className="cua-sidebar-item" key={team.id} data-selected={location.query.get('team')===team.id||undefined} onClick={()=>navigate('bots','teams',{team:team.id})} aria-label={`Open team ${team.name}`}><TeamMark team={team} bots={bots} size={18}/><span>{team.name}</span></button>)}<button className="cua-sidebar-item cua-sidebar-new" disabled={bots.length<2} title={bots.length<2?'Add a second bot to create a team':undefined} onClick={()=>setNewTeam(true)} aria-label="New team"><Icon name="plus" size={16}/><span>New team</span></button>
+      </nav></aside>:null}
       <section className="cua-bots-main">
         {error ? <div className="cua-inline-error"><ErrorNotice message={error} action="Refresh" onRetry={() => void refresh(true)}/></div> : null}
         {workError ? <div className="cua-inline-error"><ErrorNotice message={workError} action="Refresh work" onRetry={() => void refreshWork()}/></div> : null}
+        {destination==='activity'?<nav className="bots-activity-tabs" aria-label="Activity sections"><button aria-current={!workTab?'page':undefined} onClick={()=>navigate('bots','activity')}>Team work</button>{WORK_TABS.map(tab=><button key={tab.id} aria-current={workTab===tab.id?'page':undefined} onClick={()=>navigate('bots',tab.id)}>{tab.label}{tab.id==='approvals'&&approvals?` (${approvals})`:''}</button>)}</nav>:null}
+        {route==='teams'?<BotTeamPanel bots={bots} resource={teams} teamId={location.query.get('team')??undefined} onSelect={id=>navigate('bots','teams',{team:id})} onNewTeam={()=>setNewTeam(true)} onNewBot={startNew} onOpenConversation={openSharedConversation}/>:null}
+        {route==='activity'?<BotTeamActivityView bots={bots} onOpenConversation={openSharedConversation}/>:null}
+        {route==='skills'?<BotSkillsPanel bots={bots}/>:null}
+        {route==='connections'?<BotConnectionsPanel bots={bots}/>:null}
         {route === 'new' ? <div className="cua-new-bot"><div className="cua-new-bot-body"><CuaBotAvatar config={newDraft.avatarConfig} name={newDraft.name} size={128} mood={step === 2 ? 'done' : 'idle'}/>
           {step === 0 ? <div className="cua-meet"><h2>Meet your bot</h2><p>A bot works on its own computer, remembers what matters to you, and checks in when something needs your approval. Strata keeps its work and routines running while the Mac app is open.</p><input className="st-input" aria-label="Bot name" placeholder="What should we call it?" maxLength={120} value={newDraft.name} onChange={event => updateNew({ name: event.target.value, ...(!customLook ? { avatarConfig: defaultCuaBotAvatar(event.target.value) } : {}) })} onKeyDown={event => { if (event.key === 'Enter' && newDraft.name.trim()) setStep(1); }}/></div> : step === 1 ? <div className="cua-look"><h2>Make {newDraft.name.trim() || 'your bot'} yours</h2><CuaBotAvatarPicker value={newDraft.avatarConfig ?? defaultCuaBotAvatar(newDraft.name)} name={newDraft.name} onChange={avatarConfig => { setCustomLook(true); updateNew({ avatarConfig }); }}/></div> : snapshot ? <div className="cua-new-config"><CuaBotsConfig draft={newDraft} snapshot={snapshot} busy={!!pending} onBusyChange={setConfigBusy} onChange={updateNew}/></div> : <p role="status">Connecting to Strata…</p>}
           {editorError ? <ErrorNotice message={editorError} action="Dismiss" onRetry={() => setEditorError('')}/> : null}</div><footer className="cua-new-footer"><Btn disabled={!!pending || configBusy || step === 0} onClick={() => setStep(value => value - 1)}>Back</Btn><div className="cua-step-dots" aria-label={`Step ${step + 1} of 3`}>{[0, 1, 2].map(value => <i key={value} data-current={step === value || undefined}/>)}</div>{step < 2 ? <Btn variant="primary" disabled={step === 0 && !newDraft.name.trim()} onClick={() => setStep(value => value + 1)}>Continue</Btn> : <Btn variant="primary" disabled={!snapshot || !!pending || configBusy} onClick={() => void save(newDraft)}>{pending === 'save' ? 'Creating…' : `Create ${newDraft.name.trim() || 'bot'}`}</Btn>}</footer></div> : null}
@@ -164,6 +191,8 @@ export function BotsScreen() {
         </> : null}
       </section>
     </div>
+    </div>
+    {newTeam?<BotTeamEditor bots={bots} onClose={()=>setNewTeam(false)} onSaved={async team=>{const revision=navigationRevision.current,hash=window.location.hash;await teams.refresh();if(alive.current&&revision===navigationRevision.current&&hash===window.location.hash){setNewTeam(false);navigate('bots','teams',{team:team.id});}}}/>:null}
     <Dialog open={!!editing} title={editing ? `${editing.bot.name}’s settings` : 'Bot settings'} className="cua-settings-dialog" onClose={() => { if (!pending && !configBusy) setEditing(null); }} actions={<><Btn disabled={!!pending || configBusy} onClick={() => setEditing(null)}>Cancel</Btn><Btn variant="primary" disabled={!!pending || configBusy} onClick={() => { if (editing) void save(editing.draft, editing.bot); }}>{pending === 'save' ? 'Saving…' : 'Save settings'}</Btn></>}>
       {editing && snapshot ? <div className="form-stack"><label className="input-field"><span>Name</span><input className="st-input" maxLength={120} value={editing.draft.name} onChange={event => setEditing({ ...editing, draft: { ...editing.draft, name: event.target.value } })}/></label><details className="cua-edit-look"><summary><CuaBotAvatar config={editing.draft.avatarConfig} name={editing.draft.name} size={40}/>Edit look</summary><CuaBotAvatarPicker value={editing.draft.avatarConfig ?? defaultCuaBotAvatar(editing.draft.name)} name={editing.draft.name} onChange={avatarConfig => setEditing({ ...editing, draft: { ...editing.draft, avatarConfig } })}/></details><CuaBotsConfig draft={editing.draft} snapshot={snapshot} apiKeySet={editing.bot.providerSettings?.apiKeySet} busy={!!pending} onBusyChange={setConfigBusy} onChange={patch => setEditing(current => current ? { ...current, draft: { ...current.draft, ...patch } } : null)}/><p className="xs muted">Profile changes apply to new conversations. Existing conversations keep their original settings.</p>{editorError ? <ErrorNotice message={editorError} action="Dismiss" onRetry={() => setEditorError('')}/> : null}</div> : null}
     </Dialog>
@@ -180,5 +209,5 @@ export function BotsScreen() {
 
 function ProfileSection({ title, children }: { title: string; children: ReactNode }) { return <section className="cua-profile-section"><h3>{title}</h3><div>{children}</div></section>; }
 function newBotDraft(workspace: string): BotDraft { return { ...blankBot(workspace), computerMode: 'cua', workspace: '/workspace', avatarConfig: defaultCuaBotAvatar('') }; }
-function draftFor(bot: Bot): BotDraft { return { name: bot.name, avatar: bot.avatar, avatarConfig: bot.avatarConfig ? { ...bot.avatarConfig } : defaultCuaBotAvatar(bot.name), computerMode: bot.computerMode ?? 'host', instructions: bot.instructions, provider: bot.provider, model: bot.model, modelSource: bot.modelSource ? { ...bot.modelSource } : undefined, capabilities: bot.capabilities, policy: bot.policy, workspace: bot.workspace, execution: { ...bot.execution }, ...(bot.providerSettings?.baseURL ? { providerSettings: { baseURL: bot.providerSettings.baseURL } } : {}) }; }
+function draftFor(bot: Bot): BotDraft { return { name: bot.name, avatar: bot.avatar, avatarConfig: bot.avatarConfig ? { ...bot.avatarConfig } : defaultCuaBotAvatar(bot.name), computerMode: bot.computerMode ?? 'host', instructions: bot.instructions, provider: bot.provider, model: bot.model, effort: bot.effort, modelSource: bot.modelSource ? { ...bot.modelSource } : undefined, capabilities: bot.capabilities, policy: bot.policy, workspace: bot.workspace, execution: { ...bot.execution }, ...(bot.providerSettings?.baseURL ? { providerSettings: { baseURL: bot.providerSettings.baseURL } } : {}) }; }
 function message(cause: unknown) { return cause instanceof Error ? cause.message : String(cause); }

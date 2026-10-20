@@ -46,6 +46,9 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
     if (path === '/favicon.ico') { res.writeHead(204); return res.end(); }
     let input = ''; for await (const chunk of req) input += chunk;
     const body = input ? JSON.parse(input) : undefined; calls.push({ path, query: url.search, method: req.method, body });
+    if (path === '/api/bots/teams') return respond(res, {teams:[],runs:[]});
+    if (path === '/api/bots/provider-models') return respond(res, {provider:url.searchParams.get('provider'),models:[]});
+    if (path === '/api/bots/activity') return respond(res, {activity:[]});
     if (path === '/api/companion/conversations') return respond(res, { available: true, conversations });
     if (/^\/api\/bots\/(existing|created)\/work$/.test(path)) {
       if (req.method === 'GET') { if (blockWork) await new Promise(resolve => workWaiters.push(resolve)); if (failWork) return respond(res, { error: 'Current work is temporarily unavailable.' }, 503); return respond(res, work); }
@@ -194,6 +197,7 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
   assert.deepEqual(frozenFox, created.body.avatarConfig, 'A new shared chat retains the selected character configuration.');
   await page.getByRole('complementary', { name: 'Remote developer profile' }).locator('svg[data-character="fox"]').waitFor();
   await screenshot('embedded-bot-fox-profile');
+  await page.getByRole('navigation', { name: 'Bots workspace', exact: true }).getByRole('button', { name: 'Activity', exact: true }).click();
   await page.getByRole('button', { name: 'Outputs', exact: true }).click();
   await page.getByRole('button', { name: /report.md Project partner/ }).click();
   const output = page.getByRole('dialog', { name: 'report.md', exact: true });
@@ -202,6 +206,7 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
   await page.getByText('Nothing needs your approval', { exact: true }).waitFor();
   await page.getByRole('button', { name: 'Scheduled', exact: true }).click();
   await page.getByText('Give your bots a routine', { exact: true }).waitFor();
+  await page.getByRole('navigation', { name: 'Bots workspace', exact: true }).getByRole('button', { name: 'Team', exact: true }).click();
   await page.getByRole('complementary', { name: 'Bots navigation', exact: true }).getByRole('button', { name: /Project partner/ }).click();
   assert.equal(await page.getByTestId('shared-chat').getAttribute('data-session'), 'existing-chat');
   await page.getByRole('button', { name: 'New shared conversation', exact: true }).click();

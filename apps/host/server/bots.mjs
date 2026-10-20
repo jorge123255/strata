@@ -8,6 +8,7 @@ import { isLocalCompanionRequest } from './companion-routes.mjs';
 import { botModelDestination } from './bots-models.mjs';
 import { createBotComputers } from './bots-computers.mjs';
 import { createBotWork } from './bots-work.mjs';
+import { createBotTeams } from './bots-team.mjs';
 
 const fault = (status, message) => Object.assign(new Error(message), { status });
 const ids = new Set(['claude', 'codex', 'grok', 'kimi', 'ollama', 'configured']);
@@ -41,7 +42,7 @@ function endpoint(value) {
   return url.href.replace(/\/$/, '');
 }
 
-export function createBots({ directory, runtime, tools, conversations = () => null, defaultWorkspace = () => homedir(), notify = () => {}, now = () => new Date().toISOString(), remoteSSH, modelProviders, modelRequest, cuaTools }) {
+export function createBots({ directory, runtime, tools, conversations = () => null, defaultWorkspace = () => homedir(), notify = () => {}, now = () => new Date().toISOString(), remoteSSH, modelProviders, modelRequest, cuaTools, skills, mcp }) {
   const file = join(directory, 'bots.json'), profiles = new Map(), checkpoints = new Map(), chatProfiles = new Map(), active = new Map(), targets = new Map(), computerLeases = new Map(), uncertainTargets = new Map(), ownedComputers = new Set();
   const owned = id => conversations()?.botId(id) ?? null;
   function save() {
@@ -98,6 +99,8 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     return status;
   }
   const work = createBotWork({ directory, requireBot, chats: conversations, createConversation, notify });
+  const team = createBotTeams({ directory, requireBot, conversations, createConversation: (id, teamContext) => createConversation(id, {}, teamContext), notify,
+    isBotBusy: id => [...active.values()].some(run => run.botId === id), stopDirect: id => stop(id, { team: false }) });
   const hasOwnedComputer = id => [...ownedComputers, ...uncertainTargets.keys()].some(key => key.startsWith(`cua:${id}:`));
   const markOwned = bot => { ownedComputers.add(cuaResource(bot)); save(); };
   const computer = createBotComputers({ cua: cuaTools, remoteSSH, profile: (id, chatId) => { const bot = requireBot(id); if (!chatId) return copy(bot); const snapshot = chatProfiles.get(chatId); if (!snapshot || snapshot.id !== id) throw fault(404, 'This computer does not belong to that conversation.'); return copy(snapshot); },
@@ -122,7 +125,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     return bot;
   }
   function publicBot(bot) {
-    const { providerSettings, modelDestination, ...safe } = copy(bot);
+    const { providerSettings, modelDestination, extensionSnapshots, ...safe } = copy(bot);
     return { ...safe, avatar: BOT_AVATARS.includes(bot.avatar) ? bot.avatar : '🤖', ...(providerSettings ? { providerSettings: { ...(providerSettings.baseURL ? { baseURL: providerSettings.baseURL } : {}), apiKeySet: !!providerSettings.apiKey } } : {}),
       conversations: (conversations()?.list().conversations ?? []).filter(chat => chat.preferences?.botId === bot.id).map(chat => chat.id),
       active: [...active.values()].some(run => run.botId === bot.id) };
@@ -161,6 +164,8 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
       modelLabel = `${selected.connection.name} · ${selected.model.name || selected.model.id}`;
     }
     const providerSettings = provider === old.provider ? { ...old.providerSettings } : {};
+    const effort = input.effort ?? (provider === old.provider ? old.effort : '') ?? '';
+    if (typeof effort !== 'string' || effort && !/^[a-z][a-z0-9_-]{0,31}$/.test(effort)) throw fault(400, 'Choose an effort supported by this model.');
     if (input.providerSettings !== undefined) {
       const settings = input.providerSettings;
       if (!settings || typeof settings !== 'object' || Array.isArray(settings)) throw fault(400, 'Provider settings are invalid.');
@@ -170,7 +175,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     }
     return { name, avatar, ...(avatarConfig ? { avatarConfig: copy(avatarConfig) } : {}), paused: old.paused === true, computerMode, provider, capabilities, policy, execution, workspace, ...(modelSource ? { modelSource, modelDestination, modelLabel } : {}),
       instructions: cleanText(input.instructions ?? old.instructions ?? '', 32000, 'bot instructions'),
-      model: modelSource?.model ?? cleanText(input.model ?? old.model ?? '', 250, 'model name'), ...(Object.keys(providerSettings).length ? { providerSettings } : {}) };
+      model: modelSource?.model ?? cleanText(input.model ?? old.model ?? '', 250, 'model name'), effort, ...(Object.keys(providerSettings).length ? { providerSettings } : {}) };
   }
   function create(input) {
     const at = now(), bot = { id: `bot_${randomUUID()}`, ...validate(input), createdAt: at, updatedAt: at };
@@ -178,6 +183,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
   }
   function update(id, input) {
     const old = requireBot(id);
+    if (team.botInActiveRun(id)) throw fault(409, 'Stop this bot’s team work before changing its profile.');
     if ([...active.values()].some(run => run.botId === id)) throw fault(409, 'Stop this bot’s active conversations before changing its profile.');
     const bot = { id, ...validate(input, old), createdAt: old.createdAt, updatedAt: now() };
     if (executionKey(bot.execution) !== executionKey(old.execution) || bot.computerMode !== old.computerMode) {
@@ -189,6 +195,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
   }
   function remove(id) {
     const bot = requireBot(id);
+    if (team.botInActiveRun(id)) throw fault(409, 'Stop this bot’s team work before removing its profile.');
     if ([...active.values()].some(run => run.botId === id)) throw fault(409, 'Stop this bot’s active conversations before removing its profile.');
     computer.checkRemove(bot);
     if (hasOwnedComputer(id)) throw fault(409, 'Stop this bot’s isolated computer from its Computer view before removing the profile. Its files and history will be retained.');
@@ -235,10 +242,10 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
       if (bot.modelDestination && bot.modelDestination !== botModelDestination(selected.connection)) throw fault(409, 'This model connection changed its address. Edit the bot and start a new chat.');
     }
   }
-  function createConversation(id, selection = {}) {
+  function createConversation(id, selection = {}, teamContext) {
     const current = requireBot(id);
     if (current.paused) throw fault(409, 'This bot is paused. Resume it before starting a new chat.');
-    if (!selection || typeof selection !== 'object' || Array.isArray(selection) || Object.keys(selection).some(key => !['computerId', 'modelId', 'execution', 'workspace'].includes(key)) || selection.computerId && selection.execution) throw fault(400, 'Choose a computer, model and workspace for the new bot chat.');
+    if (!selection || typeof selection !== 'object' || Array.isArray(selection) || Object.keys(selection).some(key => !['computerId', 'modelId', 'execution', 'workspace', 'effort'].includes(key)) || selection.computerId && selection.execution) throw fault(400, 'Choose a computer, model and workspace for the new bot chat.');
     const patch = {};
     if (selection.computerId !== undefined) {
       const computer = computerRows().find(c => c.id === selection.computerId);
@@ -246,12 +253,17 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
       patch.execution = computer.execution;
     } else if (selection.execution !== undefined) patch.execution = selection.execution;
     if (selection.workspace !== undefined) patch.workspace = selection.workspace;
+    if (selection.effort !== undefined) patch.effort = selection.effort;
     if (selection.modelId !== undefined) {
       const model = modelRows().find(m => m.id === selection.modelId);
       if (!model) throw fault(404, 'This configured model is no longer available.');
       patch.provider = 'configured'; patch.modelSource = { connectionId: model.connectionId, model: model.model };
     }
     const bot = { ...current, ...validate(patch, current) };
+    if (teamContext) bot.teamContext = copy(teamContext);
+    // Extension assignments and selected instructions are immutable for this chat.
+    // Secrets never belong in these snapshots or in the public conversation preferences.
+    if (skills || mcp) bot.extensionSnapshots = { ...(skills ? { skills: copy(skills.snapshot(bot)) } : {}), ...(mcp ? { mcp: copy(mcp.snapshot(bot)) } : {}) };
     if (uncertainTargets.has(executionKey(bot.execution))) throw fault(409, uncertainTargets.get(executionKey(bot.execution)));
     if (bot.execution.kind === 'sandbox' || bot.execution.kind === 'ssh' && !remoteSSH) throw fault(409, 'This execution adapter is not configured.');
     const result = conversations().createForBot({ ...bot, computerLabel: executionLabel(bot.execution), modelLabel: bot.modelLabel || `${bot.provider} · ${bot.model || 'Provider default'}` });
@@ -266,9 +278,10 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     if (!request) throw fault(409, 'This bot is no longer waiting for that approval.');
     run.pending.delete(callId); request.resolve(decision === 'approve');
   }
-  async function stop(chatId) {
+  async function stop(chatId, options = {}) {
+    if (options.team !== false) { const result = await team.stopForChat(chatId); if (result) { if (result.run.state === 'cleanup_pending') throw fault(503, result.run.detail); return { stopped: true }; } }
     const run = active.get(chatId);
-    if (!run) return { stopped: false, pending: false };
+    if (!run) { await Promise.all([skills?.finish?.(chatId), mcp?.finish?.(chatId)]); return { stopped: false, pending: false }; }
     run.controller.abort();
     await run.ended;
     if (run.cleanupFailure) throw run.cleanupFailure;
@@ -295,7 +308,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
       work.record(bot.id, frame);
       onFrame(frame);
     };
-    const fingerprint = createHash('sha256').update(JSON.stringify([bot.id, bot.provider, bot.model, bot.workspace, bot.instructions, bot.policy, bot.capabilities, bot.providerSettings?.baseURL, bot.execution, bot.modelSource, bot.modelDestination, bot.computerMode])).digest('hex');
+    const fingerprint = createHash('sha256').update(JSON.stringify([bot.id, bot.provider, bot.model, bot.effort, bot.workspace, bot.instructions, bot.policy, bot.capabilities, bot.providerSettings?.baseURL, bot.execution, bot.modelSource, bot.modelDestination, bot.computerMode, bot.extensionSnapshots])).digest('hex');
     const oldCheckpoint = checkpoints.get(session.id);
     const requestPermission = async ({ id, name, args = {}, reason = 'Allow this bot action?' }) => {
       if (combined.aborted || bot.policy === 'plan') return false;
@@ -315,39 +328,76 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
         if (combined.aborted) abort();
       });
     };
+    const turnId = `turn_${randomUUID()}`;
+    const assertLive = () => { combined.throwIfAborted(); if (active.get(session.id) !== owner || !team.isLive(turnId)) throw fault(409, 'This bot turn has ended.'); };
+    const context = { bot, chatId: session.id, turnId, signal: combined, requestPermission, assertLive, onFrame: emit };
+    const extensions = [team, skills, mcp].filter(Boolean);
+    let hostTools;
     try {
+      hostTools = extensions.flatMap(extension => extension.tools(bot, context));
+      if (new Set(hostTools.map(tool => tool.name)).size !== hostTools.length || hostTools.some(tool => tools.definitions(bot).some(local => local.name === tool.name))) throw fault(503, 'Bot tool names overlap.');
+    } catch (error) { controller.abort(); active.delete(session.id); if (computerLeases.get(target) === session.id) computerLeases.delete(target); ended(); throw error; }
+    const hostNames = new Set(hostTools.map(tool => tool.name)), calls = new Map();
+    const executeHostTool = (name, args = {}, toolCallId) => {
+      assertLive();
+      if (!hostNames.has(name)) throw fault(403, 'This host tool was not assigned to this bot turn.');
+      const id = typeof toolCallId === 'string' && /^[A-Za-z0-9_.:-]{1,160}$/.test(toolCallId) ? toolCallId : `ext_${randomUUID()}`;
+      const digest = createHash('sha256').update(JSON.stringify([name, args])).digest('hex'), old = calls.get(id);
+      if (old) { if (old.digest !== digest) throw fault(409, 'This tool identity already belongs to a different action.'); return old.promise; }
+      const extension = extensions.find(value => value.owns(name));
+      const promise = (async () => {
+        emit({ type: 'agent-tool', tool: { id, name, args, state: 'running', preview: name, effect: 'Uses a Strata bot integration.', scope: 'connected' } });
+        try {
+          const result = await extension.execute(name, args, { ...context, toolCallId: id }); assertLive();
+          const value = result?.content ? result : { content: [{ type: 'text', text: JSON.stringify(result) }] };
+          emit({ type: 'agent-tool', tool: { id, name, args, state: value.isError ? 'error' : 'done', result: value.content.filter(part => part.type === 'text').map(part => part.text).join('\n') } });
+          return value;
+        } catch (error) { if (!combined.aborted) emit({ type: 'agent-tool', tool: { id, name, args, state: 'error', result: String(error.message).slice(0, 2000) } }); throw error; }
+      })();
+      calls.set(id, { digest, promise }); return promise;
+    };
+    let runFailure;
+    try {
+      team.begin(context);
+      const instructions = [bot.instructions, work.instructions(bot.id), bot.extensionSnapshots?.skills?.instructions, bot.extensionSnapshots?.mcp?.instructions, team.instructions(context)].filter(Boolean).join('\n\n');
       emit({ type: 'start', agent: true, model: bot.model || bot.provider });
-      await runtime.run({ bot: { ...bot, instructions: [bot.instructions, work.instructions(bot.id)].filter(Boolean).join('\n\n') }, sessionId: session.id, message, history: session.messages, signal: combined, onFrame: emit, requestPermission,
+      await runtime.run({ bot: { ...bot, instructions }, sessionId: session.id, message, history: session.messages, signal: combined, onFrame: emit, requestPermission, hostTools, executeHostTool,
         modelRequest: (payload, botOrSignal, signal) => {
           const transportSignal = signal ?? (botOrSignal && typeof botOrSignal.addEventListener === 'function' && typeof botOrSignal.aborted === 'boolean' ? botOrSignal : null);
           if (active.get(session.id) !== owner || combined.aborted || bot.provider !== 'configured') throw fault(409, 'This bot turn has ended or has no configured model.');
           if (typeof modelRequest !== 'function') throw fault(503, 'Configured model inference is unavailable.');
-          return modelRequest({ ...payload, tools: tools.definitions(bot).filter(tool => Array.isArray(payload?.tools) && payload.tools.some(requested => requested?.name === tool.name)), system: [bot.instructions, work.instructions(bot.id)].filter(Boolean).join('\n\n') || 'You are a Strata bot. Use the provided tools for coding and computer tasks.' }, bot, transportSignal ? AbortSignal.any([combined, transportSignal]) : combined, emit);
+          return modelRequest({ ...payload, tools: [...tools.definitions(bot), ...hostTools].filter(tool => Array.isArray(payload?.tools) && payload.tools.some(requested => requested?.name === tool.name)), system: instructions || 'You are a Strata bot. Use the provided tools for coding and computer tasks.' }, bot, transportSignal ? AbortSignal.any([combined, transportSignal]) : combined, emit);
         },
-        tools: tools.definitions(bot), executeTool: (name, args, toolCallId) => {
+        tools: [...tools.definitions(bot), ...hostTools], executeTool: (name, args, toolCallId) => {
           if (active.get(session.id) !== owner || combined.aborted) throw fault(409, 'This bot turn has ended.');
+          if (hostNames.has(name)) return executeHostTool(name, args, toolCallId);
           return tools.execute({ bot, chatId: session.id, name, args, toolCallId, signal: combined, onFrame: emit, requestPermission });
         },
         checkpoint: oldCheckpoint?.fingerprint === fingerprint ? oldCheckpoint.value : null,
         onCheckpoint: value => { if (active.get(session.id) === owner) { checkpoints.set(session.id, { fingerprint, value }); save(); } } });
     } catch (failure) {
+      runFailure = failure;
       if (failure.code === 'ssh_cleanup_unconfirmed' || failure.cleanupUnconfirmed) { uncertainTargets.set(failure.code === 'cua_cleanup_unconfirmed' || failure.cleanupUnconfirmed && failure.code !== 'ssh_cleanup_unconfirmed' ? cuaResource(bot) : target, 'Remote cleanup could not be confirmed. Use Check SSH computer on the Mac before starting another turn.'); save(); owner.cleanupFailure = failure; terminal = { type: 'error', message: failure.message }; throw failure; }
       if (combined.aborted) terminal = { type: 'done', cancelled: true };
       else throw failure;
     } finally {
+      const cancelledBeforeCleanup = combined.aborted;
       controller.abort(); // Revoke tool authority before awaiting asynchronous cleanup.
       for (const request of [...owner.pending.values()]) request.resolve(false);
       try { await tools.finish?.(session.id); }
       catch (failure) { owner.cleanupFailure = Object.assign(failure, { status: 503 }); uncertainTargets.set(bot.computerMode === 'cua' ? cuaResource(bot) : target, 'Bot cleanup could not be confirmed. Check this computer on the Mac before continuing.'); save(); terminal = { type: 'error', message: failure.message }; }
+      try { await Promise.all(extensions.map(extension => extension.finish?.(session.id))); }
+      catch (failure) { owner.cleanupFailure = Object.assign(failure, { status: 503 }); terminal = { type: 'error', message: failure.message ?? 'External bot integration cleanup could not be confirmed.' }; }
       if (active.get(session.id) === owner) active.delete(session.id);
       if (computerLeases.get(target) === session.id) computerLeases.delete(target);
       if (terminal) onFrame(terminal);
+      team.end(context, { cancelled: cancelledBeforeCleanup, error: owner.cleanupFailure?.message ?? (runFailure && !cancelledBeforeCleanup ? runFailure.message : undefined) });
       ended();
     }
   }
-  return { list, create, update, remove, pause, createConversation, computer, work, prepareCUA, checkComputer: (input, options) => computerAction(input, false, options), prepareComputer: (input, options) => computerAction(input, true, options), validateSelection, run, pending, approve, stop,
-    hasProfiles: () => profiles.size > 0, isBotConversation: id => !!owned(id), workspace: id => chatProfiles.get(id)?.execution?.kind === 'local' ? chatProfiles.get(id).workspace : null, isRemoteConversation: id => !!chatProfiles.get(id) && (chatProfiles.get(id).execution?.kind !== 'local' || chatProfiles.get(id).computerMode === 'cua'), activeCount: () => active.size,
-    async close() { work.close(); await computer.close(); for (const run of active.values()) run.controller.abort(); await Promise.allSettled([...active.values()].map(run => run.ended)); await tools.close?.(); await runtime.close?.(); } };
+  return { list, create, update, remove, pause, createConversation, computer, work, team, hasBot: id => profiles.has(id), providerModels: id => runtime.models?.(id) ?? Promise.resolve({ provider: id, models: [], detail: 'This provider has no verified effort catalog. Use Provider default.' }), prepareCUA, checkComputer: (input, options) => computerAction(input, false, options), prepareComputer: (input, options) => computerAction(input, true, options), validateSelection, run, pending, approve, stop,
+    hasProfiles: () => profiles.size > 0, isBotConversation: id => !!owned(id), workspace: id => chatProfiles.get(id)?.execution?.kind === 'local' ? chatProfiles.get(id).workspace : null, isRemoteConversation: id => !!chatProfiles.get(id) && (chatProfiles.get(id).execution?.kind !== 'local' || chatProfiles.get(id).computerMode === 'cua'), activeCount: () => active.size + team.activeCount(),
+    async close() { work.close(); await team.close(); await computer.close(); for (const run of active.values()) run.controller.abort(); await Promise.allSettled([...active.values()].map(run => run.ended)); await tools.close?.(); await runtime.close?.(); } };
 }
 
 export function createBotRoutes({ bots, port }) {
@@ -357,6 +407,22 @@ export function createBotRoutes({ bots, port }) {
     try {
       if (url.pathname === '/api/bots' && req.method === 'GET') return json(res, 200, await bots.list());
       if (url.pathname === '/api/bots' && req.method === 'POST') return json(res, 201, bots.create(await readBody(req)));
+      if (url.pathname === '/api/bots/provider-models' && req.method === 'GET') return json(res, 200, await bots.providerModels(url.searchParams.get('provider')));
+      if (url.pathname === '/api/bots/activity' && req.method === 'GET') return json(res, 200, bots.team.activity());
+      if (url.pathname === '/api/bots/teams') {
+        if (req.method === 'GET') return json(res, 200, bots.team.list());
+        if (req.method === 'POST') return json(res, 201, bots.team.create(await readBody(req)));
+        return error(res, 405, 'This team action is unavailable.');
+      }
+      const teamRoute = /^\/api\/bots\/teams\/(team_[a-f0-9-]+)(?:\/runs(?:\/(tr_[a-f0-9-]+)(?:\/(stop))?)?)?$/.exec(url.pathname);
+      if (teamRoute) {
+        const [, teamId, runId, action] = teamRoute;
+        if (action === 'stop' && req.method === 'POST') { const input = await readBody(req); if (!input || Object.keys(input).length) throw fault(400, 'Stop takes no additional settings.'); return json(res, 200, await bots.team.stop(teamId, runId)); }
+        if (runId && req.method === 'GET') return json(res, 200, bots.team.detail(teamId, runId));
+        if (!runId && url.pathname.endsWith('/runs') && req.method === 'POST') return json(res, 201, bots.team.start(teamId, await readBody(req)));
+        if (!runId && !url.pathname.endsWith('/runs') && req.method === 'PATCH') return json(res, 200, bots.team.update(teamId, await readBody(req)));
+        return error(res, 405, 'This team action is unavailable.');
+      }
       if (/^\/api\/bots\/computers\/(check|prepare|prepare-cua)$/.test(url.pathname) && req.method === 'POST') {
         const body = await readBody(req), controller = new AbortController();
         const abort = () => controller.abort(); res.once('close', abort);

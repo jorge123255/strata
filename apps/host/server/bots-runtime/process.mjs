@@ -1,4 +1,5 @@
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { promisify } from 'node:util';
 import { access, stat } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { delimiter, join, isAbsolute } from 'node:path';
@@ -20,16 +21,35 @@ export async function findExecutable(name, env = process.env) {
   return null;
 }
 const stopping = new WeakMap();
-export function killOwned(child) {
+const exec = promisify(execFile);
+export function ownedGroupAliveFromPS(output, pgid) {
+  if (typeof output !== 'string' || !output.trim()) throw new Error('The owned provider process group could not be verified.');
+  let alive = false;
+  for (const line of output.trim().split('\n')) {
+    const row = /^\s*(\d+)\s+(\S+)\s*$/.exec(line);
+    if (!row) throw new Error('The owned provider process group could not be verified.');
+    if (Number(row[1]) === pgid && !row[2].startsWith('Z')) alive = true;
+  }
+  return alive;
+}
+export function killOwned(child, options = {}) {
   if (stopping.has(child)) return stopping.get(child);
-  const hasGroup = Boolean(child.pid) && process.platform !== 'win32';
-  const alive = () => { if (!hasGroup) return child.exitCode === null && child.signalCode === null; try { process.kill(-child.pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; } };
+  const platform = options.platform ?? process.platform;
+  const hasGroup = Boolean(child.pid) && platform !== 'win32';
+  const processTable = options.processTable ?? (async () => (await exec('/bin/ps', ['-axo', 'pgid=,stat='], { env: { PATH: '/usr/bin:/bin' }, timeout: 2000, maxBuffer: 2 * 1024 * 1024 })).stdout);
+  const alive = async () => {
+    if (!hasGroup) return child.exitCode === null && child.signalCode === null;
+    // Darwin can return EPERM for an already exited group. Inspect group members,
+    // including descendants after their leader exits, and disregard only zombies.
+    if (platform === 'darwin') return ownedGroupAliveFromPS(await processTable(), child.pid);
+    try { process.kill(-child.pid, 0); return true; } catch (error) { if (error.code === 'ESRCH') return false; throw new Error('The owned provider process group could not be verified.'); }
+  };
   const stop = signal => { if (hasGroup) { try { process.kill(-child.pid, signal); return; } catch { /* gone */ } } if (child.exitCode === null && child.signalCode === null) { try { child.kill(signal); } catch { /* gone */ } } };
   // The group remains ours when its leader exits. A child that ignores TERM must still receive KILL.
   const result = (async () => {
-    if (!alive()) return;
+    if (!await alive()) return;
     stop('SIGTERM'); const began = Date.now(); let escalated = false;
-    while (alive()) {
+    while (await alive()) {
       if (!escalated && Date.now() - began >= 1000) { stop('SIGKILL'); escalated = true; }
       if (Date.now() - began >= 3000) throw new Error('The owned provider process group did not exit after Stop.');
       await new Promise(resolve => setTimeout(resolve, 20));

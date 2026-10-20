@@ -3,7 +3,7 @@ import { mkdir, access, open, lstat, readFile, readdir, writeFile, rename, unlin
 import { randomUUID, createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { hostname, homedir } from 'node:os';
-import { createBotRuntime } from './index.mjs';
+import { createBotRuntime, normalizeTools } from './index.mjs';
 import { createBotTools } from '../bots-tools.mjs';
 import { findBrowser } from '../agent/browser-probe.mjs';
 import { redact } from './process.mjs';
@@ -126,13 +126,17 @@ async function startWorkerTurn(input, { reader, send, directory, leaseMs = 12000
     runtime = runtimeFactory({ stateDir: join(directory, 'runtime') });
     signal.throwIfAborted();
     const allow = async request => { signal.throwIfAborted(); const approved = await ask('permission', request); signal.throwIfAborted(); return approved === true; };
+    const hostTools = normalizeTools(input.hostTools ?? []);
+    const localDefinitions = tools.definitions(bot).filter(tool => bot.computerMode === 'cua' || process.platform === 'darwin' || !tool.name.startsWith('computer_'));
+    if (hostTools.length > 32 || hostTools.some(tool => localDefinitions.some(local => local.name === tool.name))) throw new Error('The host tool catalog is invalid.');
+    const hostNames = new Set(hostTools.map(tool => tool.name));
     const execute = (name, args, toolCallId) => {
       signal.throwIfAborted();
-      const promise = tools.execute({ bot, chatId: input.sessionId, name, args, toolCallId, signal, onFrame: emit, requestPermission: allow });
+      const promise = hostNames.has(name) ? ask('requestHostTool', { name, args, toolCallId }) : tools.execute({ bot, chatId: input.sessionId, name, args, toolCallId, signal, onFrame: emit, requestPermission: allow });
       inFlight.add(promise); promise.finally(() => inFlight.delete(promise)).catch(() => {}); return promise;
     };
     result = await runtime.run({ bot, sessionId: input.sessionId, message: input.message, history: input.history ?? [], checkpoint: input.checkpoint, signal, onFrame: frame => { if (frame.type !== 'done' && frame.type !== 'error') emit(frame); },
-      tools: tools.definitions(bot).filter(tool => bot.computerMode === 'cua' || process.platform === 'darwin' || !tool.name.startsWith('computer_')), executeTool: execute, requestPermission: allow,
+      tools: [...localDefinitions, ...hostTools], executeTool: execute, requestPermission: allow,
       modelRequest: payload => ask('requestModel', payload), onCheckpoint: checkpoint => write({ type: 'checkpoint', value: checkpoint }) });
   } catch (error) { failure = error; }
   finally {

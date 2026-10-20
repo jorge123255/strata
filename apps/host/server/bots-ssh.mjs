@@ -70,6 +70,12 @@ export function createRemoteBotSSH({ sshPath = '/usr/bin/ssh', spawnProcess = sp
           } else if (message.type === 'requestModel') {
             if (typeof options.modelRequest !== 'function') throw new Error('This configured model is unavailable from the Mac host.');
             value = await options.modelRequest(message.value, requestController.signal);
+          } else if (message.type === 'requestHostTool') {
+            const call = message.value;
+            if (!call || typeof call !== 'object' || Array.isArray(call) || Object.keys(call).some(key => !['name', 'args', 'toolCallId'].includes(key)) || !(options.hostTools ?? []).some(tool => tool.name === call.name) || typeof options.executeHostTool !== 'function') throw new Error('The SSH worker requested a host tool outside this turn’s frozen allowlist.');
+            requestController.signal.throwIfAborted();
+            value = await options.executeHostTool(call.name, call.args, call.toolCallId);
+            requestController.signal.throwIfAborted();
           }
           if (!stopping && !done && !options.signal?.aborted) send({ type: 'reply', id: message.id, value });
         } catch (error) { if (!stopping && !done) send({ type: 'reply', id: message.id, error: redact(error) }); }
@@ -93,7 +99,7 @@ export function createRemoteBotSSH({ sshPath = '/usr/bin/ssh', spawnProcess = sp
             if (message.type === 'frame') result = options.onFrame?.(message.value);
             else if (message.type === 'identity') result = options.onIdentity?.(message.value);
             else if (message.type === 'checkpoint') result = options.onCheckpoint?.(message.value);
-            else if (message.type === 'permission' || message.type === 'requestModel') requestFromWorker(message);
+            else if (message.type === 'permission' || message.type === 'requestModel' || message.type === 'requestHostTool') requestFromWorker(message);
             if (result && typeof result.then === 'function') result.catch(error => { failure = fault('ssh_projection', redact(error)); cancel(); });
           } catch (error) { failure = fault(error.code ?? 'ssh_projection', redact(error)); cancel(); }
         }
@@ -141,9 +147,13 @@ export function createRemoteBotSSH({ sshPath = '/usr/bin/ssh', spawnProcess = sp
       const bot = structuredClone(input.bot);
       // Model credentials stay on their owning computer. Configured inference is requested through RPC.
       if (bot.providerSettings) bot.providerSettings = bot.providerSettings.baseURL ? { baseURL: bot.providerSettings.baseURL } : undefined;
+      // Host skill/MCP snapshots can contain private text and connection metadata.
+      // Only explicitly assigned tool descriptions cross this channel; execution returns to the Mac.
+      delete bot.extensionSnapshots;
+      const hostTools = (input.hostTools ?? []).map(tool => ({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema }));
       let remoteIdentity = input.checkpoint?.remoteIdentity;
       const wrap = value => ({ remoteTarget: target, remoteIdentity, remoteCheckpoint: value });
-      const result = await call('run', execution, { input: { bot, sessionId: input.sessionId, message: input.message, history: input.history ?? [], checkpoint: input.checkpoint?.remoteCheckpoint, expectedIdentity: remoteIdentity } }, {
+      const result = await call('run', execution, { input: { bot, sessionId: input.sessionId, message: input.message, history: input.history ?? [], checkpoint: input.checkpoint?.remoteCheckpoint, expectedIdentity: remoteIdentity, hostTools } }, {
         ...input, onIdentity: value => { if (!/^[a-f0-9]{64}$/.test(value ?? '') || remoteIdentity && value !== remoteIdentity) throw fault('ssh_session_identity', 'The SSH execution computer or account changed. Start a new bot chat.'); remoteIdentity = value; }, onCheckpoint: checkpoint => input.onCheckpoint?.(wrap(checkpoint)),
       });
       const checkpoint = result.checkpoint ? wrap(result.checkpoint) : null;

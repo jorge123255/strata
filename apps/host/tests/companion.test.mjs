@@ -267,6 +267,7 @@ test('packaged Resources layout resolves the bundled bridge and starts with the 
   const managerPath = join(server, 'companion.mjs');
   copyFileSync(fileURLToPath(new URL('../server/companion.mjs', import.meta.url)), managerPath);
   copyFileSync(fileURLToPath(bridgeURL), join(companion, 'bridge.mjs'));
+  copyFileSync(fileURLToPath(new URL('../../companion-bridge/bots-workspace.mjs', import.meta.url)), join(companion, 'bots-workspace.mjs'));
   const packaged = await import(pathToFileURL(managerPath));
   assert.equal(realpathSync(fileURLToPath(packaged.companionBridgeURL())), realpathSync(join(companion, 'bridge.mjs')));
   const manager = packaged.createCompanionManager({ hostPort: 43212, directory: join(base, 'identity'), port: 0, adminPort: 0, listen: '127.0.0.1', bridgeOptions: { qr: false, advertiseHost: '127.0.0.1' } });

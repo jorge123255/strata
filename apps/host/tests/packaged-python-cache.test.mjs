@@ -17,7 +17,7 @@ test('packaged Control and installer forbid bytecode writes even when the caller
   }
 });
 
-test('source Control keeps the existing bytecode preference and does not add one by default', () => {
+test('source Control also forbids bytecode writes because it can select the signed app interpreter', () => {
   for (const packaged of [undefined, '0']) {
     for (const inherited of [undefined, '0', '1']) {
       const env = {
@@ -25,8 +25,8 @@ test('source Control keeps the existing bytecode preference and does not add one
         ...(inherited === undefined ? {} : { PYTHONDONTWRITEBYTECODE: inherited }),
       };
       const result = controlEnvironment(null, { env });
-      assert.equal(result.PYTHONDONTWRITEBYTECODE, inherited);
-      assert.equal('PYTHONDONTWRITEBYTECODE' in result, inherited !== undefined);
+      assert.equal(result.PYTHONDONTWRITEBYTECODE, '1');
+      assert.equal(env.PYTHONDONTWRITEBYTECODE, inherited, 'the caller environment stays unchanged');
     }
   }
 });

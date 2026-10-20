@@ -36,6 +36,50 @@ export function createBotRuntime(options = {}) {
   const active = new Set(); let closed = false;
   let providersCache, providersCachedAt = 0;
   const executable = async id => options.commands?.[id] ?? await findExecutable(id === 'ollama' ? 'ollama' : id, env);
+  const catalogs = new Map();
+  async function models(provider, signal) {
+    if (!['claude', 'codex', 'grok', 'kimi', 'ollama', 'configured'].includes(provider)) throw new Error('Choose a supported bot provider.');
+    const cached = catalogs.get(provider);
+    if (!signal && cached && Date.now() - cached.at < 15000) return structuredClone(await cached.value);
+    const value = (async () => {
+      if (options.catalogs?.[provider]) return { provider, models: structuredClone(await options.catalogs[provider]()) };
+      if (!['claude', 'codex'].includes(provider)) return { provider, models: [], detail: 'No verified effort catalog is available for this provider. Use Provider default.' };
+      const command = await executable(provider);
+      if (!command) return { provider, models: [], detail: 'Install and sign in to this provider on the execution computer.' };
+      const cwd = join(options.stateDir ?? join(homedir(), '.strata/bots-runtime'), 'catalog'); await mkdir(cwd, { recursive: true, mode: 0o700 });
+      signal?.throwIfAborted();
+      const controller = new AbortController(), abort = () => controller.abort(), timer = setTimeout(abort, options.catalogTimeoutMs ?? 10000);
+      signal?.addEventListener('abort', abort, { once: true });
+      const rows = [];
+      try {
+        if (provider === 'codex') {
+          const rpc = jsonRpcProcess({ command, args: ['app-server', '--listen', 'stdio://'], cwd, env, signal: controller.signal, spawnProcess: options.spawnProcess, timeoutMs: 8000,
+            onRequest(message, process) { process.reject(message.id, 'Catalog discovery does not execute tools or approve actions.'); } });
+          try {
+            await rpc.request('initialize', { clientInfo: { name: 'strata', version: '0.2.1' }, capabilities: { experimentalApi: true } }); rpc.notify('initialized', {});
+            let cursor;
+            for (let page = 0; page < 5; page++) { const response = await rpc.request('model/list', { limit: 100, includeHidden: false, ...(cursor ? { cursor } : {}) }); rows.push(...(response.data ?? []).map(row => ({ id: row.model ?? row.id, name: row.displayName ?? row.model ?? row.id, efforts: (row.supportedReasoningEfforts ?? []).map(item => item.reasoningEffort), ...(row.defaultReasoningEffort ? { defaultEffort: row.defaultReasoningEffort } : {}), ...(row.isDefault ? { isDefault: true } : {}) }))); cursor = response.nextCursor; if (!cursor) break; }
+          } finally { await rpc.close(); }
+        } else {
+          const auth = await executableJsonStatus(command, ['auth', 'status', '--json'], env);
+          if (auth?.loggedIn === false) return { provider, models: [], detail: 'Sign in to Claude Code to load its model and effort options.' };
+          const sdk = options.claudeSdk ?? await import('@anthropic-ai/claude-agent-sdk');
+          const children = new Set(); let query;
+          // An open input stream permits control requests without submitting a model prompt.
+          const input = (async function* () { await new Promise(resolve => { if (controller.signal.aborted) resolve(); else controller.signal.addEventListener('abort', resolve, { once: true }); }); })();
+          try {
+            query = sdk.query({ prompt: input, options: { cwd, pathToClaudeCodeExecutable: command, abortController: controller, tools: [], settingSources: [], strictMcpConfig: true, mcpServers: {}, env,
+              canUseTool: async () => ({ behavior: 'deny', message: 'Catalog discovery cannot execute tools.' }),
+              spawnClaudeCodeProcess(plan) { const child = (options.spawnProcess ?? spawn)(plan.command, plan.args, { cwd: plan.cwd, env: plan.env, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32', windowsHide: true }); children.add(child); return child; } } });
+            rows.push(...(await query.supportedModels()).map(row => ({ id: row.value, name: row.displayName, efforts: row.supportsEffort ? row.supportedEffortLevels ?? [] : [], ...(row.resolvedModel ? { resolvedId: row.resolvedModel } : {}) })));
+          } finally { controller.abort(); query?.close(); await Promise.all([...children].map(killOwned)); }
+        }
+        return { provider, models: rows.filter(row => typeof row.id === 'string' && row.id.length <= 250).slice(0, 500).map(row => ({ ...row, name: String(row.name ?? row.id).slice(0, 250), efforts: [...new Set(row.efforts.filter(level => typeof level === 'string' && /^[a-z][a-z0-9_-]{0,31}$/.test(level)))] })) };
+      } catch (error) { return { provider, models: [], detail: `Could not verify this provider’s model options. Use Provider default. ${redact(error)}` }; }
+      finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); controller.abort(); }
+    })();
+    catalogs.set(provider, { at: Date.now(), value }); return structuredClone(await value);
+  }
   async function providers() {
     if (providersCache && Date.now() - providersCachedAt < (options.providerCacheMs ?? 30_000)) return structuredClone(await providersCache);
     providersCachedAt = Date.now();
@@ -75,6 +119,12 @@ export function createBotRuntime(options = {}) {
     }
     if (!isAbsolute(bot.workspace ?? '') || !(await stat(bot.workspace)).isDirectory()) throw new Error('Choose an existing absolute workspace folder.');
     const tools = normalizeTools(input.tools);
+    input.signal?.throwIfAborted();
+    if (bot.effort && !['grok', 'kimi'].includes(bot.provider)) {
+      const catalog = await models(bot.provider, input.signal), selected = catalog.models.find(row => row.id === bot.model || row.resolvedId === bot.model || !bot.model && row.isDefault);
+      input.signal?.throwIfAborted();
+      if (!selected?.efforts.includes(bot.effort)) throw new Error('This model’s selected effort could not be verified on its execution computer. Choose Provider default or refresh the model catalog.');
+    }
     const controller = new AbortController(), abort = () => controller.abort(input.signal?.reason);
     input.signal?.addEventListener('abort', abort, { once: true }); if (input.signal?.aborted) abort(); active.add(controller);
     const signal = controller.signal, started = Date.now();
@@ -118,7 +168,7 @@ export function createBotRuntime(options = {}) {
     } catch (error) { const safe = signal.aborted ? abortError() : new Error(redact(error, secrets)); emit({ type: 'error', message: safe.message }); throw safe; }
     finally { clearTimeout(timer); active.delete(controller); input.signal?.removeEventListener('abort', abort); }
   }
-  return { providers, run, async close() { closed = true; for (const controller of active) controller.abort(); active.clear(); await options.remoteSSH?.close(); } };
+  return { providers, models, run, async close() { closed = true; for (const controller of active) controller.abort(); active.clear(); await options.remoteSSH?.close(); } };
 }
 
 async function runClaude(c) {
@@ -134,6 +184,7 @@ async function runClaude(c) {
     c.signal.throwIfAborted();
     query = sdk.query({ prompt: c.prompt, options: {
       cwd: c.bot.workspace, pathToClaudeCodeExecutable: command, model: c.bot.model || undefined,
+      ...(c.bot.effort ? { effort: c.bot.effort } : {}),
       abortController, resume: c.checkpoint?.nativeSessionId || undefined,
       // Built-ins are disabled: all file, shell, and computer effects go through the Strata tool ledger and gate.
       tools: [], settingSources: [], strictMcpConfig: true, permissionMode: 'default',
@@ -268,11 +319,19 @@ async function runAcp(c) {
   });
   try {
     const init = await rpc.request('initialize', { protocolVersion: 1, clientInfo: { name: 'strata', version: '0.2.1' }, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false } });
+    let configOptions;
     if (c.checkpoint?.nativeSessionId) {
       if (!init.agentCapabilities?.loadSession) throw new Error(`${c.bot.provider} does not support restoring native sessions. Start a new chat; your Strata history is preserved.`);
-      sessionId = c.checkpoint.nativeSessionId; await rpc.request('session/load', { sessionId, cwd: c.bot.workspace, mcpServers: bridge ? [bridge.acp] : [] });
-    } else { const session = await rpc.request('session/new', { cwd: c.bot.workspace, mcpServers: bridge ? [bridge.acp] : [] }); sessionId = session.sessionId; }
+      sessionId = c.checkpoint.nativeSessionId; const loaded = await rpc.request('session/load', { sessionId, cwd: c.bot.workspace, mcpServers: bridge ? [bridge.acp] : [] }); configOptions = loaded.configOptions;
+    } else { const session = await rpc.request('session/new', { cwd: c.bot.workspace, mcpServers: bridge ? [bridge.acp] : [] }); sessionId = session.sessionId; configOptions = session.configOptions; }
     if (!sessionId) throw new Error(`${c.bot.provider} returned no ACP session id.`); await c.save(sessionId);
+    if (c.bot.effort) {
+      const option = configOptions?.find(option => option.category === 'thought_level');
+      const values = option?.options?.flatMap(item => Array.isArray(item.options) ? item.options : [item]) ?? [];
+      if (!option || !values.some(item => item.value === c.bot.effort)) throw new Error('This ACP model did not advertise the selected effort. Choose Provider default.');
+      const result = await rpc.request('session/set_config_option', { sessionId, configId: option.id, value: c.bot.effort });
+      if (result.configOptions?.find(item => item.id === option.id)?.currentValue !== c.bot.effort) throw new Error('The ACP provider did not confirm the selected effort. No model prompt was sent.');
+    }
     projecting = true;
     const result = await Promise.race([rpc.request('session/prompt', { sessionId, prompt: [{ type: 'text', text: `${c.bot.instructions ? `Bot instructions:\n${c.bot.instructions}\n\n` : ''}${c.prompt}` }] }, c.options.runTimeoutMs ?? 30 * 60_000), terminated.promise]);
     if (result.stopReason && result.stopReason !== 'end_turn') throw new Error(`${c.bot.provider} stopped: ${result.stopReason}`);

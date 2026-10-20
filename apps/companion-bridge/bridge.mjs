@@ -7,6 +7,7 @@ import { homedir, hostname, networkInterfaces } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { botWorkspaceRequest, handleBotWorkspace } from './bots-workspace.mjs';
 
 const run = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -51,7 +52,7 @@ function computerRequest(path, method, body, deviceId) {
   return { botId, action, chatId: body.chatId };
 }
 function botSelection(body, status = 400) {
-  if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !['computerId', 'modelId', 'workspace'].includes(key))) throw fail(status, 'Choose a saved computer and model for this conversation.');
+  if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !['computerId', 'modelId', 'workspace', 'effort'].includes(key))) throw fail(status, 'Choose a saved computer and model for this conversation.');
   const selection = {};
   for (const key of ['computerId', 'modelId']) if (body[key] !== undefined) {
     if (!safeId(body[key])) throw fail(status, 'Choose a saved computer and model for this conversation.');
@@ -60,6 +61,10 @@ function botSelection(body, status = 400) {
   if (body.workspace !== undefined) {
     if (typeof body.workspace !== 'string' || !body.workspace.startsWith('/') || body.workspace.length > 4_000 || /[\u0000-\u001f]/.test(body.workspace)) throw fail(status, 'Enter the full workspace folder path on the selected computer.');
     selection.workspace = body.workspace;
+  }
+  if (body.effort !== undefined) {
+    if (typeof body.effort !== 'string' || !/^[A-Za-z0-9_-]{0,40}$/.test(body.effort)) throw fail(status, 'Choose an effort supported by this model.');
+    selection.effort = body.effort;
   }
   return selection;
 }
@@ -212,6 +217,7 @@ export class HostClient {
     const conversation = /^\/api\/companion\/conversations(?:\/[a-zA-Z0-9_-]{1,120}(?:\/(messages|stop|approval))?)?$/.exec(path);
     const bots = path === '/api/bots' || /^\/api\/bots\/[a-zA-Z0-9_-]{1,120}\/conversations$/.test(path);
     const avatar = /^\/api\/bots\/[a-zA-Z0-9_-]{1,120}$/.test(path) && method === 'PATCH';
+    const workspace = botWorkspaceRequest(path, method, body);
     const computer = path.includes('/computer') ? computerRequest(path, method, body, deviceId) : null;
     const management = path.startsWith('/api/model-management/') ? managementRequest(path, method, body, deviceId) : null;
     // Callers cannot supply full URLs, query strings, arbitrary files, settings or operations.
@@ -221,9 +227,11 @@ export class HostClient {
       && path !== '/api/native/operations'
       && !/^\/api\/native\/instances\/[a-zA-Z0-9_-]+\/unload$/.test(path)
       && !/^\/api\/serving\/requests\/[a-zA-Z0-9_-]+\/cancel$/.test(path)
-      && !conversation && !management && !bots && !computer && !avatar) throw fail(403, 'Unsupported host control.');
+      && !conversation && !management && !bots && !computer && !avatar && !workspace) throw fail(403, 'Unsupported host control.');
     const mutation = path.endsWith('/load') || path.endsWith('/unload') || path.endsWith('/cancel') || path === '/api/native/operations' || path === '/api/chat/stream';
-    if (avatar) {
+    if (workspace) {
+      // Fully validated narrow collaboration route; no arbitrary tool execution.
+    } else if (avatar) {
       if (!body || Object.keys(body).length !== 1 || !body.avatarConfig) throw fail(403, 'Only bot appearance can be changed from iPhone.');
       avatarConfig(body.avatarConfig);
     } else if (management || computer) {
@@ -239,7 +247,7 @@ export class HostClient {
     if (path === '/api/native/operations' && (body?.kind !== 'load' || !safeId(body?.args?.model) || Object.keys(body).some(key => !['kind', 'args'].includes(key)) || Object.keys(body.args).some(key => !['model', 'values'].includes(key)) || Object.keys(body.args.values ?? {}).length)) throw fail(403, 'Only an installed model can be loaded from iPhone.');
     const origin = await this.origin();
     try {
-      return await this.fetcher(`${origin}${path}`, { method, redirect: 'error', headers: { 'content-type': 'application/json', ...(this.authorization ? { authorization: this.authorization } : {}), ...(management || computer ? { 'x-strata-companion-device': deviceId } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}), signal: signal ?? AbortSignal.timeout(management ? 170_000 : computer?.action === 'start' ? 90_000 : 15_000) });
+      return await this.fetcher(`${origin}${path}`, { method, redirect: 'error', headers: { 'content-type': 'application/json', ...(this.authorization ? { authorization: this.authorization } : {}), ...(management || computer || workspace && deviceId ? { 'x-strata-companion-device': deviceId } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}), signal: signal ?? AbortSignal.timeout(management ? 170_000 : computer?.action === 'start' ? 90_000 : workspace?.action === 'check' ? 30_000 : 15_000) });
     } catch (error) {
       if (!this.fixed) this.cached = null;
       if (error.name === 'AbortError') throw error;
@@ -442,6 +450,12 @@ export function publicConversation(conversation, { summary = false } = {}) {
     const value = conversation.preferences?.[key] ?? conversation[output];
     if (typeof value === 'string') result[output] = shortText(value, 300);
   }
+  const effort = conversation.preferences?.botEffort ?? conversation.botEffort;
+  if (typeof effort === 'string' && /^[A-Za-z0-9_-]{0,40}$/.test(effort)) result.botEffort = effort;
+  for (const key of ['teamId', 'teamRunId', 'parentChatId']) {
+    const value = conversation.preferences?.[key] ?? conversation[key];
+    if (safeId(value)) result[key] = value;
+  }
   const computerMode = conversation.preferences?.botComputerMode ?? conversation.computerMode;
   if (['host', 'cua'].includes(computerMode)) result.computerMode = computerMode;
   const model = conversation.modelName ?? [...messages].reverse().find(message => typeof message.model === 'string')?.model;
@@ -481,6 +495,7 @@ export function publicBots(body) {
     selectionSupported: Array.isArray(body.models),
     bots: body.bots.slice(0, 500).filter(bot => bot && safeId(bot.id) && providers.has(bot.provider)).map(bot => ({
       id: bot.id, name: shortText(bot.name, 200) || 'Bot', provider: bot.provider, model: shortText(bot.model, 300),
+      ...(typeof bot.effort === 'string' ? { effort: shortText(bot.effort, 40) } : {}),
       avatar: botAvatars.has(bot.avatar) ? bot.avatar : '🤖',
       ...(() => { try { return { avatarConfig: avatarConfig(bot.avatarConfig) }; } catch { return {}; } })(),
       computerMode: bot.computerMode === 'cua' ? 'cua' : 'host',
@@ -670,7 +685,8 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
       const method = req.method;
       const computerPath = /^\/v1\/bots\/([a-zA-Z0-9_-]{1,120})\/computer(?:\/(start|stop|takeover|control|release))?$/.exec(path);
       const queryEntries = [...url.searchParams];
-      if (!path.startsWith('/v1/') || url.search && (!computerPath || computerPath[2] || method !== 'GET' || queryEntries.length !== 1 || queryEntries[0][0] !== 'chatId' || !safeId(queryEntries[0][1]))) throw fail(404, 'Unknown companion endpoint.');
+      const workspacePath = botWorkspaceRequest((path + url.search).replace(/^\/v1\//, '/api/'), method, undefined, 405, false);
+      if (!path.startsWith('/v1/') || url.search && !workspacePath && (!computerPath || computerPath[2] || method !== 'GET' || queryEntries.length !== 1 || queryEntries[0][0] !== 'chatId' || !safeId(queryEntries[0][1]))) throw fail(404, 'Unknown companion endpoint.');
       if (path === '/v1/pair' && method === 'POST') {
         const body = await readBody(req, 1_000);
         if (closing) throw fail(409, 'iPhone pairing is disabled.');
@@ -690,6 +706,10 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
         if (closing) throw fail(409, 'iPhone pairing is disabled.');
         if (!authority.sessions.some(saved => saved.id === session.id)) throw fail(401, 'This device was removed. Pair it again.');
       };
+      if (workspacePath) {
+        await handleBotWorkspace({ path: path + url.search, method, req, res, session, host, readBody, sendJSON, requireCurrentSession });
+        return;
+      }
       if (path === '/v1/session' && method === 'DELETE') {
         authority.revoke(session.id);
         for (const request of active.values()) if (request.owner === session.id) request.abort.abort();
@@ -826,6 +846,14 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
           if (selectedBot.computerMode === 'cua' && input.workspace !== undefined && input.workspace !== '/workspace') throw fail(400, 'This isolated computer uses /workspace.');
           if (input.computerId && !catalog.computers.some(computer => computer.id === input.computerId && computer.available)) throw fail(409, 'Set up this computer in Strata on your Mac, then refresh Bots.');
           if (input.modelId && !catalog.models.some(model => model.id === input.modelId && model.available)) throw fail(409, 'This model connection is no longer available. Refresh Bots.');
+          if (input.effort) {
+            if (input.modelId || selectedBot.provider === 'configured') throw fail(409, 'Use Default effort for this configured model.');
+            let capabilities;
+            try { capabilities = await host.json(`/api/bots/provider-models?provider=${selectedBot.provider}`); }
+            catch { requireCurrentSession(); throw fail(409, 'Refresh this model’s supported effort levels on your Mac.'); }
+            requireCurrentSession();
+            if (!(capabilities.models ?? []).some(model => model.id === selectedBot.model && Array.isArray(model.efforts) && model.efforts.includes(input.effort))) throw fail(409, 'This effort is not supported by the selected model.');
+          }
         }
         let body;
         try { body = await host.json(`/api/bots/${encode(botConversation[1])}/conversations`, { method: 'POST', body: input }); }

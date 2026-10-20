@@ -28,6 +28,7 @@ export interface Bot {
   instructions: string;
   provider: BotProviderId;
   model: string;
+  effort?: string;
   modelSource?: BotModelSource;
   capabilities: BotCapability;
   policy: BotPolicy;
@@ -45,6 +46,35 @@ export interface BotComputer { id: string; name: string; kind: BotExecution['kin
 export interface BotConfiguredModel { id: string; connectionId: string; connectionName: string; model: string; name: string; available: boolean; detail?: string }
 export interface BotComputerCheck { available: boolean; detail: string; prepared?: boolean; providers?: unknown }
 export interface BotsSnapshot { bots: Bot[]; providers: BotProvider[]; computers: BotComputer[]; models?: BotConfiguredModel[] }
+
+/** Collaboration records contain public identities and task links, never credentials. */
+export interface BotTeamLimits { maxParallel: number; maxDepth: number; maxHops: number; maxTurns: number; maxDurationMs: number }
+export interface BotTeam { id: string; name: string; memberIds: string[]; coordinatorId: string; enabled: boolean; limits: BotTeamLimits; createdAt: string; updatedAt: string }
+export type BotTeamRunState = 'queued'|'running'|'completed'|'error'|'cancelled'|'interrupted'|'stopping'|'cleanup_pending';
+export interface BotTeamRun { id: string; teamId: string; rootChatId: string; rootBotId: string; state: BotTeamRunState; limits: BotTeamLimits; consumedTurns: number; createdAt: string; updatedAt: string; detail?: string }
+export interface BotTeamActivity { id: string; type: 'run'|'delivery'|'subagent'; teamId: string; runId: string; botId?: string; chatId?: string; parentChatId?: string; title: string; state: string; fromBotId?: string; toBotId?: string; createdAt: string; updatedAt: string; detail?: string }
+export interface BotTeamsSnapshot { teams: BotTeam[]; runs: BotTeamRun[] }
+export interface BotSkill { id: string; name: string; description: string; body: string; triggers: string[]; source: 'library'|'draft'; status: 'draft'|'enabled'; revision: number|string; digest: string; botIds: string[]; onlyIn?:string|null; mainChatEnabled?:boolean; provenance?: unknown }
+export interface BotSkillAssignment { botId: string; skillIds: string[] }
+export interface BotSkillsSnapshot { skills: BotSkill[]; assignments: BotSkillAssignment[] }
+export interface BotConnectionTool { id: string; name: string; description: string; inputSchema: unknown; readOnly: boolean }
+export interface BotConnection { id: string; name: string; transport: 'stdio'|'http'; url?: string; command?: string; args?: string[]; envKeys: string[]; apiKeySet: boolean; botIds: string[]; enabledToolIds: string[]; readOnlyToolIds: string[]; inventoryDigest:string; status: 'unchecked'|'starting'|'connected'|'unavailable'; detail: string; checkedAt?: string; tools: BotConnectionTool[] }
+export interface BotConnectionsSnapshot { connections: BotConnection[] }
+export interface BotProviderModel { id: string; name: string; efforts: string[]; defaultEffort?: string }
+export interface BotProviderModels { provider: string; models: BotProviderModel[]; detail?: string }
+export const DEFAULT_BOT_TEAM_LIMITS: BotTeamLimits = { maxParallel: 2, maxDepth: 2, maxHops: 8, maxTurns: 24, maxDurationMs: 600000 };
+export function botTeamRunActive(state: string) { return ['queued', 'running', 'stopping', 'cleanup_pending'].includes(state); }
+export function botActivityLabel(state: string) { return ({ queued: 'Queued', running: 'Working', completed: 'Completed', error: 'Failed', cancelled: 'Stopped', interrupted: 'Interrupted', stopping: 'Stopping…', cleanup_pending: 'Checking cleanup', delivered: 'Delivered', pending: 'Waiting', accepted: 'Accepted', refused: 'Refused' } as Record<string, string>)[state] ?? state; }
+export function botTeamDraftError(draft: Pick<BotTeam, 'name'|'memberIds'|'coordinatorId'|'limits'>, bots: Pick<Bot,'id'>[]): string | null {
+  if (!draft.name.trim() || draft.name.trim().length>80) return 'Give this team a name of up to 80 characters.';
+  if (draft.memberIds.length<2 || draft.memberIds.length>12) return 'Choose from 2 to 12 team members.';
+  if (new Set(draft.memberIds).size !== draft.memberIds.length || draft.memberIds.some(id => !bots.some(bot => bot.id === id))) return 'Choose available bots for this team.';
+  if (!draft.memberIds.includes(draft.coordinatorId)) return 'Choose a coordinator from this team.';
+  for (const [key, maximum] of [['maxParallel', 8], ['maxDepth', 4], ['maxHops', 32], ['maxTurns', 100], ['maxDurationMs', 3600000]] as const) {
+    if (!Number.isInteger(draft.limits[key]) || draft.limits[key] < (key === 'maxDurationMs' ? 60000 : 1) || draft.limits[key] > maximum) return 'Choose bounded team work limits.';
+  }
+  return null;
+}
 export type BotDraft = Omit<Bot, 'id' | 'createdAt' | 'updatedAt' | 'conversations' | 'available' | 'detail' | 'providerSettings'> & {
   providerSettings?: { baseURL?: string; apiKey?: string; clearKey?: boolean };
 };

@@ -9,7 +9,7 @@ const desktop = fileURLToPath(new URL('..', import.meta.url));
 const source = resolve(desktop, '../companion-bridge');
 const staged = join(desktop, 'src-tauri/resources/companion-bridge');
 mkdirSync(staged, { recursive: true });
-for (const name of ['bridge.mjs', 'index.mjs', 'qr.swift', 'package.json']) copyFileSync(join(source, name), join(staged, name));
+for (const name of ['bridge.mjs', 'bots-workspace.mjs', 'index.mjs', 'qr.swift', 'package.json']) copyFileSync(join(source, name), join(staged, name));
 if (process.platform === 'darwin') {
   const build = spawnSync('/usr/bin/swiftc', ['-O', join(source, 'qr.swift'), '-o', join(staged, 'qr-helper')], { stdio: 'inherit' });
   if (build.status !== 0) process.exit(build.status ?? 1);
