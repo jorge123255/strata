@@ -1,3 +1,17 @@
+# Thinking and ordered progress — October 19, 2026
+
+Build 4 adds the Mac's expandable Thinking text, a live latest-line preview, recorded Thinking durations, and ordered progress summaries between reply paragraphs. Explicitly grouped actions appear under their own summary; unassigned actions and approvals remain visible once. Older Mac snapshots retain the existing reply/activity view. The accepted native scrolling implementation from Build 3 is unchanged.
+
+- Simulator compilation passed on Xcode 26.6 for iPhone 17 Pro, iOS 26.5, with no compiler warnings or errors.
+- The full unit suite passed 25 tests and skipped the optional live TLS test without an invitation. A subsequent targeted run passed all nine Thinking/timeline tests, including an additional edit-counter regression: 26 unique unit tests passed across these runs. They cover ordered text/group rendering without aggregate-answer duplication, exact helper action membership and deduplication, unassigned pending/running/denied actions, malformed/unknown block fallback, legacy snapshots, Thinking duration/live-stop semantics, and Thinking/progress updates without changed answer text.
+- The complete real pinned-TLS fixture UI flow passed on the final Build 4 source in 82.5 seconds (one test, zero failures or skips). It opened and read expanded Thinking, checked recorded **Thought for 2s**, live Thinking preview, transition back to recorded Thinking while tools continued, exact narrative/progress order, historical versus live indicators, a grouped browser action appearing once, expandable results, Allow/Deny, native history scrolling and **Latest**, same-conversation continuation, Stop, and saved history/Thinking/progress after relaunch.
+- Fixture history, Thinking, progress, browser activity, and approvals are synthetic. The fixture uses the actual TLS/authentication bridge but starts no model, browser, or Mac agent. The user's active Mac work was untouched. No new real Mac pairing or model request was made for this update.
+- Integration confirmed development-signed Build 4 installed on the physical iPhone without launching it. Existing phone pairing is preserved. The updated Mac protocol still requires the integration task's Mac activation once current work is idle.
+
+Final result bundles are kept privately outside source: full unit suite `test_sim_2026-10-20T03-41-16-104Z_pid58913_ce555c42.xcresult`; final nine Thinking tests `test_sim_2026-10-20T03-42-15-492Z_pid58913_fa08693c.xcresult`; full UI flow `test_sim_2026-10-20T03-42-54-005Z_pid58913_1fce72de.xcresult`. Five passed screenshots and their export manifest are under the private evidence directory `shared-chats/thinking-ui-passed/`. Production and test source are frozen at that accepted UI run. The owned fixture listener and private invitation/control metadata were removed afterward; the simulator's saved fixture pairing is consequently offline. Physical pairing was not modified.
+
+---
+
 # Shared Mac conversations — October 19, 2026
 
 Build 3 adds shared Mac conversation history, same-session continuation, foreground activity polling, readable browser/tool cards, explicit pending approvals, and Stop. Existing pairings use the same Keychain credential. Earlier iPhone-only chats remain a separate section.

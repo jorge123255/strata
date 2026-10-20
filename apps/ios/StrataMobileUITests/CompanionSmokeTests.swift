@@ -172,13 +172,47 @@ final class CompanionSmokeTests: XCTestCase {
         tapTab("Chat")
         XCTAssertTrue(app.staticTexts["Earlier Mac history is available on the phone."].waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["Ask before actions · Strata UI fixture"].exists)
-        attachScreenshot("Shared Mac — existing history")
+        let thinking = app.buttons["thinkingDisclosure-fixture-assistant"]
+        XCTAssertTrue(thinking.waitForExistence(timeout: 5))
+        XCTAssertTrue(thinking.label.contains("Thought for 2s"))
+        thinking.tap()
+        let reasoning = app.staticTexts["thinkingContent-fixture-assistant"]
+        XCTAssertTrue(reasoning.waitForExistence(timeout: 5))
+        XCTAssertTrue(reasoning.label.contains("Inspect the existing conversation."))
+        thinking.tap()
+        let narrative = app.staticTexts.matching(identifier: "assistantMessage")
+        XCTAssertEqual(narrative.count, 2, "Ordered narrative blocks must not be repeated as one aggregate answer.")
+        let firstGroup = app.descendants(matching: .any).matching(identifier: "activityGroup-fixture-group-earlier").firstMatch
+        let laterGroup = app.descendants(matching: .any).matching(identifier: "activityGroup-fixture-group-live").firstMatch
+        XCTAssertTrue(firstGroup.exists); XCTAssertTrue(laterGroup.exists)
+        XCTAssertLessThan(narrative.element(boundBy: 0).frame.minY, firstGroup.frame.minY)
+        XCTAssertLessThan(firstGroup.frame.minY, narrative.element(boundBy: 1).frame.minY)
+        XCTAssertLessThan(narrative.element(boundBy: 1).frame.minY, laterGroup.frame.minY)
+        XCTAssertFalse(laterGroup.label.contains("Live activity"), "A saved unclosed group is not a live action.")
+        attachScreenshot("Shared Mac — thinking and ordered progress")
+
+        _ = try await fixtureControl(controlURL, action: "thinking")
+        let preview = app.staticTexts["thinkingPreview-fixture-assistant"]
+        XCTAssertTrue(preview.waitForExistence(timeout: 10))
+        XCTAssertTrue(preview.label.contains("I am reviewing the Mac workspace."))
+        XCTAssertEqual(thinking.value as? String, "Thinking live")
+        attachScreenshot("Shared Mac — live thinking preview")
+
+        _ = try await fixtureControl(controlURL, action: "progress")
+        let recordedThinking = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Recorded thinking"), object: thinking)
+        XCTAssertEqual(XCTWaiter.wait(for: [recordedThinking], timeout: 10), .completed)
+        XCTAssertTrue(thinking.label.contains("Thought for 2s"), "Thinking must finish while the Mac continues its tool turn.")
+        XCTAssertTrue(app.buttons["stopMessageButton"].exists)
+        XCTAssertTrue(laterGroup.label.contains("Live activity"))
 
         _ = try await fixtureControl(controlURL, action: "browser")
+        let browserGroup = app.buttons["activityGroup-fixture-group-live"]
+        XCTAssertTrue(browserGroup.waitForExistence(timeout: 10)); reveal(browserGroup); browserGroup.tap()
         let target = app.staticTexts["browserActivityTarget"].firstMatch
         XCTAssertTrue(target.waitForExistence(timeout: 10), "A browser action initiated on the Mac fixture must appear without a phone message.")
         XCTAssertTrue(target.label.contains("https://example.com/research"))
         let activity = app.buttons["macActivity-browser-live"]
+        XCTAssertEqual(app.buttons.matching(identifier: "macActivity-browser-live").count, 1, "A group member must not also appear as a flat duplicate action.")
         reveal(activity)
         activity.tap()
         XCTAssertTrue(app.staticTexts["macActivityResult"].waitForExistence(timeout: 3))
@@ -211,6 +245,8 @@ final class CompanionSmokeTests: XCTestCase {
         _ = try await fixtureControl(controlURL, action: "complete")
         let stoppedWorking = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.buttons["stopMessageButton"])
         XCTAssertEqual(XCTWaiter.wait(for: [stoppedWorking], timeout: 10), .completed)
+        XCTAssertTrue(thinking.label.contains("Thought for 7s"))
+        XCTAssertEqual(thinking.value as? String, "Recorded thinking")
         let input = app.descendants(matching: .any).matching(identifier: "messageInput").firstMatch
         input.tap(); input.typeText("Continue fixture Mac work")
         app.buttons["sendMessageButton"].tap()
@@ -228,6 +264,8 @@ final class CompanionSmokeTests: XCTestCase {
         let saved = app.buttons["macConversation-fixture-mac-research"]
         XCTAssertTrue(saved.waitForExistence(timeout: 10)); saved.tap()
         XCTAssertTrue(continued.waitForExistence(timeout: 10))
+        XCTAssertTrue(thinking.label.contains("Thought for 7s"), "Recorded thinking must survive history reload.")
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "activityGroup-fixture-group-earlier").firstMatch.exists)
         attachScreenshot("Shared Mac — history after relaunch")
         let finalState = try await fixtureControl(controlURL, action: "state")
         let finalCalls = try XCTUnwrap(finalState["calls"] as? [[String: Any]])

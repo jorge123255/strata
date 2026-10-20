@@ -212,15 +212,20 @@ struct ChatView: View {
                         Text("STRATA").font(.system(.caption2, weight: .bold)).tracking(1.5).foregroundStyle(StrataTheme.secondaryInk)
                     }
                 }
-                if !message.content.isEmpty {
-                    Text(.init(message.content)).font(.body).foregroundStyle(StrataTheme.ink).lineSpacing(5).textSelection(.enabled)
-                        .padding(isUser ? 15 : 0).frame(maxWidth: .infinity, alignment: .leading)
-                        .background(isUser ? StrataTheme.accentTint : .clear, in: RoundedRectangle(cornerRadius: 19))
-                        .accessibilityIdentifier(isUser ? "userMessage" : "assistantMessage")
+                if message.role == "assistant", message.thinkingText != nil {
+                    MacThinkingView(message: message, isLive: isLiveMessage(message) && message.isThinkingInProgress)
                 }
-                if let tools = message.tools, !tools.isEmpty {
-                    VStack(alignment: .leading, spacing: 9) {
-                        ForEach(tools) { tool in activity(tool) }
+                ForEach(message.timelineItems) { item in
+                    switch item {
+                    case .text(_, let text):
+                        messageText(text, isUser: isUser)
+                    case .group(let group, let tools):
+                        MacActivityGroupView(group: group, tools: tools,
+                            isLive: isLiveMessage(message),
+                            pendingToolIds: Set(store.pendingApprovals.map(\.id)),
+                            activity: { tool in activity(tool) })
+                    case .tool(let tool):
+                        activity(tool)
                     }
                 }
                 if let error = message.error, !error.isEmpty {
@@ -229,6 +234,17 @@ struct ChatView: View {
             }
             if !isUser { Spacer(minLength: 0) }
         }
+    }
+
+    private func isLiveMessage(_ message: MacChatMessage) -> Bool {
+        message.streaming == true && store.currentConversation?.active == true
+    }
+
+    private func messageText(_ text: String, isUser: Bool) -> some View {
+        Text(.init(text)).font(.body).foregroundStyle(StrataTheme.ink).lineSpacing(5).textSelection(.enabled)
+            .padding(isUser ? 15 : 0).frame(maxWidth: .infinity, alignment: .leading)
+            .background(isUser ? StrataTheme.accentTint : .clear, in: RoundedRectangle(cornerRadius: 19))
+            .accessibilityIdentifier(isUser ? "userMessage" : "assistantMessage")
     }
 
     private func activity(_ tool: MacToolActivity) -> some View {

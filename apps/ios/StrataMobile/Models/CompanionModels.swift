@@ -89,6 +89,123 @@ struct MacChatMessage: Decodable, Identifiable, Equatable {
     var streaming: Bool?
     var error: String?
     var tools: [MacToolActivity]?
+    var reasoning: String?
+    var reasoningMs: Double?
+    var blocks: [MacMessageBlock]?
+
+    var thinkingText: String? {
+        guard let value = reasoning?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+        return value
+    }
+    var thinkingPreview: String? {
+        thinkingText?.split(whereSeparator: \.isNewline).last.map { String($0).trimmingCharacters(in: .whitespaces) }
+    }
+    var isThinkingInProgress: Bool {
+        streaming == true && reasoningMs == nil && content.isEmpty && thinkingText != nil
+    }
+    func thinkingTitle(isLive: Bool) -> String {
+        guard !isLive, let duration = reasoningMs, duration.isFinite, duration >= 0 else { return "Thinking" }
+        return "Thought for " + String(format: "%.0f", (duration / 1000).rounded()) + "s"
+    }
+
+    /// Ordered Mac text/activity blocks are authoritative. Tool membership is
+    /// explicit; old groups without IDs keep their actions in the flat remainder.
+    var timelineItems: [MacMessageTimelineItem] {
+        let usable = (blocks ?? []).filter { block in
+            switch block {
+            case .text(let text): return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            case .group: return true
+            case .unsupported: return false
+            }
+        }
+        var result: [MacMessageTimelineItem] = []
+        var seenTools = Set<String>()
+        var seenGroups = Set<String>()
+        let actions = tools ?? []
+        if usable.isEmpty {
+            if !content.isEmpty { result.append(.text(id: "fallback-text", text: content)) }
+        } else {
+            var hasText = false
+            for (index, block) in usable.enumerated() {
+                switch block {
+                case .text(let text):
+                    hasText = true
+                    result.append(.text(id: "text-\(index)", text: text))
+                case .group(let group):
+                    guard seenGroups.insert(group.id).inserted else { continue }
+                    let ids = Set(group.toolIds ?? [])
+                    let members = actions.filter { ids.contains($0.id) && seenTools.insert($0.id).inserted }
+                    result.append(.group(group, tools: members))
+                case .unsupported: break
+                }
+            }
+            // Older snapshots can have group summaries without text blocks.
+            if !hasText, !content.isEmpty { result.append(.text(id: "fallback-text", text: content)) }
+        }
+        for tool in actions where seenTools.insert(tool.id).inserted { result.append(.tool(tool)) }
+        return result
+    }
+}
+
+struct MacActivityGroup: Decodable, Identifiable, Equatable {
+    var id: String
+    var line: String
+    var closed: Bool
+    var added: Double?
+    var removed: Double?
+    var toolIds: [String]?
+
+    enum CodingKeys: String, CodingKey { case id, line, closed, added, removed, toolIds }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        line = try values.decodeIfPresent(String.self, forKey: .line) ?? ""
+        closed = try values.decodeIfPresent(Bool.self, forKey: .closed) ?? false
+        added = try values.decodeIfPresent(Double.self, forKey: .added)
+        removed = try values.decodeIfPresent(Double.self, forKey: .removed)
+        toolIds = try values.decodeIfPresent([String].self, forKey: .toolIds)
+    }
+    var title: String { line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Mac activity" : line }
+    var displayTitle: String {
+        guard added != nil, removed != nil else { return title }
+        let sentence = title.replacingOccurrences(of: #"\s*\+\d+\s*[−-]\s*\d+\s*$"#, with: "", options: .regularExpression)
+        return sentence.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Mac activity" : sentence
+    }
+}
+
+enum MacMessageBlock: Decodable, Equatable {
+    case text(String)
+    case group(MacActivityGroup)
+    case unsupported
+
+    private enum CodingKeys: String, CodingKey { case kind, text }
+    init(from decoder: Decoder) throws {
+        guard let values = try? decoder.container(keyedBy: CodingKeys.self),
+              let kind = try? values.decode(String.self, forKey: .kind) else { self = .unsupported; return }
+        switch kind {
+        case "text":
+            if let text = try? values.decode(String.self, forKey: .text) { self = .text(text) }
+            else { self = .unsupported }
+        case "group":
+            if let group = try? MacActivityGroup(from: decoder), !group.id.isEmpty { self = .group(group) }
+            else { self = .unsupported }
+        default: self = .unsupported
+        }
+    }
+}
+
+enum MacMessageTimelineItem: Identifiable, Equatable {
+    case text(id: String, text: String)
+    case group(MacActivityGroup, tools: [MacToolActivity])
+    case tool(MacToolActivity)
+
+    var id: String {
+        switch self {
+        case .text(let id, _): return id
+        case .group(let group, _): return "group-" + group.id
+        case .tool(let tool): return "tool-" + tool.id
+        }
+    }
 }
 
 struct MacToolActivity: Decodable, Identifiable, Equatable {

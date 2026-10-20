@@ -237,6 +237,35 @@ export function publicTool(tool) {
   return result;
 }
 
+function publicMessageBlocks(message, tools) {
+  if (!Array.isArray(message.blocks)) return undefined;
+  const blocks = [], groups = new Map();
+  for (const block of message.blocks) {
+    if (!block || typeof block !== 'object') continue;
+    if (block.kind === 'text' && typeof block.text === 'string' && block.text) {
+      blocks.push({ kind: 'text', text: block.text });
+    } else if (block.kind === 'group' && safeId(block.id) && typeof block.line === 'string' && block.line.trim()) {
+      const clean = { kind: 'group', id: block.id, line: shortText(block.line, 8_000), closed: block.closed === true,
+        toolIds: Array.isArray(block.toolIds) ? block.toolIds : [] };
+      for (const key of ['added', 'removed']) if (Number.isFinite(block[key]) && block[key] >= 0) clean[key] = block[key];
+      // A growing group replaces its earlier snapshot at the same position.
+      if (groups.has(clean.id)) blocks[groups.get(clean.id)] = clean;
+      else { groups.set(clean.id, blocks.length); blocks.push(clean); }
+    }
+  }
+  // Some older caches contain only part of the ordered answer. In that case
+  // keep the complete content fallback rather than hiding or repeating text.
+  if (!blocks.length || blocks.filter(block => block.kind === 'text').map(block => block.text).join('') !== message.content) return undefined;
+  const allowed = new Set((tools ?? []).map(tool => tool.id)), assigned = new Set();
+  for (const block of blocks) if (block.kind === 'group') {
+    block.toolIds = block.toolIds.filter(id => {
+      if (!allowed.has(id) || assigned.has(id)) return false;
+      assigned.add(id); return true;
+    });
+  }
+  return blocks;
+}
+
 export function publicConversation(conversation, { summary = false } = {}) {
   if (!conversation || !safeId(conversation.id)) throw fail(502, 'Strata returned an unreadable conversation.');
   const messages = Array.isArray(conversation.messages) ? conversation.messages : [];
@@ -257,6 +286,13 @@ export function publicConversation(conversation, { summary = false } = {}) {
       for (const key of ['at', 'error']) if (typeof message[key] === 'string') clean[key] = shortText(message[key], key === 'error' ? 4_000 : 80);
       if (typeof message.streaming === 'boolean') clean.streaming = message.streaming;
       if (Array.isArray(message.tools)) clean.tools = message.tools.map(publicTool).filter(Boolean);
+      if (message.role === 'assistant') {
+        // This is the same model-supplied Thinking text already visible on the Mac.
+        if (typeof message.reasoning === 'string' && message.reasoning.trim()) clean.reasoning = message.reasoning;
+        if (Number.isFinite(message.reasoningMs) && message.reasoningMs >= 0) clean.reasoningMs = message.reasoningMs;
+        const blocks = publicMessageBlocks({ ...message, content: clean.content }, clean.tools);
+        if (blocks) clean.blocks = blocks;
+      }
       return clean;
     });
   }

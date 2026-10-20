@@ -10,6 +10,7 @@
 		02291579233E472787508311 /* StrataMobileApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E747A736E510FDB4A2EF361 /* StrataMobileApp.swift */; };
 		19B67E6E7EBD1D780BA5F817 /* CompanionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B15E5C8FBCE10522DE165334 /* CompanionStore.swift */; };
 		2D18BE444A89C7FFA545C3CB /* CompanionModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3A7DE4AF50BD0C3004EE31D /* CompanionModels.swift */; };
+		2D6AC49DAF586845379D5BC0 /* ThinkingTimelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E59F3652EB28C1B5CBA23EE8 /* ThinkingTimelineTests.swift */; };
 		3708264D60BA706BA23AC809 /* CompanionSmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19BD26A6FC2E7504FE691831 /* CompanionSmokeTests.swift */; };
 		3BC9A744F1A9FB886EAC7AA1 /* ModelsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81DA49FE4380C675E397AF6D /* ModelsView.swift */; };
 		4D9C963E28DB3BD3F639EA37 /* PairingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B873E16871EAA80E94A49E3F /* PairingTests.swift */; };
@@ -21,6 +22,7 @@
 		8AF7EAC858EC466D76A60E4C /* MacActivityCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF2E3BCB286B0C22E232AFCE /* MacActivityCard.swift */; };
 		A0AD8CB7E42C1FBD86F429B1 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2CC74861FF7D89BCF70ADAA /* ChatView.swift */; };
 		A97D21E9F25E3DBD69E896C4 /* OverviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64D770867340AE9EBFA13A4A /* OverviewView.swift */; };
+		A9E534606DECBE48695179D4 /* MacThinkingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37F1F34CF3BDA01A86F47075 /* MacThinkingView.swift */; };
 		B758D656728EF24B7E571622 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7F8B0FC6C733BA38DC82F66 /* Theme.swift */; };
 		C81D39EBC082FC1B884B536E /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CB6F478F559C2014D628588 /* ContentView.swift */; };
 		FC866819762C78C3310B882E /* StoreRaceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49C61200D469B81D7402D0E1 /* StoreRaceTests.swift */; };
@@ -48,6 +50,7 @@
 		19BD26A6FC2E7504FE691831 /* CompanionSmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionSmokeTests.swift; sourceTree = "<group>"; };
 		2E747A736E510FDB4A2EF361 /* StrataMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StrataMobileApp.swift; sourceTree = "<group>"; };
 		32556F71F05DB037CC51141D /* Components.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Components.swift; sourceTree = "<group>"; };
+		37F1F34CF3BDA01A86F47075 /* MacThinkingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacThinkingView.swift; sourceTree = "<group>"; };
 		38373B4B3DA9939161CEA1F2 /* StrataMobile.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = StrataMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		49C61200D469B81D7402D0E1 /* StoreRaceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoreRaceTests.swift; sourceTree = "<group>"; };
 		5851392661A0FA86A4C30E57 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -64,6 +67,7 @@
 		C3A7DE4AF50BD0C3004EE31D /* CompanionModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionModels.swift; sourceTree = "<group>"; };
 		C7F8B0FC6C733BA38DC82F66 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		CF2E3BCB286B0C22E232AFCE /* MacActivityCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacActivityCard.swift; sourceTree = "<group>"; };
+		E59F3652EB28C1B5CBA23EE8 /* ThinkingTimelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThinkingTimelineTests.swift; sourceTree = "<group>"; };
 		ED048175CF9BFFCB79F9E40A /* StrataMobileTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = StrataMobileTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -113,6 +117,7 @@
 			children = (
 				B873E16871EAA80E94A49E3F /* PairingTests.swift */,
 				49C61200D469B81D7402D0E1 /* StoreRaceTests.swift */,
+				E59F3652EB28C1B5CBA23EE8 /* ThinkingTimelineTests.swift */,
 			);
 			path = StrataMobileTests;
 			sourceTree = "<group>";
@@ -125,6 +130,7 @@
 				753EC19E8E6F2E274E15738E /* ConnectionView.swift */,
 				8CB6F478F559C2014D628588 /* ContentView.swift */,
 				CF2E3BCB286B0C22E232AFCE /* MacActivityCard.swift */,
+				37F1F34CF3BDA01A86F47075 /* MacThinkingView.swift */,
 				81DA49FE4380C675E397AF6D /* ModelsView.swift */,
 				64D770867340AE9EBFA13A4A /* OverviewView.swift */,
 			);
@@ -271,6 +277,7 @@
 			files = (
 				4D9C963E28DB3BD3F639EA37 /* PairingTests.swift in Sources */,
 				FC866819762C78C3310B882E /* StoreRaceTests.swift in Sources */,
+				2D6AC49DAF586845379D5BC0 /* ThinkingTimelineTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -286,6 +293,7 @@
 				8316ABA47A36267F8DA68E4C /* ConnectionView.swift in Sources */,
 				C81D39EBC082FC1B884B536E /* ContentView.swift in Sources */,
 				8AF7EAC858EC466D76A60E4C /* MacActivityCard.swift in Sources */,
+				A9E534606DECBE48695179D4 /* MacThinkingView.swift in Sources */,
 				3BC9A744F1A9FB886EAC7AA1 /* ModelsView.swift in Sources */,
 				A97D21E9F25E3DBD69E896C4 /* OverviewView.swift in Sources */,
 				64A1A952A5B6D2FA1FB32286 /* QRScannerView.swift in Sources */,
@@ -340,7 +348,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				INFOPLIST_FILE = StrataMobile/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -358,7 +366,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				INFOPLIST_FILE = StrataMobile/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

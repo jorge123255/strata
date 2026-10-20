@@ -215,6 +215,30 @@ final class StoreRaceTests: XCTestCase {
         XCTAssertEqual(store.currentConversation?.messages.first?.tools?.first?.state, "done")
     }
 
+    func testReasoningAndProgressUpdatesArriveWhenAnswerTextIsUnchanged() async throws {
+        let fixture = StoreTransport()
+        defer { fixture.close() }
+        func snapshot(reasoning: String, line: String) -> [String: Any] {
+            var detail = StoreTransport.detail(active: true)
+            var conversation = detail["conversation"] as! [String: Any]
+            var messages = conversation["messages"] as! [[String: Any]]
+            messages[0]["reasoning"] = reasoning
+            messages[0]["blocks"] = [["kind": "text", "text": "Earlier Mac history"], ["kind": "group", "id": "progress", "line": line, "closed": false, "toolIds": []]]
+            conversation["messages"] = messages; detail["conversation"] = conversation
+            return detail
+        }
+        fixture.respond { request in request.url!.path == "/v1/conversations/mac-existing" ? snapshot(reasoning: "First step", line: "Ran 3 commands") : nil }
+        let store = fixture.makeStore()
+        await store.selectConversation(try StoreTransport.summary())
+        fixture.respond { request in request.url!.path == "/v1/conversations/mac-existing" ? snapshot(reasoning: "First step\nNext step", line: "Ran 3 commands, edited a file") : nil }
+        await store.refreshCurrentConversation()
+        let reply = try XCTUnwrap(store.currentConversation?.messages.first)
+        XCTAssertEqual(reply.content, "Earlier Mac history")
+        XCTAssertEqual(reply.thinkingPreview, "Next step")
+        guard case .group(let progress, _) = reply.timelineItems.last else { return XCTFail("The updated progress must follow the same answer text.") }
+        XCTAssertEqual(progress.line, "Ran 3 commands, edited a file")
+    }
+
     func testSharedChatRejectsSecondMessageWhileMacIsWorking() async throws {
         let fixture = StoreTransport()
         defer { fixture.close() }

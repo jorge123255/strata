@@ -51,6 +51,8 @@ Paired devices can access the shared Mac conversation catalog and approve its pe
 
 Browser activity is shown as action cards with the address, state and available text result. This is an activity view, not a live browser video feed. Raw tool arguments, runtime protocol and saved provider configuration are excluded from the phone API. Conversation text and human-readable tool results are shared with the paired phone.
 
+The paired phone also receives the same model-supplied Thinking text that the Mac displays, with its recorded duration when available. Ordered text and activity summaries keep progress such as “Ran 3 commands” between the corresponding parts of the answer. Group payloads expose only display text, completion state, change counts and any explicit references to that message's sanitized tool cards; raw file metadata and protocol fields stay private. Older incomplete ordered snapshots use the complete answer text instead. Conversation-list summaries omit Thinking text and ordered blocks.
+
 When the Mac has no loaded local model, the initial phone selection is the first API model configured in Strata. Selecting another API model is private to the phone. Unloading an API selection clears that phone's selection; it does not stop a remote service. Removing a provider on the Mac makes an old phone selection unavailable until another model is selected.
 
 ## Phone API

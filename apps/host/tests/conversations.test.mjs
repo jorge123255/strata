@@ -250,3 +250,69 @@ test('captured Mac stream callbacks and finalizers cannot write into a newer tur
   second.record({ type: 'delta', text: 'Second output' }); second.finish();
   assert.equal(service.detail(id).conversation.messages.at(-1).content, 'Second output');
 });
+
+test('reasoning starts on its first text and freezes at the first answer without resetting', t => {
+  let milliseconds = 100;
+  const { service } = fixture(t, { clock: () => milliseconds });
+  const id = service.create().conversation.id; service.begin(id, 'Think, then answer');
+  const reply = () => service.detail(id).conversation.messages.at(-1);
+  milliseconds = 200; service.record(id, { type: 'reasoning', text: '' });
+  assert.equal(reply().reasoningStartedAt, undefined);
+  milliseconds = 1000; service.record(id, { type: 'reasoning', text: 'First thought. ' });
+  milliseconds = 1700; service.record(id, { type: 'reasoning', text: 'Second thought.' });
+  assert.equal(reply().reasoningStartedAt, 1000);
+  assert.equal(reply().reasoningMs, undefined);
+  milliseconds = 2000; service.record(id, { type: 'delta', text: '' });
+  assert.equal(reply().reasoningMs, undefined, 'an empty frame is not an answer');
+  milliseconds = 2500; service.record(id, { type: 'delta', text: 'The answer' });
+  assert.equal(reply().reasoningMs, 1500);
+  milliseconds = 4000; service.record(id, { type: 'reasoning', text: ' Additional thought.' });
+  milliseconds = 8000; service.record(id, { type: 'delta', text: ' is complete.' }); service.record(id, { type: 'done' });
+  assert.equal(reply().reasoningStartedAt, 1000);
+  assert.equal(reply().reasoningMs, 1500, 'later reasoning, text, and completion cannot extend frozen thinking time');
+  assert.equal(reply().reasoning, 'First thought. Second thought. Additional thought.');
+});
+
+for (const ending of ['done', 'error']) test(`reasoning-only ${ending} records elapsed thinking even with a zero start timestamp`, t => {
+  let milliseconds = 0;
+  const { service } = fixture(t, { clock: () => milliseconds });
+  const id = service.create().conversation.id; service.begin(id, 'Reason without an answer');
+  service.record(id, { type: 'reasoning', text: 'Considering the request' });
+  milliseconds = 725; service.record(id, { type: 'reasoning', text: ' carefully.' });
+  milliseconds = 1750; service.record(id, { type: ending, ...(ending === 'error' ? { message: 'The model stopped' } : {}) });
+  const reply = service.detail(id).conversation.messages.at(-1);
+  assert.equal(reply.reasoningStartedAt, 0);
+  assert.equal(reply.reasoningMs, 1750);
+  assert.equal(reply.streaming, false);
+  assert.equal(reply.content, '');
+  if (ending === 'error') assert.equal(reply.error, 'The model stopped');
+});
+
+test('imported thinking timestamps and frozen durations survive shared continuation and persistence', t => {
+  let milliseconds = 350;
+  const { service, directory } = fixture(t, { clock: () => milliseconds });
+  const original = session();
+  original.messages[1] = { ...original.messages[1], reasoning: 'Historical thought', reasoningStartedAt: 10, reasoningMs: 20 };
+  original.messages.push({ id: 'ongoing-user', role: 'user', content: 'Continue', at }, { id: 'ongoing-assistant', role: 'assistant', content: '', reasoning: 'Already thinking', reasoningStartedAt: 100, streaming: true, at });
+  service.sync([{ session: original }]);
+  service.begin(original.id, 'Continue', { userMessageId: 'ongoing-user', assistantMessageId: 'ongoing-assistant' });
+  service.record(original.id, { type: 'reasoning', text: ' more.' });
+  assert.equal(service.detail(original.id).conversation.messages.at(-1).reasoningStartedAt, 100);
+  milliseconds = 600; service.record(original.id, { type: 'delta', text: 'Answer' }); service.finish(original.id);
+  assert.equal(service.detail(original.id).conversation.messages.at(-1).reasoningMs, 500);
+  const historical = service.detail(original.id).conversation.messages[1];
+  assert.equal(historical.reasoningStartedAt, 10); assert.equal(historical.reasoningMs, 20);
+  service.close();
+  const restored = createConversations({ directory });
+  assert.equal(restored.detail(original.id).conversation.messages.at(-1).reasoningMs, 500);
+  assert.equal(restored.detail(original.id).conversation.messages[1].reasoningMs, 20);
+  restored.close();
+});
+
+test('answers without reasoning do not invent a thinking timer', t => {
+  const { service } = fixture(t, { clock: () => 9999 });
+  const id = service.create().conversation.id; service.begin(id, 'Answer directly');
+  service.record(id, { type: 'delta', text: 'Direct answer' }); service.finish(id);
+  const reply = service.detail(id).conversation.messages.at(-1);
+  assert.equal(reply.reasoningStartedAt, undefined); assert.equal(reply.reasoningMs, undefined);
+});

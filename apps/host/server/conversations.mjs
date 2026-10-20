@@ -15,7 +15,7 @@ const plainSession = session => {
 };
 
 export function createConversations({ directory, enabled = () => true, notify = () => {}, defaultWorkspace = () => '', validateSelection = () => {},
-  execute = async () => {}, stop = async () => {}, approve = async () => {}, pending = () => [], now = () => new Date().toISOString() } = {}) {
+  execute = async () => {}, stop = async () => {}, approve = async () => {}, pending = () => [], now = () => new Date().toISOString(), clock = Date.now } = {}) {
   const file = join(directory, 'conversations.json');
   const existingCatalog = existsSync(file);
   const available = () => existingCatalog || enabled();
@@ -119,7 +119,7 @@ export function createConversations({ directory, enabled = () => true, notify = 
     if (!session.messages.some(m => m.id === assistantMessageId)) session.messages.push({ id: assistantMessageId, role: 'assistant', content: '', streaming: true, at });
     if (session.defaultTitle || session.title === 'New conversation') { session.title = message.length > 48 ? message.slice(0, 47).trimEnd() + '…' : message; session.defaultTitle = false; }
     session.updatedAt = at;
-    turns.set(id, { assistantMessageId, executing: true, started: Date.now(), controller }); record.status = 'Starting…'; touch(id, true);
+    turns.set(id, { assistantMessageId, executing: true, started: clock(), controller }); record.status = 'Starting…'; touch(id, true);
     return detail(id);
   }
   function record(id, frame) {
@@ -129,6 +129,11 @@ export function createConversations({ directory, enabled = () => true, notify = 
     const session = entry.session;
     let reply = session.messages.find(m => m.id === turn.assistantMessageId);
     if (!reply) return;
+    const finishReasoning = () => {
+      if (reply.reasoningStartedAt !== undefined && reply.reasoningMs === undefined) {
+        reply.reasoningMs = Math.max(0, clock() - reply.reasoningStartedAt);
+      }
+    };
     const mergeTool = tool => {
       if (!tool || typeof tool.id !== 'string') return;
       const old = reply.tools?.find(t => t.id === tool.id);
@@ -140,11 +145,18 @@ export function createConversations({ directory, enabled = () => true, notify = 
       case 'queued': if (frame.requestId) reply.requestId = frame.requestId; break;
       case 'status': entry.status = frame.status?.text ?? frame.text ?? frame.status?.line ?? null; break;
       case 'delta': {
-        const text = String(frame.text ?? ''); reply.content += text;
+        const text = String(frame.text ?? '');
+        if (text) finishReasoning();
+        reply.content += text;
         if (reply.blocks) { const tail = reply.blocks.at(-1); if (tail?.kind === 'text') tail.text += text; else reply.blocks.push({ kind: 'text', text }); }
         break;
       }
-      case 'reasoning': reply.reasoning = (reply.reasoning ?? '') + String(frame.text ?? ''); break;
+      case 'reasoning': {
+        const text = String(frame.text ?? '');
+        if (text && reply.reasoningStartedAt === undefined) reply.reasoningStartedAt = clock();
+        reply.reasoning = (reply.reasoning ?? '') + text;
+        break;
+      }
       case 'agent-tool': mergeTool(frame.tool); break;
       case 'native-tool': {
         const event = frame.event;
@@ -171,9 +183,10 @@ export function createConversations({ directory, enabled = () => true, notify = 
       }
       case 'stats': if (typeof frame.tokensOut === 'number') reply.tokens = frame.tokensOut; if (typeof frame.tps === 'number') reply.tps = frame.tps; break;
       case 'notice': entry.status = String(frame.message ?? ''); break;
-      case 'error': reply.error = String(frame.message ?? 'The reply failed.'); reply.streaming = false; entry.status = null; turns.delete(id); break;
+      case 'error': finishReasoning(); reply.error = String(frame.message ?? 'The reply failed.'); reply.streaming = false; entry.status = null; turns.delete(id); break;
       case 'done':
-        reply.streaming = false; reply.durationMs = Number(frame.durationMs ?? Date.now() - turn.started);
+        finishReasoning();
+        reply.streaming = false; reply.durationMs = Number(frame.durationMs ?? clock() - turn.started);
         for (const [field, value] of [['tokens', frame.tokensOut], ['inputTokens', frame.tokensIn], ['tps', frame.tps], ['ttftMs', frame.ttftMs], ['contextUsed', frame.contextTokens]]) if (typeof value === 'number') reply[field] = value;
         reply.usageSource = frame.usageSource ?? 'unavailable';
         session.tokensIn = (session.tokensIn ?? 0) + Number(frame.tokensIn ?? 0); session.tokensOut = (session.tokensOut ?? 0) + Number(frame.tokensOut ?? 0);

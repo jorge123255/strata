@@ -18,10 +18,14 @@ Each invitation expires after five minutes and works once. Use **New pairing cod
 - Loading and unloading models that are already installed locally. Download models in the desktop app first.
 - The Mac's existing conversations, their saved message history, and current work.
 - Continuing the same conversation and workspace from either device.
+- The Mac's Thinking text in an expandable panel, with a live preview and recorded duration when available.
+- Progress summaries between reply paragraphs, in the same order as the Mac.
 - Live browser and tool activity, including the action, its target, status, and expandable results.
 - Allowing or denying an action when the Mac asks for approval, and stopping the selected conversation.
 
 Open **Chat → Conversation history** to choose a Mac conversation. Home also shows recent conversations. The active or most recent conversation opens automatically after connecting. New conversations started on the phone also appear on the Mac. Existing conversations keep their model and permission mode; new conversations start in the Mac's default workspace and ask before actions. Pairing already grants this access, so a paired phone does not need a new invitation after updating both apps.
+
+Tap **Thinking** or **Thought for…** above a reply to read the Thinking text shared by the Mac. The live preview follows the Mac's current Thinking; it changes to a recorded panel once the answer begins. Progress such as **Ran 3 commands** stays between the relevant reply paragraphs. Expand a progress row when the Mac identifies its actions; other action cards remain visible below the reply. Older Mac versions still show their saved replies and activity cards.
 
 While Chat is open in the foreground, its history and activity refresh about once per second. Other status and conversation lists refresh about every five seconds. On iOS 18 or later, scrolling back through history pauses automatic scrolling; choose **Latest** to follow new replies again. On iOS 17, use **Latest** to jump to current work; live updates leave the scroll position alone. Leaving Chat or putting the phone away does not stop the Mac's agent. Browser activity describes what the Mac is doing; it does not stream the Mac's screen. **Open page on iPhone** opens a reported web address locally.
 

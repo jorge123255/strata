@@ -20,7 +20,11 @@ const conversation = {
   gatewayToken: 'GATEWAY-SECRET',
   messages: [
     { id: 'm_user', role: 'user', content: 'Open the page', at: '2026-10-19T21:00:00.000Z' },
-    { id: 'm_assistant', role: 'assistant', content: 'I am opening the page.', model: 'Saved Mac model', streaming: true, tools: [card], raw: 'RAW-SECRET' },
+    { id: 'm_assistant', role: 'assistant', content: 'I am opening the page.', model: 'Saved Mac model', streaming: true, tools: [card], raw: 'RAW-SECRET',
+      reasoning: 'I will inspect the page before continuing.', reasoningMs: 1850, reasoningStartedAt: 1792450000000,
+      blocks: [{ kind: 'text', text: 'I am ' },
+        { kind: 'group', id: 'g1', line: 'Ran 3 commands', closed: false, tools: 3, files: [{ abs: 'FILE-SECRET' }], raw: 'GROUP-SECRET' },
+        { kind: 'text', text: 'opening the page.' }] },
   ],
 };
 const detail = () => ({ conversation: structuredClone(conversation), pending: [structuredClone(card)], apiKey: 'PROVIDER-SECRET' });
@@ -59,15 +63,72 @@ test('shared projections retain history, browser actions and helper IDs while om
   assert.equal(clean.id, conversation.id); assert.equal(clean.mode, 'manual');
   assert.equal(clean.modelName, 'Saved Mac model'); assert.equal(clean.workspace, conversation.workspace);
   assert.equal(clean.messages[1].content, conversation.messages[1].content);
+  assert.equal(clean.messages[1].reasoning, conversation.messages[1].reasoning);
+  assert.equal(clean.messages[1].reasoningMs, 1850);
+  assert.deepEqual(clean.messages[1].blocks, [{ kind: 'text', text: 'I am ' },
+    { kind: 'group', id: 'g1', line: 'Ran 3 commands', closed: false, toolIds: [] }, { kind: 'text', text: 'opening the page.' }]);
   assert.equal(clean.messages[1].tools[0].id, 'helper-session:call.1');
   assert.equal(clean.messages[1].tools[0].verb, card.verb);
   assert.deepEqual(clean.messages[1].tools[0].ask, { why: card.ask.why, detail: card.ask.detail });
   const encoded = JSON.stringify(clean);
-  for (const secret of ['GATEWAY-SECRET', 'ARGS-SECRET', 'APPROVAL-SECRET', 'ASK-SECRET', 'RAW-SECRET', 'INTERNAL-CONNECTION', 'internal/model']) assert.ok(!encoded.includes(secret), secret);
+  for (const secret of ['GATEWAY-SECRET', 'ARGS-SECRET', 'APPROVAL-SECRET', 'ASK-SECRET', 'RAW-SECRET', 'GROUP-SECRET', 'FILE-SECRET', 'INTERNAL-CONNECTION', 'internal/model', 'reasoningStartedAt']) assert.ok(!encoded.includes(secret), secret);
   assert.equal(publicTool({ ...card, id: '../call' }), null);
   assert.equal(publicTool({ ...card, result: 'x'.repeat(40_000) }).result.length, 32_000);
   const summary = publicConversation(conversation, { summary: true });
   assert.equal(summary.preview, 'I am opening the page.'); assert.equal(summary.messages, undefined);
+  assert.ok(!JSON.stringify(summary).includes(conversation.messages[1].reasoning));
+});
+
+test('ordered progress keeps one growing group and only unique explicitly associated tool IDs', () => {
+  const value = structuredClone(conversation), message = value.messages[1];
+  message.blocks = [
+    { kind: 'text', text: 'I am ' },
+    { kind: 'group', id: 'g1', line: 'Ran 1 command', closed: false },
+    { kind: 'text', text: 'opening the page.' },
+    { kind: 'group', id: 'g1', line: 'Ran 3 commands', closed: true, added: 4, removed: 0,
+      toolIds: [card.id, card.id, '../bad', 'other-message:call', { id: card.id }], files: [{ abs: 'FILE-SECRET' }] },
+    { kind: 'group', id: 'g2', line: 'Read a file', closed: true, toolIds: [card.id], added: -1, removed: Infinity },
+    { kind: 'raw-protocol', text: 'PROTOCOL-SECRET' },
+    { kind: 'group', id: 'g-empty', line: '', closed: true, tools: 0 },
+  ];
+  const clean = publicConversation(value).messages[1];
+  assert.deepEqual(clean.blocks, [
+    { kind: 'text', text: 'I am ' },
+    { kind: 'group', id: 'g1', line: 'Ran 3 commands', closed: true, added: 4, removed: 0, toolIds: [card.id] },
+    { kind: 'text', text: 'opening the page.' },
+    { kind: 'group', id: 'g2', line: 'Read a file', closed: true, toolIds: [] },
+  ]);
+  assert.ok(!JSON.stringify(clean).includes('PROTOCOL-SECRET'));
+});
+
+test('partial legacy or invalid progress blocks preserve the complete content fallback', () => {
+  for (const blocks of [
+    [{ kind: 'group', id: 'g1', line: 'Ran a command', closed: true }],
+    [{ kind: 'text', text: 'I am ' }],
+    [{ kind: 'text', text: 'I am opening the page.' }, { kind: 'text', text: 'duplicated' }],
+    [{ kind: 'text', text: 42 }, { kind: 'group', id: '../bad', line: 'Invalid' }],
+  ]) {
+    const value = structuredClone(conversation); value.messages[1].blocks = blocks;
+    const clean = publicConversation(value).messages[1];
+    assert.equal(clean.content, 'I am opening the page.'); assert.equal(clean.blocks, undefined);
+    assert.equal(clean.tools[0].id, card.id);
+  }
+  const value = structuredClone(conversation);
+  value.messages[1].content = ''; value.messages[1].blocks = [{ kind: 'group', id: 'g1', line: 'Ran a command', closed: true }];
+  assert.deepEqual(publicConversation(value).messages[1].blocks, [{ kind: 'group', id: 'g1', line: 'Ran a command', closed: true, toolIds: [] }]);
+});
+
+test('thinking duration accepts only nonnegative finite numbers and is shared only with assistant text', () => {
+  for (const reasoningMs of [-1, Infinity, NaN, '1850', null]) {
+    const value = structuredClone(conversation); value.messages[1].reasoningMs = reasoningMs;
+    assert.equal(publicConversation(value).messages[1].reasoningMs, undefined);
+  }
+  const value = structuredClone(conversation);
+  value.messages[0].reasoning = 'Not an assistant thought'; value.messages[0].reasoningMs = 30;
+  value.messages[1].reasoning = '   '; value.messages[1].reasoningMs = 0;
+  const clean = publicConversation(value);
+  assert.equal(clean.messages[0].reasoning, undefined); assert.equal(clean.messages[0].reasoningMs, undefined);
+  assert.equal(clean.messages[1].reasoning, undefined); assert.equal(clean.messages[1].reasoningMs, 0);
 });
 
 test('HostClient only admits exact shared-conversation methods and prevents desktop sync or URL forwarding', async () => {
@@ -96,6 +157,8 @@ test('paired conversation routes inherit Mac configuration and forward only mess
   assert.equal(listed.status, 200); assert.equal(listed.json.activeChatId, conversation.id);
   const loaded = await request(bridge, `/v1/conversations/${conversation.id}`, { token });
   assert.equal(loaded.status, 200); assert.equal(loaded.json.pending[0].id, card.id);
+  assert.equal(loaded.json.conversation.messages[1].reasoning, conversation.messages[1].reasoning);
+  assert.equal(loaded.json.conversation.messages[1].blocks[1].line, 'Ran 3 commands');
   const sent = await request(bridge, `/v1/conversations/${conversation.id}/messages`, { token, method: 'POST', body: { message: '  Continue on the Mac.  ' } });
   assert.equal(sent.status, 202); assert.deepEqual(calls.at(-1), { path: `/api/companion/conversations/${conversation.id}/messages`, method: 'POST', body: { message: 'Continue on the Mac.' } });
   const allowed = await request(bridge, `/v1/conversations/${conversation.id}/approval`, { token, method: 'POST', body: { toolId: card.id, decision: 'approve' } });
