@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.2.1",
   "type": "module",
-  "description": "Strata \u2014 local AI, tuned to one model. Web shell + engine host.",
+  "description": "Strata — local AI, tuned to one model. Web shell + engine host.",
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "dev:web": "vite",
@@ -27,9 +27,11 @@
     "test": "node scripts/test.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.304",
     "html-to-image": "^1.11.13",
     "katex": "^0.19.0",
     "pdfjs-dist": "^6.4.299",
+    "playwright-core": "^1.63.0",
     "prismjs": "1.30.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
@@ -40,7 +42,6 @@
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "@vitejs/plugin-react": "^4.3.4",
-    "playwright-core": "^1.63.0",
     "typescript": "^5.7.3",
     "vite": "^6.0.7"
   },

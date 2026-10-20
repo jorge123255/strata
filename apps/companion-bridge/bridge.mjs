@@ -166,6 +166,7 @@ export class HostClient {
   }
   async request(path, { method = 'GET', body, signal, deviceId } = {}) {
     const conversation = /^\/api\/companion\/conversations(?:\/[a-zA-Z0-9_-]{1,120}(?:\/(messages|stop|approval))?)?$/.exec(path);
+    const bots = path === '/api/bots' || /^\/api\/bots\/[a-zA-Z0-9_-]{1,120}\/conversations$/.test(path);
     const management = path.startsWith('/api/model-management/') ? managementRequest(path, method, body, deviceId) : null;
     // Callers cannot supply full URLs, query strings, arbitrary files, settings or operations.
     if (!/^\/api\/(setup|hardware|monitor|models|native|runtime|serving|model-providers|chat\/stream)$/.test(path)
@@ -174,10 +175,12 @@ export class HostClient {
       && path !== '/api/native/operations'
       && !/^\/api\/native\/instances\/[a-zA-Z0-9_-]+\/unload$/.test(path)
       && !/^\/api\/serving\/requests\/[a-zA-Z0-9_-]+\/cancel$/.test(path)
-      && !conversation && !management) throw fail(403, 'Unsupported host control.');
+      && !conversation && !management && !bots) throw fail(403, 'Unsupported host control.');
     const mutation = path.endsWith('/load') || path.endsWith('/unload') || path.endsWith('/cancel') || path === '/api/native/operations' || path === '/api/chat/stream';
     if (management) {
       // The paired device comes from the bridge's authenticated session, never a phone field.
+    } else if (bots) {
+      if (method !== (path === '/api/bots' ? 'GET' : 'POST') || (body !== undefined && (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length))) throw fail(403, 'Unsupported bot control.');
     } else if (conversation) {
       const create = path === '/api/companion/conversations' && method === 'POST';
       if (method !== (conversation[1] || create ? 'POST' : 'GET')) throw fail(403, 'Unsupported host control method.');
@@ -377,6 +380,8 @@ export function publicConversation(conversation, { summary = false } = {}) {
   if (typeof conversation.status === 'string') result.status = shortText(conversation.status, 1_000);
   const mode = conversation.preferences?.mode ?? conversation.mode;
   if (typeof mode === 'string') result.mode = shortText(mode, 40);
+  const botId = conversation.preferences?.botId ?? conversation.botId;
+  if (safeId(botId)) result.botId = botId;
   const model = conversation.modelName ?? [...messages].reverse().find(message => typeof message.model === 'string')?.model;
   if (typeof model === 'string') result.modelName = shortText(model, 300);
   if (summary) {
@@ -403,6 +408,30 @@ export function publicConversation(conversation, { summary = false } = {}) {
 
 function publicConversationDetail(body) {
   return { conversation: publicConversation(body.conversation), pending: Array.isArray(body.pending) ? body.pending.map(publicTool).filter(Boolean) : [] };
+}
+
+// A phone can use saved bots, but credentials and execution connection settings
+// remain on the Mac. Explicit projection also protects older or future hosts.
+export function publicBots(body) {
+  if (!body || !Array.isArray(body.bots) || !Array.isArray(body.providers) || !Array.isArray(body.computers)) throw fail(502, 'Strata returned unreadable bot information.');
+  const providers = new Set(['claude', 'codex', 'grok', 'kimi', 'ollama']);
+  return {
+    bots: body.bots.slice(0, 500).filter(bot => bot && safeId(bot.id) && providers.has(bot.provider)).map(bot => ({
+      id: bot.id, name: shortText(bot.name, 200) || 'Bot', provider: bot.provider, model: shortText(bot.model, 300),
+      capabilities: ['code', 'computer', 'both'].includes(bot.capabilities) ? bot.capabilities : 'code',
+      policy: ['manual', 'plan', 'bypass'].includes(bot.policy) ? bot.policy : 'manual',
+      execution: { kind: ['local', 'ssh', 'sandbox'].includes(bot.execution?.kind) ? bot.execution.kind : 'local' },
+      conversations: (Array.isArray(bot.conversations) ? bot.conversations : []).filter(safeId).slice(0, 1_000),
+    })),
+    providers: body.providers.slice(0, 50).filter(provider => provider && providers.has(provider.id)).map(provider => ({
+      id: provider.id, name: shortText(provider.name, 200), available: provider.available === true, detail: shortText(provider.detail, 1_000),
+      ...(Array.isArray(provider.models) ? { models: provider.models.filter(model => typeof model === 'string').slice(0, 500).map(model => shortText(model, 300)) } : {}),
+    })),
+    computers: body.computers.slice(0, 100).filter(computer => computer && safeId(computer.id)).map(computer => ({
+      id: computer.id, name: shortText(computer.name, 200), kind: shortText(computer.kind, 40),
+      available: computer.available === true, detail: shortText(computer.detail, 1_000),
+    })),
+  };
 }
 
 function sendJSON(res, status, value) {
@@ -589,6 +618,39 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
         }
         requireCurrentSession();
         return sendJSON(res, route.action === 'downloads' && !route.jobId ? 202 : 200, publicManagement(body, route));
+      }
+      if (path === '/v1/bots' && method === 'GET') {
+        let body;
+        try { body = await host.json('/api/bots'); }
+        catch (error) {
+          requireCurrentSession();
+          if ([404, 405, 501].includes(error.status)) return sendJSON(res, 200, { bots: [], providers: [], computers: [], reason: 'Update Strata on your Mac to use Bots on your iPhone.' });
+          throw fail(503, 'Bots are unavailable. Open Strata on your Mac and try again.');
+        }
+        requireCurrentSession();
+        return sendJSON(res, 200, publicBots(body));
+      }
+      const botConversation = /^\/v1\/bots\/([a-zA-Z0-9_-]{1,120})\/conversations$/.exec(path);
+      if (botConversation) {
+        if (method !== 'POST') throw fail(405, 'This bot action is unavailable.');
+        const input = await readBody(req, 1_000);
+        if (Object.keys(input).length) throw fail(400, 'Create a conversation using the saved bot settings on your Mac.');
+        requireCurrentSession();
+        let body;
+        try { body = await host.json(`/api/bots/${encode(botConversation[1])}/conversations`, { method: 'POST', body: {} }); }
+        catch (error) {
+          requireCurrentSession();
+          const messages = {
+            400: 'Check this bot’s settings in Strata on your Mac.',
+            401: 'Sign in to this bot’s provider in Strata on your Mac.',
+            403: 'This bot is unavailable. Check its permissions in Strata on your Mac.',
+            404: 'This bot is unavailable. Refresh Bots or update Strata on your Mac.',
+            409: 'This bot is not ready. Check its provider and computer in Strata on your Mac.',
+          };
+          throw fail(messages[error.status] ? error.status : 503, messages[error.status] ?? 'Bots are unavailable. Open Strata on your Mac and try again.');
+        }
+        requireCurrentSession();
+        return sendJSON(res, 201, publicConversationDetail(body));
       }
       if (path === '/v1/conversations' && method === 'GET') {
         const body = await host.json('/api/companion/conversations');

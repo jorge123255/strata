@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum CompanionTab: Hashable {
-    case overview, chat, models, connection
+    case overview, chat, bots, models, connection
 }
 
 struct ContentView: View {
@@ -24,6 +24,13 @@ struct ContentView: View {
             .tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
             .tag(CompanionTab.chat)
             .accessibilityIdentifier("chatTab")
+
+            NavigationStack {
+                BotsView(store: store, pair: { showingPairing = true }, openChat: { selection = .chat })
+            }
+            .tabItem { Label("Bots", systemImage: "sparkles.rectangle.stack") }
+            .tag(CompanionTab.bots)
+            .accessibilityIdentifier("botsTab")
 
             NavigationStack {
                 ModelsView(store: store, pair: { showingPairing = true })
@@ -57,6 +64,7 @@ struct ContentView: View {
         .onChange(of: selection, initial: true) { _, tab in
             store.setChatVisible(tab == .chat)
             store.setModelsVisible(tab == .models)
+            store.setBotsVisible(tab == .bots)
         }
         .task { if store.isPaired { await store.refresh() } }
     }

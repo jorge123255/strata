@@ -18,6 +18,15 @@ node apps/ios/test-support/companion-fixture.mjs --test-downloads \
 
 Select a simulator installed on your Mac. The command starts the fixture, runs only `CompanionSmokeTests/testSharedMacHistoryLiveBrowserApprovalAndContinuation`, then removes its private temporary TLS identity and stops both loopback listeners. The test uses the app's **Forget this Mac** flow to replace any pairing saved in that simulator, and leaves an offline fixture pairing afterward. Use a disposable simulator if you want to preserve an existing simulator connection. It never changes a physical phone's pairing.
 
+For the Bots catalog, provider/computer details, shared history and Thinking, empty bot conversation creation, continuation, Stop and relaunch workflow:
+
+```sh
+node apps/ios/test-support/companion-fixture.mjs --test-bots \
+  'platform=iOS Simulator,name=iPhone 17 Pro'
+```
+
+This runs only `CompanionSmokeTests/testBotsSharedHistoryThinkingAndNewConversation`. It asserts that listing bots and reading existing history never submits a prompt, and that creating a bot conversation sends no provider or execution overrides. All five provider entries are synthetic; this verifies phone and bridge behavior, not live provider authentication or computer control.
+
 When the Mac and iOS changes are in separate checkouts, set `STRATA_TEST_BRIDGE_MODULE` to the matching checkout's `apps/companion-bridge/bridge.mjs`. The default import is relative to this repository. `STRATA_TEST_DERIVED_DATA` optionally selects a build directory; the default is `apps/ios/build`.
 
 For a test runner that manages Xcode itself, run the fixture without a test flag. It prints only the path of a private temporary `connection.json` containing `invitation` and `control` values. Pass the invitation as `STRATA_TEST_INVITATION`, and the control URL as `STRATA_SHARED_FIXTURE_CONTROL` for chat or `STRATA_MODEL_MANAGEMENT_FIXTURE_CONTROL` for downloads. With command-line `xcodebuild`, use the `TEST_RUNNER_` prefix; both test commands handle this forwarding automatically. The loopback control endpoints are synthetic test controls, not Mac API routes. Stop the fixture with Control-C when finished; normal termination removes the temporary files.

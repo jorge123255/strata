@@ -21,7 +21,8 @@ struct MacThinkingView: View {
             .accessibilityValue(isLive ? "Thinking live" : "Recorded thinking")
             if expanded, let reasoning = message.thinkingText {
                 Text(reasoning).font(.callout).foregroundStyle(StrataTheme.secondaryInk)
-                    .lineSpacing(4).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                    .lineSpacing(4).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityIdentifier("thinkingContent-" + message.id)
             } else if isLive, let preview = message.thinkingPreview {
                 Text(preview).font(.caption).foregroundStyle(StrataTheme.secondaryInk).lineLimit(2)

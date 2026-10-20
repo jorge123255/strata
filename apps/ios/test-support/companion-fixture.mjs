@@ -34,6 +34,13 @@ const conversation = {
   messages: [{ id: 'fixture-user', role: 'user', content: 'Research this topic on the Mac.' }, assistant],
 };
 const pending = [];
+let createdBotConversation;
+const botsCatalog = () => ({
+  bots: [{ id: 'fixture-bot', name: 'Workspace companion', provider: 'codex', model: 'Fixture model', capabilities: 'both', policy: 'manual', execution: { kind: 'local' },
+    conversations: [conversation.id, ...(createdBotConversation ? [createdBotConversation.id] : [])] }],
+  providers: ['claude', 'codex', 'grok', 'kimi', 'ollama'].map(id => ({ id, name: ({ claude: 'Claude Code', codex: 'Codex', grok: 'Grok', kimi: 'Kimi', ollama: 'Ollama Cloud' })[id], available: true, detail: 'Synthetic provider. No account or model is used.' })),
+  computers: [{ id: 'local', name: 'Fixture Mac', kind: 'local', available: true, detail: 'Synthetic computer. No tools are executed.' }],
+});
 const remoteTargetId = 'remote-aaaaaaaaaaaaaaaaaaaaaaaa';
 const downloadJobs = new Map([['local', []], [remoteTargetId, []]]);
 const downloadPlans = new Map();
@@ -62,6 +69,23 @@ const host = {
     if (path === '/api/monitor') return { phase: 'idle', outputTps: 12, hardware: { ramUsedGb: 8, ramTotalGb: 48 } };
     if (path === '/api/serving') return { requests: [] };
     if (path === '/api/model-providers') return { connections: [{ id: 'fixture-provider', name: 'Fixture Mac', models: [{ id: 'fixture-model', name: 'Fixture model' }] }] };
+    if (path === '/api/bots') return botsCatalog();
+    if (path === '/api/bots/fixture-bot/conversations') {
+      createdBotConversation = { id: 'fixture-bot-created', title: 'New Workspace companion conversation', active: false, mode: 'manual',
+        preferences: { botId: 'fixture-bot' }, modelName: 'Fixture model', messages: [] };
+      return structuredClone({ conversation: createdBotConversation, pending: [] });
+    }
+    if (createdBotConversation && path.startsWith(`/api/companion/conversations/${createdBotConversation.id}`)) {
+      if (path.endsWith('/messages')) {
+        createdBotConversation.messages.push({ id: 'bot-user', role: 'user', content: options.body.message },
+          { id: 'bot-assistant', role: 'assistant', content: 'BOT_SAME_SESSION_CONTINUED', reasoning: 'Review the requested change.', reasoningMs: 1200, streaming: true });
+        createdBotConversation.active = true;
+      } else if (path.endsWith('/stop')) {
+        createdBotConversation.active = false;
+        for (const message of createdBotConversation.messages) message.streaming = false;
+      }
+      return structuredClone({ conversation: createdBotConversation, pending: [] });
+    }
     if (path === '/api/model-management/targets') {
       if (managementUnsupported) throw Object.assign(new Error('Unsupported management endpoint'), { status: 404 });
       return { targets: [{ id: 'local', name: 'Fixture Mac', kind: 'local' }, { id: remoteTargetId, name: 'Remote Strata', kind: 'remote' }] };
@@ -92,7 +116,7 @@ const host = {
       downloadJobs.get(target).unshift(job); newestDownload = job;
       return structuredClone({ job });
     }
-    if (path === '/api/companion/conversations') return options.method === 'POST' ? detail() : { conversations: [conversation], activeChatId: conversation.id };
+    if (path === '/api/companion/conversations') return options.method === 'POST' ? detail() : { conversations: [conversation, ...(createdBotConversation ? [createdBotConversation] : [])], activeChatId: conversation.id };
     if (path === `/api/companion/conversations/${conversation.id}`) return detail();
     if (path === `/api/companion/conversations/${conversation.id}/messages`) {
       conversation.messages.push(
@@ -207,7 +231,7 @@ try {
   });
   await new Promise((resolve, reject) => { control.once('error', reject); control.listen(0, '127.0.0.1', resolve); });
   const connection = { invitation: bridge.invitation(), control: `http://127.0.0.1:${control.address().port}` };
-  if (['--test', '--test-downloads'].includes(process.argv[2])) {
+  if (['--test', '--test-downloads', '--test-bots'].includes(process.argv[2])) {
     const destination = process.argv[3];
     if (!destination) throw new Error('Supply an installed simulator destination after --test.');
     const platforms = destination.split(',').map(value => value.trim()).filter(value => value.startsWith('platform='));
@@ -220,7 +244,7 @@ try {
       testProcess = spawn('xcodebuild', [
         '-project', project, '-scheme', 'StrataMobile', '-destination', destination,
         '-derivedDataPath', derivedData,
-        '-only-testing:StrataMobileUITests/CompanionSmokeTests/' + (process.argv[2] === '--test-downloads' ? 'testModelDownloadReviewProgressCancelRetryAndTargetSelection' : 'testSharedMacHistoryLiveBrowserApprovalAndContinuation'),
+        '-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation' })[process.argv[2]],
         '-parallel-testing-enabled', 'NO', 'test',
       ], { stdio: 'inherit', env: { ...process.env,
         TEST_RUNNER_STRATA_TEST_INVITATION: connection.invitation,
@@ -233,7 +257,7 @@ try {
     process.exitCode = status;
     await close();
   } else {
-    if (process.argv.length > 2) throw new Error('Usage: companion-fixture.mjs [--test|--test-downloads <simulator destination>]');
+    if (process.argv.length > 2) throw new Error('Usage: companion-fixture.mjs [--test|--test-downloads|--test-bots <simulator destination>]');
     const connectionFile = join(root, 'connection.json');
     writeFileSync(connectionFile, JSON.stringify(connection), { mode: 0o600 });
     console.log(JSON.stringify({ connectionFile }));

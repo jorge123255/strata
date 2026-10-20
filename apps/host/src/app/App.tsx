@@ -15,6 +15,7 @@ import { Btn, Dialog, IconBtn, Toasts } from '../components/ui';
 import { Brand } from '../components/Brand';
 import { SetupScreen } from '../screens/Setup';
 import { ChatScreen } from '../screens/Chat';
+import { BotsScreen } from '../screens/Bots';
 import { ModelRunScreen } from '../screens/ModelRun';
 import { ServingScreen } from '../screens/Serving';
 import { MonitorScreen } from '../screens/Monitor';
@@ -158,6 +159,8 @@ function RouteView({ route }: {
     switch (route) {
         case 'chat':
             return <ChatScreen />;
+        case 'bots':
+            return <BotsScreen />;
         case 'models':
         case 'tuning':
             return <ModelRunScreen />;

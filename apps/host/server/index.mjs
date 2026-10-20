@@ -67,6 +67,9 @@ import { createCompanionManager } from './companion.mjs';
 import { createCompanionRoutes, isLocalCompanionRequest } from './companion-routes.mjs';
 import { createConversations } from './conversations.mjs';
 import { createConversationRoutes, addConversationEvents } from './conversation-routes.mjs';
+import { createBots, createBotRoutes } from './bots.mjs';
+import { createBotTools } from './bots-tools.mjs';
+import { createBotRuntime } from './bots-runtime/index.mjs';
 import { appVersionFrom, appVersionToShow } from './app-version.mjs';
 import { createImageModels } from './image-models.mjs';
 import { createRuntimeModels } from './runtime-models.mjs';
@@ -182,6 +185,7 @@ async function pictureRefusal(connection, model) {
   return `"${model.name}" is set not to read pictures (or its server says it cannot: a llama-server started without --mmproj, or a text-only model). If that is wrong, ${fix}. Otherwise choose a model that reads pictures.`;
 }
 let conversations;
+let bots;
 const observedAgentFrames = new WeakSet();
 const agentConversationObservers = new Map();
 const agent = createAgentBridge({
@@ -503,14 +507,18 @@ const uploads = createUploads({ dir: join(store.DATA_DIR, 'uploads'), folderOf: 
 try { uploads.sweep(); } catch { /* best effort */ }
 const chatFolders = createChatFolders({ file: join(store.DATA_DIR, 'chat-folders.json') });
 /** Where a chat's files are: its chosen folder, else the folder its agent worked in, else the default workspace (chat-files.mjs). One source for every file route. */
-const chatRoot = chatId => chatRootOf({ chosen: chatFolders.get(chatId), used: agent.workingFolder?.(chatId), fallback: workspaces[0]?.path ?? WORKSPACE });
+const chatRoot = chatId => chatRootOf({ chosen: bots?.workspace(chatId) ?? chatFolders.get(chatId), used: agent.workingFolder?.(chatId), fallback: workspaces[0]?.path ?? WORKSPACE });
 
+bots = createBots({ directory: store.DATA_DIR, runtime: createBotRuntime({ stateDir: join(store.DATA_DIR, 'bots-runtime') }), tools: createBotTools({ directory: store.DATA_DIR }),
+  conversations: () => conversations, defaultWorkspace: () => workspaces[0]?.path ?? WORKSPACE, notify: (event, data) => hub.send(event, data) });
+const botRoutes = createBotRoutes({ bots, port: PORT });
 conversations = createConversations({
   directory: store.DATA_DIR,
-  enabled: () => companion.hasOptedIn(),
+  enabled: () => companion.hasOptedIn() || bots.hasProfiles(),
   notify: (event, data) => hub.send(event, data),
   defaultWorkspace: () => workspaces[0]?.path ?? WORKSPACE,
   validateSelection: selection => {
+    if (selection.botId) return bots.validateSelection(selection);
     if (selection.remoteModel) {
       const own = modelProviders.withSecrets().find(c => c.id === selection.remoteModel.connectionId);
       if (!own?.models.some(m => m.id === selection.remoteModel.modelId)) throw Object.assign(new Error('This conversation’s API model is no longer configured. Choose its model on the Mac.'), { status: 409 });
@@ -519,10 +527,11 @@ conversations = createConversations({
       catch { throw Object.assign(new Error('This conversation’s local model is no longer loaded. Choose its model on the Mac.'), { status: 409 }); }
     }
   },
-  pending: id => agent.pendingFor(id),
-  stop: id => agent.stop(id),
-  approve: options => agent.approve(options),
+  pending: id => bots.isBotConversation(id) ? bots.pending(id) : agent.pendingFor(id),
+  stop: id => bots.isBotConversation(id) ? bots.stop(id) : agent.stop(id),
+  approve: options => bots.isBotConversation(options.chatId) ? bots.approve(options) : agent.approve(options),
   execute: async ({ session, message, mode, signal, onFrame, capture }) => {
+    if (session.preferences?.botId) return bots.run({ session, message, signal, onFrame });
     const preferences = session.preferences ?? {};
     const body = { ...preferences, sessionId: session.id, message, mode, companionTurn: true, trackedConversation: true,
       conversationWorkspace: session.workspace,
@@ -1013,6 +1022,7 @@ const server = http.createServer(async (req, res) => {
   if (path === '/api/remote-serving' || path.startsWith('/api/remote-serving/')) return remoteServingRoutes(req, res, url);
   if (path === '/api/remote-lifecycle' || path.startsWith('/api/remote-lifecycle/')) return remoteLifecycleRoutes(req, res, url);
   if (path === '/api/model-management' || path.startsWith('/api/model-management/')) return modelManagementRoutes(req, res, path, method);
+  if (path === '/api/bots' || path.startsWith('/api/bots/')) return botRoutes(req, res, url);
   if (path === '/api/companion/conversations' || path.startsWith('/api/companion/conversations/')) return conversationRoutes(req, res, url);
   if (path === '/api/companion' || path.startsWith('/api/companion/')) return companionRoutes(req, res, url);
   if (method === 'OPTIONS') {
@@ -1760,12 +1770,15 @@ async function api(req, res, path, method, url) {
   // The folder a chat works in, and opening its files by path (notes-split-agent8.md).
   if (path === '/api/chat/folder' && method === 'GET') {
     const id = url.searchParams.get('sessionId') ?? '';
+    const botFolder = bots.workspace(id);
+    if (botFolder) return json(res, 200, { folder: { path: botFolder, name: basename(botFolder), exists: existsSync(botFolder) }, default: botFolder });
     return json(res, 200, { folder: chatFolders.info(id), default: workspaces[0]?.path ?? WORKSPACE });
   }
   if (path === '/api/chat/folder' && method === 'POST') {
     const body = await readBody(req);
     const id = String(body.sessionId ?? '');
     if (!id) return error(res, 400, 'sessionId is required');
+    if (bots.isBotConversation(id)) return error(res, 409, 'This bot conversation keeps its original workspace. Edit the bot profile and start a new conversation to choose another folder.');
     if (agent.isRunning(id)) return error(res, 409, 'This chat is still working. Stop it or wait for it to finish, then choose the folder.');
     if (body.path === null || body.path === '') { chatFolders.clear(id); return json(res, 200, { folder: null }); }
     try { return json(res, 200, { folder: chatFolders.set(id, body.path) }); } catch (e) { return error(res, 400, e.message); }
@@ -1984,6 +1997,7 @@ async function api(req, res, path, method, url) {
   // --- chat ---------------------------------------------------------------
   if ((path === '/api/chat/stream' || path === '/api/plan/start-goal') && method === 'POST') {
     const body = await readBody(req,12*1024*1024);
+    if (typeof body.sessionId === 'string' && bots.isBotConversation(body.sessionId)) return error(res, 409, 'Continue this bot through its shared conversation. It uses the provider and permissions in its bot profile.');
     if (path === '/api/plan/start-goal') { body.message = '/plan start'; if (typeof body.planId !== 'string') return error(res, 400, 'planId is required'); }
     let images;try{const named=Array.isArray(body.imageIds)&&body.imageIds.length?uploads.dataUrls(typeof body.sessionId==='string'?body.sessionId:'',body.imageIds):[];images=validateChatImages([...(Array.isArray(body.images)?body.images:[]),...named]);}catch(e){return error(res,400,e.message);}
     if(images.length&&body.remoteModel){const own=modelProviders.withSecrets().find(c=>c.id===body.remoteModel.connectionId);const row=own?.models.find(m=>m.id===body.remoteModel.modelId);const refused=await pictureRefusal(own,row);if(refused)return error(res,409,refused);}
@@ -2287,7 +2301,7 @@ const shutdown = async () => {
   const timeout=setTimeout(()=>process.exit(0),control?45000:10000);timeout.unref();   // stopping an engine through Control: drained (15 s), then ended; the shell's deadline is longer
   server.close();server.closeAllConnections?.();
   conversations.close();
-  await Promise.allSettled([companion.close(),localShare.stop(),cloudflare.stop(),native.close(),agent.close()]);
+  await Promise.allSettled([bots.close(),companion.close(),localShare.stop(),cloudflare.stop(),native.close(),agent.close()]);
   process.exit(0);
 };
 // Every ordinary way of being told to stop takes the clean path: Ctrl+C, kill, the terminal closing (SIGHUP), Ctrl+Break.

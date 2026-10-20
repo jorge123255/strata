@@ -122,6 +122,54 @@ struct CompanionChat: Codable, Identifiable, Equatable {
     var title: String
 }
 
+struct CompanionBots: Decodable, Equatable {
+    var bots: [CompanionBot]
+    var providers: [BotProvider]
+    var computers: [BotComputer]
+    var reason: String?
+}
+
+struct CompanionBot: Decodable, Identifiable, Equatable {
+    struct Execution: Decodable, Equatable { var kind: String }
+    var id: String
+    var name: String
+    var provider: String
+    var model: String
+    var capabilities: String
+    var policy: String
+    var execution: Execution
+    var conversations: [String]?
+
+    var capabilityLabel: String {
+        switch capabilities { case "computer": return "Computer control"; case "both": return "Code & computer"; default: return "Coding" }
+    }
+    var capabilityIcon: String {
+        switch capabilities { case "computer": return "cursorarrow.motionlines"; case "both": return "desktopcomputer"; default: return "chevron.left.forwardslash.chevron.right" }
+    }
+    var executionLabel: String {
+        switch execution.kind { case "ssh": return "SSH computer"; case "sandbox": return "Sandbox"; default: return "Your Mac" }
+    }
+    var policyLabel: String {
+        switch policy { case "plan": return "Plan mode"; case "bypass": return "Full access"; default: return "Ask before actions" }
+    }
+}
+
+struct BotProvider: Decodable, Identifiable, Equatable {
+    var id: String
+    var name: String
+    var available: Bool
+    var detail: String
+    var models: [String]?
+}
+
+struct BotComputer: Decodable, Identifiable, Equatable {
+    var id: String
+    var name: String
+    var kind: String
+    var available: Bool
+    var detail: String
+}
+
 struct ChatMessage: Codable, Identifiable, Equatable {
     var id: String
     var role: String
@@ -138,8 +186,9 @@ struct MacConversationSummary: Decodable, Identifiable, Equatable {
     var mode: String?
     var active: Bool
     var preview: String?
+    var botId: String?
 
-    enum CodingKeys: String, CodingKey { case id, title, updatedAt, workspace, modelName, mode, active, preview }
+    enum CodingKeys: String, CodingKey { case id, title, updatedAt, workspace, modelName, mode, active, preview, botId }
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = try values.decode(String.self, forKey: .id)
@@ -152,6 +201,7 @@ struct MacConversationSummary: Decodable, Identifiable, Equatable {
         mode = try values.decodeIfPresent(String.self, forKey: .mode)
         active = try values.decodeIfPresent(Bool.self, forKey: .active) ?? false
         preview = try values.decodeIfPresent(String.self, forKey: .preview)
+        botId = try values.decodeIfPresent(String.self, forKey: .botId)
     }
 
     var workspaceName: String? { workspace.map { URL(fileURLWithPath: $0).lastPathComponent }.flatMap { $0.isEmpty ? nil : $0 } }
@@ -166,6 +216,7 @@ struct MacConversation: Decodable, Identifiable, Equatable {
     var active: Bool
     var status: String?
     var messages: [MacChatMessage]
+    var botId: String? = nil
 
     var permissionLabel: String {
         switch mode {

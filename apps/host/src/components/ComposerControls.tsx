@@ -36,6 +36,7 @@ export function ComposerControls({ session, onPreview, onAttach, onError, onSlas
     onSlash: () => void;
 }) {
     const remoteModel = useStore(s => s.remoteModel);
+    const bot = !!session?.preferences?.botId;
     const native = useNative();
     const nativeModel = native?.instances.find(i => i.id === native.defaultId);
     const [toolsOpen, setToolsOpen] = useState(false);
@@ -52,7 +53,7 @@ export function ComposerControls({ session, onPreview, onAttach, onError, onSlas
     const addFilesLatest = useRef<(files: File[]) => Promise<void>>(async () => { });
     // A model on an API takes a reasoning effort when its provider says it can think (OpenRouter's model list); otherwise the provider decides.
     const apiOnlyDefault = !!apiModel && apiModel.thinks !== true;
-    const pictures = pictureStatus(native, remoteModel, providers);
+    const pictures = bot ? { ok: false, message: 'Images can be opened in preview. This bot transport currently accepts text.' } : pictureStatus(native, remoteModel, providers);
     const mode = modes.find(m => m.value === session?.preferences?.mode) ?? modes[0];
     const effort = efforts.includes(session?.preferences?.thinking ?? '') ? session!.preferences!.thinking! : 'Medium';
     const budget = session?.preferences?.thinkingBudget ?? 0;
@@ -126,20 +127,21 @@ export function ComposerControls({ session, onPreview, onAttach, onError, onSlas
     useEffect(() => {
         folder.current?.setAttribute('webkitdirectory', '');
         const key = (e: KeyboardEvent) => {
-            if (!e.defaultPrevented && (e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'a' && !document.querySelector('.dialog-layer') && !streaming && !reading) {
+            if (!bot && !e.defaultPrevented && (e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'a' && !document.querySelector('.dialog-layer') && !streaming && !reading) {
                 e.preventDefault();
                 files.current?.click();
             }
         };
         const website = () => { setUrlOpen(true); setError(''); };
         const preview = () => previewFile.current?.click();
-        const dropped = (e: Event) => { if (!streaming && !reading) void addFilesLatest.current((e as CustomEvent<File[]>).detail ?? []); };
+        const dropped = (e: Event) => { if (bot) { onError('Attachments are not available for bot chats yet. Use the bot workspace for files.'); return; } if (!streaming && !reading) void addFilesLatest.current((e as CustomEvent<File[]>).detail ?? []); };
         window.addEventListener('strata:drop-files', dropped);
         window.addEventListener('keydown', key);
         window.addEventListener('strata:open-website', website);
         window.addEventListener('strata:open-preview', preview);
         return () => { window.removeEventListener('strata:drop-files', dropped); window.removeEventListener('keydown', key); window.removeEventListener('strata:open-website', website); window.removeEventListener('strata:open-preview', preview); };
-    }, [streaming, reading]);
+    }, [streaming, reading, bot]);
+    useEffect(() => { setMenu(false); setPreferences(null); setToolsOpen(false); }, [session?.id]);
     useEffect(() => {
         if (preferences !== 'mode')
             return;
@@ -155,20 +157,20 @@ export function ComposerControls({ session, onPreview, onAttach, onError, onSlas
         return () => window.removeEventListener('keydown', key);
     }, [preferences, session?.id]);
     return <>
-    {tr(!remoteModel && nativeModel?.metrics?.mcp?.servers?.length ? <button className="composer-choice" aria-label={tr("Use connected MCP tools")} aria-pressed={session?.preferences?.useTools === true} onClick={() => session?.preferences?.useTools ? setChatPreferences(session.id, { useTools: false }) : setToolsOpen(true)}><Icon name="skills" size={16}/>{tr("Tools")}{tr(session?.preferences?.useTools ? ' on' : '')}</button> : null)}
+    {tr(!bot && !remoteModel && nativeModel?.metrics?.mcp?.servers?.length ? <button className="composer-choice" aria-label={tr("Use connected MCP tools")} aria-pressed={session?.preferences?.useTools === true} onClick={() => session?.preferences?.useTools ? setChatPreferences(session.id, { useTools: false }) : setToolsOpen(true)}><Icon name="skills" size={16}/>{tr("Tools")}{tr(session?.preferences?.useTools ? ' on' : '')}</button> : null)}
     <Dialog open={toolsOpen} compact title={tr("Enable connected tools?")} onClose={() => setToolsOpen(false)} actions={<><Btn onClick={() => setToolsOpen(false)}>{tr("Keep tools off")}</Btn><Btn variant="primary" onClick={() => { setChatPreferences(session?.id, { useTools: true, mode: 'bypass' }); setToolsOpen(false); }}>{tr("Enable tools")}</Btn></>}><p>{tr("Connected servers can act on the resources you configured. Calls run automatically when the model chooses them, and their results appear in chat.")}</p><p className="small muted">{tr("This switches this conversation to Bypass permissions. Servers: ")}{tr((nativeModel?.metrics?.mcp?.servers ?? []).map((s: any) => s.name).join(', '))}.</p></Dialog>
     <input ref={files} type="file" multiple hidden accept="image/*,.pdf,.txt,.md,.markdown,.csv,.ts,.tsx,.js,.jsx,.py,.json,.css,.rs,.go,.sh,.html,.htm,.yaml,.yml,.toml,.xml,.log" onChange={e => { void addFiles(Array.from(e.target.files ?? [])); e.target.value = ''; }}/>
     <input ref={folder} type="file" multiple hidden onChange={e => { void addFiles(Array.from(e.target.files ?? []), true); e.target.value = ''; }}/>
     <input ref={previewFile} type="file" hidden onChange={e => { void openFile(e.target.files?.[0]); e.target.value = ''; }}/>
-    <button ref={trigger} className="composer-add" aria-label={tr("Add or open")} title={tr("Add or open")} disabled={reading || streaming} aria-haspopup="menu" aria-expanded={menu} onClick={() => { setPreferences(null); setMenu(v => !v); }}><Icon name="plus" size={22}/></button>
+    <button ref={trigger} className="composer-add" aria-label={tr("Add or open")} title={tr(bot ? 'Attachments are not available for bot chats yet. Use the bot workspace for files.' : 'Add or open')} disabled={bot || reading || streaming} aria-haspopup="menu" aria-expanded={menu} onClick={() => { setPreferences(null); setMenu(v => !v); }}><Icon name="plus" size={22}/></button>
     <DictationControl draft={draft} onDraft={onDraft} sessionId={session?.id} disabled={streaming}/>
-    <button ref={modeTrigger} className="composer-choice composer-mode" aria-label={tr("Mode: {0}", [tr(mode.label)])} aria-haspopup="menu" aria-expanded={preferences === 'mode'} onClick={() => { setMenu(false); setPreferences(v => v === 'mode' ? null : 'mode'); }}><span>{tr(mode.label)}</span><Icon name="chevron" size={13}/></button>
+    {!bot ? <button ref={modeTrigger} className="composer-choice composer-mode" aria-label={tr("Mode: {0}", [tr(mode.label)])} aria-haspopup="menu" aria-expanded={preferences === 'mode'} onClick={() => { setMenu(false); setPreferences(v => v === 'mode' ? null : 'mode'); }}><span>{tr(mode.label)}</span><Icon name="chevron" size={13}/></button> : null}
     <span className="spacer"/>
-    <button ref={thinkingTrigger} className="composer-choice composer-effort" disabled={apiOnlyDefault} title={tr(apiOnlyDefault ? "Reasoning uses the API provider’s defaults." : undefined)} aria-label={tr("Reasoning effort: {0}", [apiOnlyDefault ? tr('Provider default') : effort])} aria-haspopup="menu" aria-expanded={preferences === 'thinking'} onClick={() => { setMenu(false); setPreferences(v => v === 'thinking' ? null : 'thinking'); }}><Icon name="thinking" size={16}/><span>{tr(apiOnlyDefault ? 'Default' : effort)}</span><Icon name="chevron" size={13}/></button>
+    {!bot ? <button ref={thinkingTrigger} className="composer-choice composer-effort" disabled={apiOnlyDefault} title={tr(apiOnlyDefault ? "Reasoning uses the API provider’s defaults." : undefined)} aria-label={tr("Reasoning effort: {0}", [apiOnlyDefault ? tr('Provider default') : effort])} aria-haspopup="menu" aria-expanded={preferences === 'thinking'} onClick={() => { setMenu(false); setPreferences(v => v === 'thinking' ? null : 'thinking'); }}><Icon name="thinking" size={16}/><span>{tr(apiOnlyDefault ? 'Default' : effort)}</span><Icon name="chevron" size={13}/></button> : <span className="xs muted">{tr('Bot settings')}</span>}
     {tr(menu ? <FloatingMenu anchor={trigger.current} title={tr("Add or open")} width={292} onClose={() => setMenu(false)}>
       <button role="menuitem" className="menu__item" onClick={() => { setMenu(false); files.current?.click(); }}><Icon name="attach"/><span>{tr("Add files or photos")}</span><kbd className="menu-shortcut">{tr(shortcut)}</kbd></button>
       <button role="menuitem" className="menu__item" onClick={() => { setMenu(false); folder.current?.click(); }}><Icon name="folder-plus"/>{tr("Add folder")}</button>
-      <button role="menuitem" className="menu__item" onClick={() => { setMenu(false); onSlash(); }}><span className="slash-command-icon" aria-hidden="true">/</span>{tr("Slash commands")}</button>
+      {!bot ? <button role="menuitem" className="menu__item" onClick={() => { setMenu(false); onSlash(); }}><span className="slash-command-icon" aria-hidden="true">/</span>{tr("Slash commands")}</button> : null}
     </FloatingMenu> : null)}
     {tr(preferences ? <FloatingMenu anchor={preferences === 'mode' ? modeTrigger.current : thinkingTrigger.current} title={tr(preferences === 'mode' ? 'Mode' : 'Reasoning effort')} width={preferences === 'mode' ? 330 : 280} onClose={() => setPreferences(null)}>
       {tr(preferences === 'mode' ? <>{tr(modes.map((option, index) => <button key={option.value} role="menuitemradio" aria-checked={mode.value === option.value} className="menu__item composer-mode-option" onClick={() => { setChatPreferences(session?.id, { mode: option.value }); setPreferences(null); }}><span><strong>{tr(option.label)}</strong><small>{tr(option.hint)}</small></span>{tr(mode.value === option.value ? <Icon name="check" size={16}/> : null)}<kbd className="menu-shortcut">{tr(index + 1)}</kbd></button>))}</> : <><div className="reasoning-menu-model"><Icon name={apiModel ? 'link' : modelFamilyIcon(loaded?.family ?? nativeModel?.label)} size={18}/><strong>{tr(apiModel?.name ?? (nativeModel && nativeModel.status === 'ready' ? nativeModel.label : null) ?? loaded?.family ?? 'No model loaded')}</strong></div><p className="composer-menu-heading">{tr("Reasoning effort")}</p>{tr(efforts.map(option => <button key={option} role="menuitemradio" aria-checked={effort === option} className="menu__item" onClick={() => { setChatPreferences(session?.id, { thinking: option }); setPreferences(null); }}>{tr(option)}<span className="spacer"/>{tr(effort === option ? <Icon name="check" size={16}/> : null)}</button>))}{tr(apiModel ? null : <><p className="composer-menu-heading">{tr("Thinking budget")}</p>{tr(THINKING_BUDGETS.map(([value, label]) => <button key={value} role="menuitemradio" aria-checked={budget === value} disabled={effort === 'Off'} className="menu__item" onClick={() => { setChatPreferences(session?.id, { thinkingBudget: value }); setPreferences(null); }}>{tr(label)}<span className="spacer"/>{tr(budget === value ? <Icon name="check" size={16}/> : null)}</button>))}</>)}</>)}

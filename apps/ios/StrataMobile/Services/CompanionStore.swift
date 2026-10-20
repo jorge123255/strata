@@ -31,11 +31,17 @@ final class CompanionStore: ObservableObject {
     @Published private(set) var isSubmittingMessage = false
     @Published private(set) var isSelectingConversation = false
     @Published private(set) var decidingToolId: String?
+    @Published private(set) var botCatalog: CompanionBots?
+    @Published private(set) var botsMessage: String?
+    @Published private(set) var isLoadingBots = false
+    @Published private(set) var creatingBotConversationId: String?
     var isWorking: Bool { isSending || currentConversation?.active == true }
     var isLegacyConversation: Bool { currentChatId != nil }
     private var hasChosenConversation = false
     private var chatVisible = false
     private var modelsVisible = false
+    private var botsVisible = false
+    private var botsRequest: UUID?
     private var hasDiscoveredModelTargets = false
     private var modelTargetGeneration = UUID()
     private var modelReviewGeneration = UUID()
@@ -68,7 +74,7 @@ final class CompanionStore: ObservableObject {
     }
 
     func pair(url: String, code: String, fingerprint: String) async {
-        guard !isLoading, !isSending, !isSubmittingMessage, !isModelDownloadBusy else { return }
+        guard !isLoading, !isSending, !isSubmittingMessage, !isModelDownloadBusy, creatingBotConversationId == nil else { return }
         let operation = beginLoading()
         let generation = connectionGeneration
         error = nil
@@ -86,6 +92,7 @@ final class CompanionStore: ObservableObject {
             try saveConnection(saved)
             connectionGeneration = UUID(); conversationGeneration = UUID()
             clearModelManagement()
+            clearBots()
             connection = saved
             client = CompanionClient(baseURL: address, fingerprint: pin, token: saved.token)
             status = nil; models = []; chats = []; messages = []; currentChatId = nil
@@ -214,14 +221,75 @@ final class CompanionStore: ObservableObject {
 
     func setChatVisible(_ visible: Bool) { chatVisible = visible }
     func setModelsVisible(_ visible: Bool) { modelsVisible = visible }
+    func setBotsVisible(_ visible: Bool) { botsVisible = visible }
 
     func refreshLiveState(refreshOverview: Bool) async {
         guard isPaired else { return }
         if refreshOverview { await refresh(silently: true) }
         if chatVisible { await refreshCurrentConversation() }
+        if botsVisible, refreshOverview || botCatalog == nil { await refreshBots() }
         if modelsVisible, refreshOverview || !hasDiscoveredModelTargets || modelCatalog?.jobs.contains(where: \.isRunning) == true {
             await refreshModelManagement(refreshTargets: refreshOverview)
         }
+    }
+
+    func refreshBots() async {
+        guard let client, isPaired, botsRequest == nil else { return }
+        let generation = connectionGeneration
+        let request = UUID()
+        botsRequest = request; isLoadingBots = true
+        defer {
+            if botsRequest == request { botsRequest = nil; isLoadingBots = false }
+        }
+        do {
+            let result: CompanionBots = try await client.perform("/v1/bots")
+            guard connectionGeneration == generation, botsRequest == request else { return }
+            if botCatalog != result { botCatalog = result }
+            botsMessage = result.reason
+        } catch is CancellationError { }
+        catch {
+            guard connectionGeneration == generation, botsRequest == request else { return }
+            if let http = error as? CompanionHTTPError, http.isUnsupported {
+                botCatalog = nil
+                botsMessage = "Update Strata on your Mac to use Bots on your iPhone."
+            } else { botsMessage = friendly(error) }
+        }
+    }
+
+    func botConversations(_ bot: CompanionBot) -> [MacConversationSummary] {
+        let ids = Set(bot.conversations ?? [])
+        return conversations.filter { $0.botId == bot.id || ids.contains($0.id) }
+    }
+
+    @discardableResult
+    func newBotConversation(_ bot: CompanionBot) async -> Bool {
+        guard let client, botCatalog?.bots.contains(where: { $0.id == bot.id }) == true,
+              !isSending, !isSubmittingMessage, creatingBotConversationId == nil else { return false }
+        let generation = connectionGeneration
+        let selection = UUID()
+        conversationGeneration = selection; hasChosenConversation = true
+        creatingBotConversationId = bot.id; isSelectingConversation = true; error = nil
+        defer {
+            if connectionGeneration == generation {
+                creatingBotConversationId = nil
+                if conversationGeneration == selection { isSelectingConversation = false }
+            }
+        }
+        do {
+            let detail: MacConversationDetail = try await client.perform("/v1/bots/" + escapedComponent(bot.id) + "/conversations", method: "POST", body: [:])
+            guard connectionGeneration == generation, conversationGeneration == selection else { return false }
+            currentChatId = nil; messages = []; apply(detail)
+            await refresh(silently: true)
+            return connectionGeneration == generation && conversationGeneration == selection
+        } catch is CancellationError { return false }
+        catch {
+            if connectionGeneration == generation, conversationGeneration == selection { self.error = friendly(error) }
+            return false
+        }
+    }
+
+    private func clearBots() {
+        botsRequest = nil; isLoadingBots = false; botCatalog = nil; botsMessage = nil; creatingBotConversationId = nil
     }
 
     func refreshModelManagement(refreshTargets: Bool = false) async {
@@ -429,7 +497,7 @@ final class CompanionStore: ObservableObject {
     func sendMessage(_ text: String) async {
         if isLegacyConversation { await sendLegacyMessage(text); return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let client, !isSubmittingMessage, currentConversation?.active != true, !trimmed.isEmpty else { return }
+        guard let client, !isSubmittingMessage, creatingBotConversationId == nil, currentConversation?.active != true, !trimmed.isEmpty else { return }
         let generation = connectionGeneration
         let selection = UUID()
         conversationGeneration = selection; hasChosenConversation = true
@@ -506,7 +574,7 @@ final class CompanionStore: ObservableObject {
 
     func disconnect() async {
         guard let client else { return }
-        guard !isSending, !isSubmittingMessage, !isModelDownloadBusy else { error = "Wait for the current request before disconnecting."; return }
+        guard !isSending, !isSubmittingMessage, !isModelDownloadBusy, creatingBotConversationId == nil else { error = "Wait for the current request before disconnecting."; return }
         let generation = connectionGeneration
         do {
             // Revoke on the Mac before deleting the local credential.
@@ -518,7 +586,7 @@ final class CompanionStore: ObservableObject {
     }
 
     func forgetMac() {
-        guard !isSending, !isSubmittingMessage, !isModelDownloadBusy else { error = "Wait for the current request before forgetting this Mac."; return }
+        guard !isSending, !isSubmittingMessage, !isModelDownloadBusy, creatingBotConversationId == nil else { error = "Wait for the current request before forgetting this Mac."; return }
         do {
             try deleteConnection()
             clearConnection()
@@ -539,6 +607,7 @@ final class CompanionStore: ObservableObject {
     private func clearConnection() {
         connectionGeneration = UUID(); conversationGeneration = UUID()
         clearModelManagement()
+        clearBots()
         loadingOperation = nil; isLoading = false
         client = nil; connection = nil; status = nil; models = []; chats = []; messages = []; currentChatId = nil; error = nil
         conversations = []; currentConversation = nil; pendingApprovals = []; hasChosenConversation = false

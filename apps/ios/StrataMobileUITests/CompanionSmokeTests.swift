@@ -275,6 +275,76 @@ final class CompanionSmokeTests: XCTestCase {
         XCTAssertTrue(finalCalls.contains { ($0["path"] as? String) == "/api/companion/conversations/fixture-mac-research/stop" })
     }
 
+    /// The real phone UI and TLS bridge share bot conversations with a synthetic
+    /// host. Opening a bot, history or Thinking must never submit a model prompt.
+    @MainActor
+    func testBotsSharedHistoryThinkingAndNewConversation() async throws {
+        guard let raw = ProcessInfo.processInfo.environment["STRATA_TEST_INVITATION"],
+              let invitation = URLComponents(string: raw),
+              let control = ProcessInfo.processInfo.environment["STRATA_SHARED_FIXTURE_CONTROL"],
+              let controlURL = URL(string: control), controlURL.host == "127.0.0.1" else {
+            throw XCTSkip("Provide an isolated Bots fixture invitation and loopback control URL.")
+        }
+        func item(_ name: String) -> String? { invitation.queryItems?.first { $0.name == name }?.value }
+        openManualPairing(); sensitivePairingVisible = true
+        fillPairing(address: try XCTUnwrap(item("url")), code: try XCTUnwrap(item("code")), fingerprint: try XCTUnwrap(item("fingerprint")))
+        submitPairing()
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.buttons["dismissPairingButton"])
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 25), .completed)
+        sensitivePairingVisible = false
+
+        tapTab("Bots")
+        let bot = app.buttons["bot-fixture-bot"]
+        XCTAssertTrue(bot.waitForExistence(timeout: 10)); bot.tap()
+        XCTAssertTrue(app.staticTexts["Code & computer"].waitForExistence(timeout: 5))
+        let provider = app.descendants(matching: .any).matching(identifier: "botProviderDetail").firstMatch
+        XCTAssertTrue(provider.exists); XCTAssertTrue(provider.label.contains("Codex"))
+        let permissions = app.descendants(matching: .any).matching(identifier: "botPermissionsDetail").firstMatch
+        XCTAssertTrue(permissions.exists); XCTAssertTrue(permissions.label.contains("Ask before actions"))
+        attachScreenshot("Bots — saved provider computer and permissions")
+        let history = app.buttons["botConversation-fixture-mac-research"]
+        XCTAssertTrue(history.waitForExistence(timeout: 5)); reveal(history); history.tap()
+        XCTAssertTrue(app.staticTexts["Earlier Mac history is available on the phone."].waitForExistence(timeout: 10))
+        let thinking = app.buttons["thinkingDisclosure-fixture-assistant"]
+        XCTAssertTrue(thinking.waitForExistence(timeout: 5)); thinking.tap()
+        XCTAssertTrue(app.staticTexts["thinkingContent-fixture-assistant"].waitForExistence(timeout: 5))
+        attachScreenshot("Bots — shared Mac history and recorded Thinking")
+        let before = try await fixtureControl(controlURL, action: "state")
+        let beforeCalls = try XCTUnwrap(before["calls"] as? [[String: Any]])
+        XCTAssertFalse(beforeCalls.contains { ($0["method"] as? String) == "POST" }, "Opening bots and history must not start work.")
+
+        tapTab("Bots")
+        if app.buttons["bot-fixture-bot"].exists { app.buttons["bot-fixture-bot"].tap() }
+        let create = app.buttons["newBotConversationButton"]
+        XCTAssertTrue(create.waitForExistence(timeout: 5)); reveal(create); create.tap()
+        XCTAssertTrue(app.staticTexts["New Workspace companion conversation"].waitForExistence(timeout: 10))
+        let input = app.descendants(matching: .any).matching(identifier: "messageInput").firstMatch
+        XCTAssertTrue(input.waitForExistence(timeout: 5)); input.tap(); input.typeText("Continue bot fixture work")
+        app.buttons["sendMessageButton"].tap()
+        let reply = app.staticTexts.matching(identifier: "assistantMessage").matching(NSPredicate(format: "label CONTAINS %@", "BOT_SAME_SESSION_CONTINUED")).firstMatch
+        XCTAssertTrue(reply.waitForExistence(timeout: 10))
+        let stop = app.buttons["stopMessageButton"]
+        XCTAssertTrue(stop.waitForExistence(timeout: 5)); stop.tap()
+        let stopped = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: stop)
+        XCTAssertEqual(XCTWaiter.wait(for: [stopped], timeout: 10), .completed)
+        attachScreenshot("Bots — same conversation continued and stopped")
+
+        app.terminate(); app.launch(); tapTab("Bots")
+        let reopenedBot = app.buttons["bot-fixture-bot"]
+        XCTAssertTrue(reopenedBot.waitForExistence(timeout: 10)); reopenedBot.tap()
+        let saved = app.buttons["botConversation-fixture-bot-created"]
+        XCTAssertTrue(saved.waitForExistence(timeout: 10)); reveal(saved); saved.tap()
+        XCTAssertTrue(reply.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["thinkingDisclosure-bot-assistant"].exists)
+        attachScreenshot("Bots — shared history retained after relaunch")
+        let after = try await fixtureControl(controlURL, action: "state")
+        let calls = try XCTUnwrap(after["calls"] as? [[String: Any]])
+        XCTAssertEqual(calls.filter { ($0["path"] as? String) == "/api/bots/fixture-bot/conversations" }.count, 1)
+        XCTAssertEqual(calls.filter { ($0["path"] as? String)?.hasSuffix("/messages") == true }.count, 1)
+        let creation = try XCTUnwrap(calls.first { ($0["path"] as? String) == "/api/bots/fixture-bot/conversations" })
+        XCTAssertEqual((creation["body"] as? [String: Any])?.count, 0)
+    }
+
     /// Uses a real TLS bridge with synthetic catalog/jobs. No model files, real
     /// Strata computers, or physical phones are controlled by this fixture.
     @MainActor

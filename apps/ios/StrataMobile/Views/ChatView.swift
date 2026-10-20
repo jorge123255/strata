@@ -60,7 +60,7 @@ struct ChatView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(value.title).font(.subheadline.weight(.semibold)).foregroundStyle(StrataTheme.ink).lineLimit(2)
                     .accessibilityIdentifier("macConversationTitle")
-                Text(value.permissionLabel + (value.workspace.map { " · " + URL(fileURLWithPath: $0).lastPathComponent } ?? ""))
+                Text((conversationBot.map { $0.name + " · " } ?? "") + value.permissionLabel + (value.workspace.map { " · " + URL(fileURLWithPath: $0).lastPathComponent } ?? ""))
                     .font(.caption2).foregroundStyle(StrataTheme.secondaryInk).lineLimit(2)
             }
             Spacer(minLength: 5)
@@ -209,7 +209,7 @@ struct ChatView: View {
                 if !isUser {
                     HStack(spacing: 6) {
                         StrataMark(size: 22)
-                        Text("STRATA").font(.system(.caption2, weight: .bold)).tracking(1.5).foregroundStyle(StrataTheme.secondaryInk)
+                        Text(conversationBot?.name.uppercased() ?? "STRATA").font(.system(.caption2, weight: .bold)).tracking(1.5).foregroundStyle(StrataTheme.secondaryInk)
                     }
                 }
                 if message.role == "assistant", message.thinkingText != nil {
@@ -298,6 +298,10 @@ struct ChatView: View {
         guard store.isPaired else { return "Your Mac’s conversations, within reach." }
         guard store.status?.hostConnected == true else { return "Mac unavailable · check Connection" }
         return store.currentConversation?.modelName ?? store.status?.modelName ?? "Connected to your Mac"
+    }
+    private var conversationBot: CompanionBot? {
+        guard let botId = store.currentConversation?.botId else { return nil }
+        return store.botCatalog?.bots.first { $0.id == botId }
     }
     private func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)

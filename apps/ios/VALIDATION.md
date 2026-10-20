@@ -1,3 +1,18 @@
+# Bots companion — October 20, 2026
+
+The fifth native tab lists saved coding, computer-control and combined bots. Details show the saved provider, model, execution kind and permissions. Existing bot conversations open in the same Chat view; creating an empty bot conversation starts no model work. The paired phone cannot edit bot credentials or execution configuration. Existing model, Maya, pairing and shared-chat paths are retained.
+
+- Simulator build-for-testing passed on iPhone 17 Pro, iOS 26.5.
+- The full Swift unit suite passed: 46 tests, one optional live TLS test skipped, zero failures. Seven new tests verify all five provider entries, empty saved-settings bot conversation creation, retained shared Thinking, delayed creation versus chat selection, delayed catalog versus forgotten pairing, older-host fallback, readable offline catalog, and legacy summary identity fallback.
+- All 37 companion bridge tests passed. Six new tests cover explicit bot route/method allowlisting, no-launch catalog reads, removal of credentials and SSH details, retained shared history/Thinking, older hosts, safe provider failures, in-flight read revocation, and revocation during creation-body receipt.
+- The full native Bots UI workflow passed on final phone source in 77.7 seconds, one test with zero failures or skips. It exercised real pinned-TLS pairing to an isolated synthetic host, card/detail navigation, provider/computer/permission descriptions, existing shared history and expanded Thinking, no prompt while viewing, empty saved-bot creation, continuation, exact-chat Stop and restored bot history after relaunch.
+- Four passing screenshots were exported and visually inspected. This caught and fixed a preexisting selectable Thinking layout issue: expanded text now grows vertically and shows both full lines rather than a truncated single line.
+- The UI workflow used a dedicated disposable simulator named **Strata Bots QA 20261020**. It did not alter the existing paired simulator, physical iPhone, production Strata host, provider accounts, models or Maya connections. All provider and computer results were synthetic; this is phone/bridge acceptance, not live provider or desktop execution proof.
+
+Private result bundles remain in the ignored Bots derived-data directory: final unit `Test-StrataMobile-2026.10.20_13-21-06--0500.xcresult`; final UI `Test-StrataMobile-2026.10.20_13-16-46--0500.xcresult`. The fixture removed its temporary identity and listeners afterward. No app was installed on or launched on the physical iPhone for these checks.
+
+---
+
 # Thinking and ordered progress — October 19, 2026
 
 Build 4 adds the Mac's expandable Thinking text, a live latest-line preview, recorded Thinking durations, and ordered progress summaries between reply paragraphs. Explicitly grouped actions appear under their own summary; unassigned actions and approvals remain visible once. Older Mac snapshots retain the existing reply/activity view. The accepted native scrolling implementation from Build 3 is unchanged.

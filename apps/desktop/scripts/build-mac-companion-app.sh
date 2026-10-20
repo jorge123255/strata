@@ -133,8 +133,16 @@ cp "$task_repo/apps/host/python/remote_model_manager.py" "$task_resources/host/p
 cp "$task_repo/apps/host/python/remote_model_lifecycle.py" "$task_resources/host/python/remote_model_lifecycle.py"
 cp "$task_repo/apps/host/python/remote-lifecycle-source.json.gz" "$task_resources/host/python/remote-lifecycle-source.json.gz"
 cp "$task_repo/apps/host/package.json" "$task_resources/host/package.json"
+cp "$task_repo/apps/host/package-lock.json" "$task_resources/host/package-lock.json"
+# Bots need the SDK and browser client at runtime. The SDK uses the user's
+# installed Claude CLI; its optional bundled CLI is intentionally omitted.
+rm -rf "$task_resources/host/node_modules"
+npm --prefix "$task_resources/host" ci --omit=dev --omit=optional --ignore-scripts --no-audit --no-fund
+/usr/bin/xcrun swiftc "$task_repo/apps/host/server/bots-computer.swift" -O -o "$task_resources/host/server/bots-computer"
+/usr/bin/codesign --force --sign - --timestamp=none "$task_resources/host/server/bots-computer"
 /usr/bin/ditto "$task_desktop/src-tauri/resources/companion-bridge" "$task_resources/companion-bridge"
 /usr/libexec/PlistBuddy -c 'Add NSLocalNetworkUsageDescription string Pair your iPhone with Strata on this Mac over an encrypted connection.' "$task_output/Contents/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c 'Set NSLocalNetworkUsageDescription Pair your iPhone with Strata on this Mac over an encrypted connection.' "$task_output/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c 'Add NSScreenCaptureUsageDescription string Let your approved Strata bots see this Mac’s display.' "$task_output/Contents/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c 'Set NSScreenCaptureUsageDescription Let your approved Strata bots see this Mac’s display.' "$task_output/Contents/Info.plist"
 # Do not use --deep here: changing an engine signature would invalidate its component manifest.
 /usr/bin/codesign --force --sign - --preserve-metadata=identifier,entitlements,flags "$task_output"
 /usr/bin/codesign --verify --deep --strict "$task_output"

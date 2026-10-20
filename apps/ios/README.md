@@ -18,6 +18,7 @@ Each invitation expires after five minutes and works once. Use **New pairing cod
 - Loading and unloading models that are already installed locally.
 - Downloading catalog models on the paired Mac or a supported Strata connection, after reviewing size, storage, picture reading, and required engine steps.
 - The Mac's existing conversations, their saved message history, and current work.
+- Saved coding and computer-control bots, their provider and computer details, and bot-specific conversation history.
 - Continuing the same conversation and workspace from either device.
 - The Mac's Thinking text in an expandable panel, with a live preview and recorded duration when available.
 - Progress summaries between reply paragraphs, in the same order as the Mac.
@@ -31,6 +32,12 @@ Tap **Thinking** or **Thought for…** above a reply to read the Thinking text s
 While Chat is open in the foreground, its history and activity refresh about once per second. Other status and conversation lists refresh about every five seconds. On iOS 18 or later, scrolling back through history pauses automatic scrolling; choose **Latest** to follow new replies again. On iOS 17, use **Latest** to jump to current work; live updates leave the scroll position alone. Leaving Chat or putting the phone away does not stop the Mac's agent. Browser activity describes what the Mac is doing; it does not stream the Mac's screen. **Open page on iPhone** opens a reported web address locally.
 
 Requests go through the Mac. A configured API provider may run remotely. Earlier phone-only chats remain available under **Earlier iPhone conversations**; continuing one uses its original text-only chat path.
+
+## Work with a bot
+
+Open **Bots**, choose a bot configured on the Mac, then open one of its conversations or choose **New conversation**. New bot conversations inherit that bot's saved provider, model, computer, workspace and permissions; a message starts the work. Opening a bot does not start a task. Its conversation opens in the existing Chat screen, with shared history, available Thinking, action approvals and Stop. Existing bot history remains readable when a provider needs attention.
+
+Create bots, sign in to providers, and configure computer access in the Mac app. Provider credentials and SSH connection details stay on the Mac. Bot providers and execution computers are separate from the existing model library and Maya connections. Older Mac builds show an update message without affecting existing chats or model controls.
 
 ## Download a model
 

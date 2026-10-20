@@ -17,7 +17,7 @@ const plainSession = session => {
 export function createConversations({ directory, enabled = () => true, notify = () => {}, defaultWorkspace = () => '', validateSelection = () => {},
   execute = async () => {}, stop = async () => {}, approve = async () => {}, pending = () => [], now = () => new Date().toISOString(), clock = Date.now } = {}) {
   const file = join(directory, 'conversations.json');
-  const existingCatalog = existsSync(file);
+  let existingCatalog = existsSync(file);
   const available = () => existingCatalog || enabled();
   const requireAvailable = () => { if (!available()) throw fault(409, 'Enable Pair iPhone on the Mac to share conversations.'); };
   const entries = new Map(), deleted = new Set(), turns = new Map();
@@ -41,7 +41,7 @@ export function createConversations({ directory, enabled = () => true, notify = 
     const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
     try {
       writeFileSync(tmp, JSON.stringify({ version: 1, deleted: [...deleted], conversations: [...entries.values()].map(({ session, revision }) => ({ session, revision })) }), { mode: 0o600 });
-      chmodSync(tmp, 0o600); renameSync(tmp, file);
+      chmodSync(tmp, 0o600); renameSync(tmp, file); existingCatalog = true;
     } finally { try { unlinkSync(tmp); } catch {} }
   }
   const view = record => ({ ...copy(record.session), revision: record.revision, active: turns.has(record.session.id), status: record.status });
@@ -91,6 +91,12 @@ export function createConversations({ directory, enabled = () => true, notify = 
         entries.set(session.id, { session, revision: 0, status: null }); touch(session.id);
       } else if (!turns.has(session.id) && Number.isInteger(item.baseRevision) && item.baseRevision === existing.revision) {
         // Compare-and-swap: a stale renderer can never replace phone messages or newer tool activity.
+        if (existing.session.preferences?.botId) {
+          // Bot ownership is a host record. Renderer preferences cannot turn a bot
+          // transcript into an ordinary model chat or adopt another bot's identity.
+          session.workspace = existing.session.workspace;
+          session.preferences = copy(existing.session.preferences);
+        }
         existing.session = session; touch(session.id);
       }
       results.push({ conversation: view(entries.get(session.id)) });
@@ -98,13 +104,13 @@ export function createConversations({ directory, enabled = () => true, notify = 
     flush(); publish();
     return { results, ...list() };
   }
-  function create(selection = {}) {
+  function create(selection = {}, bot = null) {
     requireAvailable();
     validateSelection(selection);
     const at = now(), id = `s_${randomUUID()}`;
     const session = { id, title: 'New conversation', defaultTitle: true, createdAt: at, updatedAt: at,
-      messages: [], workspace: defaultWorkspace(), tokensIn: 0, tokensOut: 0,
-      preferences: { mode: 'manual', ...(selection.remoteModel ? { remoteModel: copy(selection.remoteModel) } : {}), ...(selection.nativeModelId ? { nativeModelId: selection.nativeModelId } : {}) } };
+      messages: [], workspace: bot?.workspace ?? defaultWorkspace(), tokensIn: 0, tokensOut: 0,
+      preferences: { mode: bot?.policy ?? 'manual', ...(bot ? { botId: bot.id, botName: bot.name } : {}), ...(selection.remoteModel ? { remoteModel: copy(selection.remoteModel) } : {}), ...(selection.nativeModelId ? { nativeModelId: selection.nativeModelId } : {}) } };
     entries.set(id, { session, revision: 0, status: null }); touch(id, true);
     return detail(id);
   }
@@ -208,7 +214,7 @@ export function createConversations({ directory, enabled = () => true, notify = 
   function send(id, message) {
     if (typeof message !== 'string' || !message.trim() || message.length > 100_000) throw fault(400, 'Write a message of up to 100,000 characters.');
     const entry = requireRecord(id), before = copy(entry.session);
-    validateSelection({ remoteModel: before.preferences?.remoteModel, nativeModelId: before.preferences?.nativeModelId });
+    validateSelection({ chatId: id, botId: before.preferences?.botId, remoteModel: before.preferences?.remoteModel, nativeModelId: before.preferences?.nativeModelId });
     begin(id, message.trim());
     const turn = turns.get(id), session = copy(entry.session);
     turn.executing = false;
@@ -238,6 +244,7 @@ export function createConversations({ directory, enabled = () => true, notify = 
   }
   function preferences(id, patch) {
     const entry = requireRecord(id);
+    if (entry.session.preferences?.botId) throw fault(409, 'Edit this bot’s profile to change its provider or permissions.');
     const allowed = ['mode', 'thinking', 'thinkingBudget', 'useTools', 'agent', 'remoteModel', 'nativeModelId', 'access'];
     const next = Object.fromEntries(Object.entries(patch ?? {}).filter(([key]) => allowed.includes(key)));
     if (next.mode && !writableModes.has(next.mode)) throw fault(400, 'Choose a valid chat mode.');
@@ -247,6 +254,6 @@ export function createConversations({ directory, enabled = () => true, notify = 
     requireRecord(id); if (turns.has(id)) throw fault(409, 'Stop this conversation before deleting it.');
     entries.delete(id); deleted.add(id); touch(id, true); return { deleted: id };
   }
-  return { list, detail, sync, create, begin, record, finish, send, stop: stopTurn, approval, preferences, remove,
-    available, capture, has: id => entries.has(id), isRunning: id => turns.has(id), close() { for (const turn of turns.values()) turn.controller.abort(); flush(); publish(); } };
+  return { list, detail, sync, create, createForBot: bot => create({}, bot), begin, record, finish, send, stop: stopTurn, approval, preferences, remove,
+    available, capture, has: id => entries.has(id), botId: id => entries.get(id)?.session.preferences?.botId ?? null, isRunning: id => turns.has(id), close() { for (const turn of turns.values()) turn.controller.abort(); flush(); publish(); } };
 }

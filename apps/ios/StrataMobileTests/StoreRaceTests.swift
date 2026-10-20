@@ -465,6 +465,145 @@ final class ModelManagementTests: XCTestCase {
     }
 }
 
+@MainActor
+final class BotsTests: XCTestCase {
+    func testCatalogListsAllProvidersWithoutStartingWork() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { $0.url!.path == "/v1/bots" ? Self.catalog : nil }
+        let store = fixture.makeStore()
+        await store.refreshBots()
+        XCTAssertEqual(store.botCatalog?.providers.map(\.id), ["claude", "codex", "grok", "kimi", "ollama"])
+        XCTAssertEqual(store.botCatalog?.bots.first?.capabilityLabel, "Code & computer")
+        XCTAssertEqual(fixture.requests.map(\.path), ["/v1/bots"])
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+        XCTAssertNil(store.currentConversation)
+        XCTAssertNil(store.botsMessage)
+    }
+
+    func testBotConversationUsesSavedSettingsAndSameThinkingHistory() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { request in
+            switch request.url!.path {
+            case "/v1/bots": return Self.catalog
+            case "/v1/bots/bot_coder/conversations": return Self.botDetail
+            default: return nil
+            }
+        }
+        let store = fixture.makeStore()
+        await store.refreshBots()
+        let bot = try XCTUnwrap(store.botCatalog?.bots.first)
+        let created = await store.newBotConversation(bot)
+        XCTAssertTrue(created)
+        XCTAssertEqual(store.currentConversation?.botId, bot.id)
+        XCTAssertEqual(store.currentConversation?.id, "mac-existing")
+        XCTAssertEqual(store.currentConversation?.messages.first?.thinkingText, "Inspect the code before continuing.")
+        XCTAssertEqual(store.currentConversation?.mode, "manual")
+        let posts = fixture.requests.filter { $0.method == "POST" }
+        XCTAssertEqual(posts.map(\.path), ["/v1/bots/bot_coder/conversations"])
+        XCTAssertEqual(posts.first?.jsonBody?.count, 0, "Provider credentials and bot settings must remain on the Mac.")
+        XCTAssertNil(store.creatingBotConversationId)
+        XCTAssertFalse(store.isSelectingConversation)
+    }
+
+    func testPendingBotCreationCannotReopenAfterNewChatSelection() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { $0.url!.path == "/v1/bots" ? Self.catalog : nil }
+        let store = fixture.makeStore()
+        await store.refreshBots()
+        let pending = fixture.hold("/v1/bots/bot_coder/conversations")
+        let bot = try XCTUnwrap(store.botCatalog?.bots.first)
+        let creating = Task { await store.newBotConversation(bot) }
+        await fulfillment(of: [pending.requested], timeout: 2)
+        store.newChat()
+        pending.finish(Self.botDetail)
+        let created = await creating.value
+        XCTAssertFalse(created)
+        XCTAssertNil(store.currentConversation)
+        XCTAssertFalse(store.isSelectingConversation)
+        XCTAssertNil(store.creatingBotConversationId)
+        XCTAssertFalse(fixture.requests.contains { $0.path.hasSuffix("/messages") || $0.path.hasSuffix("/stop") })
+    }
+
+    func testDelayedCatalogCannotRestoreForgottenMac() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let store = fixture.makeStore()
+        let pending = fixture.hold("/v1/bots")
+        let refreshing = Task { await store.refreshBots() }
+        await fulfillment(of: [pending.requested], timeout: 2)
+        store.forgetMac()
+        pending.finish(Self.catalog)
+        await refreshing.value
+        XCTAssertFalse(store.isPaired)
+        XCTAssertNil(store.botCatalog)
+        XCTAssertFalse(store.isLoadingBots)
+        XCTAssertNil(store.botsMessage)
+    }
+
+    func testUnsupportedBotsDoesNotDisturbExistingSharedHistory() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { $0.url!.path == "/v1/conversations/mac-existing" ? StoreTransport.detail(active: false) : nil }
+        let store = fixture.makeStore()
+        await store.selectConversation(try StoreTransport.summary())
+        await store.refreshBots() // The fixture's unknown route returns 404.
+        XCTAssertTrue(store.botsMessage?.contains("Update Strata") == true)
+        XCTAssertEqual(store.currentConversation?.id, "mac-existing")
+        XCTAssertEqual(store.currentConversation?.messages.first?.content, "Earlier Mac history")
+        XCTAssertNil(store.error)
+    }
+
+    func testCatalogFailureKeepsLastReadableBots() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { $0.url!.path == "/v1/bots" ? Self.catalog : nil }
+        let store = fixture.makeStore()
+        await store.refreshBots()
+        let pending = fixture.hold("/v1/bots")
+        let refreshing = Task { await store.refreshBots() }
+        await fulfillment(of: [pending.requested], timeout: 2)
+        pending.finish(["error": "Bots are unavailable. Open Strata on your Mac and try again."], status: 503)
+        await refreshing.value
+        XCTAssertEqual(store.botCatalog?.bots.first?.id, "bot_coder")
+        XCTAssertTrue(store.botsMessage?.contains("unavailable") == true)
+        XCTAssertFalse(store.isLoadingBots)
+    }
+
+    func testHistoryGroupsByBotIdentityAndPreservesLegacySummaryDecoding() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { request in
+            switch request.url!.path {
+            case "/v1/bots": return Self.catalog
+            case "/v1/conversations": return ["conversations": [
+                ["id": "mac-existing", "title": "Older bot conversation", "active": false],
+                ["id": "bot-new", "title": "New bot conversation", "active": true, "botId": "bot_coder"],
+                ["id": "other", "title": "Other conversation", "active": false, "botId": "other-bot"],
+            ]]
+            case "/v1/conversations/mac-existing": return Self.botDetail
+            default: return nil
+            }
+        }
+        let store = fixture.makeStore()
+        await store.refreshBots(); await store.refresh()
+        let bot = try XCTUnwrap(store.botCatalog?.bots.first)
+        XCTAssertEqual(store.botConversations(bot).map(\.id), ["mac-existing", "bot-new"])
+        XCTAssertNil(store.conversations.first?.botId, "Older summaries remain decodable, with catalog conversation IDs as fallback.")
+    }
+
+    private static var catalog: [String: Any] {
+        ["bots": [["id": "bot_coder", "name": "Coder", "provider": "codex", "model": "default", "capabilities": "both", "policy": "manual",
+                   "execution": ["kind": "local"], "conversations": ["mac-existing"]]],
+         "providers": ["claude", "codex", "grok", "kimi", "ollama"].map { ["id": $0, "name": $0.capitalized, "available": true, "detail": "Ready"] as [String: Any] },
+         "computers": [["id": "local", "name": "Your Mac", "kind": "local", "available": true, "detail": "Ready"]]]
+    }
+    private static var botDetail: [String: Any] {
+        var result = StoreTransport.detail(active: false)
+        var conversation = result["conversation"] as! [String: Any]
+        conversation["botId"] = "bot_coder"
+        var messages = conversation["messages"] as! [[String: Any]]
+        messages[0]["reasoning"] = "Inspect the code before continuing."
+        conversation["messages"] = messages; result["conversation"] = conversation
+        return result
+    }
+}
+
 private final class StoreTransport {
     static let status: [String: Any] = ["macName": "Fixture Mac", "hostConnected": true, "engineState": "idle", "activeRequests": 0]
     let host = "fixture-\(UUID().uuidString.lowercased()).invalid"

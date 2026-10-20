@@ -45,6 +45,7 @@ The default private data folder is `~/Library/Application Support/Strata Compani
 - Review and start a catalog model download on the Mac or a saved Strata computer that supports model management. The preview names the computer, download size, free and needed disk space, picture-reading choice, and any engine or unload effects. Starting is a separate action after that preview. Downloads do not automatically load a model. Progress and **Stop download** apply to the selected download; completed files are kept for a later retry. A retry requires a new preview. The integrated Mac pairing service must be enabled, and the target's management access must be configured on the Mac. Older hosts and ordinary inference-only API connections show that management is unavailable.
 - Read and continue the Mac's conversations. Messages, browser actions and other tool cards update while the Chat tab is open. Existing chats keep their model, working folder and permission mode. New chats use the phone's selected model and start in Manual mode.
 - Answer a pending action with **Allow** or **Deny**, or stop the selected conversation. Closing the phone app leaves Mac agent work running. Stop is an explicit action.
+- List saved coding and computer-control bots and open a shared conversation for a selected bot. The bot's saved Mac settings are authoritative. Creating the empty conversation does not submit a prompt or start tools. Provider sign-ins, credentials and execution connection settings stay on the Mac; the phone cannot create or edit them.
 
 The Mac imports its existing web-view history into a private host conversation store. If you enable pairing for the first time while a Mac reply is already running, that conversation is shared after the current reply finishes; keep its Mac window open until then. Both screens use the same conversation IDs. Versioned updates prevent a stale desktop cache from replacing newer phone messages. Removing a conversation on the Mac also removes it from the shared catalog.
 
@@ -76,6 +77,8 @@ All routes use HTTPS. The iPhone must compare the leaf certificate's SHA-256 DER
 | POST | `/v1/model-management/targets/:targetId/downloads` | `{planId}` → 202 with `{job}`; starts only the reviewed download |
 | POST | `/v1/model-management/targets/:targetId/downloads/:jobId/cancel` | `{}` → `{job}`; stops that device's relevant download |
 | GET | `/v1/conversations` | Shared Mac conversation summaries and `activeChatId` |
+| GET | `/v1/bots` | Public saved bots, provider availability and computer descriptions; no credentials or SSH settings |
+| POST | `/v1/bots/:id/conversations` | `{}` → `{conversation,pending}`; creates an empty shared conversation with the saved bot settings |
 | POST | `/v1/conversations` | `{}` → `{conversation,pending}`; creates a shared conversation |
 | GET | `/v1/conversations/:id` | `{conversation,pending}` with messages, tool cards and active state |
 | POST | `/v1/conversations/:id/messages` | `{message}` → 202 with current conversation; work continues on Mac |
@@ -88,6 +91,8 @@ All routes use HTTPS. The iPhone must compare the leaf certificate's SHA-256 DER
 | POST | `/v1/requests/:id/cancel` | Stops a request ID previously streamed to this device |
 
 Shared conversations are polled while the phone is active; sending a message returns promptly and never ties agent execution to the phone connection. Shared tool cards retain the Mac's readable verbs, targets, states and results. The API does not accept model, folder, permissions or history overrides when continuing a conversation.
+
+Bot conversations use those same conversation routes, IDs and Thinking projection. Conversation summaries and details carry an optional `botId`. The bot catalog exposes only identity, provider/model, capability, permission mode, execution kind and conversation IDs. Detailed provider configuration, instructions, computer addresses, usernames and keys are excluded. Bot listing is read-only; bot conversation creation accepts only an empty object. Both routes recheck pairing after awaiting the host, so a removed device cannot receive an in-flight private result.
 
 The earlier phone-only chat route uses SSE events named `frame`, with a JSON `data:` line. The first frame has `type: "session"`, `chatId`, and `sessionId`. Text deltas use `text`. An interrupted legacy stream without a host `done` frame emits an error. A successful model `load` can return 202 while the Mac completes loading.
 

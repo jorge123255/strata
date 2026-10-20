@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 export const ROUTES = [
   'setup',
   'chat',
+  'bots',
   'models',
   'tuning',
   'serving',

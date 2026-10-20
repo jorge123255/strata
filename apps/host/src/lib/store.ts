@@ -306,6 +306,7 @@ export function setSettingsSection(settingsSection: AppState['settingsSection'])
 /** Choose the open chat's model: an API model, or null for the local one. Other chats keep theirs. */
 export function selectRemoteModel(remoteModel: RemoteModelSelection | null) {
   if (state.streaming) return;
+  if (state.sessions.find(session => session.id === state.activeSession)?.preferences?.botId) return;
   if (remoteModel && !state.providers?.connections.some(c => c.id === remoteModel.connectionId && c.models.some(m => m.id === remoteModel.modelId))) return;
   set({ remoteModel });
   const id = state.activeSession;
@@ -1022,6 +1023,7 @@ const sharedActive = new Set<string>();
 let sharedReady = false;
 let sharedSyncTimer: ReturnType<typeof setTimeout> | null = null;
 let sharedSyncPending = Promise.resolve();
+const botSends = new Set<string>();
 const sessionSnapshot = (session: Session) => { const { revision, active, status, ...snapshot } = session; return snapshot; };
 function cacheSessions(sessions: Session[]) {
   try { localStorage.setItem(SESSION_KEY, JSON.stringify(sessions)); } catch { /* Offline cache may be full; the host retains history. */ }
@@ -1044,6 +1046,11 @@ function applySharedConversation(data: { conversation?: Session; deleted?: strin
   cacheSessions(sessions);
   set({ sessions, streaming: !!state.activeSession && (liveTurns.has(state.activeSession) || sharedActive.has(state.activeSession)), liveChats: new Set([...liveTurns.keys(), ...sharedActive]).size });
   document.documentElement.dataset.streaming = state.liveChats ? 'true' : 'false';
+}
+/** Adopt the canonical host conversation when opening a bot from its profile. */
+export function adoptSharedConversation(conversation: Session) {
+  applySharedConversation({ conversation });
+  if (!sharedReady) void initializeSharedConversations().catch(() => undefined);
 }
 async function initializeSharedConversations() {
   const availability = await api.get<{ available?: boolean }>('/api/companion/conversations');
@@ -1105,6 +1112,7 @@ export function newSession(): Session {
 
 export function setChatPreferences(id: string | undefined, preferences: NonNullable<Session['preferences']>) {
   const sessionId = id ?? newSession().id;
+  if (state.sessions.find(session => session.id === sessionId)?.preferences?.botId) return;
   patchSession(sessionId, s => ({ ...s, preferences: { ...s.preferences, ...preferences } }));
   // A mode change applies to the very next tool call of a turn that is already running (a goal and its helpers included).
   if (sharedReady) void api.patch<{ conversation: Session }>(`/api/companion/conversations/${encodeURIComponent(sessionId)}/preferences`, preferences).then(applySharedConversation).catch(() => undefined);
@@ -1430,6 +1438,8 @@ export async function retryLast(messageId?: string) {
   const end = messageId ? source.messages.findIndex(m => m.id === messageId) : source.messages.length - 1;
   const user = source.messages.slice(0, end + 1).reverse().find(m => m.role === 'user');
   if (!user) return;
+  // Native provider sessions own their history. Asking again appends a new turn.
+  if (source.preferences?.botId) { await sendMessage(user.content); return; }
   const prompt = rewindTo(user.id);
   if (prompt !== null) {
     // Retry sends immediately; only Edit should leave the prompt in the composer.
@@ -1450,6 +1460,7 @@ export function branchFrom(messageId: string): string | null {
   if (!sessionId) return null;
   const source = state.sessions.find((s) => s.id === sessionId);
   if (!source) return null;
+  if (source.preferences?.botId) { pushToast('info', 'Start a new bot conversation', 'Native bot history is retained by its provider. Open Bots to start a separate conversation.'); return null; }
   const at = source.messages.findIndex((m) => m.id === messageId);
   if (at < 0) return null;
 
@@ -1621,7 +1632,35 @@ export async function approvePlan(sessionId: string, planId: string) {
 /** "Start as goal" (and Resume on a paused plan): the host streams the run like any chat turn. */
 export async function startPlanGoal(planId: string) { await sendMessage('', { planId }); }
 
+async function sendBotMessage(botSession: Session, text: string) {
+  const message = text.trim();
+  if (!message) return false;
+  if (botSends.has(botSession.id) || sharedActive.has(botSession.id) || botSession.active) {
+    pushToast('info', 'This bot is still working', 'Wait for its response or stop this conversation before sending another message.');
+    return false;
+  }
+  if (pendingChatPhotos(botSession.id).length) {
+    pushToast('info', 'Send text to this bot', 'Image attachments are not available for this bot transport. You can open images in preview.');
+    return false;
+  }
+  botSends.add(botSession.id);
+  sharedActive.add(botSession.id);
+  markTurn(botSession.id, null);
+  try {
+    const result = await api.post<{ conversation: Session }>(`/api/companion/conversations/${encodeURIComponent(botSession.id)}/messages`, { message });
+    applySharedConversation(result);
+    return true;
+  } catch (cause) {
+    sharedActive.delete(botSession.id);
+    markTurn(botSession.id, null);
+    pushToast('error', 'The bot could not start', cause instanceof Error ? cause.message : String(cause));
+    return false;
+  } finally { botSends.delete(botSession.id); }
+}
+
 export async function sendMessage(text: string, options: { fromLoop?: boolean; goalAction?: 'resume'; planId?: string; shown?: string; title?: string; markdown?: boolean } = {}) {
+  const botSession = state.sessions.find(session => session.id === state.activeSession && session.preferences?.botId);
+  if (botSession) return sendBotMessage(botSession, text);
   if (state.streaming) {
     // Typed while the assistant works: behind a running goal it waits in the queue; otherwise there is nothing to do but wait.
     const waiting = state.activeSession, line = text.trim();
@@ -1879,7 +1918,11 @@ function answerAgentTool(sessionId: string, messageId: string, tool: ToolCall, a
     ...s, messages: s.messages.map(m => m.id === messageId ? { ...m, tools: (m.tools ?? []).map(t => t.id === tool.id ? { ...t, state: state_, ...(result !== undefined ? { result } : {}) } : t) } : m),
   }));
   setState(approved ? 'running' : 'denied');
-  api.post('/api/chat/approval', { sessionId, toolId: tool.id, decision: approved ? 'approve' : 'deny' }).catch(error => {
+  const bot = state.sessions.find(session => session.id === sessionId)?.preferences?.botId;
+  const path = bot ? `/api/companion/conversations/${encodeURIComponent(sessionId)}/approval` : '/api/chat/approval';
+  api.post<{ conversation?: Session }>(path, { ...(bot ? {} : { sessionId }), toolId: tool.id, decision: approved ? 'approve' : 'deny' }).then(result => {
+    if (bot && result.conversation) applySharedConversation(result);
+  }).catch(error => {
     setState('proposed');
     pushToast('error', 'That answer was not delivered', error instanceof Error ? error.message : undefined);
   });

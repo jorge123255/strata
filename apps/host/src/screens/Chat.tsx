@@ -7,6 +7,7 @@ import { timeSkipPrompt, timeSkipTabId, type TimeSkipRun } from '../lib/time-ski
 import { TimeSkipWorking } from '../components/TimeSkipWorking';
 import { ChatToolbar } from '../components/ChatToolbar';
 import { ChatTelemetry } from '../components/TelemetryPopover';
+import { href } from '../lib/router';
 import { ArtifactCard } from '../components/ArtifactCard';
 import { ChatMedia } from '../components/ChatMedia';
 import { closePreviewTab } from '../lib/preview-tabs';
@@ -59,12 +60,15 @@ export function ChatScreen() {
        reply streams into it. Without this, switching away from a session that
        answered you would mark it unread. */
     const messageCount = session?.messages.length ?? 0;
+    const botId = session?.preferences?.botId;
     useEffect(() => {
         if (session && session.id === activeId && !streaming)
             markRead(session.id);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [session?.id, messageCount, streaming]);
     const [draft, setDraft] = useState('');
+    const draftState = useRef({ sessionId: session?.id, draft });
+    draftState.current = { sessionId: session?.id, draft };
     const draftKey = `strata.chat-draft.${session?.id ?? 'new'}`;
     useEffect(() => {
         setDraft(sessionStorage.getItem(draftKey) ?? '');
@@ -351,7 +355,7 @@ export function ChatScreen() {
         return () => window.removeEventListener('keydown', onKey);
     }, [focusMode]);
     const chatNative = useNative(), queuedPhotos = useChatPhotos(session?.id);
-    const readyForChat = !!loaded || !!chatNative?.instances.some(i => i.status === 'ready');
+    const readyForChat = !!botId || !!loaded || !!chatNative?.instances.some(i => i.status === 'ready');
     useEffect(() => {
         if (setupVisible || !readyForChat || messageCount)
             return;
@@ -362,6 +366,10 @@ export function ChatScreen() {
         const text = draft.trim();
         if (!text && !queuedPhotos.length)
             return;
+        if (streaming && botId) {
+            pushToast('info', 'This bot is still working', 'Wait for its response or stop this conversation before sending another message.');
+            return;
+        }
         if (streaming) {
             // Typed while a goal runs: it waits in the queue, shown under the conversation. With no goal running there is nothing to queue behind.
             if (!text || !session)
@@ -375,13 +383,19 @@ export function ChatScreen() {
             pushToast('info', 'Add a prompt after /time-skip');
             return;
         }
-        if (timeSkip === null) {
+        if (timeSkip === null && !botId) {
             // No model to answer: say so plainly (or show the download), and do not start a run.
             const why = noModelNotice(chatNative ?? null, { libraryLoaded: !!loaded });
             if (why) { pushToast('info', tr(why.title), tr(why.message)); return; }
         }
         updateDraft('');
-        void sendMessage(text);
+        const sentSessionId = session?.id;
+        void sendMessage(text).then(sent => {
+            if (sent === false) {
+                sessionStorage.setItem(`strata.chat-draft.${sentSessionId ?? 'new'}`, text);
+                if (draftState.current.sessionId === sentSessionId && !draftState.current.draft) updateDraft(text);
+            }
+        });
     }
     function onComposerKey(_e: React.KeyboardEvent) { }
     if (!session) {
@@ -425,7 +439,7 @@ export function ChatScreen() {
         }}>
 
             <div className="chat__inner">
-              {tr(session.messages.length === 0 ? (session.statsAvailable === false ? <p className="small muted">{tr("Editing from an earlier message. Update the prompt below.")}</p> :
+              {tr(session.messages.length === 0 ? (botId ? <div className="bot-chat-empty"><Icon name="experts" size={34}/><h2 className="h3">{session.preferences?.botName ?? tr('Your bot')}</h2><p className="small">{tr('Send a message to start work. Replies, supported thinking and tool activity stay in this conversation on your Mac and paired iPhone.')}</p><a className="small" href={href('bots', botId)}>{tr('Open bot profile')}</a></div> : session.statsAvailable === false ? <p className="small muted">{tr("Editing from an earlier message. Update the prompt below.")}</p> :
             <UsageDashboard loaded={!!loaded}/>) : (session.messages.map((m, i) => (<Message key={m.id} message={m} isLast={i === session.messages.length - 1} onEditPrompt={editPrompt} onPreview={openPreview} onOpenTimeSkip={openTimeSkip} timeSkipDone={!!allTimeSkipRuns.find(r => r.id === m.timeSkipId)?.completedAt} timeSkipReal={!!allTimeSkipRuns.find(r => r.id === m.timeSkipId)?.job} timeSkipRun={allTimeSkipRuns.find(r => r.id === m.timeSkipId)} onOpenLink={openLink}/>))))}
               <QueuedMessages chatId={session.id}/>
             </div>
@@ -497,14 +511,15 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
 }) {
     const clearDraft = useCallback(() => setDraft(''), [setDraft]);
     const photos = useChatPhotos(session?.id), native = useNative();
-    const canChat = loaded || native?.instances.some(i => i.status === 'ready');
+    const bot = !!session?.preferences?.botId;
+    const canChat = bot || loaded || native?.instances.some(i => i.status === 'ready');
     const commands = useSlashCommands(clearDraft, setDraft);
     const [cursor, setCursor] = useState(0);
     const [fileError, setFileError] = useState('');
     const [slashOpen, setSlashOpen] = useState(false);
     const [slashDismissed, setSlashDismissed] = useState(false);
     const slashHostRef = useRef<HTMLDivElement>(null);
-    const slashQuery = slashDismissed ? null : slashOpen ? '' : draft.startsWith('/') && !/\s/.test(draft) ? draft.slice(1) : null;
+    const slashQuery = bot || slashDismissed ? null : slashOpen ? '' : draft.startsWith('/') && !/\s/.test(draft) ? draft.slice(1) : null;
     const matches = slashQuery === null ? [] : commands.filter((c) => c.label.slice(1).startsWith(slashQuery.toLowerCase()));
     useEffect(() => { setSlashDismissed(false); }, [draft, session?.id]);
     useEffect(() => {
@@ -526,11 +541,10 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
       <div className="composer">
         <div className="composer__inner">
           {tr(fileError ? <ErrorNotice message={fileError} action={tr("Dismiss")} onRetry={() => setFileError('')}/> : null)}
-          <FolderChip chatId={session?.id} disabled={streaming}/>
-          <GoalBar chatId={session?.id}/>
+          {!bot ? <><FolderChip chatId={session?.id} disabled={streaming}/><GoalBar chatId={session?.id}/></> : null}
           <div className="st-composer" style={{ boxShadow: 'var(--st-sh-bar)' }}>
           {tr(photos.length ? <ChatPhotos photos={photos} onRemove={id => removeChatPhoto(id, session?.id)}/> : null)}
-          <textarea ref={textareaRef} rows={1} value={draft} aria-label={tr("Message Strata")} placeholder={tr(canChat ? 'Message Strata…' : 'Try /time-skip, or load a model to chat…')} onFocus={() => setSlashDismissed(false)} onPaste={(e) => {
+          <textarea ref={textareaRef} rows={1} value={draft} aria-label={tr("Message Strata")} placeholder={tr(bot ? 'Message your bot…' : canChat ? 'Message Strata…' : 'Try /time-skip, or load a model to chat…')} onFocus={() => setSlashDismissed(false)} onPaste={(e) => {
             // A picture on the clipboard (a screenshot, a copied image) is attached like a dropped file; text pastes as usual.
             const files = pastedFiles(e.clipboardData);
             if (!files.length)
@@ -576,7 +590,7 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
             {tr(streaming ? (<Btn variant="secondary" size="sm" icon="stop" onClick={stopStreaming}>{tr("Stop")}</Btn>) : (<Btn variant="primary" size="sm" icon="send" disabled={(!draft.trim() && !photos.length) || draft.trim() === '/' || (!canChat && timeSkipPrompt(draft) === null)} onClick={onSubmit}>{tr("Send")}</Btn>))}
           </div>
         </div>
-        <ChatTelemetry session={session}/>
+        {!bot ? <ChatTelemetry session={session}/> : null}
         </div>
       </div>
       {/* Outside the composer's glass on purpose: a material sampling another
@@ -605,6 +619,7 @@ function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOp
 }) {
     const streaming = useStore(s => s.streaming);
     const activeSession = useStore(s => s.activeSession);
+    const bot = useStore(s => !!s.sessions.find(session => session.id === s.activeSession)?.preferences?.botId);
     const hostLive = useStore(s => s.connection !== 'offline');
     const liveStatus = useLiveStatus(m.role === 'assistant' && m.streaming ? activeSession : null);
     // A reply that proposed a plan shows the plan card in place of its closing text (which is the plan in prose).
@@ -620,12 +635,12 @@ function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOp
           <time dateTime={m.at} title={tr(new Date(m.at).toLocaleString(localeTag()))}>{tr(sentTime)}</time>
           <span className="st-msg__actions">
             <IconBtn name="copy" title={tr("Copy message")} onClick={() => void navigator.clipboard.writeText(m.content)}/>
-            <IconBtn name="refresh" title={tr("Rewind to here")} disabled={streaming} onClick={() => {
+            {!bot ? <IconBtn name="refresh" title={tr("Rewind to here")} disabled={streaming} onClick={() => {
                 const prompt = rewindTo(m.id);
                 if (prompt !== null)
                     onEditPrompt(prompt);
-            }}/>
-            <MessageMenu label={tr("More message actions")}><button role="menuitem" className="menu__item" onClick={() => branchFrom(m.id)}><Icon name="branch"/>{tr("Branch from here")}</button></MessageMenu>
+            }}/> : null}
+            {!bot ? <MessageMenu label={tr("More message actions")}><button role="menuitem" className="menu__item" onClick={() => branchFrom(m.id)}><Icon name="branch"/>{tr("Branch from here")}</button></MessageMenu> : null}
           </span>
         </div>
       </div>);
@@ -664,7 +679,7 @@ function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOp
             <MessageMenu label={tr("More response actions")}>
               {tr(!isLast ? <><button role="menuitem" className="menu__item" onClick={() => void navigator.clipboard.writeText(m.content)}>{tr("Copy response")}</button><button role="menuitem" className="menu__item" onClick={() => void retryLast(m.id)}>{tr("Ask again")}</button></> : null)}
               {tr(isLast ? <button role="menuitem" className="menu__item" onClick={() => void continueLast()}>{tr("Continue")}</button> : null)}
-              <button role="menuitem" className="menu__item" onClick={() => branchFrom(m.id)}>{tr("Branch from here")}</button>
+              {!bot ? <button role="menuitem" className="menu__item" onClick={() => branchFrom(m.id)}>{tr("Branch from here")}</button> : null}
               {tr(m.tokens || m.tps || m.durationMs ? <p className="xs muted response-stats">{tr(m.tokens ? `${tokens(m.tokens)} tokens` : '')}{tr(m.tps ? ` · ${tps(m.tps)} tok/s` : '')}{tr(m.durationMs ? ` · ${duration(m.durationMs)}` : '')}{tr(m.demo ? ' · Example' : '')}</p> : null)}
             </MessageMenu>
           </span>
