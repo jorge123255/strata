@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { api } from '../lib/client';
 import { navigate, useLocation } from '../lib/router';
+import { useMedia } from '../lib/responsive';
 import { adoptSharedConversation, selectSession, useStore } from '../lib/store';
 import { sessionTitle } from '../lib/session-title';
 import { relTime } from '../lib/format';
@@ -23,9 +24,10 @@ const WORK_TABS: { id: BotsWorkTab; label: string; icon: 'clock' | 'shield' | 'f
 
 export function BotsScreen() {
   const location = useLocation(), sessions = useStore(state => state.sessions);
+  const compact = useMedia('(max-width: 1279px)');
   const workspace = useStore(state => state.workspaces.find(item => item.id === state.activeWorkspace)?.path ?? state.workspacePath);
   const [snapshot, setSnapshot] = useState<BotsSnapshot | null>(null), [error, setError] = useState(''), [loading, setLoading] = useState(true), [pending, setPending] = useState('');
-  const [selectedChats, setSelectedChats] = useState<Record<string, string>>({}), [showProfile, setShowProfile] = useState(true), [showComputer, setShowComputer] = useState(false);
+  const [selectedChats, setSelectedChats] = useState<Record<string, string>>({}), [showProfile, setShowProfile] = useState(() => !compact), [showComputer, setShowComputer] = useState(false);
   const [step, setStep] = useState(0), [newDraft, setNewDraft] = useState<BotDraft>(() => newBotDraft(workspace)), [customLook, setCustomLook] = useState(false);
   const [editing, setEditing] = useState<{ bot: Bot; draft: BotDraft } | null>(null), [editorError, setEditorError] = useState(''), [configBusy, setConfigBusy] = useState(false);
   const [opening, setOpening] = useState<{ bot: Bot; execution: BotExecution; workspace: string; modelId: string } | null>(null), [chatError, setChatError] = useState(''), [computerBusy, setComputerBusy] = useState(false);
@@ -78,6 +80,7 @@ export function BotsScreen() {
     }
   }, [route, selected?.id, chat?.id]);
   useEffect(() => { setShowComputer(false); }, [selected?.id]);
+  useEffect(() => { if (compact) setShowProfile(false); }, [compact]);
   useEffect(() => {
     if (!computerKey || !selected || showComputer) return;
     let current = true, reading = false;

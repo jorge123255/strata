@@ -217,7 +217,17 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
   await page.getByRole('option', { name: 'Existing work', exact: true }).click();
   assert.equal(await page.getByTestId('shared-chat').getAttribute('data-session'), 'existing-chat');
   await page.evaluate(() => { document.documentElement.dataset.theme = 'light'; }); await screenshot('embedded-bots-light');
-  await page.setViewportSize({ width: 390, height: 844 }); await screenshot('embedded-bots-mobile');
+  await page.setViewportSize({ width: 390, height: 844 });
+  const compactProfile = page.getByRole('complementary', { name: 'Project partner profile', exact: true });
+  await compactProfile.waitFor({ state: 'hidden' });
+  assert.equal(await page.getByTestId('shared-chat').getAttribute('data-session'), 'existing-chat', 'Entering a compact window keeps the selected chat.');
+  await screenshot('embedded-bots-mobile');
+  await page.getByRole('button', { name: 'Show profile', exact: true }).click();
+  await compactProfile.waitFor();
+  await screenshot('embedded-bots-mobile-profile');
+  await page.getByRole('button', { name: 'Hide profile', exact: true }).click();
+  await compactProfile.waitFor({ state: 'hidden' });
+  assert.equal(await page.getByTestId('shared-chat').getAttribute('data-session'), 'existing-chat', 'Explicit profile controls preserve the conversation.');
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'The embedded section fits a narrow view.');
   assert.equal(calls.some(call => ['/messages', '/model-providers', '/native', '/desktop'].some(segment => call.path.includes(segment)) || call.path.includes('/computer/') && ['start', 'takeover', 'control', 'stop'].some(action => call.path.endsWith('/' + action))), false, 'No provider prompt, serving change, app launch or VM was started.');
   assert.deepEqual(errors, []); assert.deepEqual(blocked, []); assert.deepEqual(unexpected, []);
