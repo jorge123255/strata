@@ -24,6 +24,7 @@ if [[ "$task_app_version" != "$task_carrier_version" ]]; then
   exit 1
 fi
 /usr/bin/codesign --verify --deep --strict "$task_source"
+/usr/bin/codesign --verify --strict "$task_control/python/bin/python3.12"
 node "$task_desktop/scripts/stage-companion.mjs"
 npm --prefix "$task_repo/apps/host" run build
 mkdir -p "${task_output:h}"
@@ -39,7 +40,8 @@ if [[ "${task_control:A}" != "${task_resources}/control" ]]; then
   rm -rf "$task_resources/control"
   /usr/bin/ditto --noqtn "$task_control" "$task_resources/control"
 fi
-"$task_resources/control/python/bin/python3" -I -B - "$task_repo" "$task_resources/control" "$task_source/Contents/Resources/control" <<'PY'
+# Do not execute a nested binary inside the copied app before its changed enclosing bundle is re-signed.
+"$task_control/python/bin/python3" -I -B - "$task_repo" "$task_resources/control" "$task_source/Contents/Resources/control" <<'PY'
 from pathlib import Path
 import hashlib
 import json
