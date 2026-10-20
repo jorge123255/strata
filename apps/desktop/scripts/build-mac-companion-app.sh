@@ -21,9 +21,11 @@ if ! /bin/cp -cRX "$task_source" "$task_output" 2>/dev/null; then
 fi
 task_resources="$task_output/Contents/Resources"
 # Only the new copy's UI and host are replaced. Its engines and signed components stay byte-identical.
-rm -rf "$task_resources/host/dist" "$task_resources/host/server"
+rm -rf "$task_resources/host/dist" "$task_resources/host/server" "$task_resources/host/python"
 /usr/bin/ditto "$task_repo/apps/host/dist" "$task_resources/host/dist"
 /usr/bin/ditto "$task_repo/apps/host/server" "$task_resources/host/server"
+mkdir -p "$task_resources/host/python"
+cp "$task_repo/apps/host/python/remote_model_manager.py" "$task_resources/host/python/remote_model_manager.py"
 cp "$task_repo/apps/host/package.json" "$task_resources/host/package.json"
 /usr/bin/ditto "$task_desktop/src-tauri/resources/companion-bridge" "$task_resources/companion-bridge"
 /usr/libexec/PlistBuddy -c 'Add NSLocalNetworkUsageDescription string Pair your iPhone with Strata on this Mac over an encrypted connection.' "$task_output/Contents/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c 'Set NSLocalNetworkUsageDescription Pair your iPhone with Strata on this Mac over an encrypted connection.' "$task_output/Contents/Info.plist"
