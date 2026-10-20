@@ -59,6 +59,8 @@ import { createChatFolders, chatRootOf, openFile, resolveChatFile, previewFile, 
 import { createLlmProxy, samplingFromExpert } from './agent/llm-shape.mjs';
 import { checkUpdates, checkComponentUpdates } from './updates.mjs';
 import { createAppUi } from './app-ui.mjs';
+import { createCompanionManager } from './companion.mjs';
+import { createCompanionRoutes } from './companion-routes.mjs';
 import { appVersionFrom, appVersionToShow } from './app-version.mjs';
 import { createImageModels } from './image-models.mjs';
 import { createRuntimeModels } from './runtime-models.mjs';
@@ -90,6 +92,13 @@ const DIST = process.env.STRATA_DIST
     : join(ROOT, 'dist');
 const PORT = Number(process.env.STRATA_PORT ?? 8791);
 const HOST = process.env.STRATA_BIND ?? '127.0.0.1';
+const companion = createCompanionManager({
+  hostPort: PORT,
+  directory: process.env.STRATA_COMPANION_DIR,
+  port: Number(process.env.STRATA_COMPANION_PORT ?? 8787),
+  adminPort: Number(process.env.STRATA_COMPANION_ADMIN_PORT ?? 8788),
+});
+const companionRoutes = createCompanionRoutes({ manager: companion, port: PORT });
 /* The folder chats work in when nothing else is chosen. It is never the app's own folder (the host is started inside its install
    directory, so `process.cwd()` was "host" in the sidebar and the agent could read and write the app): the person's own
    Documents\Strata\Workspace (the models folder is next to it, not in it), created on first use, unless STRATA_WORKSPACE names one. */
@@ -912,6 +921,7 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('access-control-allow-origin', '*');
   res.setHeader('access-control-allow-headers', 'content-type, authorization, x-api-key, x-strata-client');
   res.setHeader('access-control-allow-methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+  if (path === '/api/companion' || path.startsWith('/api/companion/')) return companionRoutes(req, res, url);
   if (method === 'OPTIONS') {
     res.writeHead(204);
     res.end();
@@ -2147,6 +2157,8 @@ async function staticFile(req, res, path) {
 /* ------------------------------------------------------------------ start --- */
 
 server.listen(PORT, HOST, () => {
+  // Restore only a pairing listener the person explicitly enabled in this app.
+  void companion.restore().catch(() => {});
   if (process.send) process.send({ type: 'strata-ready', port: PORT });
   // Engines a lost owner left behind (an earlier crash, an older version): ended after a PID + start time + command-line check.
   if (control && process.env.STRATA_PACKAGED === '1') control.cleanup().catch(() => {});
@@ -2158,7 +2170,7 @@ const shutdown = async () => {
   clearInterval(taskTimer);tasks.close();
   const timeout=setTimeout(()=>process.exit(0),control?45000:10000);timeout.unref();   // stopping an engine through Control: drained (15 s), then ended; the shell's deadline is longer
   server.close();server.closeAllConnections?.();
-  await Promise.allSettled([localShare.stop(),cloudflare.stop(),native.close(),agent.close()]);
+  await Promise.allSettled([companion.close(),localShare.stop(),cloudflare.stop(),native.close(),agent.close()]);
   process.exit(0);
 };
 // Every ordinary way of being told to stop takes the clean path: Ctrl+C, kill, the terminal closing (SIGHUP), Ctrl+Break.

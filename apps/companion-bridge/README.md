@@ -1,11 +1,11 @@
 # Strata iPhone companion bridge
 
-The bridge connects the iPhone app to the Strata app already running on your Mac. It is a separate, opt-in process. Starting and quitting it does not restart Strata, change its address, download a model, or stop its engine.
+The bridge connects the iPhone app to Strata on your Mac. The desktop app can run it inside its existing host after you enable **Pair iPhone**. The optional standalone helper runs it as a separate process. Enabling or disabling pairing does not restart Strata, change its address, download a model, or stop its engine.
 
 ## Connect your iPhone
 
 1. Open Strata on the Mac. Put your Mac and iPhone on the same trusted Wi-Fi network.
-2. Open **Strata Companion** on the Mac. Its pairing window shows a QR code and a six-digit code.
+2. In the Mac Strata app, choose **Pair iPhone** in the sidebar or **Settings → iPhone**, then enable pairing. The panel shows a QR code and a six-digit code. The standalone **Strata Companion** app is an optional alternative; run one pairing service at a time.
 3. Open Strata on iPhone and scan the QR code in **Pair with Mac**, or paste the full invitation. The invitation includes the Mac's certificate fingerprint, address, and one-use code. A six-digit code by itself does not establish certificate trust.
 4. Choose one of your Mac's configured API models, or an installed local model, in **Models**. Send a message from **Chats**.
 

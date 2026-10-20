@@ -255,7 +255,7 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
   const csrf = randomBytes(24).toString('base64url');
   const adminPath = `/admin/${adminSecret}`;
   const qrFile = join(directory, 'pairing.png');
-  let networkPort, localPort, closing = false;
+  let networkPort, localPort, closing = false, closed;
   let qrReady = false;
   const saveChats = () => privateJSON(chatFile, chats);
   const invitation = () => {
@@ -278,6 +278,31 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
       await run(existsSync(helper) ? helper : '/usr/bin/swift', [...(existsSync(helper) ? [] : [join(here, 'qr.swift')]), invitation(), qrFile], { timeout: 30_000, maxBuffer: 20_000 });
       chmodSync(qrFile, 0o600); qrReady = true;
     } catch { /* Manual invitation remains available without the Swift command line tools. */ }
+  }
+  // Local in-process controls let the desktop app own pairing without opening the
+  // standalone admin page. Never return the certificate key, session hashes or tokens.
+  function localState() {
+    const { available, expiresAt } = adminState();
+    return {
+      invitation: {
+        url: invitation(), code: authority.code, fingerprint: identity.fingerprint,
+        address: new URL(invitation()).searchParams.get('url'), expiresAt, available,
+        qrAvailable: available && qrReady && !closing,
+      },
+      devices: authority.publicSessions().map(({ id, deviceName, createdAt }) => ({ id, deviceName, createdAt })),
+    };
+  }
+  async function rotateInvitation() {
+    if (closing) throw fail(409, 'Enable iPhone pairing first.');
+    authority.rotate(); await updateQR();
+    return localState();
+  }
+  function revokeSession(sessionId) {
+    if (closing) throw fail(409, 'Enable iPhone pairing first.');
+    if (typeof sessionId !== 'string' || !/^[a-f0-9]{32}$/.test(sessionId)) throw fail(400, 'Choose a paired device.');
+    authority.revoke(sessionId);
+    for (const request of active.values()) if (request.owner === sessionId) request.abort.abort();
+    return localState();
   }
   async function snapshot() {
     const [library, native, monitor, serving, providers] = await Promise.all([
@@ -314,6 +339,7 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
       if (url.search || !path.startsWith('/v1/')) throw fail(404, 'Unknown companion endpoint.');
       if (path === '/v1/pair' && method === 'POST') {
         const body = await readBody(req, 1_000);
+        if (closing) throw fail(409, 'iPhone pairing is disabled.');
         const result = authority.pair(body.code, body.deviceName);
         return sendJSON(res, 200, { token: result.token, macName });
       }
@@ -327,6 +353,7 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
         throw fail(401, 'Pair this iPhone with your Mac first.');
       }
       const requireCurrentSession = () => {
+        if (closing) throw fail(409, 'iPhone pairing is disabled.');
         if (!authority.sessions.some(saved => saved.id === session.id)) throw fail(401, 'This device was removed. Pair it again.');
       };
       if (path === '/v1/session' && method === 'DELETE') {
@@ -395,7 +422,9 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
         const answer = { id: id(), role: 'assistant', content: '' };
         chat.messages.push(answer); chat.updatedAt = new Date(now()).toISOString(); saveChats();
         const abort = new AbortController();
-        const request = { owner: session.id, abort, requestId: null };
+        let finish;
+        const finished = new Promise(resolve => { finish = resolve; });
+        const request = { owner: session.id, abort, requestId: null, finished };
         active.set(chat.id, request);
         res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive', 'x-accel-buffering': 'no' });
         const emit = frame => { if (!res.destroyed) res.write(`event: frame\ndata: ${JSON.stringify({ ...frame, chatId: chat.id, sessionId: chat.id })}\n\n`); };
@@ -436,7 +465,9 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
           emit({ type: 'error', message: abort.signal.aborted ? 'Response stopped.' : error.status ? error.message : 'Strata could not finish this response. Check the Mac app.' });
         } finally {
           clearTimeout(timer); abort.abort();
-          active.delete(chat.id); saveChats(); res.end();
+          active.delete(chat.id);
+          try { saveChats(); }
+          finally { res.end(); finish(); }
         }
         return;
       }
@@ -508,11 +539,8 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
       if (req.method === 'POST' && [adminPath + '/rotate', adminPath + '/revoke'].includes(url.pathname)) {
         if (!same(req.headers['x-strata-csrf'], csrf)) throw fail(403, 'Reload the pairing page.');
         const body = await readBody(req, 1_000);
-        if (url.pathname.endsWith('/rotate')) { authority.rotate(); await updateQR(); }
-        else {
-          authority.revoke(body.id);
-          for (const request of active.values()) if (request.owner === body.id) request.abort.abort();
-        }
+        if (url.pathname.endsWith('/rotate')) await rotateInvitation();
+        else revokeSession(body.id);
         return sendJSON(res, 200, { ok: true });
       }
       if (url.pathname !== adminPath || req.method !== 'GET') throw fail(404, 'Pairing page unavailable.');
@@ -534,12 +562,23 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
     port: networkPort, adminPort: localPort,
     adminURL: `http://127.0.0.1:${localPort}${adminPath}`,
     invitation,
+    state: localState,
+    rotateInvitation,
+    revokeSession,
+    qrImage: () => qrReady && adminState().available && !closing ? readFileSync(qrFile) : null,
     async close() {
-      if (closing) return;
+      if (closing) return closed;
       closing = true;
-      for (const request of active.values()) request.abort.abort();
-      for (const server of [secureServer, adminServer]) server.closeIdleConnections();
-      await Promise.all([secureServer, adminServer].map(server => new Promise(resolve => server.close(resolve))));
+      const running = [...active.values()];
+      for (const request of running) request.abort.abort();
+      // Disabling access also ends held requests; a client cannot delay shutdown
+      // by leaving a request body or TLS connection unfinished.
+      const listeners = [secureServer, adminServer].map(server => new Promise(resolve => {
+        server.close(resolve);
+        server.closeAllConnections();
+      }));
+      closed = Promise.all([...listeners, ...running.map(request => request.finished)]);
+      await closed;
     },
   };
 }

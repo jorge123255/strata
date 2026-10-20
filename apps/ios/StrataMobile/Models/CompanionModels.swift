@@ -77,7 +77,7 @@ struct PairingInvitation: Equatable {
 
     static func parse(_ value: String) throws -> PairingInvitation {
         guard let parts = URLComponents(string: value), parts.scheme == "strata", parts.host == "pair" else {
-            throw CompanionError.invalidInvitation("This is not a Strata pairing code. Open Strata Companion on your Mac and scan its QR code.")
+            throw CompanionError.invalidInvitation("This is not a Strata pairing code. Choose Pair iPhone in Strata on your Mac and scan its QR code.")
         }
         let items = parts.queryItems ?? []
         guard Set(items.map(\.name)).count == items.count else {

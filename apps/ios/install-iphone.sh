@@ -59,4 +59,4 @@ if [[ "${STRATA_LAUNCH_AFTER_INSTALL:-1}" == "1" ]]; then
     xcrun devicectl device process launch --device "$task_device_id" "$task_bundle_id"
 fi
 
-echo "Strata is installed. Open Strata Companion on your Mac to pair it."
+echo "Strata is installed. Choose Pair iPhone in Strata on your Mac to pair it."

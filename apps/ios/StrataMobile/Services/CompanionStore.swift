@@ -226,7 +226,7 @@ final class CompanionStore: ObservableObject {
             case .serverCertificateUntrusted, .secureConnectionFailed, .cancelled:
                 return "The Mac certificate could not be verified. Scan a fresh pairing QR code from your Mac."
             case .cannotConnectToHost, .cannotFindHost, .timedOut, .notConnectedToInternet:
-                return "Your Mac is unreachable. Keep Strata Companion running and connect both devices to the same network."
+                return "Your Mac is unreachable. Keep Strata running with iPhone pairing enabled and connect both devices to the same network."
             default: break
             }
         }

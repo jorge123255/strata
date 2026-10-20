@@ -69,7 +69,7 @@ struct ConnectionView: View {
             Button("Forget this Mac", role: .destructive) { store.forgetMac() }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("This removes the pairing key from this iPhone. To revoke its access on the Mac too, remove this iPhone from Strata Companion on your Mac.")
+            Text("This removes the pairing key from this iPhone. To revoke its access on the Mac too, choose Pair iPhone in Strata and remove this device.")
         }
         .refreshable { if store.isPaired { await store.refresh() } }
     }
@@ -157,7 +157,7 @@ struct PairMacView: View {
                             .foregroundStyle(StrataTheme.accentText)
                             .frame(width: 65, height: 65)
                             .background(StrataTheme.accentTint, in: RoundedRectangle(cornerRadius: 21))
-                        PageHeading(eyebrow: "Hello, Mac", title: "Make it a pair.", subtitle: "Open Strata Companion on your Mac, then scan its pairing QR code. Keep both devices on the same network.")
+                        PageHeading(eyebrow: "Hello, Mac", title: "Make it a pair.", subtitle: "Open Strata on your Mac, choose Pair iPhone, then enable pairing and scan its QR code. Keep both devices on the same network.")
                     }
 
                     Button { showingScanner = true } label: {
@@ -316,7 +316,7 @@ struct PairMacView: View {
         do {
             apply(try PairingInvitation.parse(payload))
         } catch {
-            scanError = "That code isn’t a Strata pairing invitation. Scan the code displayed by Strata Companion on your Mac."
+            scanError = "That code isn’t a Strata pairing invitation. Choose Pair iPhone in Strata on your Mac and scan its code."
         }
     }
 

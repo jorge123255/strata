@@ -5,11 +5,11 @@ A native SwiftUI companion for the Strata desktop app. It uses Strata's emerald,
 ## Connect
 
 1. Keep Strata open on your Mac.
-2. Open **Strata Companion** on the Mac. The app lives in `apps/companion-mac` and runs the opt-in pairing bridge.
+2. In the Mac Strata app, choose **Pair iPhone** in the sidebar, or **Settings → iPhone**, then choose **Enable iPhone pairing**.
 3. Open **Strata** on iPhone, choose **Pair your Mac**, and scan the Mac's QR code. Check the address and choose **Pair with Mac**.
 4. Allow local network access. Keep both devices on the same trusted network.
 
-Each invitation expires after five minutes and works once. Use **New invitation** on the Mac for another device. The camera is optional: enter the HTTPS address, six-digit code, and certificate fingerprint manually instead.
+Each invitation expires after five minutes and works once. Use **New pairing code** on the Mac for another device. The camera is optional: enter the HTTPS address, six-digit code, and certificate fingerprint manually instead. Strata remembers that pairing is enabled and restores the listener on its next launch. **Disable pairing** closes the listener while preserving paired phones for later.
 
 ## What it controls
 
@@ -34,7 +34,7 @@ open StrataMobile.xcodeproj
 
 Select the `StrataMobile` scheme and an iPhone simulator or your device. Set your own development team under Signing & Capabilities when building outside this fork's configured team. Device installation requires a valid development profile containing the phone's UDID and `com.strata.companion.ios` app identifier. No paid dependencies or third-party Swift packages are used.
 
-For a connected, unlocked iPhone, `./install-iphone.sh <device-identifier>` builds, installs, and launches the app. Set `STRATA_PROVISIONING_PROFILE` to an existing dedicated profile name when Xcode has no account signed in, and `STRATA_DEVELOPMENT_TEAM` to override the team. Set `STRATA_LAUNCH_AFTER_INSTALL=0` to install while the phone remains locked.
+For a connected, unlocked iPhone, `./install-iphone.sh <device-identifier>` builds, installs, and launches the app. Set `STRATA_PROVISIONING_PROFILE` to an existing dedicated profile name when Xcode has no account signed in, and `STRATA_DEVELOPMENT_TEAM` to override the team. Set `STRATA_LAUNCH_AFTER_INSTALL=0` to install without opening the app.
 
 ## Verify
 
