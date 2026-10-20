@@ -46,6 +46,10 @@ phone-only chats remain available separately.
 expiring QR code. The phone connects over certificate-pinned HTTPS on your local network. Pairing remains off until
 enabled; the integrated desktop app supplies the shared-conversation API.
 
+The Mac app also offers [remote model management](apps/host/REMOTE-MODELS.md) for saved Strata API connections:
+download catalog models and import GGUF files already on the destination computer. The paired iPhone can follow and
+start model downloads on those computers too. Remote API management is off until enabled on the destination.
+
 Upstream drafts: [Mac pairing and shared conversations](https://github.com/Niko1221/Strata/pull/3347) and
 [native iPhone app](https://github.com/Niko1221/Strata/pull/3348), linked to the
 [scope discussion](https://github.com/Niko1221/Strata/issues/3346). The client requires the Mac changes at runtime.
