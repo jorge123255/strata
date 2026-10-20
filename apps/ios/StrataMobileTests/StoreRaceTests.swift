@@ -1126,3 +1126,187 @@ final class AvatarSchemaTests: XCTestCase {
         XCTAssertEqual(images.count, 4)
     }
 }
+
+@MainActor
+final class BotWorkspaceTests: XCTestCase {
+    private var limits: [String: Any] { ["maxParallel": 2, "maxDepth": 2, "maxHops": 8, "maxTurns": 24, "maxDurationMs": 600000] }
+    private func team(enabled: Bool = false, name: String = "Team") -> [String: Any] {
+        ["id": "team_fixture", "name": name, "memberIds": ["bot_coder", "bot_reviewer"], "coordinatorId": "bot_coder", "enabled": enabled, "limits": limits]
+    }
+    private func runRecord(state: String = "running") -> [String: Any] {
+        ["id": "run_fixture", "teamId": "team_fixture", "rootChatId": "s_shared", "rootBotId": "bot_coder", "state": state, "consumedTurns": 1]
+    }
+    private func skill(id: String = "skill_fixture", source: String = "draft") -> [String: Any] {
+        ["id": id, "name": "Review", "description": "Review changes", "body": "Read the diff.", "triggers": ["review"], "source": source, "status": "enabled", "revision": source == "library" ? "library-digest" : 2, "digest": "abc", "botIds": []]
+    }
+    private func decode<T: Decodable>(_ value: [String: Any], as type: T.Type) throws -> T { try JSONDecoder().decode(type, from: JSONSerialization.data(withJSONObject: value)) }
+
+    func testTeamCatalogAndCreationDoNotPromptAndOnlyExplicitTaskStartsTheSharedRun() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let savedTeam = team(), running = runRecord(), cancelled = runRecord(state: "cancelled")
+        fixture.respond { request in
+            switch request.url!.path {
+            case "/v1/bots/teams": return request.httpMethod == "POST" ? ["team": savedTeam] : ["teams": [savedTeam], "runs": []]
+            case "/v1/bots/teams/team_fixture/runs": return ["run": running]
+            case "/v1/bots/activity": return ["activity": []]
+            case "/v1/bots/teams/team_fixture/runs/run_fixture/stop": return ["run": cancelled]
+            default: return nil
+            }
+        }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore()
+        await workspace.refreshTeams()
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+        let created = await workspace.createTeam(BotTeamDraft(name: "Team", memberIds: ["bot_coder", "bot_reviewer"], coordinatorId: "bot_coder"))
+        XCTAssertTrue(created)
+        XCTAssertEqual(fixture.requests.first { $0.method == "POST" }?.jsonBody?["enabled"] as? Bool, false)
+        XCTAssertFalse(fixture.requests.contains { $0.path.contains("/runs") })
+        var enabled = try decode(savedTeam, as: BotTeam.self); enabled.enabled = true
+        let started = await workspace.startTeam(enabled, message: "Review the fixture", requestId: "request_fixture")
+        XCTAssertEqual(started?.rootChatId, "s_shared")
+        let sent = try XCTUnwrap(fixture.requests.first { $0.path.hasSuffix("/runs") })
+        XCTAssertEqual(sent.body, ["message": "Review the fixture", "requestId": "request_fixture"])
+        await workspace.stopRun(try XCTUnwrap(started))
+        XCTAssertEqual(fixture.requests.first { $0.path.hasSuffix("/stop") }?.body, [:])
+        XCTAssertNil(store.currentConversation, "The workspace must not navigate the shared store on its own.")
+        XCTAssertFalse(fixture.requests.contains { $0.path.contains("/serving") || $0.path.contains("/native") || $0.path == "/v1/chat" })
+    }
+
+    func testWorkspaceReadAndLateTaskResultCannotPublishAfterPairingIsForgotten() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore()
+        let held = fixture.hold("/v1/bots/teams")
+        let reading = Task { await workspace.refreshTeams() }
+        await fulfillment(of: [held.requested], timeout: 2)
+        store.forgetMac(); held.finish(["teams": [team()], "runs": []]); await reading.value
+        XCTAssertNil(workspace.teams)
+        XCTAssertFalse(store.isPaired)
+
+        let other = StoreTransport(); defer { other.close() }
+        let otherStore = other.makeStore(), otherWorkspace = otherStore.botWorkspaceStore()
+        let task = other.hold("/v1/bots/teams/team_fixture/runs"), selected = try decode(team(enabled: true), as: BotTeam.self)
+        let sending = Task { await otherWorkspace.startTeam(selected, message: "Explicit task", requestId: "request_fixture") }
+        await fulfillment(of: [task.requested], timeout: 2)
+        otherStore.forgetMac(); task.finish(["run": runRecord()])
+        let result = await sending.value
+        XCTAssertNil(result); XCTAssertNil(otherWorkspace.teams); XCTAssertNil(otherStore.currentConversation)
+    }
+
+    func testNewerWorkspaceCatalogWinsOverAnOlderDelayedRead() async {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore()
+        let first = fixture.hold("/v1/bots/teams"), readingFirst = Task { await workspace.refreshTeams() }
+        await fulfillment(of: [first.requested], timeout: 2)
+        let second = fixture.hold("/v1/bots/teams"), readingSecond = Task { await workspace.refreshTeams() }
+        await fulfillment(of: [second.requested], timeout: 2)
+        second.finish(["teams": [team(name: "Latest")], "runs": []]); await readingSecond.value
+        first.finish(["teams": [team(name: "Stale")], "runs": []]); await readingFirst.value
+        XCTAssertEqual(workspace.teams?.teams.first?.name, "Latest")
+    }
+
+    func testSkillEditReturnsToDraftAndAssignmentMergesOneToggleIntoFreshLibraryAssignments() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let draft = skill(), library = skill(id: "library.review", source: "library")
+        fixture.respond { request in
+            switch request.url!.path {
+            case "/v1/bots/skills": return ["skills": [draft, library], "assignments": [["botId": "bot_coder", "skillIds": ["library.review"]]]]
+            case "/v1/bots/skills/skill_fixture": return ["skill": draft]
+            case "/v1/bots/skills/assign": return ["saved": true]
+            default: return nil
+            }
+        }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore()
+        let parsed = try decode(draft, as: BotSkill.self)
+        let saved = await workspace.saveSkill(BotSkillDraft(skill: parsed), reviewing: parsed)
+        XCTAssertTrue(saved)
+        XCTAssertEqual(fixture.requests.first { $0.method == "PATCH" }?.jsonBody?["status"] as? String, "draft")
+        var beforeEnable = draft; beforeEnable["status"] = "draft"
+        await workspace.assignSkill(try decode(beforeEnable, as: BotSkill.self), botId: "bot_coder", assigned: true)
+        XCTAssertEqual(fixture.requests.first { $0.path.hasSuffix("/assign") }?.jsonBody?["skillIds"] as? [String], ["library.review", "skill_fixture"])
+        XCTAssertEqual(workspace.skills?.skills.last?.revision.description, "library-dige")
+        XCTAssertFalse(fixture.requests.contains { $0.path.contains("messages") || $0.path.contains("serving") })
+    }
+
+    func testMCPAccessRetainsOnlyAlreadyReviewedReadOnlyToolsWithoutSendingProgramsOrSecrets() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let value: [String: Any] = ["id": "mcpc_fixture", "name": "Tools", "transport": "stdio", "apiKeySet": true, "inventoryDigest": String(repeating: "a", count: 64), "botIds": ["bot_coder"], "enabledToolIds": ["tool_read", "tool_old"], "readOnlyToolIds": ["tool_read", "tool_old"], "status": "starting", "detail": "Checking", "checkedAt": "2026-10-20T22:00:00.000Z", "tools": [["id": "tool_read", "name": "Read", "description": "Read files", "readOnly": true], ["id": "tool_write", "name": "Write", "description": "Write files", "readOnly": false]]]
+        fixture.respond { request in request.url!.path == "/v1/bots/connections" ? ["connections": [value]] : ["connection": value] }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(), connection = try decode(value, as: BotMCPConnection.self)
+        XCTAssertEqual(connection.statusLabel, "Checking…"); XCTAssertNotNil(connection.checkedAt?.date)
+        let saved = await workspace.saveConnection(connection, botIds: ["bot_reviewer"], toolIds: ["tool_read", "tool_write"])
+        XCTAssertTrue(saved)
+        let body = try XCTUnwrap(fixture.requests.first { $0.method == "PATCH" }?.jsonBody)
+        XCTAssertEqual(Set(body.keys), ["botIds", "enabledToolIds", "readOnlyToolIds", "expectedInventoryDigest"])
+        XCTAssertEqual(body["expectedInventoryDigest"] as? String, String(repeating: "a", count: 64))
+        XCTAssertEqual(body["readOnlyToolIds"] as? [String], ["tool_read"])
+        await workspace.checkConnection(connection)
+        XCTAssertEqual(fixture.requests.first { $0.path.hasSuffix("/check") }?.body, [:])
+    }
+
+    func testUnsupportedWorkspaceUsesUpgradeReasonAndEffortComesOnlyFromExactDeclaredModel() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { request in
+            if request.url!.path == "/v1/bots/teams" { return ["teams": [], "runs": [], "reason": "Update Strata on Mac"] }
+            if request.url!.path == "/v1/bots/provider-models" { return ["provider": "codex", "models": [["id": "supported", "name": "Known", "efforts": ["low", "high"]]]] }
+            return nil
+        }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore()
+        await workspace.refreshTeams(); XCTAssertEqual(workspace.messages["teams"], "Update Strata on Mac")
+        var bot = try decode(["id": "bot_coder", "name": "Coder", "provider": "codex", "model": "supported", "capabilities": "code", "policy": "manual", "execution": ["kind": "local"]], as: CompanionBot.self)
+        let supported = await store.supportedBotEfforts(bot); XCTAssertEqual(supported, ["low", "high"])
+        bot.model = "unknown"; let unknown = await store.supportedBotEfforts(bot); XCTAssertTrue(unknown.isEmpty)
+        bot.provider = "configured"; let configured = await store.supportedBotEfforts(bot); XCTAssertTrue(configured.isEmpty)
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+        let frozen = try decode(["id": "s_shared", "title": "Task", "active": false, "messages": [], "botEffort": "high", "teamId": "team_fixture", "teamRunId": "run_fixture", "parentChatId": "s_parent"], as: MacConversation.self)
+        XCTAssertEqual(frozen.botEffort, "high"); XCTAssertEqual(frozen.teamRunId, "run_fixture"); XCTAssertEqual(frozen.parentChatId, "s_parent")
+    }
+
+    func testSkillEnableUsesReviewedVersionAndConflictRefreshesWithoutEnablingAgain() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let reviewed = try decode(skill(), as: BotSkill.self)
+        var newer = skill(); newer["revision"] = 3; newer["digest"] = "changed-digest"; newer["body"] = "New unseen instructions"
+        fixture.respond { request in request.url!.path == "/v1/bots/skills" ? ["skills": [newer], "assignments": []] : nil }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(), patch = fixture.hold("/v1/bots/skills/skill_fixture")
+        let enabling = Task { await workspace.setSkillEnabled(reviewed, enabled: true) }
+        await fulfillment(of: [patch.requested], timeout: 2)
+        let proof = try XCTUnwrap(fixture.requests.first { $0.method == "PATCH" }?.jsonBody)
+        XCTAssertEqual(proof["expectedRevision"] as? Int, 2); XCTAssertEqual(proof["expectedDigest"] as? String, "abc")
+        patch.finish(["error": "This skill changed; review it again."], status: 409)
+        await enabling.value
+        XCTAssertEqual(workspace.skills?.skills.first?.digest, "changed-digest")
+        XCTAssertNotNil(workspace.messages["skills"])
+        XCTAssertEqual(fixture.requests.filter { $0.method == "PATCH" }.count, 1)
+        XCTAssertTrue(store.isPaired)
+    }
+
+    func testMCPConflictRefreshesInventoryWithoutReplayingStaleAccess() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let old: [String: Any] = ["id": "mcpc_fixture", "name": "Tools", "transport": "stdio", "apiKeySet": false, "inventoryDigest": String(repeating: "a", count: 64), "botIds": [], "enabledToolIds": [], "readOnlyToolIds": [], "status": "connected", "detail": "Ready", "tools": []]
+        var changed = old; changed["inventoryDigest"] = String(repeating: "b", count: 64)
+        fixture.respond { request in request.url!.path == "/v1/bots/connections" ? ["connections": [changed]] : nil }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(), patch = fixture.hold("/v1/bots/connections/mcpc_fixture")
+        let displayed = try decode(old, as: BotMCPConnection.self)
+        let saving = Task { await workspace.saveConnection(displayed, botIds: ["bot_coder"], toolIds: []) }
+        await fulfillment(of: [patch.requested], timeout: 2)
+        patch.finish(["error": "Connection changed. Review its tools again."], status: 409)
+        let saved = await saving.value
+        XCTAssertFalse(saved); XCTAssertEqual(workspace.connections?.connections.first?.inventoryDigest, String(repeating: "b", count: 64))
+        XCTAssertEqual(fixture.requests.filter { $0.method == "PATCH" }.count, 1)
+        XCTAssertNotNil(workspace.messages["connections"]); XCTAssertTrue(store.isPaired)
+    }
+
+    func testEditedDraftAssignmentCanBeRevokedWithoutReenablingItsChangedInstructions() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        var changed = skill(); changed["status"] = "draft"; changed["digest"] = "new-unreviewed-digest"; changed["botIds"] = ["bot_coder"]
+        let draft = changed, library = skill(id: "library.review", source: "library")
+        fixture.respond { request in
+            if request.url!.path == "/v1/bots/skills" { return ["skills": [draft, library], "assignments": [["botId": "bot_coder", "skillIds": ["skill_fixture", "library.review"]]]] }
+            if request.url!.path.hasSuffix("/assign") { return ["saved": true] }
+            return nil
+        }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore()
+        await workspace.assignSkill(try decode(draft, as: BotSkill.self), botId: "bot_coder", assigned: false)
+        XCTAssertEqual(fixture.requests.first { $0.path.hasSuffix("/assign") }?.jsonBody?["skillIds"] as? [String], ["library.review"])
+        XCTAssertFalse(fixture.requests.contains { $0.method == "PATCH" })
+        XCTAssertTrue(store.isPaired)
+    }
+}

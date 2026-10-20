@@ -147,6 +147,7 @@ struct CompanionBot: Decodable, Identifiable, Equatable {
     var computerMode: String?
     var avatarConfig: AvatarConfig?
     var paused: Bool?
+    var effort: String?
 
     var face: AvatarConfig { avatarConfig ?? .default(for: name) }
 
@@ -253,6 +254,10 @@ struct MacConversation: Decodable, Identifiable, Equatable {
     var botModelName: String? = nil
     var computerMode: String? = nil
     var botAvatarConfig: AvatarConfig? = nil
+    var botEffort: String? = nil
+    var teamId: String? = nil
+    var teamRunId: String? = nil
+    var parentChatId: String? = nil
 
     var permissionLabel: String {
         switch mode {

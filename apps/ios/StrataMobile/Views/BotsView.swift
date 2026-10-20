@@ -4,11 +4,18 @@ struct BotsView: View {
     @ObservedObject var store: CompanionStore
     let pair: () -> Void
     let openChat: () -> Void
+    @State private var destination: BotWorkspaceDestination = .team
+    @State private var workspace: BotWorkspaceStore?
+    @State private var workspaceGeneration: UUID?
+    @State private var creatingTeam = false
 
     // Adapted from Cua Bots iOS PhoneViews.swift (FSL-1.1-MIT,
     // Copyright (c) 2026 Cua AI, Inc.). Uses Strata's existing paired store.
     var body: some View {
-        List {
+        Group {
+          if store.isPaired, let workspace, destination != .team {
+            BotWorkspaceDestinationView(destination: destination, store: store, workspace: workspace, openChat: openChat)
+          } else { List {
             if !store.isPaired {
                 ConnectionNeededView(icon: "sparkles.rectangle.stack", title: "Meet your bots", message: "Pair your Mac to open your bots and their shared conversations.", pair: pair)
             } else {
@@ -21,6 +28,7 @@ struct BotsView: View {
                 }
                 if store.isLoadingBots, store.botCatalog == nil { ProgressView("Checking your bots…") }
                 if let catalog = store.botCatalog {
+                    if let workspace { BotTeamsSection(store: store, workspace: workspace, openChat: openChat, createTeam: { creatingTeam = true }) }
                     Section {
                         if catalog.bots.isEmpty, catalog.reason == nil { emptyBots }
                         ForEach(catalog.bots) { bot in
@@ -34,11 +42,28 @@ struct BotsView: View {
                     }
                 }
             }
+          } }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if store.isPaired {
+                Picker("Bots workspace", selection: $destination) {
+                    ForEach(BotWorkspaceDestination.allCases) { item in Text(item.rawValue).tag(item) }
+                }.pickerStyle(.segmented).padding(.horizontal, 20).padding(.vertical, 10)
+                    .background(StrataTheme.background).accessibilityIdentifier("botsWorkspacePicker")
+            }
         }
         .scrollContentBackground(.hidden).background(StrataTheme.background)
         .navigationTitle("Bots").toolbar(.visible, for: .navigationBar)
         .refreshable { await store.refresh(silently: true); await store.refreshBots() }
-        .task(id: store.isPaired) { if store.isPaired { await store.refreshBots() } }
+        .sheet(isPresented: $creatingTeam) { if let workspace { BotTeamEditor(store: store, workspace: workspace) } }
+        .task(id: store.pairingGeneration) {
+            if workspaceGeneration != store.pairingGeneration || workspace == nil {
+                creatingTeam = false
+                workspace = store.isPaired ? store.botWorkspaceStore() : nil
+                workspaceGeneration = store.pairingGeneration
+            }
+            if store.isPaired { await store.refreshBots(); await workspace?.refreshTeams() }
+        }
     }
 
     private var emptyBots: some View {
@@ -222,6 +247,8 @@ private struct BotConversationSetupView: View {
     @State private var modelId = ""
     @State private var workspace: String
     @State private var message: String?
+    @State private var supportedEfforts: [String] = []
+    @State private var effortSelection = "__profile"
     @FocusState private var workspaceFocused: Bool
 
     init(store: CompanionStore, bot: CompanionBot, openChat: @escaping () -> Void) {
@@ -235,6 +262,10 @@ private struct BotConversationSetupView: View {
     private var chosenComputer: BotComputer? { store.botCatalog?.computers.first { $0.id == computerId } }
     private var chosenModel: BotConfiguredModel? { store.botCatalog?.models?.first { $0.id == modelId } }
     private var isBusy: Bool { store.creatingBotConversationId != nil }
+    private var effortOverride: String? {
+        if !modelId.isEmpty { return bot.effort?.isEmpty == false ? "" : nil }
+        return effortSelection == "__profile" ? nil : effortSelection
+    }
     private var canCreate: Bool {
         !isBusy && store.status?.hostConnected == true &&
         (computerId.isEmpty || chosenComputer?.available == true) && (modelId.isEmpty || chosenModel?.available == true) &&
@@ -292,6 +323,13 @@ private struct BotConversationSetupView: View {
                         if let model = chosenModel, let detail = model.detail, !detail.isEmpty {
                             Text(detail).font(.caption).foregroundStyle(StrataTheme.secondaryInk)
                         }
+                        if modelId.isEmpty, !supportedEfforts.isEmpty {
+                            Picker("Effort", selection: $effortSelection) {
+                                Text("Bot default").tag("__profile")
+                                Text("Provider default").tag("")
+                                ForEach(supportedEfforts, id: \.self) { level in Text(level.capitalized).tag(level) }
+                            }.accessibilityIdentifier("botEffortPicker")
+                        }
                     } header: { Text("What powers it") } footer: {
                         Text("A configured model applies to this conversation. Existing model-serving selections stay unchanged.")
                     }
@@ -317,7 +355,8 @@ private struct BotConversationSetupView: View {
                             message = nil
                             let folder = bot.computerMode == "cua" ? "/workspace" : (supportsSelection && workspace != bot.workspace ? workspace : nil)
                             if await store.newBotConversation(bot, computerId: computerId.isEmpty ? nil : computerId,
-                                                              modelId: modelId.isEmpty ? nil : modelId, workspace: folder) {
+                                                              modelId: modelId.isEmpty ? nil : modelId, workspace: folder,
+                                                              effort: effortOverride) {
                                 dismiss(); openChat()
                             } else { message = store.error ?? "This conversation could not be created. Refresh Bots and try again."; store.error = nil }
                         }
@@ -345,5 +384,6 @@ private struct BotConversationSetupView: View {
             .interactiveDismissDisabled(isBusy)
         }
         .tint(StrataTheme.accentText)
+        .task(id: bot.provider + ":" + bot.model) { supportedEfforts = await store.supportedBotEfforts(bot) }
     }
 }

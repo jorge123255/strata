@@ -35,6 +35,14 @@ const conversation = {
 };
 const pending = [];
 let createdBotConversation;
+const workspaceFlags = ['--test-workspace-skills', '--test-workspace-connections', '--test-workspace-teams'];
+const workspaceMode = workspaceFlags.includes(process.argv[2]);
+let teamConversation, savedTeam, teamRun;
+const teamLimits = { maxParallel: 2, maxDepth: 2, maxHops: 8, maxTurns: 24, maxDurationMs: 600000 };
+const skillDrafts = [];
+const skillAssignments = { 'fixture-bot': ['library.review'] };
+const skillCatalog = () => ({ skills: [{ id: 'library.review', name: 'Library review', description: 'Existing shared library instructions', body: 'Review changes carefully.', triggers: [], source: 'library', status: 'enabled', revision: 'library-digest', digest: 'library-digest' }, ...skillDrafts].map(skill => ({ ...skill, botIds: Object.entries(skillAssignments).filter(([, ids]) => ids.includes(skill.id)).map(([id]) => id) })), assignments: Object.entries(skillAssignments).map(([botId, skillIds]) => ({ botId, skillIds })) });
+const mcpConnection = { id: 'mcpc_fixture', name: 'Fixture tools', transport: 'stdio', inventoryDigest: 'a'.repeat(64), command: '/fixture/never-executed', args: [], env: { TEST_SECRET: 'PRIVATE-FIXTURE-SECRET' }, apiKey: 'PRIVATE-FIXTURE-KEY', apiKeySet: true, status: 'unchecked', detail: 'Synthetic connection; no program runs.', botIds: ['fixture-bot'], enabledToolIds: ['tool_read'], readOnlyToolIds: ['tool_read'], tools: [{ id: 'tool_read', name: 'Read workspace', description: 'Synthetic read-only inventory', readOnly: true }, { id: 'tool_write', name: 'Write workspace', description: 'Synthetic write inventory; approval policy applies', readOnly: false }] };
 const fixtureComputerMode = process.argv[2] === '--test-computer' ? 'cua' : 'host';
 let botFace = { color: 'sky', eyes: 'star', ears: 'scalloped' };
 let computerRunning = false;
@@ -46,7 +54,8 @@ const computerState = () => ({ available: true, running: computerRunning, comput
   control: { active: !!computerControl, owned: !!computerControl, ...(computerControl ? { expiresAt: computerControl.expiresAt } : {}) } });
 const botsCatalog = () => ({
   bots: [{ id: 'fixture-bot', name: 'Workspace companion', avatar: '🦊', avatarConfig: botFace, computerMode: fixtureComputerMode, provider: 'codex', model: 'Fixture model', workspace: fixtureComputerMode === 'cua' ? '/workspace' : '/fixture/default', capabilities: 'both', policy: 'manual', execution: { kind: 'local' },
-    conversations: [conversation.id, ...(createdBotConversation ? [createdBotConversation.id] : [])] }],
+    conversations: [conversation.id, ...(createdBotConversation ? [createdBotConversation.id] : []), ...(teamConversation ? [teamConversation.id] : [])] },
+    ...(workspaceMode ? [{ id: 'fixture-reviewer', name: 'Review companion', avatarConfig: { color: 'violet', eyes: 'happy', ears: 'round', kind: 'cat' }, computerMode: 'host', provider: 'claude', model: 'Fixture reviewer', workspace: '/fixture/default', capabilities: 'code', policy: 'manual', execution: { kind: 'local' }, conversations: [] }] : [])],
   providers: ['claude', 'codex', 'grok', 'kimi', 'ollama', 'configured'].map(id => ({ id, name: ({ claude: 'Claude Code', codex: 'Codex', grok: 'Grok', kimi: 'Kimi', ollama: 'Ollama Cloud', configured: 'Configured models' })[id], available: true, detail: 'Synthetic provider. No account or model is used.' })),
   computers: [{ id: 'local', name: 'Fixture Mac', kind: 'local', available: true, detail: 'Synthetic computer. No tools are executed.' },
     { id: 'ssh_fixture', name: 'Remote fixture computer', kind: 'ssh', available: true, detail: 'Prepared synthetic target. No SSH connection is made.' }],
@@ -81,6 +90,30 @@ const host = {
     if (path === '/api/serving') return { requests: [] };
     if (path === '/api/model-providers') return { connections: [{ id: 'fixture-provider', name: 'Fixture Mac', models: [{ id: 'fixture-model', name: 'Fixture model' }] }] };
     if (path === '/api/bots') return botsCatalog();
+    if (path === '/api/bots/provider-models?provider=codex') return { provider: 'codex', models: [{ id: 'Fixture model', name: 'Fixture model', efforts: ['low', 'high'] }] };
+    if (workspaceMode && path === '/api/bots/teams') {
+      if (options.method === 'POST') { savedTeam = { id: 'team_fixture', ...structuredClone(options.body), enabled: false, limits: options.body.limits ?? teamLimits }; return { team: savedTeam }; }
+      return { teams: savedTeam ? [savedTeam] : [], runs: teamRun ? [teamRun] : [] };
+    }
+    if (workspaceMode && path === '/api/bots/teams/team_fixture' && options.method === 'PATCH') { Object.assign(savedTeam, options.body); return { team: savedTeam }; }
+    if (workspaceMode && path === '/api/bots/teams/team_fixture/runs') {
+      if (!savedTeam?.enabled) throw Object.assign(new Error('Review and enable fixture team first'), { status: 409 });
+      teamRun = { id: 'run_fixture', teamId: savedTeam.id, rootChatId: 'fixture-team-chat', rootBotId: savedTeam.coordinatorId, state: 'running', limits: savedTeam.limits, consumedTurns: 2 };
+      teamConversation = { id: 'fixture-team-chat', title: 'Team review task', active: true, status: 'Working with reviewer', mode: 'manual', workspace: '/fixture/default', preferences: { botId: savedTeam.coordinatorId, botName: 'Workspace companion', botAvatarConfig: botFace, botComputerMode: 'host', botComputer: 'Fixture Mac', botModel: 'Fixture model', teamId: savedTeam.id, teamRunId: teamRun.id }, messages: [{ id: 'team-user', role: 'user', content: options.body.message }, { id: 'team-assistant', role: 'assistant', content: 'The reviewer is checking the workspace.', reasoning: 'Delegate a focused review and retain the shared conversation.', reasoningMs: 1000, streaming: true }] };
+      return { run: teamRun, conversation: teamConversation, pending: [] };
+    }
+    if (workspaceMode && path === '/api/bots/teams/team_fixture/runs/run_fixture/stop') { teamRun.state = 'cancelled'; teamConversation.active = false; teamConversation.messages.forEach(message => { message.streaming = false; }); return { run: teamRun }; }
+    if (workspaceMode && path === '/api/bots/activity') return { activity: teamRun ? [{ id: 'activity-message', type: 'delivery', title: 'Coordinator message', state: 'delivered', teamId: savedTeam.id, runId: teamRun.id, fromBotId: savedTeam.coordinatorId, toBotId: 'fixture-reviewer', chatId: teamConversation.id }, { id: 'activity-subagent', type: 'subagent', title: 'Reviewer subagent', state: teamRun.state, teamId: savedTeam.id, runId: teamRun.id, botId: 'fixture-reviewer', parentChatId: teamConversation.id, chatId: teamConversation.id, detail: 'Durable synthetic delegation. No provider or computer was started.' }] : [] };
+    if (workspaceMode && path === '/api/bots/skills') {
+      if (options.method === 'POST') { const skill = { id: 'skill_created', ...structuredClone(options.body), source: 'draft', status: 'draft', revision: 1, digest: 'draft-digest' }; skillDrafts.push(skill); return { skill: { ...skill, botIds: [] } }; }
+      return skillCatalog();
+    }
+    if (workspaceMode && path === '/api/bots/skills/skill_created' && options.method === 'PATCH') { const skill = skillDrafts[0]; Object.assign(skill, options.body); skill.revision++; return { skill: { ...skill, botIds: skillCatalog().skills.find(s => s.id === skill.id).botIds } }; }
+    if (workspaceMode && path === '/api/bots/skills/assign') { skillAssignments[options.body.botId] = [...options.body.skillIds]; return skillCatalog(); }
+    if (workspaceMode && path === '/api/bots/connections') return { connections: [mcpConnection] };
+    if (workspaceMode && path === '/api/bots/connections/mcpc_fixture/check') { mcpConnection.status = 'connected'; mcpConnection.detail = 'Two synthetic tools available. No program was executed.'; mcpConnection.checkedAt = new Date().toISOString(); return { connection: mcpConnection }; }
+    if (workspaceMode && path === '/api/bots/connections/mcpc_fixture' && options.method === 'PATCH') { Object.assign(mcpConnection, options.body); return { connection: mcpConnection }; }
+    if (teamConversation && path.startsWith(`/api/companion/conversations/${teamConversation.id}`)) return { conversation: teamConversation, pending: [] };
     if (path === '/api/bots/fixture-bot' && options.method === 'PATCH') { botFace = structuredClone(options.body.avatarConfig); return {}; }
     const computer = /^\/api\/bots\/fixture-bot\/computer(?:\/(start|stop|takeover|control|release))?(?:\?chatId=([A-Za-z0-9_-]+))?$/.exec(path);
     if (computer) {
@@ -142,7 +175,7 @@ const host = {
       downloadJobs.get(target).unshift(job); newestDownload = job;
       return structuredClone({ job });
     }
-    if (path === '/api/companion/conversations') return options.method === 'POST' ? detail() : { conversations: [conversation, ...(createdBotConversation ? [createdBotConversation] : [])], activeChatId: conversation.id };
+    if (path === '/api/companion/conversations') return options.method === 'POST' ? detail() : { conversations: [conversation, ...(createdBotConversation ? [createdBotConversation] : []), ...(teamConversation ? [teamConversation] : [])], activeChatId: teamConversation?.active ? teamConversation.id : conversation.id };
     if (path === `/api/companion/conversations/${conversation.id}`) return detail();
     if (path === `/api/companion/conversations/${conversation.id}/messages`) {
       conversation.messages.push(
@@ -197,6 +230,10 @@ try {
       if (request.method === 'POST') {
         switch (action) {
         case '/state':
+          break;
+        case '/team-progress':
+          if (!teamRun) throw new Error('Start a synthetic team first');
+          teamRun.consumedTurns = 7;
           break;
         case '/download-progress': {
           const job = latestDownload();
@@ -257,7 +294,7 @@ try {
   });
   await new Promise((resolve, reject) => { control.once('error', reject); control.listen(0, '127.0.0.1', resolve); });
   const connection = { invitation: bridge.invitation(), control: `http://127.0.0.1:${control.address().port}` };
-  if (['--test', '--test-downloads', '--test-bots', '--test-computer'].includes(process.argv[2])) {
+  if (['--test', '--test-downloads', '--test-bots', '--test-computer', ...workspaceFlags].includes(process.argv[2])) {
     const destination = process.argv[3];
     if (!destination) throw new Error('Supply an installed simulator destination after --test.');
     const platforms = destination.split(',').map(value => value.trim()).filter(value => value.startsWith('platform='));
@@ -270,7 +307,7 @@ try {
       testProcess = spawn('xcodebuild', [
         '-project', project, '-scheme', 'StrataMobile', '-destination', destination,
         '-derivedDataPath', derivedData,
-        '-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation', '--test-computer': 'testActualSampleAvatarAndIsolatedComputerControl' })[process.argv[2]],
+        '-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation', '--test-computer': 'testActualSampleAvatarAndIsolatedComputerControl', '--test-workspace-skills': 'testReviewedSkillAssignmentAndWorkspaceNavigation', '--test-workspace-connections': 'testSavedConnectionCheckAndReviewedAccess', '--test-workspace-teams': 'testTeamExplicitTaskSharedThinkingStopAndActivity' })[process.argv[2]],
         '-parallel-testing-enabled', 'NO', 'test',
       ], { stdio: 'inherit', env: { ...process.env,
         TEST_RUNNER_STRATA_TEST_INVITATION: connection.invitation,
@@ -281,9 +318,10 @@ try {
       testProcess.once('exit', code => resolve(code ?? 1));
     });
     process.exitCode = status;
+    if (process.env.STRATA_TEST_STATE_OUTPUT) writeFileSync(process.env.STRATA_TEST_STATE_OUTPUT, JSON.stringify({ calls, savedTeam, teamRun, skillAssignments, skills: skillCatalog(), connectionAccess: { botIds: mcpConnection.botIds, enabledToolIds: mcpConnection.enabledToolIds, readOnlyToolIds: mcpConnection.readOnlyToolIds } }), { mode: 0o600 });
     await close();
   } else {
-    if (process.argv.length > 2) throw new Error('Usage: companion-fixture.mjs [--test|--test-downloads|--test-bots|--test-computer <simulator destination>]');
+    if (process.argv.length > 2) throw new Error('Usage: companion-fixture.mjs [--test|--test-downloads|--test-bots|--test-computer|--test-workspace-skills|--test-workspace-connections|--test-workspace-teams <simulator destination>]');
     const connectionFile = join(root, 'connection.json');
     writeFileSync(connectionFile, JSON.stringify(connection), { mode: 0o600 });
     console.log(JSON.stringify({ connectionFile }));

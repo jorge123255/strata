@@ -364,6 +364,168 @@ final class CompanionSmokeTests: XCTestCase {
     }
 
     @MainActor
+    private func pairWorkspaceFixture() throws -> URL {
+        guard let raw = ProcessInfo.processInfo.environment["STRATA_TEST_INVITATION"],
+              let invitation = URLComponents(string: raw),
+              let control = ProcessInfo.processInfo.environment["STRATA_SHARED_FIXTURE_CONTROL"],
+              let controlURL = URL(string: control), controlURL.host == "127.0.0.1" else { throw XCTSkip("Provide an isolated workspace fixture.") }
+        func item(_ name: String) -> String? { invitation.queryItems?.first { $0.name == name }?.value }
+        openManualPairing(); sensitivePairingVisible = true
+        fillPairing(address: try XCTUnwrap(item("url")), code: try XCTUnwrap(item("code")), fingerprint: try XCTUnwrap(item("fingerprint")))
+        submitPairing()
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.buttons["dismissPairingButton"])
+        guard XCTWaiter.wait(for: [dismissed], timeout: 25) == .completed else { throw acceptanceError("Fixture pairing did not complete.") }
+        sensitivePairingVisible = false
+        tapTab("Bots")
+        try require(app.segmentedControls["botsWorkspacePicker"])
+        return controlURL
+    }
+
+    @MainActor
+    func testReviewedSkillAssignmentAndWorkspaceNavigation() async throws {
+        let controlURL = try pairWorkspaceFixture()
+        try selectWorkspace("Skills")
+        let create = app.buttons["createBotSkillButton"]
+        try require(create); try waitEnabled(create); create.tap()
+        app.textFields["botSkillNameInput"].tap(); app.textFields["botSkillNameInput"].typeText("Phone review skill")
+        let body = app.textViews["botSkillBodyInput"]; body.tap(); body.typeText("Review the change and explain the result.")
+        app.buttons["saveBotSkillButton"].tap()
+        let skill = app.buttons["botSkill-skill_created"]
+        try require(skill); try tapWorkspace(skill)
+        let enable = app.buttons["enableBotSkillButton"]
+        try require(enable); try waitEnabled(enable); try tapWorkspace(enable)
+        let assign = app.switches["skillAssignment-fixture-bot"]
+        try waitEnabled(assign); try tapSwitch(assign)
+        let assigned = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == '1'"), object: assign)
+        guard XCTWaiter.wait(for: [assigned], timeout: 10) == .completed else { throw acceptanceError("The skill assignment was not confirmed.") }
+        attachScreenshot("Bots workspace — reviewed skill assigned")
+        app.navigationBars.buttons.firstMatch.tap()
+        try selectWorkspace("Connections")
+        try require(app.buttons["botConnection-mcpc_fixture"])
+        try selectWorkspace("Skills")
+        try require(app.buttons["botSkill-skill_created"])
+        attachScreenshot("Bots workspace — returning retains reviewed skills")
+        let state = try await fixtureControl(controlURL, action: "state"), calls = try XCTUnwrap(state["calls"] as? [[String: Any]])
+        XCTAssertTrue(calls.contains { $0["path"] as? String == "/api/bots/skills/assign" && $0["method"] as? String == "POST" })
+        XCTAssertTrue(calls.contains { $0["path"] as? String == "/api/bots/connections" })
+        XCTAssertFalse(calls.contains { ($0["path"] as? String)?.hasSuffix("/messages") == true })
+    }
+
+    @MainActor
+    func testSavedConnectionCheckAndReviewedAccess() async throws {
+        let controlURL = try pairWorkspaceFixture()
+        try selectWorkspace("Connections")
+        let connection = app.buttons["botConnection-mcpc_fixture"]
+        try require(connection); try tapWorkspace(connection)
+        let check = app.buttons["checkBotConnectionButton"]
+        try require(check); check.tap()
+        try require(app.buttons["Check saved connection"]); app.buttons["Check saved connection"].tap()
+        let write = app.switches["connectionToolAccess-tool_write"]
+        try require(write); try waitEnabled(write); try tapSwitch(write)
+        try tapSwitch(app.switches["connectionBotAccess-fixture-reviewer"])
+        try tapWorkspace(app.buttons["saveBotConnectionAccessButton"])
+        try require(app.staticTexts["Access saved"])
+        attachScreenshot("Bots workspace — saved MCP tool and bot access")
+        let state = try await fixtureControl(controlURL, action: "state"), calls = try XCTUnwrap(state["calls"] as? [[String: Any]])
+        XCTAssertTrue(calls.contains { $0["path"] as? String == "/api/bots/connections/mcpc_fixture/check" })
+        let access = try XCTUnwrap(calls.first { $0["path"] as? String == "/api/bots/connections/mcpc_fixture" && $0["method"] as? String == "PATCH" }?["body"] as? [String: Any])
+        XCTAssertEqual(access["readOnlyToolIds"] as? [String], ["tool_read"])
+        XCTAssertTrue((access["enabledToolIds"] as? [String] ?? []).contains("tool_write"))
+        XCTAssertTrue((access["botIds"] as? [String] ?? []).contains("fixture-reviewer"))
+        XCTAssertFalse(calls.contains { ($0["path"] as? String)?.hasSuffix("/messages") == true })
+    }
+
+    @MainActor
+    func testTeamExplicitTaskSharedThinkingStopAndActivity() async throws {
+        let controlURL = try pairWorkspaceFixture()
+        let create = app.buttons["createBotTeamButton"]
+        try require(create); try waitEnabled(create); try tapWorkspace(create)
+        let name = app.textFields["botTeamNameInput"]; try require(name)
+        attachScreenshot("Bots workspace — native team creation form")
+        name.tap(); name.typeText("Phone review team")
+        app.buttons["dismissBotTeamNameKeyboardButton"].tap()
+        try tapSwitch(app.switches["teamMember-fixture-bot"])
+        try tapSwitch(app.switches["teamMember-fixture-reviewer"])
+        try waitEnabled(app.buttons["confirmBotTeamButton"]); app.buttons["confirmBotTeamButton"].tap()
+        let team = app.buttons["team-team_fixture"]
+        try require(team); try tapWorkspace(team)
+        let enabled = app.buttons["toggleBotTeamEnabledButton"]
+        try require(enabled); try waitEnabled(enabled); enabled.tap()
+        let input = app.descendants(matching: .any).matching(identifier: "botTeamTaskInput").firstMatch
+        try tapWorkspace(input); input.typeText("Review this synthetic workspace")
+        app.buttons["dismissBotTeamTaskKeyboardButton"].tap()
+        let start = app.buttons["startBotTeamTaskButton"]
+        try waitEnabled(start); try tapWorkspace(start)
+        let thinking = app.buttons["thinkingDisclosure-team-assistant"]
+        try require(thinking); thinking.tap()
+        try require(app.staticTexts["thinkingContent-team-assistant"])
+        attachScreenshot("Bots workspace — coordinator shared history and Thinking")
+        tapTab("Bots")
+        let stop = app.buttons["stopBotTeamRun-run_fixture"]
+        try require(stop)
+        _ = try await fixtureControl(controlURL, action: "team-progress")
+        try require(app.staticTexts["7 turns"])
+        try tapWorkspace(stop)
+        try require(app.buttons["Stop all team work"]); app.buttons["Stop all team work"].tap()
+        try require(app.staticTexts["Cancelled"])
+        app.navigationBars.buttons.firstMatch.tap()
+        try selectWorkspace("Activity")
+        try require(app.staticTexts["Reviewer subagent"])
+        XCTAssertTrue(app.staticTexts["Coordinator message"].exists)
+        attachScreenshot("Bots workspace — durable messages and subagents")
+        let state = try await fixtureControl(controlURL, action: "state"), calls = try XCTUnwrap(state["calls"] as? [[String: Any]])
+        let creations = calls.filter { $0["path"] as? String == "/api/bots/teams" && $0["method"] as? String == "POST" }
+        XCTAssertEqual(creations.count, 1); XCTAssertEqual((creations.first?["body"] as? [String: Any])?["enabled"] as? Bool, false)
+        XCTAssertEqual(calls.filter { $0["path"] as? String == "/api/bots/teams/team_fixture/runs" && $0["method"] as? String == "POST" }.count, 1)
+        XCTAssertTrue(calls.contains { $0["path"] as? String == "/api/bots/teams/team_fixture/runs/run_fixture/stop" })
+        XCTAssertFalse(calls.contains { ($0["path"] as? String)?.hasSuffix("/messages") == true }, "Only the explicit team task sends a prompt.")
+    }
+
+    private func acceptanceError(_ message: String) -> NSError { NSError(domain: "StrataUIAcceptance", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
+    private func require(_ element: XCUIElement) throws {
+        guard element.waitForExistence(timeout: 10) else { throw acceptanceError("A required workspace control did not appear.") }
+    }
+    private func selectWorkspace(_ title: String) throws {
+        let button = app.segmentedControls["botsWorkspacePicker"].buttons[title]
+        try require(button)
+        button.tap()
+        let selected = XCTNSPredicateExpectation(predicate: NSPredicate(format: "selected == true"), object: button)
+        guard XCTWaiter.wait(for: [selected], timeout: 5) == .completed else { throw acceptanceError("Workspace selection did not change to \(title).") }
+    }
+    private func waitEnabled(_ element: XCUIElement) throws {
+        try require(element)
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: element)
+        guard XCTWaiter.wait(for: [ready], timeout: 15) == .completed else { throw acceptanceError("A required workspace control did not become enabled.") }
+    }
+
+    private func tapSwitch(_ element: XCUIElement) throws { try tapWorkspace(element, horizontal: 0.93) }
+
+    private func tapWorkspace(_ element: XCUIElement, horizontal: CGFloat? = nil) throws {
+        for _ in 0..<12 {
+            let window = app.windows.firstMatch.frame
+            let top = max(window.minY + 60, app.navigationBars.firstMatch.frame.maxY + 8)
+            var bottom = window.maxY - 24
+            if app.tabBars.firstMatch.exists { bottom = min(bottom, app.tabBars.firstMatch.frame.minY - 18) }
+            if app.keyboards.firstMatch.exists { bottom = min(bottom, app.keyboards.firstMatch.frame.minY - 12) }
+            let frame = element.exists ? element.frame : .zero, y = frame.midY
+            if element.exists, element.isHittable, frame.width > 0, y > top, y < bottom {
+                if let horizontal { element.coordinate(withNormalizedOffset: CGVector(dx: horizontal, dy: 0.5)).tap() }
+                else { element.tap() }
+                return
+            }
+            // SwiftUI List may not expose a hittable scroll container on this
+            // iOS release. Drag within the actual content viewport, never the
+            // floating tab bar or a switch whose center is outside that viewport.
+            let origin = app.windows.firstMatch.coordinate(withNormalizedOffset: .zero)
+            let upper = origin.withOffset(CGVector(dx: window.width * 0.5, dy: top - window.minY + 75))
+            let lower = origin.withOffset(CGVector(dx: window.width * 0.5, dy: bottom - window.minY - 45))
+            if element.exists, frame.height > 0, y <= top { upper.press(forDuration: 0.02, thenDragTo: lower) }
+            else { lower.press(forDuration: 0.02, thenDragTo: upper) }
+        }
+        throw NSError(domain: "StrataUIAcceptance", code: 2, userInfo: [NSLocalizedDescriptionKey: "The workspace control must be visible above the tab bar and keyboard."])
+    }
+
+    @MainActor
     func testActualSampleAvatarAndIsolatedComputerControl() async throws {
         guard let raw = ProcessInfo.processInfo.environment["STRATA_TEST_INVITATION"],
               let invitation = URLComponents(string: raw),
@@ -766,6 +928,9 @@ final class ExistingPairingComputerAcceptanceTests: XCTestCase {
         let dy = (frame.height - 800 * scale) / 2 + 380 * scale
         canvas.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: dx, dy: dy)).tap()
         let field = app.descendants(matching: .any).matching(identifier: "computerTypeField").firstMatch
+        let inputReady = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: field)
+        XCTAssertEqual(XCTWaiter.wait(for: [inputReady], timeout: 15), .completed,
+                       "The previous real computer action must finish before focusing its text field.")
         reveal(field); field.tap(); field.typeText("IPHONE-CUA-READY-20261020")
         let type = app.buttons["computerTypeButton"]
         XCTAssertTrue(type.isEnabled); type.tap()

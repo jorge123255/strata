@@ -57,6 +57,7 @@ final class CompanionStore: ObservableObject {
     private var client: CompanionClient?
     private var streamTask: Task<Void, Never>?
     private var connectionGeneration = UUID()
+    var pairingGeneration: UUID { connectionGeneration }
     private var conversationGeneration = UUID()
     private var loadingOperation: UUID?
     private var streamOperation: UUID?
@@ -79,6 +80,23 @@ final class CompanionStore: ObservableObject {
         return BotComputerSession(client: client, botId: botId, chatId: chatId, isCurrent: { [weak self] in
             self?.connectionGeneration == generation && self?.isPaired == true
         })
+    }
+
+    func botWorkspaceStore() -> BotWorkspaceStore {
+        let generation = connectionGeneration
+        return BotWorkspaceStore(client: client, isCurrent: { [weak self] in
+            self?.connectionGeneration == generation && self?.isPaired == true
+        })
+    }
+
+    func supportedBotEfforts(_ bot: CompanionBot) async -> [String] {
+        guard let client, bot.provider != "configured" else { return [] }
+        let generation = connectionGeneration
+        do {
+            let catalog = try await client.botProviderModels(bot.provider)
+            guard connectionGeneration == generation, !Task.isCancelled else { return [] }
+            return catalog.models.first { $0.id == bot.model }?.efforts ?? []
+        } catch { return [] }
     }
 
     func saveBotAvatar(botId: String, avatar: AvatarConfig) async -> Bool {
@@ -288,11 +306,15 @@ final class CompanionStore: ObservableObject {
     }
 
     @discardableResult
-    func newBotConversation(_ bot: CompanionBot, computerId: String? = nil, modelId: String? = nil, workspace: String? = nil) async -> Bool {
+    func newBotConversation(_ bot: CompanionBot, computerId: String? = nil, modelId: String? = nil, workspace: String? = nil, effort: String? = nil) async -> Bool {
         guard let client, let currentBot = botCatalog?.bots.first(where: { $0.id == bot.id }),
               !isSending, !isSubmittingMessage, creatingBotConversationId == nil else { return false }
         if currentBot.paused == true { error = "This bot is paused. Resume it in Strata on your Mac."; return false }
         var options: [String: String] = [:]
+        if let effort {
+            guard effort.range(of: "^[A-Za-z0-9_-]{0,40}$", options: .regularExpression) != nil else { error = "Choose an effort supported by this model."; return false }
+            options["effort"] = effort
+        }
         if computerId != nil || modelId != nil || workspace != nil || currentBot.computerMode == "cua" {
             guard botCatalog?.selectionSupported == true else {
                 error = "Update Strata on your Mac to choose a computer or model for this conversation."; return false

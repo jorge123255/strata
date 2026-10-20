@@ -14,6 +14,7 @@
 		2D18BE444A89C7FFA545C3CB /* CompanionModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3A7DE4AF50BD0C3004EE31D /* CompanionModels.swift */; };
 		2D6AC49DAF586845379D5BC0 /* ThinkingTimelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E59F3652EB28C1B5CBA23EE8 /* ThinkingTimelineTests.swift */; };
 		3708264D60BA706BA23AC809 /* CompanionSmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19BD26A6FC2E7504FE691831 /* CompanionSmokeTests.swift */; };
+		38FB4A58BEB38DE9CAE1651E /* BotWorkspaceViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEA3E422BC28DEAA0435D70A /* BotWorkspaceViews.swift */; };
 		3BC9A744F1A9FB886EAC7AA1 /* ModelsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81DA49FE4380C675E397AF6D /* ModelsView.swift */; };
 		4D9C963E28DB3BD3F639EA37 /* PairingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B873E16871EAA80E94A49E3F /* PairingTests.swift */; };
 		57FBEF1B0FBD00F25E2F03EB /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B70947875E2884785A789C47 /* Assets.xcassets */; };
@@ -31,9 +32,11 @@
 		A97D21E9F25E3DBD69E896C4 /* OverviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64D770867340AE9EBFA13A4A /* OverviewView.swift */; };
 		A9E534606DECBE48695179D4 /* MacThinkingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37F1F34CF3BDA01A86F47075 /* MacThinkingView.swift */; };
 		B758D656728EF24B7E571622 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7F8B0FC6C733BA38DC82F66 /* Theme.swift */; };
+		BBC970F9110CD57FAF6A5338 /* BotWorkspaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A35E56FE5DF4C12304AE1EA /* BotWorkspaceStore.swift */; };
 		C81D39EBC082FC1B884B536E /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CB6F478F559C2014D628588 /* ContentView.swift */; };
 		D91FE563EBED134805EDFD2D /* BotsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CE64DDD0C439FA09FD1F543 /* BotsView.swift */; };
 		E57AF1DA5CEEEFDBDC644D41 /* LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = 8C800B2DB69A76089F424CBE /* LICENSE.txt */; };
+		EC729329FE30A565197A4F07 /* BotWorkspaceModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17D974F087CFE32B66755D9F /* BotWorkspaceModels.swift */; };
 		FC866819762C78C3310B882E /* StoreRaceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49C61200D469B81D7402D0E1 /* StoreRaceTests.swift */; };
 /* End PBXBuildFile section */
 
@@ -56,8 +59,10 @@
 
 /* Begin PBXFileReference section */
 		141A40B82BA2D85EDA8360C1 /* CompanionClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionClient.swift; sourceTree = "<group>"; };
+		17D974F087CFE32B66755D9F /* BotWorkspaceModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotWorkspaceModels.swift; sourceTree = "<group>"; };
 		19BD26A6FC2E7504FE691831 /* CompanionSmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionSmokeTests.swift; sourceTree = "<group>"; };
 		1CD333D8FB83B599C757ED90 /* BotComputerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotComputerView.swift; sourceTree = "<group>"; };
+		2A35E56FE5DF4C12304AE1EA /* BotWorkspaceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotWorkspaceStore.swift; sourceTree = "<group>"; };
 		2E657AA847B02C74E921C3FB /* SVGPath.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SVGPath.swift; sourceTree = "<group>"; };
 		2E747A736E510FDB4A2EF361 /* StrataMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StrataMobileApp.swift; sourceTree = "<group>"; };
 		32556F71F05DB037CC51141D /* Components.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Components.swift; sourceTree = "<group>"; };
@@ -78,6 +83,7 @@
 		B70947875E2884785A789C47 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B873E16871EAA80E94A49E3F /* PairingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingTests.swift; sourceTree = "<group>"; };
 		BBBCA7B9C05B1108EE5E9592 /* NOTICE.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = NOTICE.md; sourceTree = "<group>"; };
+		BEA3E422BC28DEAA0435D70A /* BotWorkspaceViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotWorkspaceViews.swift; sourceTree = "<group>"; };
 		C2039E6C0B84C032D88C64AE /* QRScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScannerView.swift; sourceTree = "<group>"; };
 		C2CC74861FF7D89BCF70ADAA /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
 		C3A7DE4AF50BD0C3004EE31D /* CompanionModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionModels.swift; sourceTree = "<group>"; };
@@ -147,6 +153,7 @@
 		A4A289F10E4E9F5FB07C51DD /* Models */ = {
 			isa = PBXGroup;
 			children = (
+				17D974F087CFE32B66755D9F /* BotWorkspaceModels.swift */,
 				C3A7DE4AF50BD0C3004EE31D /* CompanionModels.swift */,
 			);
 			path = Models;
@@ -167,6 +174,7 @@
 			children = (
 				1CD333D8FB83B599C757ED90 /* BotComputerView.swift */,
 				7CE64DDD0C439FA09FD1F543 /* BotsView.swift */,
+				BEA3E422BC28DEAA0435D70A /* BotWorkspaceViews.swift */,
 				C2CC74861FF7D89BCF70ADAA /* ChatView.swift */,
 				32556F71F05DB037CC51141D /* Components.swift */,
 				753EC19E8E6F2E274E15738E /* ConnectionView.swift */,
@@ -193,6 +201,7 @@
 			isa = PBXGroup;
 			children = (
 				418206B836C06B84AAE0F261 /* BotComputerSession.swift */,
+				2A35E56FE5DF4C12304AE1EA /* BotWorkspaceStore.swift */,
 				141A40B82BA2D85EDA8360C1 /* CompanionClient.swift */,
 				B15E5C8FBCE10522DE165334 /* CompanionStore.swift */,
 				C2039E6C0B84C032D88C64AE /* QRScannerView.swift */,
@@ -334,6 +343,9 @@
 				196B170CECE3E14AED2E7EF3 /* BotAvatar.swift in Sources */,
 				1444351F3208C9E1DC99F2C8 /* BotComputerSession.swift in Sources */,
 				701219961DE67C41EDC4EF88 /* BotComputerView.swift in Sources */,
+				EC729329FE30A565197A4F07 /* BotWorkspaceModels.swift in Sources */,
+				BBC970F9110CD57FAF6A5338 /* BotWorkspaceStore.swift in Sources */,
+				38FB4A58BEB38DE9CAE1651E /* BotWorkspaceViews.swift in Sources */,
 				D91FE563EBED134805EDFD2D /* BotsView.swift in Sources */,
 				A0AD8CB7E42C1FBD86F429B1 /* ChatView.swift in Sources */,
 				79B2F9C1699CE48D32D09946 /* CompanionClient.swift in Sources */,
@@ -400,7 +412,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 9;
+				CURRENT_PROJECT_VERSION = 10;
 				INFOPLIST_FILE = StrataMobile/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -418,7 +430,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 9;
+				CURRENT_PROJECT_VERSION = 10;
 				INFOPLIST_FILE = StrataMobile/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

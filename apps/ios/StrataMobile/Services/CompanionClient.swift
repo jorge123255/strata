@@ -56,7 +56,7 @@ final class CompanionClient {
         }
         var req = URLRequest(url: baseURL.appendingPathComponent(String(path.dropFirst())))
         req.httpMethod = method
-        req.timeoutInterval = path.hasPrefix("/v1/model-management/") ? 180 : (path.hasSuffix("/computer/start") ? 100 : 20)
+        req.timeoutInterval = path.hasPrefix("/v1/model-management/") ? 180 : path.hasSuffix("/computer/start") ? 100 : path.hasPrefix("/v1/bots/connections/") && path.hasSuffix("/check") ? 35 : 20
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         if let body { req.httpBody = try JSONEncoder().encode(body) }
@@ -104,6 +104,16 @@ final class CompanionClient {
     static func computerPath(botId: String, action: String? = nil) throws -> String {
         guard isSafeIdentifier(botId), action == nil || ["start", "stop", "takeover", "control", "release"].contains(action!) else { throw CompanionError.server("Choose a saved bot computer.") }
         return "/v1/bots/\(botId)/computer" + (action.map { "/" + $0 } ?? "")
+    }
+
+    func botProviderModels(_ provider: String) async throws -> BotProviderModels {
+        guard ["claude", "codex", "grok", "kimi", "ollama", "configured"].contains(provider) else { throw CompanionError.server("Choose a supported provider.") }
+        var req = try request("/v1/bots/provider-models")
+        var url = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)!
+        url.queryItems = [URLQueryItem(name: "provider", value: provider)]; req.url = url.url
+        let (data, response) = try await session.data(for: req)
+        try Self.check(response, data: data)
+        return try JSONDecoder().decode(BotProviderModels.self, from: data)
     }
 
     static func isSafeIdentifier(_ value: String) -> Bool {
