@@ -75,7 +75,16 @@ export function Sidebar({ containerRef }: {
     <aside className="nav" ref={containerRef} aria-label={tr("Main navigation")} aria-modal={navOpen && compact ? true : undefined} role={navOpen && compact ? 'dialog' : undefined} tabIndex={-1}>
       <div className="nav__top">{tr(!collapsed ? <a className="nav__brand" href={href('chat')} aria-label={tr("Strata — open chat")}><Brand variant="lockup" height={28} decorative className="nav__brand-lockup"/></a> : null)}<button type="button" className="nav__collapse" aria-label={tr(collapsed ? 'Show sidebar' : 'Hide sidebar')} title={tr(collapsed ? 'Show sidebar' : 'Hide sidebar')} onClick={() => compact ? setNavOpen(!navOpen) : toggleRail()}><Icon name="panel" size={20}/></button></div>
       <div className="nav__scroll">
-        <button className="st-btn st-btn--primary nav-new" aria-label={tr("New chat")} title={tr("New chat")} onClick={() => runCommand('new')}><Icon name="new-chat" size={18}/><span className="nav__rail-hide">{tr("New chat")}</span></button>
+        <div className="nav__quick-actions">
+          <button className="st-btn st-btn--primary nav-new" aria-label={tr("New chat")} title={tr("New chat")} onClick={() => runCommand('new')}><Icon name="new-chat" size={18}/><span className="nav__rail-hide">{tr("New chat")}</span></button>
+          <button type="button" className="navitem nav-command" aria-label={tr("Command palette")} title={tr("Command palette")} onClick={() => { setNavOpen(false); runCommand('palette'); }}><Icon name="search"/><span className="navitem__text">{tr("Search anything")}</span><kbd className="nav__rail-hide" aria-hidden="true">{MOD}K</kbd></button>
+        </div>
+        <nav className="nav__destinations" aria-label={tr("Workspace navigation")}>
+          <NavLink route="bots" label={tr("Bots")} icon="experts" current={location.route}/>
+          <NavLink route="models" label={tr("Models")} icon="models" current={location.route === 'tuning' ? 'models' : location.route}/>
+          <NavLink route="skills" label={tr("Skills")} icon="skills" current={location.route}/>
+          <NavLink route="monitor" label={tr("Monitor")} icon="activity" current={location.route}/>
+        </nav>
         <TaskTree collapsed={collapsed}/>
         {tr(collapsed ? <div className="nav-recent" aria-label={tr("Recent chats")}>{tr(recentChats(sessions, activeSession).map((session, index) => <RecentChatLink key={session.id} session={session} slot={index + 1} active={activeSession === session.id && location.route === 'chat'}/>))}</div> : null)}
         {!collapsed ? <div className="ws">
@@ -104,10 +113,6 @@ export function Sidebar({ containerRef }: {
       </div>
       <div className="nav__foot">
         <button className="enginechip" data-state={status === 'Ready' ? 'ready' : ['Reading prompt', 'Thinking', 'Generating', 'Loading'].includes(status) ? 'busy' : 'off'} onClick={() => go('models')} title={tr("{0} \u00B7 {1} \u00B7 {2}", [modelName, modelQuant, tr(status)])} aria-label={tr("{0} \u00B7 {1}", [modelName, modelQuant])}><span className="enginechip__family"><Icon name={modelFamilyIcon(current?.family)} size={20}/><span className="enginechip__dot"/></span><span className="enginechip__text nav__rail-hide"><span className="enginechip__title">{modelName}</span><span className="enginechip__sub">{modelQuant}</span></span></button>
-        <NavLink route="bots" label={tr("Bots")} icon="experts" current={location.route}/>
-        <NavLink route="skills" label={tr("Skills")} icon="skills" current={location.route}/>
-        <NavLink route="monitor" label={tr("Monitor")} icon="activity" current={location.route}/>
-        <NavLink route="models" label={tr("Models")} icon="models" current={location.route === 'tuning' ? 'models' : location.route}/>
         <button type="button" className="navitem" title={tr("Pair iPhone")} aria-label={tr("Pair iPhone")} aria-current={location.query.has('settings') && settingsSection === 'iPhone' ? 'page' : undefined} onClick={() => { setSettingsSection('iPhone'); go('settings'); }}><Icon name="link"/><span className="navitem__text">{tr("Pair iPhone")}</span></button>
         <div className="nav__bottom"><MoreMenu current={location.route}/><button className="st-btn st-btn--icon theme-switch" aria-label={tr(dark ? 'Switch to light mode' : 'Switch to dark mode')} title={tr(dark ? 'Switch to light mode' : 'Switch to dark mode')} onClick={() => setTheme(dark ? 'light' : 'dark')}><span key={String(dark)} className="theme-switch__icon"><Icon name={dark ? 'sun' : 'moon'} size={19}/></span></button></div>
       </div>

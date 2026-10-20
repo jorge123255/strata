@@ -703,26 +703,6 @@
   border-bottom: 0;
 }
 
-/* Accessibility correction, light only — see docs/design-system-notes.md §2.1.
-   The kit pairs `--st-accent-ink: #ffffff` with `--st-accent: #10b981`: 2.54:1,
-   under AA for the 14px/700 labels on primary buttons and the user's chat
-   bubble. Dark mode already pairs a dark ink with the accent fill, so light mode
-   adopts the same relationship. With a dark ink the fill can no longer darken on
-   hover, so the hover lifts instead of sinking. Both states clear AA:
-     base  #05261b on #10b981  = 6.37:1
-     hover #05261b on #12c68e  = 7.31:1
-   Blast radius is three surfaces — primary buttons, the user bubble and the
-   brand mark — plus one hover rule. Delete this block to return to the kit's
-   values verbatim, or use option B in the notes (deeper accent, white ink). */
-:root:not([data-theme='dark']) {
-  --st-accent-ink: #05261b;
-  --st-accent-hover: #12c68e;
-  /* Accent used as text: #0c8a60 on the accent tint measures 4.14:1, which is
-     under AA at the 12–13px these badges use. Deepened to 5.07:1 on the tint
-     and 5.35:1 on white, so links and status text improve with it. */
-  --st-accent-text: #0a7a55;
-}
-
 /* ======================================================= interface scale ==
    One multiplier for the chrome, driven by a preference. The kit expresses its
    type and spacing in px, so scaling means restating those tokens as products
