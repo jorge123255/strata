@@ -6,6 +6,10 @@ Pairing stays off until enabled. Once enabled, Strata restores the connection se
 
 The desktop app uses the same private certificate, device sessions, and phone conversations as the older standalone helper. Quit **Strata Companion** before enabling the built-in service; only one service can own the pairing ports at a time. The Mac's existing inference host remains on loopback, and the phone receives only the companion's narrow authenticated HTTPS controls.
 
+On iPhone, open **Chat → History** to reopen a Mac conversation and continue its work. The same messages and browser/tool activity appear on both screens. Existing conversations keep their model, folder and permission mode. Pending tool requests can be allowed or denied on the phone. Closing the phone app leaves Mac work running; **Stop** ends the selected turn explicitly.
+
+The updated Mac app imports existing desktop chat history into a private conversation store. If you enable pairing for the first time while a Mac reply is already running, that conversation is shared after the current reply finishes; keep its Mac window open until then. Earlier phone-only chats remain available separately. Existing paired phones stay paired through this update. Browser action cards show addresses, progress and text results; they do not stream the browser's screen.
+
 ## Build using an installed Mac carrier
 
 Install dependencies under `apps/host`, then from `apps/desktop`:

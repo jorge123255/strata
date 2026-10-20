@@ -16,9 +16,16 @@ Each invitation expires after five minutes and works once. Use **New pairing cod
 - Live connection and model status from the Mac.
 - The Mac's configured API models, with credentials kept on the Mac.
 - Loading and unloading models that are already installed locally. Download models in the desktop app first.
-- Streaming chat, stopping a reply, new conversations, and phone conversation history.
+- The Mac's existing conversations, their saved message history, and current work.
+- Continuing the same conversation and workspace from either device.
+- Live browser and tool activity, including the action, its target, status, and expandable results.
+- Allowing or denying an action when the Mac asks for approval, and stopping the selected conversation.
 
-Requests go through the Mac. A configured API provider may run remotely. Phone conversations are kept separately from desktop conversations, whose history is currently stored by the desktop web view. The phone chat does not enable desktop agent tools or filesystem access.
+Open **Chat → Conversation history** to choose a Mac conversation. Home also shows recent conversations. The active or most recent conversation opens automatically after connecting. New conversations started on the phone also appear on the Mac. Existing conversations keep their model and permission mode; new conversations start in the Mac's default workspace and ask before actions. Pairing already grants this access, so a paired phone does not need a new invitation after updating both apps.
+
+While Chat is open in the foreground, its history and activity refresh about once per second. Other status and conversation lists refresh about every five seconds. On iOS 18 or later, scrolling back through history pauses automatic scrolling; choose **Latest** to follow new replies again. On iOS 17, use **Latest** to jump to current work; live updates leave the scroll position alone. Leaving Chat or putting the phone away does not stop the Mac's agent. Browser activity describes what the Mac is doing; it does not stream the Mac's screen. **Open page on iPhone** opens a reported web address locally.
+
+Requests go through the Mac. A configured API provider may run remotely. Earlier phone-only chats remain available under **Earlier iPhone conversations**; continuing one uses its original text-only chat path.
 
 **Connection → Disconnect Mac** revokes the phone's access and removes its local credential. **Forget this Mac** is available when the Mac is unreachable; it removes the credential only from the phone. Remove that device in the Mac pairing window to revoke its old session. **Pair again** also recovers a changed certificate or address.
 
@@ -49,6 +56,8 @@ xcodebuild -project StrataMobile.xcodeproj -scheme StrataMobile \
   -only-testing:StrataMobileUITests/CompanionSmokeTests/testManualPairingRejectsMalformedFingerprint \
   -only-testing:StrataMobileUITests/CompanionSmokeTests/testManualPairingRejectsInvalidCode test
 ```
+
+The optional real Mac read-only test takes `STRATA_READONLY_INVITATION`. It pairs, reads existing history, and verifies saved pairing after relaunch, without sending a model message or approving/stopping work. The isolated synthetic shared-conversation test takes `STRATA_TEST_INVITATION` and `STRATA_SHARED_FIXTURE_CONTROL`; its fixture data and loopback control endpoint are test-owned.
 
 The optional live TLS and pairing/chat tests require `STRATA_TEST_INVITATION` in the test runner environment. They use the real bridge and real selected model. The live UI test consumes the one-use invitation and leaves its simulator paired. Keep those result bundles private because XCTest records entered pairing fields.
 

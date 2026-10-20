@@ -9,6 +9,16 @@ final class CompanionStore: ObservableObject {
     @Published private(set) var chats: [CompanionChat] = []
     @Published private(set) var messages: [ChatMessage] = []
     @Published private(set) var currentChatId: String?
+    @Published private(set) var conversations: [MacConversationSummary] = []
+    @Published private(set) var currentConversation: MacConversation?
+    @Published private(set) var pendingApprovals: [MacToolActivity] = []
+    @Published private(set) var isSubmittingMessage = false
+    @Published private(set) var isSelectingConversation = false
+    @Published private(set) var decidingToolId: String?
+    var isWorking: Bool { isSending || currentConversation?.active == true }
+    var isLegacyConversation: Bool { currentChatId != nil }
+    private var hasChosenConversation = false
+    private var chatVisible = false
     @Published private(set) var isLoading = false
     @Published private(set) var isSending = false
     @Published var error: String?
@@ -35,7 +45,7 @@ final class CompanionStore: ObservableObject {
     }
 
     func pair(url: String, code: String, fingerprint: String) async {
-        guard !isLoading, !isSending else { return }
+        guard !isLoading, !isSending, !isSubmittingMessage else { return }
         let operation = beginLoading()
         let generation = connectionGeneration
         error = nil
@@ -55,6 +65,7 @@ final class CompanionStore: ObservableObject {
             connection = saved
             client = CompanionClient(baseURL: address, fingerprint: pin, token: saved.token)
             status = nil; models = []; chats = []; messages = []; currentChatId = nil
+            conversations = []; currentConversation = nil; pendingApprovals = []; hasChosenConversation = false
             pendingInvitation = nil
             try await fetchState()
         } catch is CancellationError { }
@@ -76,9 +87,15 @@ final class CompanionStore: ObservableObject {
         async let fetchedStatus: CompanionStatus = client.perform("/v1/status")
         async let fetchedModels: ModelResult = client.perform("/v1/models")
         async let fetchedChats: ChatListResult = client.perform("/v1/chats")
-        let (newStatus, newModels, newChats) = try await (fetchedStatus, fetchedModels, fetchedChats)
+        async let fetchedConversations: MacConversationList = client.perform("/v1/conversations")
+        let (newStatus, newModels, newChats, newConversations) = try await (fetchedStatus, fetchedModels, fetchedChats, fetchedConversations)
         guard connectionGeneration == generation else { throw CancellationError() }
         status = newStatus; models = newModels.models; chats = newChats.chats
+        conversations = newConversations.conversations
+        if !hasChosenConversation, currentConversation == nil, !isSending, !isSubmittingMessage,
+           let first = conversations.first(where: { $0.id == newConversations.activeChatId }) ?? conversations.first {
+            await selectConversation(first)
+        }
     }
 
     func loadModel(_ id: String) async {
@@ -111,16 +128,21 @@ final class CompanionStore: ObservableObject {
     }
 
     func newChat() {
-        guard !isSending else { return }
-        conversationGeneration = UUID()
-        currentChatId = nil; messages = []; error = nil
+        guard !isSubmittingMessage, !isSending else { return }
+        // Leaving an active Mac conversation only changes this phone's view.
+        // The Mac keeps running until the person explicitly chooses Stop.
+        streamTask?.cancel(); streamTask = nil; streamOperation = nil; isSending = false
+        conversationGeneration = UUID(); hasChosenConversation = true
+        currentChatId = nil; messages = []; currentConversation = nil; pendingApprovals = []; error = nil
+        isSelectingConversation = false
     }
 
     func selectChat(_ chat: CompanionChat) async {
-        guard let client, !isSending else { return }
+        guard let client, !isSending, !isSubmittingMessage else { return }
         let generation = connectionGeneration
         let conversation = UUID()
-        conversationGeneration = conversation
+        conversationGeneration = conversation; hasChosenConversation = true
+        currentConversation = nil; pendingApprovals = []
         do {
             let history: ChatHistory = try await client.perform("/v1/chats/\(chat.id)")
             guard connectionGeneration == generation, conversationGeneration == conversation, !isSending else { return }
@@ -130,7 +152,7 @@ final class CompanionStore: ObservableObject {
         }
     }
 
-    func sendMessage(_ text: String) async {
+    func sendLegacyMessage(_ text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let client, !isSending, !trimmed.isEmpty else { return }
         let generation = connectionGeneration
@@ -166,7 +188,113 @@ final class CompanionStore: ObservableObject {
         await task.value
     }
 
+    func setChatVisible(_ visible: Bool) { chatVisible = visible }
+
+    func refreshLiveState(refreshOverview: Bool) async {
+        guard isPaired else { return }
+        if refreshOverview { await refresh(silently: true) }
+        if chatVisible { await refreshCurrentConversation() }
+    }
+
+    func selectConversation(_ summary: MacConversationSummary) async {
+        guard let client, !isSubmittingMessage, !isSending else { return }
+        let generation = connectionGeneration
+        let selection = UUID()
+        conversationGeneration = selection; hasChosenConversation = true
+        isSelectingConversation = true
+        defer { if conversationGeneration == selection { isSelectingConversation = false } }
+        do {
+            let detail: MacConversationDetail = try await client.perform(conversationPath(summary.id))
+            guard connectionGeneration == generation, conversationGeneration == selection else { return }
+            currentChatId = nil; messages = []; apply(detail); error = nil
+        } catch is CancellationError { }
+        catch { if connectionGeneration == generation, conversationGeneration == selection { self.error = friendly(error) } }
+    }
+
+    func refreshCurrentConversation() async {
+        guard let client, let selected = currentConversation, !isSubmittingMessage, !isSelectingConversation, decidingToolId == nil else { return }
+        let generation = connectionGeneration
+        let selection = conversationGeneration
+        do {
+            let detail: MacConversationDetail = try await client.perform(conversationPath(selected.id))
+            guard connectionGeneration == generation, conversationGeneration == selection, currentConversation?.id == selected.id else { return }
+            apply(detail)
+        } catch is CancellationError { }
+        catch {
+            // Background refresh leaves the conversation readable and retryable.
+            if connectionGeneration == generation { markUnreachable() }
+        }
+    }
+
+    func sendMessage(_ text: String) async {
+        if isLegacyConversation { await sendLegacyMessage(text); return }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let client, !isSubmittingMessage, currentConversation?.active != true, !trimmed.isEmpty else { return }
+        let generation = connectionGeneration
+        let selection = UUID()
+        conversationGeneration = selection; hasChosenConversation = true
+        isSubmittingMessage = true; error = nil
+        defer { if connectionGeneration == generation { isSubmittingMessage = false } }
+        do {
+            if currentConversation == nil {
+                let created: MacConversationDetail = try await client.perform("/v1/conversations", method: "POST", body: [:])
+                guard connectionGeneration == generation, conversationGeneration == selection else { return }
+                apply(created)
+            }
+            guard let id = currentConversation?.id else { throw CompanionError.server("The Mac could not create a conversation.") }
+            let detail: MacConversationDetail = try await client.perform(conversationPath(id) + "/messages", method: "POST", body: ["message": trimmed])
+            guard connectionGeneration == generation, conversationGeneration == selection else { return }
+            apply(detail)
+            await refresh(silently: true)
+        } catch is CancellationError { }
+        catch { if connectionGeneration == generation, conversationGeneration == selection { self.error = friendly(error) } }
+    }
+
+    func stopConversation() async {
+        guard let client, let selected = currentConversation, selected.active, !isSubmittingMessage, !isSelectingConversation else { return }
+        let generation = connectionGeneration
+        let selection = UUID()
+        conversationGeneration = selection
+        isSubmittingMessage = true
+        defer { if connectionGeneration == generation { isSubmittingMessage = false } }
+        do {
+            let detail: MacConversationDetail = try await client.perform(conversationPath(selected.id) + "/stop", method: "POST", body: [:])
+            guard connectionGeneration == generation, conversationGeneration == selection else { return }
+            apply(detail)
+        } catch is CancellationError { }
+        catch { if connectionGeneration == generation, conversationGeneration == selection { self.error = friendly(error) } }
+    }
+
+    func decideApproval(_ tool: MacToolActivity, approve: Bool) async {
+        guard let client, let selected = currentConversation, decidingToolId == nil,
+              pendingApprovals.contains(where: { $0.id == tool.id }) else { return }
+        let generation = connectionGeneration
+        let selection = UUID()
+        conversationGeneration = selection
+        decidingToolId = tool.id
+        defer { if connectionGeneration == generation { decidingToolId = nil } }
+        do {
+            let detail: MacConversationDetail = try await client.perform(conversationPath(selected.id) + "/approval", method: "POST", body: ["toolId": tool.id, "decision": approve ? "approve" : "deny"])
+            guard connectionGeneration == generation, conversationGeneration == selection else { return }
+            apply(detail); error = nil
+        } catch is CancellationError { }
+        catch { if connectionGeneration == generation, conversationGeneration == selection { self.error = friendly(error) } }
+    }
+
+    private func apply(_ detail: MacConversationDetail) {
+        // A live poll often returns the same snapshot. Publishing it repeatedly
+        // needlessly rebuilds the scroll view and its selectable text controls.
+        if currentConversation != detail.conversation { currentConversation = detail.conversation }
+        if pendingApprovals != detail.pending { pendingApprovals = detail.pending }
+    }
+
+    private func conversationPath(_ id: String) -> String {
+        let escaped = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?#%"))) ?? id
+        return "/v1/conversations/\(escaped)"
+    }
+
     func cancelMessage() async {
+        if currentConversation != nil { await stopConversation(); return }
         guard let client, let currentChatId, isSending else { return }
         let operation = streamOperation
         let generation = connectionGeneration
@@ -178,7 +306,7 @@ final class CompanionStore: ObservableObject {
 
     func disconnect() async {
         guard let client else { return }
-        guard !isSending else { error = "Stop the current reply before disconnecting."; return }
+        guard !isSending, !isSubmittingMessage else { error = "Wait for the current request before disconnecting."; return }
         let generation = connectionGeneration
         do {
             // Revoke on the Mac before deleting the local credential.
@@ -190,7 +318,7 @@ final class CompanionStore: ObservableObject {
     }
 
     func forgetMac() {
-        guard !isSending else { error = "Stop the current reply before forgetting this Mac."; return }
+        guard !isSending, !isSubmittingMessage else { error = "Wait for the current request before forgetting this Mac."; return }
         do {
             try deleteConnection()
             clearConnection()
@@ -212,6 +340,8 @@ final class CompanionStore: ObservableObject {
         connectionGeneration = UUID(); conversationGeneration = UUID()
         loadingOperation = nil; isLoading = false
         client = nil; connection = nil; status = nil; models = []; chats = []; messages = []; currentChatId = nil; error = nil
+        conversations = []; currentConversation = nil; pendingApprovals = []; hasChosenConversation = false
+        isSubmittingMessage = false; isSelectingConversation = false; decidingToolId = nil
     }
 
     private func markUnreachable() {

@@ -31,6 +31,115 @@ struct ChatMessage: Codable, Identifiable, Equatable {
     var content: String
 }
 
+// Shared Mac conversations retain their identity, workspace, and permission mode.
+struct MacConversationSummary: Decodable, Identifiable, Equatable {
+    var id: String
+    var title: String
+    var updatedAt: String?
+    var workspace: String?
+    var modelName: String?
+    var mode: String?
+    var active: Bool
+    var preview: String?
+
+    enum CodingKeys: String, CodingKey { case id, title, updatedAt, workspace, modelName, mode, active, preview }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        title = try values.decode(String.self, forKey: .title)
+        if let text = try? values.decode(String.self, forKey: .updatedAt) { updatedAt = text }
+        else if let number = try? values.decode(Double.self, forKey: .updatedAt) { updatedAt = String(number) }
+        else { updatedAt = nil }
+        workspace = try values.decodeIfPresent(String.self, forKey: .workspace)
+        modelName = try values.decodeIfPresent(String.self, forKey: .modelName)
+        mode = try values.decodeIfPresent(String.self, forKey: .mode)
+        active = try values.decodeIfPresent(Bool.self, forKey: .active) ?? false
+        preview = try values.decodeIfPresent(String.self, forKey: .preview)
+    }
+
+    var workspaceName: String? { workspace.map { URL(fileURLWithPath: $0).lastPathComponent }.flatMap { $0.isEmpty ? nil : $0 } }
+}
+
+struct MacConversation: Decodable, Identifiable, Equatable {
+    var id: String
+    var title: String
+    var workspace: String?
+    var modelName: String?
+    var mode: String?
+    var active: Bool
+    var status: String?
+    var messages: [MacChatMessage]
+
+    var permissionLabel: String {
+        switch mode {
+        case "plan": return "Plan mode"
+        case "bypass": return "Full access on Mac"
+        case "accept-edits": return "Accept edits"
+        case "auto": return "Automatic permissions"
+        default: return "Ask before actions"
+        }
+    }
+}
+
+struct MacChatMessage: Decodable, Identifiable, Equatable {
+    var id: String
+    var role: String
+    var content: String
+    var at: String?
+    var streaming: Bool?
+    var error: String?
+    var tools: [MacToolActivity]?
+}
+
+struct MacToolActivity: Decodable, Identifiable, Equatable {
+    struct Ask: Decodable, Equatable { var why: String?; var detail: String? }
+    var id: String
+    var name: String
+    var preview: String?
+    var effect: String?
+    var scope: String?
+    var verb: String?
+    var target: String?
+    var ask: Ask?
+    var state: String
+    var result: String?
+    var live: Bool?
+    var approved: Bool?
+    var durationMs: Double?
+
+    var isBrowser: Bool { name.lowercased().contains("browser") }
+    var isRunning: Bool { state == "running" || state == "approved" }
+    var title: String {
+        if let verb, !verb.isEmpty { return verb }
+        if isBrowser { return "Browser activity" }
+        if name.lowercased().contains("shell") || scope == "shell" { return "Run a command" }
+        return name.replacingOccurrences(of: "_", with: " ")
+    }
+    var statusLabel: String {
+        switch state {
+        case "proposed": return "Needs approval"
+        case "approved", "running": return "Working"
+        case "done": return "Completed"
+        case "denied": return "Denied"
+        case "error": return "Failed"
+        default: return state.capitalized
+        }
+    }
+    var icon: String {
+        if isBrowser { return "globe" }
+        if scope == "shell" { return "terminal" }
+        if scope == "write" { return "doc.badge.gearshape" }
+        return "wrench.and.screwdriver"
+    }
+    var browserURL: URL? {
+        guard isBrowser, let target, let url = URL(string: target), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return nil }
+        return url
+    }
+}
+
+struct MacConversationList: Decodable { var conversations: [MacConversationSummary]; var activeChatId: String? }
+struct MacConversationDetail: Decodable { var conversation: MacConversation; var pending: [MacToolActivity] }
+
 struct PairedConnection: Codable, Equatable {
     var baseURL: URL
     var macName: String

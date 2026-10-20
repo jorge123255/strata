@@ -7,7 +7,7 @@ The bridge connects the iPhone app to Strata on your Mac. The desktop app can ru
 1. Open Strata on the Mac. Put your Mac and iPhone on the same trusted Wi-Fi network.
 2. In the Mac Strata app, choose **Pair iPhone** in the sidebar or **Settings → iPhone**, then enable pairing. The panel shows a QR code and a six-digit code. The standalone **Strata Companion** app is an optional alternative; run one pairing service at a time.
 3. Open Strata on iPhone and scan the QR code in **Pair with Mac**, or paste the full invitation. The invitation includes the Mac's certificate fingerprint, address, and one-use code. A six-digit code by itself does not establish certificate trust.
-4. Choose one of your Mac's configured API models, or an installed local model, in **Models**. Send a message from **Chats**.
+4. Open **Chat → History** to reopen a Mac conversation. Its history and current browser or tool activity appear on your phone. Send a message to continue in the same Mac session. Choose a model in **Models** when starting a new conversation.
 
 An invitation lasts five minutes and allows five guesses in total. Choose **New invitation** on the Mac after it expires. The Mac pairing window also lists paired devices. **Remove** revokes a device immediately. The phone's disconnect action revokes its own session.
 
@@ -42,9 +42,14 @@ The default private data folder is `~/Library/Application Support/Strata Compani
 - View Mac connection, memory, model and active-request status.
 - Choose among the API models already configured on the Mac. Provider credentials and endpoint addresses stay on the Mac. An API choice belongs to that paired phone and does not switch the desktop's selected chat model.
 - Load an already downloaded local model or unload the phone's selected instance. Choosing an already running local model selects that instance for the phone without restarting it or changing the desktop's default. The existing host applies its own memory and active-request safeguards. Downloads, install operations, settings edits, files, shell commands, and arbitrary proxy routes are unavailable from the bridge.
-- Send text messages through the Mac's real `/api/chat/stream` route and receive streaming responses. The companion forces the agent and tools off. Stopping a response aborts that request and preserves partial output.
+- Read and continue the Mac's conversations. Messages, browser actions and other tool cards update while the Chat tab is open. Existing chats keep their model, working folder and permission mode. New chats use the phone's selected model and start in Manual mode.
+- Answer a pending action with **Allow** or **Deny**, or stop the selected conversation. Closing the phone app leaves Mac agent work running. Stop is an explicit action.
 
-Phone conversations are stored separately. The desktop currently stores its conversation index in its web view's local storage and provides no history API. This bridge does not copy or merge that storage. Each paired device can access only its own conversations.
+The Mac imports its existing web-view history into a private host conversation store. If you enable pairing for the first time while a Mac reply is already running, that conversation is shared after the current reply finishes; keep its Mac window open until then. Both screens use the same conversation IDs. Versioned updates prevent a stale desktop cache from replacing newer phone messages. Removing a conversation on the Mac also removes it from the shared catalog.
+
+Paired devices can access the shared Mac conversation catalog and approve its pending actions. Earlier phone-only conversations remain in **Earlier iPhone chats** and stay private to their original paired device; their existing text-only route is retained for compatibility. Those earlier chats do not run agent tools.
+
+Browser activity is shown as action cards with the address, state and available text result. This is an activity view, not a live browser video feed. Raw tool arguments, runtime protocol and saved provider configuration are excluded from the phone API. Conversation text and human-readable tool results are shared with the paired phone.
 
 When the Mac has no loaded local model, the initial phone selection is the first API model configured in Strata. Selecting another API model is private to the phone. Unloading an API selection clears that phone's selection; it does not stop a remote service. Removing a provider on the Mac makes an old phone selection unavailable until another model is selected.
 
@@ -60,13 +65,21 @@ All routes use HTTPS. The iPhone must compare the leaf certificate's SHA-256 DER
 | GET | `/v1/models` | `{models:[{id,name,size,state,detail,loaded,selected}],loadedModelId}` |
 | POST | `/v1/models/load` | `{id}`; alias `/v1/models/:id/load` with `{}` |
 | POST | `/v1/models/unload` | `{}` |
+| GET | `/v1/conversations` | Shared Mac conversation summaries and `activeChatId` |
+| POST | `/v1/conversations` | `{}` → `{conversation,pending}`; creates a shared conversation |
+| GET | `/v1/conversations/:id` | `{conversation,pending}` with messages, tool cards and active state |
+| POST | `/v1/conversations/:id/messages` | `{message}` → 202 with current conversation; work continues on Mac |
+| POST | `/v1/conversations/:id/stop` | `{}` → current conversation |
+| POST | `/v1/conversations/:id/approval` | `{toolId,decision:"approve"|"deny"}` → current conversation |
 | GET | `/v1/chats` | `{chats:[{id,title,updatedAt}]}` |
 | GET | `/v1/chats/:id` | `{id,title,messages:[{id,role,content}]}` |
 | POST | `/v1/chat` | `{message,chatId?}` (`sessionId` accepted as alias) → SSE |
 | POST | `/v1/chat/:id/cancel` | Stops this device's active conversation |
 | POST | `/v1/requests/:id/cancel` | Stops a request ID previously streamed to this device |
 
-SSE events are named `frame`, with a JSON `data:` line. The first frame has `type: "session"`, `chatId`, and `sessionId`. Subsequent frames retain the host's `type` (`start`, `delta`, `stats`, `done`, `error`, etc.). Text deltas use `text`; all frames include both conversation IDs. Only bounded text/status fields cross the bridge; tool payloads and host paths are excluded. An interrupted stream without a host `done` frame emits an error. A successful `load` can return 202 while the Mac completes loading.
+Shared conversations are polled while the phone is active; sending a message returns promptly and never ties agent execution to the phone connection. Shared tool cards retain the Mac's readable verbs, targets, states and results. The API does not accept model, folder, permissions or history overrides when continuing a conversation.
+
+The earlier phone-only chat route uses SSE events named `frame`, with a JSON `data:` line. The first frame has `type: "session"`, `chatId`, and `sessionId`. Text deltas use `text`. An interrupted legacy stream without a host `done` frame emits an error. A successful model `load` can return 202 while the Mac completes loading.
 
 `selected` identifies this phone's model choice. Several native models can have `state: "loaded"`; chat and unload resolve the selected model's ready instance explicitly. The initial native selection follows the Mac's default instance, rather than catalog order. Unloading clears the phone's selection, so another loaded instance is not selected silently.
 

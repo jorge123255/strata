@@ -116,6 +116,7 @@ final class CompanionSmokeTests: XCTestCase {
         attachScreenshot("Models — live Mac library")
 
         tapTab("Chat")
+        app.buttons["newChatButton"].tap() // Live checks always create an isolated QA conversation.
         let input = app.descendants(matching: .any).matching(identifier: "messageInput").firstMatch
         XCTAssertTrue(input.waitForExistence(timeout: 5))
         input.tap()
@@ -145,6 +146,141 @@ final class CompanionSmokeTests: XCTestCase {
         XCTAssertTrue(app.buttons["disconnectMacButton"].exists)
         XCTAssertTrue(app.buttons["pairAgainButton"].exists)
         attachScreenshot("Connection — saved Mac pairing")
+    }
+
+    /// Runs through the real HTTPS bridge against an isolated, explicitly synthetic
+    /// Mac conversation fixture. It never starts a model, browser, or Mac agent.
+    @MainActor
+    func testSharedMacHistoryLiveBrowserApprovalAndContinuation() async throws {
+        guard let raw = ProcessInfo.processInfo.environment["STRATA_TEST_INVITATION"],
+              let invitation = URLComponents(string: raw),
+              let control = ProcessInfo.processInfo.environment["STRATA_SHARED_FIXTURE_CONTROL"],
+              let controlURL = URL(string: control), controlURL.host == "127.0.0.1" else {
+            throw XCTSkip("Provide an isolated shared-conversation fixture invitation and loopback control URL.")
+        }
+        func item(_ name: String) -> String? { invitation.queryItems?.first { $0.name == name }?.value }
+        let address = try XCTUnwrap(item("url"))
+        let code = try XCTUnwrap(item("code"))
+        let fingerprint = try XCTUnwrap(item("fingerprint"))
+        openManualPairing()
+        sensitivePairingVisible = true
+        fillPairing(address: address, code: code, fingerprint: fingerprint)
+        submitPairing()
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.buttons["dismissPairingButton"])
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 25), .completed)
+        sensitivePairingVisible = false
+        tapTab("Chat")
+        XCTAssertTrue(app.staticTexts["Earlier Mac history is available on the phone."].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Ask before actions · Strata UI fixture"].exists)
+        attachScreenshot("Shared Mac — existing history")
+
+        _ = try await fixtureControl(controlURL, action: "browser")
+        let target = app.staticTexts["browserActivityTarget"].firstMatch
+        XCTAssertTrue(target.waitForExistence(timeout: 10), "A browser action initiated on the Mac fixture must appear without a phone message.")
+        XCTAssertTrue(target.label.contains("https://example.com/research"))
+        let activity = app.buttons["macActivity-browser-live"]
+        reveal(activity)
+        activity.tap()
+        XCTAssertTrue(app.staticTexts["macActivityResult"].waitForExistence(timeout: 3))
+        attachScreenshot("Shared Mac — live browser activity")
+        activity.tap() // Keep approvals compact and reachable while the fixture grows.
+
+        _ = try await fixtureControl(controlURL, action: "allow")
+        let allow = app.buttons["approveMacAction-helper-session:approve-action"]
+        XCTAssertTrue(allow.waitForExistence(timeout: 10)); reveal(allow); allow.tap()
+        let approved = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: allow)
+        XCTAssertEqual(XCTWaiter.wait(for: [approved], timeout: 10), .completed)
+
+        _ = try await fixtureControl(controlURL, action: "deny")
+        let deny = app.buttons["denyMacAction-helper-session:deny-action"]
+        XCTAssertTrue(deny.waitForExistence(timeout: 10))
+        app.scrollViews.firstMatch.swipeDown() // Read older history while the Mac is still working.
+        let latest = app.buttons["followLatestMessagesButton"]
+        XCTAssertTrue(latest.waitForExistence(timeout: 5), "Native history scrolling must pause following.")
+        latest.tap()
+        reveal(deny); deny.tap()
+        let denied = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: deny)
+        XCTAssertEqual(XCTWaiter.wait(for: [denied], timeout: 10), .completed)
+        let approvalState = try await fixtureControl(controlURL, action: "state")
+        let calls = try XCTUnwrap(approvalState["calls"] as? [[String: Any]])
+        let decisions = calls.filter { ($0["path"] as? String)?.hasSuffix("/approval") == true }.compactMap { $0["body"] as? [String: String] }
+        XCTAssertEqual(decisions.map { $0["toolId"] }, ["helper-session:approve-action", "helper-session:deny-action"])
+        XCTAssertEqual(decisions.map { $0["decision"] }, ["approve", "deny"])
+        XCTAssertFalse(calls.contains { ($0["path"] as? String)?.hasSuffix("/messages") == true }, "Viewing live Mac work must not send a new model message.")
+
+        _ = try await fixtureControl(controlURL, action: "complete")
+        let stoppedWorking = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.buttons["stopMessageButton"])
+        XCTAssertEqual(XCTWaiter.wait(for: [stoppedWorking], timeout: 10), .completed)
+        let input = app.descendants(matching: .any).matching(identifier: "messageInput").firstMatch
+        input.tap(); input.typeText("Continue fixture Mac work")
+        app.buttons["sendMessageButton"].tap()
+        let continued = app.staticTexts.matching(identifier: "assistantMessage").matching(NSPredicate(format: "label CONTAINS %@", "SAME_MAC_SESSION_CONTINUED")).firstMatch
+        XCTAssertTrue(continued.waitForExistence(timeout: 10))
+        let stop = app.buttons["stopMessageButton"]
+        XCTAssertTrue(stop.waitForExistence(timeout: 5)); stop.tap()
+        let stopFinished = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: stop)
+        XCTAssertEqual(XCTWaiter.wait(for: [stopFinished], timeout: 10), .completed)
+        attachScreenshot("Shared Mac — same conversation continued")
+
+        app.terminate(); app.launch()
+        tapTab("Chat")
+        app.buttons["chatHistoryButton"].tap()
+        let saved = app.buttons["macConversation-fixture-mac-research"]
+        XCTAssertTrue(saved.waitForExistence(timeout: 10)); saved.tap()
+        XCTAssertTrue(continued.waitForExistence(timeout: 10))
+        attachScreenshot("Shared Mac — history after relaunch")
+        let finalState = try await fixtureControl(controlURL, action: "state")
+        let finalCalls = try XCTUnwrap(finalState["calls"] as? [[String: Any]])
+        let messages = finalCalls.filter { ($0["path"] as? String)?.hasSuffix("/messages") == true }
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages.first?["path"] as? String, "/api/companion/conversations/fixture-mac-research/messages")
+        XCTAssertTrue(finalCalls.contains { ($0["path"] as? String) == "/api/companion/conversations/fixture-mac-research/stop" })
+    }
+
+    /// Read-only acceptance against the user's running Mac. This test pairs,
+    /// reads existing history, and reconnects; it sends no model message or action.
+    @MainActor
+    func testLiveMacReadOnlyHistoryAndSavedPairing() throws {
+        guard let raw = ProcessInfo.processInfo.environment["STRATA_READONLY_INVITATION"],
+              let invitation = URLComponents(string: raw), invitation.scheme == "strata", invitation.host == "pair" else {
+            throw XCTSkip("Provide a fresh real Mac invitation for read-only history acceptance.")
+        }
+        func item(_ name: String) -> String? { invitation.queryItems?.first { $0.name == name }?.value }
+        let address = try XCTUnwrap(item("url"))
+        let code = try XCTUnwrap(item("code"))
+        let fingerprint = try XCTUnwrap(item("fingerprint"))
+        openManualPairing()
+        sensitivePairingVisible = true
+        fillPairing(address: address, code: code, fingerprint: fingerprint)
+        submitPairing()
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.buttons["dismissPairingButton"])
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 30), .completed)
+        sensitivePairingVisible = false
+        XCTAssertTrue(app.buttons["connectionStatus"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["connectionStatus"].label.localizedCaseInsensitiveContains("connected"))
+        tapTab("Chat")
+        let title = app.staticTexts["macConversationTitle"]
+        XCTAssertTrue(title.waitForExistence(timeout: 15), "The real Mac's selected or active conversation must open.")
+        XCTAssertFalse(title.label.isEmpty)
+        XCTAssertTrue(app.staticTexts.matching(identifier: "assistantMessage").firstMatch.waitForExistence(timeout: 15), "Read the existing Mac history without creating a message.")
+        attachScreenshot("Live Mac — read-only existing history")
+
+        app.terminate(); app.launch()
+        XCTAssertTrue(app.buttons["connectionStatus"].waitForExistence(timeout: 15))
+        XCTAssertFalse(app.buttons["pairMacButton"].exists, "The real Mac pairing must survive relaunch.")
+        tapTab("Chat")
+        XCTAssertTrue(app.staticTexts["macConversationTitle"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts.matching(identifier: "assistantMessage").firstMatch.waitForExistence(timeout: 15))
+        attachScreenshot("Live Mac — saved read-only pairing")
+    }
+
+    private func fixtureControl(_ baseURL: URL, action: String) async throws -> [String: Any] {
+        var request = URLRequest(url: baseURL.appendingPathComponent(action))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 5
+        let (data, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 
     private func prepareUnpairedApp() throws {

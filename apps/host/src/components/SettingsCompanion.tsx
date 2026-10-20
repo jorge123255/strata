@@ -124,7 +124,7 @@ export function SettingsCompanion() {
     {!state ? !error ? <p className="small muted" role="status">{tr('Loading pairing settings…')}</p> : null : <>
       {!state.enabled ? <section className="st-card companion-enable" aria-labelledby="companion-enable-title">
         <span className="companion-mark"><Icon name="link" size={28}/></span>
-        <div><h3 className="h4" id="companion-enable-title">{tr('Take Strata with you')}</h3><p className="small muted">{tr('Chat, check live status, and control your models from the Strata app on your iPhone.')}</p></div>
+        <div><h3 className="h4" id="companion-enable-title">{tr('Take Strata with you')}</h3><p className="small muted">{tr('Read your Mac’s chat history, continue its conversations, follow browser and tool activity, and answer tool approvals from your iPhone.')}</p></div>
         <p className="small muted">{tr('Keep your Mac and iPhone on the same trusted Wi-Fi network. Enable pairing when you are ready to connect.')}</p>
         <div><Btn variant="primary" icon="link" disabled={busy} onClick={() => void change('/api/companion/start')}>{tr(busy ? 'Starting pairing…' : 'Enable iPhone pairing')}</Btn></div>
       </section> : <section className="st-card companion-invitation" aria-labelledby="companion-invitation-title">

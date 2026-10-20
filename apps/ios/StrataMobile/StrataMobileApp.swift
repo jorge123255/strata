@@ -9,9 +9,11 @@ struct StrataMobileApp: App {
             ContentView(store: store)
                 .task(id: scenePhase) {
                     guard scenePhase == .active else { return }
+                    var tick = 0
                     while !Task.isCancelled {
-                        await store.refresh(silently: true)
-                        do { try await Task.sleep(for: .seconds(5)) }
+                        await store.refreshLiveState(refreshOverview: tick % 5 == 0)
+                        tick += 1
+                        do { try await Task.sleep(for: .seconds(1)) }
                         catch { return }
                     }
                 }

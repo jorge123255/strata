@@ -17,6 +17,7 @@ const fail = (status, message) => Object.assign(new Error(message), { status });
 const finite = value => Number.isFinite(value) ? value : null;
 const encode = value => encodeURIComponent(String(value));
 const safeId = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,120}$/.test(value);
+const safeToolId = value => typeof value === 'string' && /^[a-zA-Z0-9_.:-]{1,300}$/.test(value);
 const shortText = (value, max) => typeof value === 'string' ? value.slice(0, max) : '';
 
 function privateJSON(file, value) {
@@ -142,15 +143,21 @@ export class HostClient {
     finally { this.discovery = null; }
   }
   async request(path, { method = 'GET', body, signal } = {}) {
+    const conversation = /^\/api\/companion\/conversations(?:\/[a-zA-Z0-9_-]{1,120}(?:\/(messages|stop|approval))?)?$/.exec(path);
     // Callers cannot supply full URLs, query strings, arbitrary files, settings or operations.
     if (!/^\/api\/(setup|hardware|monitor|models|native|runtime|serving|model-providers|chat\/stream)$/.test(path)
       && !/^\/api\/models\/[a-zA-Z0-9_-]+\/load$/.test(path)
       && path !== '/api/models/unload'
       && path !== '/api/native/operations'
       && !/^\/api\/native\/instances\/[a-zA-Z0-9_-]+\/unload$/.test(path)
-      && !/^\/api\/serving\/requests\/[a-zA-Z0-9_-]+\/cancel$/.test(path)) throw fail(403, 'Unsupported host control.');
+      && !/^\/api\/serving\/requests\/[a-zA-Z0-9_-]+\/cancel$/.test(path)
+      && !conversation) throw fail(403, 'Unsupported host control.');
     const mutation = path.endsWith('/load') || path.endsWith('/unload') || path.endsWith('/cancel') || path === '/api/native/operations' || path === '/api/chat/stream';
-    if (method !== (mutation ? 'POST' : 'GET')) throw fail(403, 'Unsupported host control method.');
+    if (conversation) {
+      const create = path === '/api/companion/conversations' && method === 'POST';
+      if (method !== (conversation[1] || create ? 'POST' : 'GET')) throw fail(403, 'Unsupported host control method.');
+      if (path === '/api/companion/conversations/sync') throw fail(403, 'Desktop synchronization is unavailable from iPhone.');
+    } else if (method !== (mutation ? 'POST' : 'GET')) throw fail(403, 'Unsupported host control method.');
     if (path === '/api/native/operations' && (body?.kind !== 'load' || !safeId(body?.args?.model) || Object.keys(body).some(key => !['kind', 'args'].includes(key)) || Object.keys(body.args).some(key => !['model', 'values'].includes(key)) || Object.keys(body.args.values ?? {}).length)) throw fail(403, 'Only an installed model can be loaded from iPhone.');
     const origin = await this.origin();
     try {
@@ -210,6 +217,54 @@ export function providerModels(providers) {
     name: model.name ?? model.id, size: null, state: 'installed', detail: `API model via Mac · ${connection.name}`,
     remoteModel: { connectionId: connection.id, modelId: model.id },
   })));
+}
+
+// Share the same human-readable conversation and action cards as the Mac. Raw
+// runtime frames, tool arguments and provider configuration are never exported.
+export function publicTool(tool) {
+  if (!tool || !safeToolId(tool.id)) return null;
+  const result = { id: tool.id, name: shortText(tool.name, 200),
+    state: ['proposed', 'approved', 'running', 'done', 'denied', 'error'].includes(tool.state) ? tool.state : 'running' };
+  for (const key of ['preview', 'effect', 'scope', 'verb', 'target', 'result']) {
+    if (typeof tool[key] === 'string') result[key] = shortText(tool[key], key === 'result' ? 32_000 : 8_000);
+  }
+  for (const key of ['live', 'approved']) if (typeof tool[key] === 'boolean') result[key] = tool[key];
+  if (Number.isFinite(tool.durationMs) && tool.durationMs >= 0) result.durationMs = tool.durationMs;
+  if (tool.ask && typeof tool.ask === 'object') {
+    result.ask = {};
+    for (const key of ['why', 'detail']) if (typeof tool.ask[key] === 'string') result.ask[key] = shortText(tool.ask[key], 8_000);
+  }
+  return result;
+}
+
+export function publicConversation(conversation, { summary = false } = {}) {
+  if (!conversation || !safeId(conversation.id)) throw fail(502, 'Strata returned an unreadable conversation.');
+  const messages = Array.isArray(conversation.messages) ? conversation.messages : [];
+  const result = { id: conversation.id, title: shortText(conversation.title, 500) || 'Conversation',
+    updatedAt: shortText(conversation.updatedAt, 80), active: conversation.active === true };
+  if (typeof conversation.workspace === 'string') result.workspace = shortText(conversation.workspace, 4_000);
+  if (typeof conversation.status === 'string') result.status = shortText(conversation.status, 1_000);
+  const mode = conversation.preferences?.mode ?? conversation.mode;
+  if (typeof mode === 'string') result.mode = shortText(mode, 40);
+  const model = conversation.modelName ?? [...messages].reverse().find(message => typeof message.model === 'string')?.model;
+  if (typeof model === 'string') result.modelName = shortText(model, 300);
+  if (summary) {
+    const last = [...messages].reverse().find(message => typeof message.content === 'string' && message.content.trim());
+    result.preview = shortText(last?.content, 300);
+  } else {
+    result.messages = messages.filter(message => message && safeId(message.id) && ['user', 'assistant', 'system'].includes(message.role)).map(message => {
+      const clean = { id: message.id, role: message.role, content: typeof message.content === 'string' ? message.content : '' };
+      for (const key of ['at', 'error']) if (typeof message[key] === 'string') clean[key] = shortText(message[key], key === 'error' ? 4_000 : 80);
+      if (typeof message.streaming === 'boolean') clean.streaming = message.streaming;
+      if (Array.isArray(message.tools)) clean.tools = message.tools.map(publicTool).filter(Boolean);
+      return clean;
+    });
+  }
+  return result;
+}
+
+function publicConversationDetail(body) {
+  return { conversation: publicConversation(body.conversation), pending: Array.isArray(body.pending) ? body.pending.map(publicTool).filter(Boolean) : [] };
 }
 
 function sendJSON(res, status, value) {
@@ -375,6 +430,51 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
         const [library, native, providers] = await Promise.all([host.json('/api/models'), host.json('/api/native'), host.json('/api/model-providers')]);
         const { models, loadedModelId } = choices(session, library, native, providers);
         return sendJSON(res, 200, { models, loadedModelId });
+      }
+      if (path === '/v1/conversations' && method === 'GET') {
+        const body = await host.json('/api/companion/conversations');
+        requireCurrentSession();
+        const conversations = (Array.isArray(body.conversations) ? body.conversations : []).map(conversation => publicConversation(conversation, { summary: true }));
+        return sendJSON(res, 200, { conversations, ...(safeId(body.activeChatId) ? { activeChatId: body.activeChatId } : {}) });
+      }
+      if (path === '/v1/conversations' && method === 'POST') {
+        // Only the server's saved model selection can configure a new chat.
+        // Continuing a chat always inherits its existing Mac model and permissions.
+        const body = await readBody(req, 1_000);
+        if (Object.keys(body).length) throw fail(400, 'Create a conversation without changing Mac settings.');
+        const [library, native, providers] = await Promise.all([host.json('/api/models'), host.json('/api/native'), host.json('/api/model-providers')]);
+        requireCurrentSession();
+        const selection = choices(session, library, native, providers);
+        if (!selection.loadedModelId) throw fail(409, 'Choose a model in the iPhone Models tab first.');
+        const options = { ...(selection.selectedRemote ? { remoteModel: selection.selectedRemote.remoteModel } : {}), ...(selection.selectedNativeInstance ? { nativeModelId: selection.selectedNativeInstance.id } : {}) };
+        const created = await host.json('/api/companion/conversations', { method: 'POST', body: options });
+        requireCurrentSession();
+        return sendJSON(res, 201, publicConversationDetail(created));
+      }
+      const conversationMatch = /^\/v1\/conversations\/([a-zA-Z0-9_-]{1,120})(?:\/(messages|stop|approval))?$/.exec(path);
+      if (conversationMatch) {
+        const [, conversationId, action] = conversationMatch;
+        if (conversationId === 'sync') throw fail(404, 'Unknown companion endpoint.');
+        if ((!action && method !== 'GET') || (action && method !== 'POST')) throw fail(405, 'This conversation action is unavailable.');
+        let input;
+        if (action) {
+          const body = await readBody(req);
+          if (action === 'messages') {
+            const message = shortText(body.message, 20_001).trim();
+            if (!message || message.length > 20_000 || Object.keys(body).some(key => key !== 'message')) throw fail(400, 'Write a message of up to 20,000 characters.');
+            input = { message };
+          } else if (action === 'approval') {
+            if (!safeToolId(body.toolId) || !['approve', 'deny'].includes(body.decision) || Object.keys(body).some(key => !['toolId', 'decision'].includes(key))) throw fail(400, 'Choose Allow or Deny for this action.');
+            input = { toolId: body.toolId, decision: body.decision };
+          } else {
+            if (Object.keys(body).length) throw fail(400, 'Stop this conversation without changing Mac settings.');
+            input = {};
+          }
+        }
+        requireCurrentSession();
+        const body = await host.json(`/api/companion/conversations/${encode(conversationId)}${action ? `/${action}` : ''}`, { method: action ? 'POST' : 'GET', ...(action ? { body: input } : {}) });
+        requireCurrentSession();
+        return sendJSON(res, action === 'messages' ? 202 : 200, publicConversationDetail(body));
       }
       if (path === '/v1/chats' && method === 'GET') return sendJSON(res, 200, { chats: chats.filter(chat => chat.owner === session.id).map(({ id, title, updatedAt }) => ({ id, title, updatedAt })) });
       const chatMatch = /^\/v1\/chats\/([a-f0-9]{32})$/.exec(path);
@@ -548,7 +648,7 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
       const { available, revision } = adminState();
       const deviceRows = authority.publicSessions().map(session => `<li><span>${escape(session.deviceName)}</span><button onclick="act('revoke',{id:'${escape(session.id)}'})">Remove</button></li>`).join('');
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-      res.end(`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Strata · Pair iPhone</title><style>:root{color-scheme:dark}body{font:16px system-ui;background:#0e1113;color:#eef1f3;max-width:670px;margin:50px auto;padding:24px}h1{font-size:35px;letter-spacing:-1px}.accent{color:#34d399}.card{background:#161a1d;border:1px solid #2a3036;border-radius:24px;padding:28px;margin:24px 0}img{display:block;width:260px;height:260px;image-rendering:pixelated;background:white;border:18px solid white;border-radius:14px;margin:20px auto}code{font-size:34px;letter-spacing:8px;display:block;text-align:center}button{background:#34d399;color:#052e20;border:0;border-radius:12px;padding:12px 20px;font-weight:600;cursor:pointer}li{display:flex;justify-content:space-between;align-items:center;padding:12px 0}ul{padding:0}p{line-height:1.55;color:#8e979f}label{display:block;font-size:13px;color:#8e979f;margin-top:16px}.manual-row{display:flex;gap:10px;align-items:center}.manual-row input{flex:1;min-width:0;font:13px ui-monospace,monospace;background:#0e1113;color:#eef1f3;border:1px solid #2a3036;border-radius:12px;padding:12px}.manual-row button{padding:11px 14px}summary{cursor:pointer;color:#34d399;margin:18px 0}textarea{width:100%;height:90px;background:#0e1113;color:#34d399;border:1px solid #2a3036;border-radius:12px;margin:14px 0;padding:10px;box-sizing:border-box}small{overflow-wrap:anywhere;color:#8e979f}</style><h1>Strata <span class="accent">for iPhone</span></h1><p>Keep Strata open. Connect your iPhone and Mac to the same trusted Wi-Fi network.</p><section class="card"><h2>Pair your iPhone</h2>${available ? `${qrReady ? `<img src="${adminPath}/qr.png" alt="Scan this invitation in Strata on iPhone">` : ''}<code>${authority.code}</code><p>Open Strata on your iPhone and scan this code, or paste the invitation below. It expires at ${escape(new Date(authority.expiresAt).toLocaleTimeString())} and works once.</p><textarea id="invitation" readonly aria-label="Pairing invitation">${escape(invitation())}</textarea><button onclick="copyField('invitation',this)">Copy invitation</button><details><summary>Enter connection details manually</summary><label for="mac-address">HTTPS address</label><div class="manual-row"><input id="mac-address" readonly value="${escape(new URL(invitation()).searchParams.get('url'))}"><button onclick="copyField('mac-address',this)">Copy</button></div><label for="mac-fingerprint">Certificate fingerprint (SHA-256)</label><div class="manual-row"><input id="mac-fingerprint" readonly value="${identity.fingerprint}"><button onclick="copyField('mac-fingerprint',this)">Copy</button></div><label for="pairing-code">Pairing code</label><div class="manual-row"><input id="pairing-code" readonly value="${authority.code}"><button onclick="copyField('pairing-code',this)">Copy</button></div></details>` : '<p>This invitation is used or expired. Create another to pair a new device.</p>'}<button onclick="act('rotate',{})">New invitation</button></section><section class="card"><h2>Paired devices</h2><ul>${deviceRows || '<p>No paired devices yet.</p>'}</ul></section><p>Your phone uses encrypted HTTPS with this Mac’s pinned certificate. Removing a device immediately revokes access. Phone conversations are stored separately from desktop conversations.</p><small>Certificate SHA-256: ${identity.fingerprint}</small><script>const shownRevision='${revision}';function reloadKeepingScroll(){try{sessionStorage.setItem('strata.pairing.scroll',String(scrollY));}catch{}location.reload();}try{const saved=sessionStorage.getItem('strata.pairing.scroll');if(saved!==null){sessionStorage.removeItem('strata.pairing.scroll');requestAnimationFrame(()=>scrollTo(0,Number(saved)||0));}}catch{}async function copyField(id,button){const field=document.getElementById(id);try{await navigator.clipboard.writeText(field.value);}catch{field.focus();field.select();document.execCommand('copy');}button.textContent='Copied';setTimeout(()=>button.textContent=id==='invitation'?'Copy invitation':'Copy',1500);}let polling=false;setInterval(async()=>{if(polling)return;polling=true;try{const r=await fetch(location.pathname+'/state',{cache:'no-store'});if(r.ok&&(await r.json()).revision!==shownRevision)reloadKeepingScroll();}catch{}finally{polling=false;}},3000);async function act(action,body){const r=await fetch(location.pathname+'/'+action,{method:'POST',headers:{'content-type':'application/json','x-strata-csrf':'${csrf}'},body:JSON.stringify(body)});if(r.ok)reloadKeepingScroll();else alert('Could not update pairing. Reload and try again.');}</script>`);
+      res.end(`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Strata · Pair iPhone</title><style>:root{color-scheme:dark}body{font:16px system-ui;background:#0e1113;color:#eef1f3;max-width:670px;margin:50px auto;padding:24px}h1{font-size:35px;letter-spacing:-1px}.accent{color:#34d399}.card{background:#161a1d;border:1px solid #2a3036;border-radius:24px;padding:28px;margin:24px 0}img{display:block;width:260px;height:260px;image-rendering:pixelated;background:white;border:18px solid white;border-radius:14px;margin:20px auto}code{font-size:34px;letter-spacing:8px;display:block;text-align:center}button{background:#34d399;color:#052e20;border:0;border-radius:12px;padding:12px 20px;font-weight:600;cursor:pointer}li{display:flex;justify-content:space-between;align-items:center;padding:12px 0}ul{padding:0}p{line-height:1.55;color:#8e979f}label{display:block;font-size:13px;color:#8e979f;margin-top:16px}.manual-row{display:flex;gap:10px;align-items:center}.manual-row input{flex:1;min-width:0;font:13px ui-monospace,monospace;background:#0e1113;color:#eef1f3;border:1px solid #2a3036;border-radius:12px;padding:12px}.manual-row button{padding:11px 14px}summary{cursor:pointer;color:#34d399;margin:18px 0}textarea{width:100%;height:90px;background:#0e1113;color:#34d399;border:1px solid #2a3036;border-radius:12px;margin:14px 0;padding:10px;box-sizing:border-box}small{overflow-wrap:anywhere;color:#8e979f}</style><h1>Strata <span class="accent">for iPhone</span></h1><p>Keep Strata open. Connect your iPhone and Mac to the same trusted Wi-Fi network.</p><section class="card"><h2>Pair your iPhone</h2>${available ? `${qrReady ? `<img src="${adminPath}/qr.png" alt="Scan this invitation in Strata on iPhone">` : ''}<code>${authority.code}</code><p>Open Strata on your iPhone and scan this code, or paste the invitation below. It expires at ${escape(new Date(authority.expiresAt).toLocaleTimeString())} and works once.</p><textarea id="invitation" readonly aria-label="Pairing invitation">${escape(invitation())}</textarea><button onclick="copyField('invitation',this)">Copy invitation</button><details><summary>Enter connection details manually</summary><label for="mac-address">HTTPS address</label><div class="manual-row"><input id="mac-address" readonly value="${escape(new URL(invitation()).searchParams.get('url'))}"><button onclick="copyField('mac-address',this)">Copy</button></div><label for="mac-fingerprint">Certificate fingerprint (SHA-256)</label><div class="manual-row"><input id="mac-fingerprint" readonly value="${identity.fingerprint}"><button onclick="copyField('mac-fingerprint',this)">Copy</button></div><label for="pairing-code">Pairing code</label><div class="manual-row"><input id="pairing-code" readonly value="${authority.code}"><button onclick="copyField('pairing-code',this)">Copy</button></div></details>` : '<p>This invitation is used or expired. Create another to pair a new device.</p>'}<button onclick="act('rotate',{})">New invitation</button></section><section class="card"><h2>Paired devices</h2><ul>${deviceRows || '<p>No paired devices yet.</p>'}</ul></section><p>Your phone uses encrypted HTTPS with this Mac’s pinned certificate. Removing a device immediately revokes access. Paired devices can read and continue Mac conversations and answer pending tool approvals. Earlier iPhone-only chats remain separate.</p><small>Certificate SHA-256: ${identity.fingerprint}</small><script>const shownRevision='${revision}';function reloadKeepingScroll(){try{sessionStorage.setItem('strata.pairing.scroll',String(scrollY));}catch{}location.reload();}try{const saved=sessionStorage.getItem('strata.pairing.scroll');if(saved!==null){sessionStorage.removeItem('strata.pairing.scroll');requestAnimationFrame(()=>scrollTo(0,Number(saved)||0));}}catch{}async function copyField(id,button){const field=document.getElementById(id);try{await navigator.clipboard.writeText(field.value);}catch{field.focus();field.select();document.execCommand('copy');}button.textContent='Copied';setTimeout(()=>button.textContent=id==='invitation'?'Copy invitation':'Copy',1500);}let polling=false;setInterval(async()=>{if(polling)return;polling=true;try{const r=await fetch(location.pathname+'/state',{cache:'no-store'});if(r.ok&&(await r.json()).revision!==shownRevision)reloadKeepingScroll();}catch{}finally{polling=false;}},3000);async function act(action,body){const r=await fetch(location.pathname+'/'+action,{method:'POST',headers:{'content-type':'application/json','x-strata-csrf':'${csrf}'},body:JSON.stringify(body)});if(r.ok)reloadKeepingScroll();else alert('Could not update pairing. Reload and try again.');}</script>`);
     } catch (error) { sendJSON(res, error.status ?? 500, { error: error.status ? error.message : 'Pairing page unavailable.' }); }
   });
   await new Promise((resolve, reject) => { secureServer.once('error', reject); secureServer.listen(port, listen, resolve); });

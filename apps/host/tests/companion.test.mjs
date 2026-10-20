@@ -57,6 +57,7 @@ test('desktop startup keeps pairing off, imports nothing and creates no identity
   const manager = createCompanionManager({ hostPort: 8791, directory, loadBridge: () => { imports++; throw new Error('must stay lazy'); } });
   assert.deepEqual(manager.state(), { enabled: false, invitation: null, devices: [], error: null });
   assert.equal(manager.qrImage(), null);
+  assert.equal(manager.hasOptedIn(), false);
   assert.equal((await manager.restore()).enabled, false);
   await manager.close();
   await assert.rejects(manager.rotateInvitation(), { status: 409 });
@@ -228,7 +229,7 @@ test('desktop relaunch restores opted-in pairing and trusted phones; explicit di
   const deviceId = first.state().devices[0].id;
   await first.close();
   const preferenceFile = join(directory, 'desktop-pairing.json');
-  assert.deepEqual(JSON.parse(readFileSync(preferenceFile, 'utf8')), { enabled: true });
+  assert.deepEqual(JSON.parse(readFileSync(preferenceFile, 'utf8')), { enabled: true, hasOptedIn: true });
   assert.equal(statSync(preferenceFile).mode & 0o777, 0o600);
   const second = newManager();
   assert.equal(second.state().enabled, false);
@@ -238,7 +239,7 @@ test('desktop relaunch restores opted-in pairing and trusted phones; explicit di
   assert.equal(restored.devices[0].id, deviceId);
   assert.equal((await phoneRequest(Number(new URL(restored.invitation.address).port), '/v1/not-a-route', { token })).status, 404);
   await second.stop();
-  assert.deepEqual(JSON.parse(readFileSync(preferenceFile, 'utf8')), { enabled: false });
+  assert.deepEqual(JSON.parse(readFileSync(preferenceFile, 'utf8')), { enabled: false, hasOptedIn: true });
   const third = newManager();
   assert.equal((await third.restore()).enabled, false);
   assert.ok(readFileSync(join(directory, 'sessions.json'), 'utf8').includes(deviceId));
@@ -284,4 +285,20 @@ test('the shared bridge keeps the exact loopback host instead of discovering ano
   t.after(async () => { await bridge.close(); rmSync(directory, { recursive: true, force: true }); });
   await host.json('/api/models');
   assert.deepEqual(calls, ['http://127.0.0.1:43213/api/models']);
+});
+
+
+test('sharing consent survives disable and notifies the desktop on its first enable', async t => {
+  let notifications = 0;
+  const { manager, directory } = await fixture(t, { changed: () => { notifications += 1; } });
+  assert.equal(manager.hasOptedIn(), false);
+  await manager.start();
+  assert.equal(manager.hasOptedIn(), true);
+  assert.equal(notifications, 1);
+  await manager.stop();
+  assert.equal(manager.hasOptedIn(), true);
+  const restored = createCompanionManager({ hostPort: 43210, directory });
+  assert.equal(restored.state().enabled, false);
+  assert.equal(restored.hasOptedIn(), true);
+  await restored.close();
 });

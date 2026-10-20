@@ -19,6 +19,7 @@ export function createCompanionManager({
   listen = '0.0.0.0',
   loadBridge = () => import(companionBridgeURL()),
   bridgeOptions = {},
+  changed = () => {},
 } = {}) {
   if (!Number.isInteger(hostPort) || hostPort < 1 || hostPort > 65535) throw new Error('A local Strata host port is required.');
   let bridge = null;
@@ -27,11 +28,14 @@ export function createCompanionManager({
   const preferenceFile = join(directory, 'desktop-pairing.json');
   let preferenceExists = false;
   let restoreEnabled = false;
+  let optedIn = false;
   try {
     const preference = JSON.parse(readFileSync(preferenceFile, 'utf8'));
     preferenceExists = true;
     if (!preference || Array.isArray(preference) || typeof preference.enabled !== 'boolean') throw new Error('Invalid pairing preference.');
     restoreEnabled = preference.enabled;
+    // Earlier builds wrote this file only after enabling pairing. A later disable keeps that consent.
+    optedIn = preference.enabled || preference.hasOptedIn !== false;
   } catch (cause) {
     if (cause.code !== 'ENOENT') {
       preferenceExists = true;
@@ -58,10 +62,10 @@ export function createCompanionManager({
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     const temp = `${preferenceFile}.${process.pid}.tmp`;
     try {
-      writeFileSync(temp, JSON.stringify({ enabled }), { mode: 0o600 });
+      writeFileSync(temp, JSON.stringify({ enabled, hasOptedIn: optedIn || enabled }), { mode: 0o600 });
       chmodSync(temp, 0o600);
       renameSync(temp, preferenceFile);
-      preferenceExists = true; restoreEnabled = enabled;
+      preferenceExists = true; restoreEnabled = enabled; optedIn ||= enabled;
     } finally { try { unlinkSync(temp); } catch {} }
   };
   const closeBridge = async () => {
@@ -85,6 +89,7 @@ export function createCompanionManager({
       try { remember(true); }
       catch (cause) { await started.close(); throw cause; }
       bridge = started;
+      changed();
       return state();
     } catch (cause) {
       error = cause.code === 'EADDRINUSE'
@@ -95,6 +100,7 @@ export function createCompanionManager({
   };
   return {
     state,
+    hasOptedIn: () => optedIn,
     start: () => serialized(startBridge),
     restore: () => serialized(() => restoreEnabled ? startBridge() : state()),
     close: () => serialized(closeBridge),

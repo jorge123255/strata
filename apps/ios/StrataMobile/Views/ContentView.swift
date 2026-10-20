@@ -54,6 +54,7 @@ struct ContentView: View {
         } message: {
             Text(store.error ?? "Please try again.")
         }
+        .onChange(of: selection, initial: true) { _, tab in store.setChatVisible(tab == .chat) }
         .task { if store.isPaired { await store.refresh() } }
     }
 }

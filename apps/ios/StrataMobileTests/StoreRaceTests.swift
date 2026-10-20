@@ -1,4 +1,5 @@
 import XCTest
+import Combine
 @testable import StrataMobile
 
 @MainActor
@@ -73,7 +74,7 @@ final class StoreRaceTests: XCTestCase {
         let store = fixture.makeStore()
         let original = store.connection
         let stream = fixture.hold("/v1/chat")
-        let sending = Task { await store.sendMessage("Synthetic fixture") }
+        let sending = Task { await store.sendLegacyMessage("Synthetic fixture") }
         await fulfillment(of: [stream.requested], timeout: 2)
         XCTAssertTrue(store.isSending)
 
@@ -88,6 +89,141 @@ final class StoreRaceTests: XCTestCase {
         XCTAssertEqual(store.messages.last?.content, "Fixture reply")
         XCTAssertNil(store.error)
     }
+
+    func testSharedHistoryContinuesTheSameMacConversation() async throws {
+        let fixture = StoreTransport()
+        defer { fixture.close() }
+        fixture.respond { request in
+            switch request.url!.path {
+            case "/v1/conversations/mac-existing": return StoreTransport.detail(active: false)
+            case "/v1/conversations/mac-existing/messages": return StoreTransport.detail(active: true, content: "Continuing the existing work")
+            default: return nil
+            }
+        }
+        let store = fixture.makeStore()
+        await store.selectConversation(try StoreTransport.summary())
+        XCTAssertEqual(store.currentConversation?.messages.first?.content, "Earlier Mac history")
+        XCTAssertEqual(store.currentConversation?.permissionLabel, "Ask before actions")
+        await store.sendMessage("Continue that work")
+        XCTAssertEqual(store.currentConversation?.id, "mac-existing")
+        XCTAssertTrue(store.isWorking)
+        let posts = fixture.requests.filter { $0.method == "POST" }
+        XCTAssertEqual(posts.map(\.path), ["/v1/conversations/mac-existing/messages"])
+        XCTAssertEqual(posts.first?.body?["message"], "Continue that work")
+        XCTAssertNil(posts.first?.body?["mode"], "The phone must preserve the Mac conversation's permissions.")
+        XCTAssertNil(store.error)
+    }
+
+    func testMacStartedBrowserActivityUpdatesWithoutPhoneSending() async throws {
+        let fixture = StoreTransport()
+        defer { fixture.close() }
+        fixture.respond { request in request.url!.path == "/v1/conversations/mac-existing" ? StoreTransport.detail(active: true, toolState: "running") : nil }
+        let store = fixture.makeStore()
+        await store.selectConversation(try StoreTransport.summary())
+        let initialReads = fixture.requests.count
+        store.setChatVisible(false)
+        await store.refreshLiveState(refreshOverview: false)
+        XCTAssertEqual(fixture.requests.count, initialReads, "An offscreen Chat view must stop its fast polling.")
+        store.setChatVisible(true)
+        await store.refreshLiveState(refreshOverview: false)
+        XCTAssertEqual(fixture.requests.count, initialReads + 1)
+        let browser = try XCTUnwrap(store.currentConversation?.messages.first?.tools?.first)
+        XCTAssertTrue(browser.isBrowser)
+        XCTAssertTrue(browser.isRunning)
+        XCTAssertEqual(browser.browserURL?.absoluteString, "https://example.com/research")
+        XCTAssertEqual(browser.title, "Opened a page")
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+    }
+
+    func testNewPhoneWorkCreatesASharedMacConversation() async throws {
+        let fixture = StoreTransport()
+        defer { fixture.close() }
+        fixture.respond { request in
+            if request.url!.path == "/v1/conversations", request.httpMethod == "POST" { return StoreTransport.detail(active: false, content: "") }
+            if request.url!.path == "/v1/conversations/mac-existing/messages" { return StoreTransport.detail(active: true, content: "Started on Mac") }
+            return nil
+        }
+        let store = fixture.makeStore()
+        store.newChat()
+        await store.sendMessage("New shared work")
+        XCTAssertEqual(fixture.requests.filter { $0.method == "POST" }.map(\.path), ["/v1/conversations", "/v1/conversations/mac-existing/messages"])
+        XCTAssertNil(store.currentChatId)
+        XCTAssertEqual(store.currentConversation?.id, "mac-existing")
+        XCTAssertEqual(store.currentConversation?.mode, "manual")
+        XCTAssertNil(store.error)
+    }
+
+    func testDelayedLiveSnapshotCannotReopenConversationAfterNewChat() async throws {
+        let fixture = StoreTransport()
+        defer { fixture.close() }
+        fixture.respond { request in request.url!.path == "/v1/conversations/mac-existing" ? StoreTransport.detail(active: true) : nil }
+        let store = fixture.makeStore()
+        await store.selectConversation(try StoreTransport.summary())
+        let snapshot = fixture.hold("/v1/conversations/mac-existing")
+        let polling = Task { await store.refreshCurrentConversation() }
+        await fulfillment(of: [snapshot.requested], timeout: 2)
+        store.newChat()
+        snapshot.finish(StoreTransport.detail(active: true, content: "A late Mac update"))
+        await polling.value
+        XCTAssertNil(store.currentConversation)
+        XCTAssertTrue(store.pendingApprovals.isEmpty)
+        XCTAssertFalse(fixture.requests.contains { $0.path.hasSuffix("/stop") }, "Changing views must leave Mac work running.")
+    }
+
+    func testApprovalUsesOpaqueToolIdAndStopTargetsSameConversation() async throws {
+        let fixture = StoreTransport()
+        defer { fixture.close() }
+        fixture.respond { request in
+            switch request.url!.path {
+            case "/v1/conversations/mac-existing": return StoreTransport.detail(active: true, toolState: "proposed")
+            case "/v1/conversations/mac-existing/approval": return StoreTransport.detail(active: true, toolState: "running")
+            case "/v1/conversations/mac-existing/stop": return StoreTransport.detail(active: false)
+            default: return nil
+            }
+        }
+        let store = fixture.makeStore()
+        await store.selectConversation(try StoreTransport.summary())
+        let tool = try XCTUnwrap(store.pendingApprovals.first)
+        await store.decideApproval(tool, approve: true)
+        XCTAssertTrue(store.pendingApprovals.isEmpty)
+        await store.stopConversation()
+        XCTAssertFalse(store.isWorking)
+        let posts = fixture.requests.filter { $0.method == "POST" }
+        XCTAssertEqual(posts.map(\.path), ["/v1/conversations/mac-existing/approval", "/v1/conversations/mac-existing/stop"])
+        XCTAssertEqual(posts.first?.body?["toolId"], "helper-session:browser-call")
+        XCTAssertEqual(posts.first?.body?["decision"], "approve")
+        XCTAssertNil(store.error)
+    }
+
+    func testUnchangedLiveSnapshotDoesNotPublishNewViewState() async throws {
+        let fixture = StoreTransport()
+        defer { fixture.close() }
+        fixture.respond { request in request.url!.path == "/v1/conversations/mac-existing" ? StoreTransport.detail(active: true, toolState: "running") : nil }
+        let store = fixture.makeStore()
+        await store.selectConversation(try StoreTransport.summary())
+        var publications = 0
+        let observation = store.objectWillChange.sink { publications += 1 }
+        defer { observation.cancel() }
+
+        await store.refreshCurrentConversation()
+        await store.refreshCurrentConversation()
+        XCTAssertEqual(publications, 0, "Unchanged polling must not invalidate the conversation's scroll controls.")
+
+        fixture.respond { request in request.url!.path == "/v1/conversations/mac-existing" ? StoreTransport.detail(active: true, toolState: "done") : nil }
+        await store.refreshCurrentConversation()
+        XCTAssertEqual(publications, 1, "A changed action must still update the visible conversation.")
+        XCTAssertEqual(store.currentConversation?.messages.first?.tools?.first?.state, "done")
+    }
+
+    func testSharedChatRejectsSecondMessageWhileMacIsWorking() async throws {
+        let fixture = StoreTransport()
+        defer { fixture.close() }
+        fixture.respond { request in request.url!.path == "/v1/conversations/mac-existing" ? StoreTransport.detail(active: true) : nil }
+        let store = fixture.makeStore()
+        await store.selectConversation(try StoreTransport.summary())
+        await store.sendMessage("This must not interrupt the Mac")
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+    }
 }
 
 /// Delayed responses exercise the real HTTP decoding path without a live bridge,
@@ -97,6 +233,11 @@ private final class StoreTransport {
     let host = "fixture-\(UUID().uuidString.lowercased()).invalid"
     private let lock = NSLock()
     private var held: [String: HeldStoreResponse] = [:]
+    struct RecordedRequest { var path: String; var method: String; var body: [String: String]? }
+    private var recordedRequests: [RecordedRequest] = []
+    var requests: [RecordedRequest] { lock.lock(); defer { lock.unlock() }; return recordedRequests }
+    private var responder: ((URLRequest) -> [String: Any]?)?
+    func respond(_ value: @escaping (URLRequest) -> [String: Any]?) { lock.lock(); responder = value; lock.unlock() }
     private var session: URLSession?
     private(set) var deletedConnections = 0
     private(set) var savedConnections = 0
@@ -123,14 +264,49 @@ private final class StoreTransport {
 
     func receive(_ request: StoreURLProtocol) {
         let path = request.request.url!.path
-        lock.lock(); let response = held[path]; lock.unlock()
+        let payload: Data?
+        if let data = request.request.httpBody { payload = data }
+        else if let stream = request.request.httpBodyStream {
+            stream.open(); defer { stream.close() }
+            var data = Data()
+            var buffer = [UInt8](repeating: 0, count: 1024)
+            while stream.hasBytesAvailable {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                if count <= 0 { break }
+                data.append(buffer, count: count)
+            }
+            payload = data
+        } else { payload = nil }
+        let body = payload.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: String] }
+        lock.lock()
+        recordedRequests.append(RecordedRequest(path: path, method: request.request.httpMethod ?? "GET", body: body))
+        let response = held[path]
+        let responder = responder
+        lock.unlock()
         if let response { response.receive(request); return }
+        if let json = responder?(request.request) { request.finishJSON(json); return }
         switch path {
         case "/v1/status": request.finishJSON(Self.status)
         case "/v1/models": request.finishJSON(["models": []])
         case "/v1/chats": request.finishJSON(["chats": []])
+        case "/v1/conversations": request.finishJSON(["conversations": []])
         default: request.finishJSON(["error": "Unexpected fixture request"], status: 404)
         }
+    }
+
+    static func summary() throws -> MacConversationSummary {
+        try JSONDecoder().decode(MacConversationSummary.self, from: JSONSerialization.data(withJSONObject: ["id": "mac-existing", "title": "Mac research", "active": true, "updatedAt": 12345]))
+    }
+
+    static func detail(active: Bool, content: String = "Earlier Mac history", toolState: String? = nil) -> [String: Any] {
+        var message: [String: Any] = ["id": "mac-message", "role": "assistant", "content": content]
+        var pending: [[String: Any]] = []
+        if let toolState {
+            let tool: [String: Any] = ["id": "helper-session:browser-call", "name": "mcp__browser__browser_navigate", "state": toolState, "verb": "Opened a page", "target": "https://example.com/research", "scope": "connected", "result": "Page title: Example", "live": true]
+            message["tools"] = [tool]
+            if toolState == "proposed" { pending = [tool] }
+        }
+        return ["conversation": ["id": "mac-existing", "title": "Mac research", "active": active, "mode": "manual", "workspace": "/tmp/fixture-project", "messages": [message]], "pending": pending]
     }
 
     func close() {

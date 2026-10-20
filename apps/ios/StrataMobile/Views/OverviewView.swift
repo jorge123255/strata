@@ -129,19 +129,48 @@ struct OverviewView: View {
             }
             .strataCard()
 
+            if !store.conversations.isEmpty {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text("ON YOUR MAC").font(.caption2.weight(.bold)).tracking(1.6).foregroundStyle(StrataTheme.secondaryInk)
+                        Spacer()
+                        Button("See all") { open(.chat) }.font(.caption.weight(.semibold)).foregroundStyle(StrataTheme.accentText)
+                    }
+                    ForEach(store.conversations.prefix(3)) { conversation in
+                        Button {
+                            Task { await store.selectConversation(conversation); open(.chat) }
+                        } label: {
+                            HStack(spacing: 13) {
+                                Image(systemName: conversation.active ? "circle.fill" : "bubble.left")
+                                    .font(conversation.active ? .caption2 : .body).foregroundStyle(StrataTheme.accentText).frame(width: 22)
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text(conversation.title).font(.subheadline.weight(.semibold)).foregroundStyle(StrataTheme.ink).lineLimit(2)
+                                    Text(conversation.active ? "Working now · follow live" : (conversation.workspaceName ?? "Continue conversation"))
+                                        .font(.caption).foregroundStyle(conversation.active ? StrataTheme.accentText : StrataTheme.secondaryInk)
+                                }
+                                Spacer(minLength: 0)
+                                Image(systemName: "chevron.right").font(.caption).foregroundStyle(StrataTheme.secondaryInk)
+                            }
+                            .strataCard(padding: 16)
+                        }
+                        .buttonStyle(.plain).accessibilityIdentifier("homeMacConversation-" + conversation.id)
+                    }
+                }
+            }
+
             Text("Make room for a good idea.")
                 .font(.system(.headline, design: .rounded))
                 .foregroundStyle(StrataTheme.ink)
                 .padding(.top, 4)
 
-            Button { open(.chat) } label: {
+            Button { store.newChat(); open(.chat) } label: {
                 HStack(spacing: 16) {
                     Image(systemName: "bubble.left.and.bubble.right")
                         .font(.system(size: 26, weight: .light))
                         .foregroundStyle(StrataTheme.accentText)
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Start a conversation").font(.headline).foregroundStyle(StrataTheme.ink)
-                        Text("Think, write, and explore with your Mac.")
+                        Text("Start work on your Mac from here.")
                             .font(.caption).foregroundStyle(StrataTheme.secondaryInk)
                     }
                     Spacer(minLength: 0)
