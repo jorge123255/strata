@@ -37,10 +37,18 @@ Version 0.2.0-beta · engine 0.1.45.3
 
 ## iPhone companion in this fork
 
-This branch adds a native [Strata iPhone app](apps/ios/README.md) with matching light and dark colors, streaming chat,
-live status, and model controls. **Pair iPhone** in the desktop sidebar, also available under **Settings → iPhone**, displays an
-expiring pairing QR code and connects the phone over pinned HTTPS. The [standalone Mac helper](apps/companion-mac/README.md) remains an optional alternative. Phone conversations
-are stored separately; configured API providers may run remotely. The desktop app and engine keep their existing defaults.
+This branch adds a native [Strata iPhone app](apps/ios/README.md) with matching light and dark colors. Open and continue
+your Mac's conversations with saved history, expandable Thinking, ordered progress, browser/tool activity, approvals
+and Stop. Work stays on the Mac or its configured model provider and continues when you close the phone app. Earlier
+phone-only chats remain available separately.
+
+**Pair iPhone** in the desktop sidebar, also available under **Settings → iPhone**, enables pairing and displays an
+expiring QR code. The phone connects over certificate-pinned HTTPS on your local network. Pairing remains off until
+enabled; the integrated desktop app supplies the shared-conversation API.
+
+Upstream drafts: [Mac pairing and shared conversations](https://github.com/Niko1221/Strata/pull/3347) and
+[native iPhone app](https://github.com/Niko1221/Strata/pull/3348), linked to the
+[scope discussion](https://github.com/Niko1221/Strata/issues/3346). The client requires the Mac changes at runtime.
 
 ## What you need
 
