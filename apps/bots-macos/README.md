@@ -1,6 +1,6 @@
 # Strata Bots for Mac
 
-The actual CUA Bots SwiftUI sample, adapted as a feature window inside Strata. It keeps the original koala avatar drawing and editor, sidebar, chat and profile inspector, computer frame, memory, outputs, rules and scheduled-work screens. See [UPSTREAM.md](UPSTREAM.md) and [LICENSE](LICENSE) for provenance and FSL-1.1-MIT terms.
+This is the retained SwiftUI reference/prototype adapted from the actual CUA Bots sample. **It is not built, bundled or opened by Strata. The shipped Bots interface is embedded in Strata’s main window under `apps/host/src/screens/Bots.tsx`.** It keeps the original koala avatar drawing and editor, sidebar, chat and profile inspector, computer frame, memory, outputs, rules and scheduled-work screens. See [UPSTREAM.md](UPSTREAM.md) and [LICENSE](LICENSE) for provenance and FSL-1.1-MIT terms.
 
 Strata owns profiles, conversations, provider thinking, tool approvals, memory, outputs and schedules. The window uses the existing loopback host API. It does not create a separate history, pairing system or model account. Claude Code, Codex, Grok, Kimi, Ollama Cloud and saved Models connections are supported. Maya remains a separate connection. Each new conversation can choose its own saved model and local or SSH execution computer.
 
@@ -17,7 +17,7 @@ apps/bots-macos/scripts/build-app.sh
 open -a apps/bots-macos/build/StrataBots.app --args --strata-host http://127.0.0.1:47831
 ```
 
-The build script produces `build/StrataBots.app`, including the original license and source attribution. It builds Swift only. `STRATA_BOTS_BUILD_DIR` selects a scratch directory, `STRATA_BOTS_CONFIGURATION=debug` selects a debug build, and `STRATA_BOTS_SIGN_IDENTITY` selects a signing identity. Strata’s desktop packager places the app inside its resources and signs the combined bundle.
+The build script produces `build/StrataBots.app`, including the original license and source attribution. It builds Swift only. `STRATA_BOTS_BUILD_DIR` selects a scratch directory, `STRATA_BOTS_CONFIGURATION=debug` selects a debug build, and `STRATA_BOTS_SIGN_IDENTITY` selects a signing identity. This optional developer prototype is separate from the shipped product. Strata’s desktop packager removes any legacy `StrataBots.app` inherited from an older carrier.
 
 ## Validation
 

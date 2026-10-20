@@ -1,0 +1,8 @@
+.bot-chat-embedded{display:flex;flex-direction:column;min-width:0;min-height:0;height:100%;flex:1;overflow:hidden}
+.bot-chat-embedded>.chat-toolbar{min-height:44px;height:44px;background:transparent}
+.bot-chat-embedded .chat-toolbar__conversation{padding:0 14px;gap:8px}
+.bot-chat-embedded .chatsplit{flex:1;min-height:0}
+.bot-chat-embedded .chat__inner{max-width:880px;padding-inline:20px}
+.bot-chat-embedded .composer__inner{max-width:880px;padding-inline:16px}
+.bot-chat-embedded .chat-agents__label{display:none}
+.bot-chat-embedded .bot-chat-empty{padding:48px 16px}

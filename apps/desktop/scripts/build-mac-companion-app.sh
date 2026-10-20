@@ -5,6 +5,16 @@ task_repo="${task_desktop:h:h}"
 task_source="${STRATA_BASE_APP:-/Applications/Strata.app}"
 task_control="${STRATA_CONTROL_DONOR:-${task_source}/Contents/Resources/control}"
 task_output="${1:-${task_desktop}/build/Strata.app}"
+remove_legacy_bots_app() {
+  local task_resources="$1"
+  # A copied carrier may contain the retired standalone app. Remove its
+  # carrier link instead of following it if the whole legacy folder is linked.
+  if [[ -L "$task_resources/bots" ]]; then
+    rm -f "$task_resources/bots"
+  else
+    rm -rf "$task_resources/bots/StrataBots.app"
+  fi
+}
 if [[ ! -d "$task_source/Contents/Resources/host" ]]; then
   print -u2 -- 'Install the official Strata Mac app first, or set STRATA_BASE_APP.'
   exit 1
@@ -27,13 +37,13 @@ fi
 /usr/bin/codesign --verify --strict "$task_control/python/bin/python3.12"
 node "$task_desktop/scripts/stage-companion.mjs"
 npm --prefix "$task_repo/apps/host" run build
-"$task_repo/apps/bots-macos/scripts/build-app.sh"
 mkdir -p "${task_output:h}"
 # APFS clones avoid duplicating hundreds of MB of unchanged engines on a full disk.
 if ! /bin/cp -cR "$task_source" "$task_output" 2>/dev/null; then
   /usr/bin/ditto --noqtn "$task_source" "$task_output"
 fi
 task_resources="$task_output/Contents/Resources"
+remove_legacy_bots_app "$task_resources"
 # Keep the carrier's native shell and engines. Use a verified Control donor for its signed Python runtime,
 # then stage ALL of this checkout's Control sources, including the shared-chat/remote lifecycle runtime guards.
 # A host/UI-only overlay would silently leave the installed Control on the carrier's older version.
@@ -142,10 +152,6 @@ npm --prefix "$task_resources/host" ci --omit=dev --omit=optional --ignore-scrip
 /usr/bin/xcrun swiftc "$task_repo/apps/host/server/bots-computer.swift" -O -o "$task_resources/host/server/bots-computer"
 /usr/bin/codesign --force --sign - --timestamp=none "$task_resources/host/server/bots-computer"
 /usr/bin/ditto "$task_desktop/src-tauri/resources/companion-bridge" "$task_resources/companion-bridge"
-mkdir -p "$task_resources/bots"
-rm -rf "$task_resources/bots/StrataBots.app"
-/usr/bin/ditto "$task_repo/apps/bots-macos/build/StrataBots.app" "$task_resources/bots/StrataBots.app"
-/usr/bin/codesign --verify --deep --strict "$task_resources/bots/StrataBots.app"
 /usr/libexec/PlistBuddy -c 'Add NSLocalNetworkUsageDescription string Pair your iPhone with Strata on this Mac over an encrypted connection.' "$task_output/Contents/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c 'Set NSLocalNetworkUsageDescription Pair your iPhone with Strata on this Mac over an encrypted connection.' "$task_output/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Add NSScreenCaptureUsageDescription string Let your approved Strata bots see this Mac’s display.' "$task_output/Contents/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c 'Set NSScreenCaptureUsageDescription Let your approved Strata bots see this Mac’s display.' "$task_output/Contents/Info.plist"
 # Do not use --deep here: changing an engine signature would invalidate its component manifest.

@@ -1,5 +1,7 @@
 # Native Mac Bots validation
 
+This records the earlier standalone prototype. The shipped Bots interface is now embedded in Strata’s main window; the desktop packager no longer builds or bundles this prototype. See the latest section in `../../SHARED-CHATS-VALIDATION.md`.
+
 Validated on the user's Apple Silicon Mac on 2026-10-20.
 
 - Swift package and native feature app built successfully. The final staged feature app uses the release configuration. The final test and build commands used an explicit minimal environment with no inherited API credentials.

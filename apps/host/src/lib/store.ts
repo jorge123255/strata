@@ -1,4 +1,5 @@
 import { plainFailure, plainFailureText } from './plain-errors';
+import { botRoutineNotice } from './bot-routine-notice';
 import { showcaseMessages, SHOWCASE_AGENTS } from './chat-showcase';
 import { updateAgent } from './agents';
 import { LOOP_USAGE, parseLoop, type LoopCommand } from './loop';
@@ -633,6 +634,11 @@ export function setShortcuts(open: boolean) {
 function applyEvent(e: StreamEvent) {
   const data = e.data as Record<string, unknown>;
   switch (e.event) {
+    case 'bots': {
+      const notice = botRoutineNotice(data);
+      if (notice) pushToast(notice.tone, notice.title, notice.body);
+      break;
+    }
     case 'monitor':
       set({ monitor: data as unknown as MonitorState });
       break;

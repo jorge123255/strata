@@ -1,4 +1,6 @@
-import { botAvatar } from '../lib/bots';
+import { CuaBotAvatar } from '../components/CuaBotAvatar';
+import { selectedChat } from '../lib/chat-context';
+import './ChatEmbedded.css';
 import {localeTag} from '../lib/i18n';
 import { tr } from '../lib/i18n';
 import { UsageDashboard } from '../components/UsageDashboard';
@@ -44,19 +46,20 @@ import { getSlashCommands } from '../lib/commands';
 import { useLocation } from '../lib/router';
 import { composerSends } from '../lib/shortcut-bindings';
 import type { ChatMessage, Session, ToolCall } from '../lib/types';
-export function ChatScreen() {
+export function ChatScreen({ embedded = false, sessionId, onComputer }: { embedded?: boolean; sessionId?: string; onComputer?: () => void } = {}) {
     const location = useLocation();
     const sessions = useStore((s) => s.sessions);
     const activeId = useStore((s) => s.activeSession);
     const library = useStore((s) => s.library);
-    const streaming = useStore((s) => s.streaming);
+    const activeStreaming = useStore((s) => s.streaming);
     const setup = useStore(s => s.setup);
     const setupFlag = useStore(s => s.setupOpen);
     const setupVisible = location.route === 'setup' || setupFlag || !!setup && !setup.complete && !setup.dismissed;
     const session: Session | null = useMemo(() => {
-        const wanted = location.param ?? activeId;
-        return sessions.find((s) => s.id === wanted) ?? sessions[0] ?? null;
-    }, [sessions, activeId, location.param]);
+        const wanted = embedded ? sessionId : location.param ?? activeId;
+        return selectedChat(sessions, wanted, embedded);
+    }, [sessions, activeId, location.param, embedded, sessionId]);
+    const streaming = embedded && session?.id !== activeId ? !!session?.active || !!session?.messages.some(message => message.streaming) : activeStreaming;
     /* A conversation you are watching is read by definition — including while a
        reply streams into it. Without this, switching away from a session that
        answered you would mark it unread. */
@@ -364,6 +367,9 @@ export function ChatScreen() {
             textarea.current?.focus({ preventScroll: true });
     }, [setupVisible, readyForChat, session?.id, messageCount]);
     function submit() {
+        if (embedded && !session) return;
+        // Send through the existing shared store, bound to the displayed chat.
+        if (session && session.id !== activeId) selectSession(session.id);
         const text = draft.trim();
         if (!text && !queuedPhotos.length)
             return;
@@ -399,6 +405,7 @@ export function ChatScreen() {
         });
     }
     function onComposerKey(_e: React.KeyboardEvent) { }
+    if (!session && embedded) return <div className="bot-chat-empty"><p>{tr('This conversation is no longer available. Choose another conversation from this bot’s history.')}</p></div>;
     if (!session) {
         return (<>
         <ChatToolbar previewWidth={paneWidth} extraTabs={extraTabs} session={session} items={previews} onCloseTab={closeTab} selected={setupVisible ? null : selectedPreview} onSelect={selectPreview} onClose={() => { setSelectedPreview(null); setExpanded(false); }} inline={inlinePreview} expanded={expanded} onExpand={() => setExpanded(v => !v)}/>
@@ -418,8 +425,8 @@ export function ChatScreen() {
         </div>
       </>);
     }
-    return (<>
-      <ChatToolbar previewWidth={paneWidth} extraTabs={extraTabs} session={session} items={previews} onCloseTab={closeTab} selected={setupVisible ? null : selectedPreview} onSelect={selectPreview} onClose={() => { setSelectedPreview(null); setExpanded(false); }} inline={inlinePreview} expanded={expanded} onExpand={() => setExpanded(v => !v)}/>
+    const conversation = (<>
+      <ChatToolbar embedded={embedded} onComputer={onComputer} previewWidth={paneWidth} extraTabs={extraTabs} session={session} items={previews} onCloseTab={closeTab} selected={setupVisible ? null : selectedPreview} onSelect={selectPreview} onClose={() => { setSelectedPreview(null); setExpanded(false); }} inline={inlinePreview} expanded={expanded} onExpand={() => setExpanded(v => !v)}/>
 
       {/* The composer belongs to the conversation column, not the window: with
                 the context panel open, a full-width composer sat underneath the panel
@@ -440,7 +447,7 @@ export function ChatScreen() {
         }}>
 
             <div className="chat__inner">
-              {tr(session.messages.length === 0 ? (botId ? <div className="bot-chat-empty"><span style={{ fontSize: 34 }} aria-hidden="true">{botAvatar(session.preferences?.botAvatar)}</span><h2 className="h3">{session.preferences?.botName ?? tr('Your bot')}</h2><p className="xs muted">{[session.preferences?.botComputer, session.preferences?.botModel].filter(Boolean).join(' · ')}</p><p className="small">{tr('Send a message to start work. Replies, supported thinking and tool activity stay in this conversation on your Mac and paired iPhone.')}</p><a className="small" href={href('bots', botId)}>{tr('Open bot profile')}</a></div> : session.statsAvailable === false ? <p className="small muted">{tr("Editing from an earlier message. Update the prompt below.")}</p> :
+              {tr(session.messages.length === 0 ? (botId ? <div className="bot-chat-empty"><CuaBotAvatar config={session.preferences?.botAvatarConfig} name={session.preferences?.botName} size={72}/><h2 className="h3">{session.preferences?.botName ?? tr('Your bot')}</h2><p className="xs muted">{[session.preferences?.botComputer, session.preferences?.botModel].filter(Boolean).join(' · ')}</p><p className="small">{tr('Send a message to start work. Replies, supported thinking and tool activity stay in this conversation on your Mac and paired iPhone.')}</p><a className="small" href={href('bots', botId)}>{tr('Open bot profile')}</a></div> : session.statsAvailable === false ? <p className="small muted">{tr("Editing from an earlier message. Update the prompt below.")}</p> :
             <UsageDashboard loaded={!!loaded}/>) : (session.messages.map((m, i) => (<Message key={m.id} message={m} isLast={i === session.messages.length - 1} onEditPrompt={editPrompt} onPreview={openPreview} onOpenTimeSkip={openTimeSkip} timeSkipDone={!!allTimeSkipRuns.find(r => r.id === m.timeSkipId)?.completedAt} timeSkipReal={!!allTimeSkipRuns.find(r => r.id === m.timeSkipId)?.job} timeSkipRun={allTimeSkipRuns.find(r => r.id === m.timeSkipId)} onOpenLink={openLink}/>))))}
               <QueuedMessages chatId={session.id}/>
             </div>
@@ -455,6 +462,7 @@ export function ChatScreen() {
         {tr(resizeHandle)}
       </div>
     </>);
+    return embedded ? <section className="bot-chat-embedded" aria-label="Bot conversation">{conversation}</section> : conversation;
 }
 interface SlashCommand {
     id: string;
@@ -588,7 +596,7 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
         }}/>
           <div className="st-composer__bar">
             <ComposerControls draft={draft} onDraft={setDraft} session={session} onPreview={onPreview} streaming={streaming} onSlash={() => { setSlashDismissed(false); setSlashOpen(true); requestAnimationFrame(() => textareaRef.current?.focus()); }} onError={setFileError} onAttach={(name, text) => { setDraft(`${draft}${draft ? '\n\n' : ''}Attached ${name}\n\n${text}`); requestAnimationFrame(() => textareaRef.current?.focus()); }}/>
-            {tr(streaming ? (<Btn variant="secondary" size="sm" icon="stop" onClick={stopStreaming}>{tr("Stop")}</Btn>) : (<Btn variant="primary" size="sm" icon="send" disabled={(!draft.trim() && !photos.length) || draft.trim() === '/' || (!canChat && timeSkipPrompt(draft) === null)} onClick={onSubmit}>{tr("Send")}</Btn>))}
+            {tr(streaming ? (<Btn variant="secondary" size="sm" icon="stop" onClick={() => { if (session) selectSession(session.id); stopStreaming(); }}>{tr("Stop")}</Btn>) : (<Btn variant="primary" size="sm" icon="send" disabled={(!draft.trim() && !photos.length) || draft.trim() === '/' || (!canChat && timeSkipPrompt(draft) === null)} onClick={onSubmit}>{tr("Send")}</Btn>))}
           </div>
         </div>
         {!bot ? <ChatTelemetry session={session}/> : null}

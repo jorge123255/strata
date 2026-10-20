@@ -28,7 +28,7 @@ test('legacy EventHub clients retain all events unless an explicit per-client fi
   legacy.emit('close'); assert.equal(hub.size, 1);
 });
 
-test('initial and live conversation events require exact desktop origin, loopback Host and loopback peer', t => {
+test('conversation and bot-work events require exact desktop origin, loopback Host and loopback peer', t => {
   const hub = new EventHub();
   const conversation = { id: 'private-chat', messages: [{ content: 'INITIAL-PRIVATE-HISTORY' }] };
   const conversations = { list: () => ({ conversations: [conversation] }) };
@@ -50,9 +50,11 @@ test('initial and live conversation events require exact desktop origin, loopbac
     return { label, res, allowed };
   });
   hub.send('conversation', { conversation: { ...conversation, messages: [{ content: 'LIVE-PRIVATE-HISTORY' }] } });
+  hub.send('bots', { routineCompleted: { id: 'private-routine', prompt: 'PRIVATE-BOT-WORK' } });
   hub.send('monitor', { publicOperationalState: 'healthy' });
   for (const { label, res, allowed } of subscribers) {
     assert.equal(res.output.includes('LIVE-PRIVATE-HISTORY'), allowed, `${label}: live snapshot`);
+    assert.equal(res.output.includes('PRIVATE-BOT-WORK'), allowed, `${label}: bot work`);
     assert.ok(res.output.includes('healthy'), `${label}: existing operational events still arrive`);
     if (!allowed) assert.doesNotMatch(res.output, /private-chat|event: conversation/, `${label}: no transcript identifiers or deletion events`);
   }

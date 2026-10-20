@@ -1,0 +1,18 @@
+CUA Bots koala avatar and picker
+
+Copyright (c) 2026 Cua AI, Inc.
+SPDX-License-Identifier: FSL-1.1-MIT
+
+Adapted from examples/cua-bots-macos/Sources/CuaBotsCore/Avatar/BotAvatar.swift,
+KoalaGeometry.swift and CuaBotsUI/Components.swift in jorge123255/cua
+(parent trycua/cua), commit ef61a985d58958c6b9bc392f0ea0da785aa36ce9.
+Source: https://github.com/jorge123255/cua/tree/ef61a985d58958c6b9bc392f0ea0da785aa36ce9/examples/cua-bots-macos
+
+The full Functional Source License 1.1 with MIT Future License is shipped
+alongside this notice as cua-bots-LICENSE.txt. The original Cua copyright
+and license apply to these adapted components.
+
+The React/SVG adaptation retains the original koala paths, palette, glyphs,
+expressions and 108 configurations. Koala geometry and design originate
+with Cua AI. This adaptation does not imply endorsement or ownership of
+Cua trademarks.

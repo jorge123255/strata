@@ -350,13 +350,11 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     async close() { work.close(); await computer.close(); for (const run of active.values()) run.controller.abort(); await Promise.allSettled([...active.values()].map(run => run.ended)); await tools.close?.(); await runtime.close?.(); } };
 }
 
-export function createBotRoutes({ bots, port, desktop }) {
+export function createBotRoutes({ bots, port }) {
   return async (req, res, url) => {
     res.removeHeader('access-control-allow-origin'); res.setHeader('cache-control', 'no-store');
     if (!isLocalCompanionRequest(req, typeof port === 'function' ? port() : port)) return error(res, 403, 'Open Bots in Strata on this computer.');
     try {
-      if (url.pathname === '/api/bots/desktop' && req.method === 'GET') return json(res, 200, desktop?.status() ?? { available: false, native: true, name: 'Strata Bots' });
-      if (url.pathname === '/api/bots/desktop/open' && req.method === 'POST') { if (!desktop) throw fault(503, 'The native Bots component is unavailable.'); return json(res, 200, await desktop.open()); }
       if (url.pathname === '/api/bots' && req.method === 'GET') return json(res, 200, await bots.list());
       if (url.pathname === '/api/bots' && req.method === 'POST') return json(res, 201, bots.create(await readBody(req)));
       if (/^\/api\/bots\/computers\/(check|prepare|prepare-cua)$/.test(url.pathname) && req.method === 'POST') {

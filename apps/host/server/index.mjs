@@ -70,7 +70,6 @@ import { createConversationRoutes, addConversationEvents } from './conversation-
 import { createBots, createBotRoutes } from './bots.mjs';
 import { createBotTools } from './bots-tools.mjs';
 import { createBotCUATools } from './bots-cua.mjs';
-import { createBotsDesktop } from './bots-desktop.mjs';
 import { createBotRuntime } from './bots-runtime/index.mjs';
 import { createRemoteBotSSH } from './bots-ssh.mjs';
 import { createBotModelClient, createBotModelSources } from './bots-models.mjs';
@@ -520,7 +519,7 @@ const botTools = { definitions: bot => (bot.computerMode === 'cua' ? cuaBotTools
 const botModelSources = createBotModelSources({ providers: modelProviders, localInstances: () => native.readyInstances() });
 bots = createBots({ directory: store.DATA_DIR, remoteSSH: botSSH, cuaTools: cuaBotTools, modelProviders: botModelSources, modelRequest: createBotModelClient({ providers: botModelSources }), runtime: createBotRuntime({ stateDir: join(store.DATA_DIR, 'bots-runtime'), remoteSSH: botSSH }), tools: botTools,
   conversations: () => conversations, defaultWorkspace: () => workspaces[0]?.path ?? WORKSPACE, notify: (event, data) => hub.send(event, data) });
-const botRoutes = createBotRoutes({ bots, port: PORT, desktop: createBotsDesktop({ port: PORT }) });
+const botRoutes = createBotRoutes({ bots, port: PORT });
 conversations = createConversations({
   directory: store.DATA_DIR,
   enabled: () => companion.hasOptedIn() || bots.hasProfiles(),

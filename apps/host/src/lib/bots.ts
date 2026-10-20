@@ -24,6 +24,7 @@ export interface Bot {
   avatar?: string;
   avatarConfig?: { color: 'cloud'|'violet'|'orange'|'sky'|'graphite'|'slate'; eyes: 'star'|'round'|'happy'|'calm'|'plus'|'delight'; ears: 'scalloped'|'round'|'small' };
   computerMode?: 'host' | 'cua';
+  paused?: boolean;
   instructions: string;
   provider: BotProviderId;
   model: string;
@@ -82,6 +83,17 @@ export function botComputerSelection(execution: BotExecution, computers: BotComp
 /** All selection stays keyed by bot identity, never by the currently loaded model. */
 export function botConversations<T extends { preferences?: { botId?: string }; updatedAt: string }>(sessions: T[], botId: string): T[] {
   return sessions.filter(session => session.preferences?.botId === botId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+/** Frozen public labels describe a chat; they are never parsed into credentials or execution settings. */
+export function botConversationContext(bot: Bot, chat?: { id: string; workspace?: string; preferences?: { botId?: string; botComputerMode?: 'host' | 'cua'; botComputer?: string; botModel?: string } }, models: BotConfiguredModel[] = []) {
+  if (chat) {
+    const owned = chat.preferences?.botId === bot.id;
+    return { chatId: chat.id, computerMode: owned ? chat.preferences?.botComputerMode : undefined,
+      computer: owned && chat.preferences?.botComputer || 'Conversation computer', model: owned && chat.preferences?.botModel || 'Conversation model', workspace: owned ? chat.workspace || '' : '' };
+  }
+  const model = configuredModel(bot.modelSource, models);
+  return { chatId: undefined, computerMode: bot.computerMode ?? 'host', computer: botComputerLabel(bot.execution), model: model ? configuredModelLabel(model) : `${botProviderName(bot.provider)} · ${bot.model || 'Provider default'}`, workspace: bot.workspace };
 }
 
 export function botDraftError(draft: BotDraft): string | null {

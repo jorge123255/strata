@@ -26,10 +26,10 @@ export function createConversationRoutes({ conversations, port }) {
 }
 
 
-/** Shared transcripts are private even though legacy operational events allow other local clients. */
+/** Shared transcripts and bot work are private even though legacy operational events allow other local clients. */
 export function addConversationEvents({ req, res, hub, conversations, port }) {
   const privateEligible = isLocalCompanionRequest(req, typeof port === 'function' ? port() : port);
-  hub.add(res, { allowEvent: event => event !== 'conversation' || privateEligible });
+  hub.add(res, { allowEvent: event => !['conversation', 'bots'].includes(event) || privateEligible });
   if (!privateEligible) return;
   // Initial snapshots close the gap between bootstrap and the live connection, under the same access check.
   for (const conversation of conversations.list().conversations) {

@@ -67,3 +67,22 @@ test('profiles validate remote targets and provider addresses without requiring 
   assert.match(bots.botDraftError({ ...draft, providerSettings: { baseURL: 'file:///tmp/model' } }), /HTTP or HTTPS/);
   assert.equal(bots.botDraftError({ ...draft, providerSettings: { baseURL: 'https://ollama.com/v1' } }), null);
 });
+
+test('embedded bot context follows immutable conversation labels and isolation after profile edits', () => {
+  const profile = { ...bots.blankBot('/new-host-folder'), id: 'bot-a', name: 'Ada', provider: 'codex', model: 'new-model', computerMode: 'host' };
+  const chat = { id: 'old-cua-chat', workspace: '/workspace', preferences: { botId: 'bot-a', botComputerMode: 'cua', botComputer: 'Chosen SSH computer', botModel: 'Maya · Maya-S24' } };
+  const before = structuredClone([profile, chat]);
+  assert.deepEqual(bots.botConversationContext(profile, chat), { chatId: 'old-cua-chat', computerMode: 'cua', computer: 'Chosen SSH computer', model: 'Maya · Maya-S24', workspace: '/workspace' });
+  assert.deepEqual(bots.botConversationContext({ ...profile, computerMode: 'cua' }, { ...chat, workspace: '/old-host-folder', preferences: { ...chat.preferences, botComputerMode: 'host', botModel: 'grok · Provider default' } }), { chatId: 'old-cua-chat', computerMode: 'host', computer: 'Chosen SSH computer', model: 'grok · Provider default', workspace: '/old-host-folder' });
+  assert.deepEqual([profile, chat], before);
+});
+
+test('missing or unrelated frozen settings never borrow the current profile computer or model', () => {
+  const profile = { ...bots.blankBot('/new-folder'), id: 'bot-a', name: 'Ada', computerMode: 'cua', provider: 'codex', model: 'new' };
+  const missing = bots.botConversationContext(profile, { id: 'old', preferences: { botId: 'bot-a' } });
+  assert.equal(missing.computerMode, undefined); assert.equal(missing.computer, 'Conversation computer'); assert.equal(missing.model, 'Conversation model');
+  const other = bots.botConversationContext(profile, { id: 'other', workspace: '/unrelated', preferences: { botId: 'bot-b', botComputerMode: 'cua', botComputer: 'Someone else', botModel: 'Other model' } });
+  assert.equal(other.computerMode, undefined); assert.equal(other.computer, 'Conversation computer'); assert.equal(other.model, 'Conversation model'); assert.equal(other.workspace, '');
+  const fresh = bots.botConversationContext(profile);
+  assert.equal(fresh.computerMode, 'cua'); assert.equal(fresh.model, 'Codex · new'); assert.equal(fresh.workspace, '/new-folder');
+});
