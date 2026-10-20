@@ -8,7 +8,10 @@ import './CuaBotAvatar.css'
 export const CUA_BOT_COLORS = ['cloud', 'violet', 'orange', 'sky', 'graphite', 'slate'] as const
 export const CUA_BOT_EYES = ['star', 'round', 'happy', 'calm', 'plus', 'delight'] as const
 export const CUA_BOT_EARS = ['scalloped', 'round', 'small'] as const
+export const CUA_BOT_KINDS = ['koala', 'fox', 'cat', 'robot'] as const
 export type CuaBotAvatarConfig = {
+  /** Missing on legacy faces; keep their serialized form unchanged. */
+  kind?: typeof CUA_BOT_KINDS[number]
   color: typeof CUA_BOT_COLORS[number]
   eyes: typeof CUA_BOT_EYES[number]
   ears: typeof CUA_BOT_EARS[number]
@@ -43,11 +46,20 @@ export function normalizeCuaBotAvatarConfig(value: unknown, name = ''): CuaBotAv
   if (!value || typeof value !== 'object') return fallback
   const config = value as Record<string, unknown>
   return {
+    ...(CUA_BOT_KINDS.includes(config.kind as typeof CUA_BOT_KINDS[number]) && config.kind !== 'koala' ? { kind: config.kind as CuaBotAvatarConfig['kind'] } : {}),
     color: CUA_BOT_COLORS.find(item => item === config.color) ?? fallback.color,
     eyes: CUA_BOT_EYES.find(item => item === config.eyes) ?? fallback.eyes,
     ears: CUA_BOT_EARS.find(item => item === config.ears) ?? fallback.ears,
   }
 }
+
+// Original Strata characters. Coordinates deliberately share the koala eye grid
+// so expressions, six palettes and reduced-motion behavior stay consistent.
+const characterHeads = {
+  fox: 'M-.95 -.47Q-.96 -.86-.66-.91Q0-1.03.66-.91Q.96-.86.95-.47L.9 .23Q.75 .65 0 .9Q-.75 .65-.9 .23Z',
+  cat: 'M-.98 -.44Q-.98-.88-.56-.92Q0-1 .56-.92Q.98-.88.98-.44L.95 .27Q.87 .83 0 .87Q-.87 .83-.95 .27Z',
+  robot: 'M-.73-.87H.73Q1-.87 1-.6V.57Q1 .84.73 .84H-.73Q-1 .84-1 .57V-.6Q-1-.87-.73-.87Z',
+} as const
 
 type Glyph = 'star' | 'round' | 'dash' | 'caret' | 'plus' | 'cross' | 'greater' | 'less' | 'slash' | 'backslash'
 const restingEyes: Record<CuaBotAvatarConfig['eyes'], readonly [Glyph, Glyph]> = {
@@ -128,18 +140,33 @@ export function CuaBotAvatar({ config: supplied, name = '', size = 48, className
   const spin = mood === 'working' ? (time % 1.2 < .6 ? 15 : -15) : 0
   const dimension = Number.isFinite(size) && size > 0 ? size : 48
   const colorName = config.color[0].toUpperCase() + config.color.slice(1)
+  const kind = config.kind ?? 'koala'
+  const head = kind === 'koala' ? geometry.head : characterHeads[kind]
+  const earSize = config.ears === 'small' ? .78 : config.ears === 'round' ? .92 : 1
   return <svg className={`cua-bot-avatar ${className}`.trim()} width={dimension} height={dimension}
     viewBox="-1.425 -1.485 2.85 2.85" fill="none" role="img"
-    aria-label={`${name ? `${name}, ` : ''}${colorName} koala, ${mood === 'needsApproval' ? 'needs approval' : mood}`}>
-    <defs><clipPath id={clipID}><path d={geometry.head} /></clipPath></defs>
+    data-character={kind} aria-label={`${name ? `${name}, ` : ''}${colorName} ${kind}, ${mood === 'needsApproval' ? 'needs approval' : mood}`}>
+    <defs><clipPath id={clipID}><path d={head} /></clipPath></defs>
     <g fill={colors.face}>
-      {([-1, 1] as const).map(side => config.ears === 'round'
+      {kind === 'koala' ? ([-1, 1] as const).map(side => config.ears === 'round'
         ? <circle key={side} cx={side * .9023 * .97} cy={-.4916 * 1.02} r={Math.sqrt(.598 / Math.PI)} />
-        : <path key={side} d={geometry.ear} transform={`translate(${side * .9023 * (config.ears === 'small' ? .86 : 1)} ${-.4916 * (config.ears === 'small' ? .86 : 1)}) scale(${side * (config.ears === 'small' ? .72 : 1)} ${config.ears === 'small' ? .72 : 1})`} />)}
-      <path d={geometry.head} />
+        : <path key={side} d={geometry.ear} transform={`translate(${side * .9023 * (config.ears === 'small' ? .86 : 1)} ${-.4916 * (config.ears === 'small' ? .86 : 1)}) scale(${side * (config.ears === 'small' ? .72 : 1)} ${config.ears === 'small' ? .72 : 1})`} />)
+        : ([-1, 1] as const).map(side => <g key={side} transform={`scale(${side} 1)`}>
+          {kind === 'robot' ? <><rect x=".96" y="-.29" width=".23" height={.46 * earSize} rx=".1" /><path d="M.53-.83V-1.08" stroke={colors.nose} strokeWidth=".09" /><ellipse cx=".53" cy="-1.13" rx=".105" ry=".105" /></>
+            : <g transform={`translate(.67 -.58) scale(${earSize})`}>
+              <path d={config.ears === 'round' ? 'M-.33 .15Q-.48-.66-.04-.61Q.44-.61.33 .33Z' : 'M-.34 .15L.22-.69Q.32-.78.34-.59L.4 .36Z'} />
+              <path d="M-.13 .05L.2-.44L.25 .2Z" fill={colors.nose} opacity=".4" />
+            </g>}
+        </g>)}
+      <path d={head} />
     </g>
     <g clipPath={`url(#${clipID})`}>
-      <path d={geometry.nose} fill={colors.nose} />
+      <path d="M-.83-.5Q-.68-.83-.23-.82" stroke="white" strokeOpacity=".18" strokeWidth=".1" strokeLinecap="round" />
+      {kind === 'fox' && <path d="M-1 .02Q-.59-.04 0 .39Q.59-.04 1 .02L1 .95H-1Z" fill="white" opacity=".52" />}
+      {kind === 'cat' && <g stroke={colors.nose} strokeWidth=".045" strokeLinecap="round" opacity=".65"><path d="M-.54 .34L-.88 .25M-.53 .45L-.9 .47M.54 .34L.88 .25M.53 .45L.9 .47" /></g>}
+      {kind === 'koala' ? <path d={geometry.nose} fill={colors.nose} />
+        : kind === 'robot' ? <rect x="-.28" y=".34" width=".56" height=".13" rx=".065" fill={colors.nose} />
+          : <><path d="M-.15 .26Q0 .18.15 .26L0 .43Z" fill={colors.nose} /><path d="M0 .42V.52M-.14 .52Q0 .65.14 .52" stroke={colors.nose} strokeWidth=".04" strokeLinecap="round" /></>}
       <g stroke={colors.eye} strokeLinecap="butt" strokeLinejoin="miter">
         <Eye glyph={left} side="left" spin={spin} />
         <Eye glyph={right} side="right" spin={spin} />
@@ -160,6 +187,12 @@ const label = (value: string) => value[0].toUpperCase() + value.slice(1)
 export function CuaBotAvatarPicker({ value, onChange, name = '', className = '' }: CuaBotAvatarPickerProps) {
   const config = normalizeCuaBotAvatarConfig(value, name)
   return <div className={`cua-bot-avatar-picker ${className}`.trim()}>
+    <fieldset><legend>Character</legend><div className="cua-avatar-characters">
+      {CUA_BOT_KINDS.map(kind => <button type="button" key={kind} className="cua-avatar-option"
+        aria-label={label(kind)} aria-pressed={(config.kind ?? 'koala') === kind} onClick={() => { const { kind: _, ...face } = config; onChange(kind === 'koala' ? face : { ...face, kind }) }}>
+        <CuaBotAvatar config={{ ...config, kind }} size={46} animated={false} /><span>{label(kind)}</span>
+      </button>)}
+    </div></fieldset>
     <fieldset><legend>Color</legend><div className="cua-avatar-colors">
       {CUA_BOT_COLORS.map(color => <button type="button" key={color} className="cua-avatar-color"
         aria-label={label(color)} aria-pressed={config.color === color} title={label(color)}

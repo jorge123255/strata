@@ -19,3 +19,20 @@ enum KoalaGeometry {
     static let leftEye = (x: -0.53029, y: -0.04019, squash: 0.94409)
     static let rightEye = (x: 0.53510, y: -0.04055, squash: 0.94409)
 }
+
+// Original Strata character paths, shared with the embedded React/SVG renderer.
+// The original CUA koala geometry above stays unchanged.
+enum AvatarCharacterGeometry {
+    static let foxHead = "M-.95 -.47Q-.96 -.86-.66-.91Q0-1.03.66-.91Q.96-.86.95-.47L.9 .23Q.75 .65 0 .9Q-.75 .65-.9 .23Z"
+    static let catHead = "M-.98 -.44Q-.98-.88-.56-.92Q0-1 .56-.92Q.98-.88.98-.44L.95 .27Q.87 .83 0 .87Q-.87 .83-.95 .27Z"
+    static let robotHead = "M-.73-.87H.73Q1-.87 1-.6V.57Q1 .84.73 .84H-.73Q-1 .84-1 .57V-.6Q-1-.87-.73-.87Z"
+    static let highlight = "M-.83-.5Q-.68-.83-.23-.82"
+    static let foxMask = "M-1 .02Q-.59-.04 0 .39Q.59-.04 1 .02L1 .95H-1Z"
+    static let catWhiskers = "M-.54 .34L-.88 .25M-.53 .45L-.9 .47M.54 .34L.88 .25M.53 .45L.9 .47"
+    static let animalNose = "M-.15 .26Q0 .18.15 .26L0 .43Z"
+    static let animalMouth = "M0 .42V.52M-.14 .52Q0 .65.14 .52"
+    static let robotAntenna = "M.53-.83V-1.08"
+    static let roundEar = "M-.33 .15Q-.48-.66-.04-.61Q.44-.61.33 .33Z"
+    static let pointedEar = "M-.34 .15L.22-.69Q.32-.78.34-.59L.4 .36Z"
+    static let innerEar = "M-.13 .05L.2-.44L.25 .2Z"
+}

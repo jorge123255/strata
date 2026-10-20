@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createBotCUATools, cuaSandboxName, CUA_IMAGE } from '../server/bots-cua.mjs';
@@ -88,4 +88,38 @@ test('Linux preparation uses only the private SDK helper and scopes QEMU wrapper
   assert.ok(processes[1].args[1].endsWith('/bots-runtime/cua-qemu-prepare.py')); assert.equal(processes[1].args[2], join(directory, 'cua-runtime/home/.cua'));
   assert.equal(processes[1].options.env.PATH.split(':')[0], join(directory, 'cua-runtime/home/.cua/bin'));
   assert.equal(processes[1].command, join(venv, 'python')); await tools.close();
+});
+
+test('Mac preparation replaces an unloadable signed-Python venv with an existing independent interpreter and retains the failed runtime', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'strata-cua-mac-')); t.after(() => rm(directory, { recursive: true, force: true }));
+  const root = join(directory, 'cua-runtime'), venv = join(root, 'venv'), executable = join(venv, 'bin/python'), independent = join(directory, 'independent-python'), invalid = join(directory, 'not-executable');
+  await mkdir(join(venv, 'bin'), { recursive: true }); await writeFile(executable, 'signed interpreter'); await writeFile(independent, 'existing interpreter'); await writeFile(invalid, 'not an executable');
+  const processes = []; let replaced = false;
+  const tools = createBotCUATools({ directory, platform: 'darwin', python: '/bundled/signed/python', pythonCandidates: [join(directory, 'missing'), invalid, independent], processRunner: async (command, args, options) => {
+    processes.push({ command, args, options });
+    if (command === invalid || command === executable && args.includes('-c') && !replaced) throw Object.assign(Error('Cannot execute this interpreter'), { code: 'EACCES' });
+    if (command === executable && args.includes('-c')) return { code: 0, stdout: '0.5.0\n' };
+    if (args.includes('venv')) { assert.equal(command, independent); await mkdir(join(venv, 'bin'), { recursive: true }); await writeFile(executable, 'independent interpreter'); replaced = true; }
+    return { code: 0, stdout: '' };
+  }, bridge: async () => ({ available: true, prepared: true }) });
+  assert.equal((await tools.prepare()).available, true);
+  const backup = (await readdir(root)).find(name => name.startsWith('venv-unavailable-')); assert.ok(backup);
+  assert.equal(await readFile(join(root, backup, 'bin/python'), 'utf8'), 'signed interpreter');
+  assert.ok(processes.some(p => p.args.includes('pip'))); assert.ok(processes.every(p => p.options.env.HOME === join(root, 'home')));
+  assert.ok(processes.every(p => p.command !== '/bundled/signed/python'));
+  await tools.close();
+});
+
+test('Mac preparation reuses a working private SDK after restart without selecting another interpreter', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'strata-cua-mac-reuse-')); t.after(() => rm(directory, { recursive: true, force: true }));
+  const bin = join(directory, 'cua-runtime/venv/bin'); await mkdir(bin, { recursive: true }); await writeFile(join(bin, 'python'), 'working');
+  const calls = [], tools = createBotCUATools({ directory, platform: 'darwin', pythonCandidates: [], processRunner: async (command, args) => { calls.push({ command, args }); return { code: 0, stdout: '0.5.0\n' }; }, bridge: async () => ({ available: true }) });
+  await tools.prepare(); assert.equal(calls.length, 1); assert.match(calls[0].args[2], /import cua/); assert.deepEqual(await readdir(join(directory, 'cua-runtime')), ['home', 'venv']); await tools.close();
+});
+
+test('Mac preparation with no compatible independent interpreter leaves the failed venv intact and gives an actionable error', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'strata-cua-mac-missing-')); t.after(() => rm(directory, { recursive: true, force: true }));
+  const bin = join(directory, 'cua-runtime/venv/bin'); await mkdir(bin, { recursive: true }); await writeFile(join(bin, 'python'), 'retained');
+  const tools = createBotCUATools({ directory, platform: 'darwin', pythonCandidates: [], processRunner: async () => ({ code: 1, stdout: '' }), bridge: async () => { throw Error('must not call SDK'); } });
+  await assert.rejects(tools.prepare(), /independent Python 3.10/); assert.equal(await readFile(join(bin, 'python'), 'utf8'), 'retained'); assert.deepEqual(await readdir(join(directory, 'cua-runtime')), ['home', 'venv']); await tools.close();
 });

@@ -22,7 +22,7 @@ export interface Bot {
   id: string;
   name: string;
   avatar?: string;
-  avatarConfig?: { color: 'cloud'|'violet'|'orange'|'sky'|'graphite'|'slate'; eyes: 'star'|'round'|'happy'|'calm'|'plus'|'delight'; ears: 'scalloped'|'round'|'small' };
+  avatarConfig?: { kind?: 'koala'|'fox'|'cat'|'robot'; color: 'cloud'|'violet'|'orange'|'sky'|'graphite'|'slate'; eyes: 'star'|'round'|'happy'|'calm'|'plus'|'delight'; ears: 'scalloped'|'round'|'small' };
   computerMode?: 'host' | 'cua';
   paused?: boolean;
   instructions: string;

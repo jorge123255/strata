@@ -2,7 +2,7 @@
  * every exposed tool is executed inside this bot's owned CUA Space. */
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { access, mkdir, statfs } from 'node:fs/promises';
+import { access, mkdir, rename, statfs } from 'node:fs/promises';
 import { join, delimiter } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runBotProcess } from './bots-tools.mjs';
@@ -64,7 +64,7 @@ export function runCUABridge(python, helper, payload, { signal, env, timeout = 1
   });
 }
 
-export function createBotCUATools({ directory, processRunner = runBotProcess, bridge = runCUABridge, python = 'python3', platform = process.platform } = {}) {
+export function createBotCUATools({ directory, processRunner = runBotProcess, bridge = runCUABridge, python = 'python3', platform = process.platform, pythonCandidates } = {}) {
   if (!directory) fail('A private CUA state directory is required.');
   const root = join(directory, 'cua-runtime'), venv = join(root, 'venv'), executable = join(venv, platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
   const helper = fileURLToPath(new URL('./bots-cua.py', import.meta.url));
@@ -89,14 +89,38 @@ export function createBotCUATools({ directory, processRunner = runBotProcess, br
     if (preparing) return preparing;
     preparing = (async () => {
       await mkdir(join(root, 'home'), { recursive: true, mode: 0o700 });
+      // The app's hardened Python cannot load a separately signed SDK dylib.
+      // Reuse a working private venv; on macOS create one from an existing
+      // independent Python without changing the app signature or installing
+      // a system interpreter. A failed venv is retained for diagnosis.
+      const versionArgs = ['-I', '-c', 'import cua, importlib.metadata; print(importlib.metadata.version("cua"))'];
+      const inspect = async (command, args) => {
+        try { return await processRunner(command, args, { signal, timeout: 15000, env: environment() }); }
+        catch (error) { if (signal?.aborted) throw error; return null; }
+      };
+      const version = await exists(executable) ? await inspect(executable, versionArgs) : null;
+      const installed = version?.code === 0 && version.stdout.trim() === CUA_VERSION;
+      let creator = python;
+      if (platform === 'darwin' && !installed) {
+        creator = null;
+        const candidates = pythonCandidates ?? ['/opt/homebrew/bin/python3', '/usr/local/bin/python3', '/Library/Frameworks/Python.framework/Versions/Current/bin/python3'];
+        for (const candidate of candidates) {
+          if (!await exists(candidate)) continue;
+          const check = await inspect(candidate, ['-I', '-c', 'import sys,venv; sys.exit(0 if (3,10) <= sys.version_info[:2] < (4,0) else 1)']);
+          if (check?.code === 0) { creator = candidate; break; }
+        }
+        if (!creator) fail('CUA on this Mac needs an existing independent Python 3.10 or later with venv support. Strata’s signed Python cannot load the separately signed CUA library. No system software or app signatures were changed.');
+        if (await exists(venv)) await rename(venv, `${venv}-unavailable-${Date.now()}-${randomUUID()}`);
+      }
       if (!await exists(executable)) {
         const disk = await statfs(root); if (Number(disk.bavail) * Number(disk.bsize) < 512 * 1024 * 1024) fail('CUA needs at least 512 MB of free disk space to prepare its private SDK. Choose a remote computer or free disk space.');
-        const make = await processRunner(python, ['-B', '-m', 'venv', venv], { signal, timeout: 120000 }); if (make.code !== 0) fail('Python 3 with venv support is required to prepare CUA.');
+        const make = await processRunner(creator, ['-B', '-m', 'venv', venv], { signal, timeout: 120000, env: environment() }); if (make.code !== 0) fail('Python 3 with venv support is required to prepare CUA.');
       }
-      const version = await processRunner(executable, ['-I', '-c', 'import importlib.metadata; print(importlib.metadata.version("cua"))'], { signal, timeout: 15000, env: environment() });
-      if (version.code !== 0 || version.stdout.trim() !== CUA_VERSION) {
+      if (!installed) {
         const install = await processRunner(executable, ['-I', '-m', 'pip', '--isolated', 'install', '--index-url', 'https://pypi.org/simple', '--disable-pip-version-check', '--no-cache-dir', '--only-binary=:all:', `cua==${CUA_VERSION}`], { signal, timeout: 300000, maxBytes: 2 * 1024 * 1024, env: environment() });
         if (install.code !== 0) fail(`The private CUA ${CUA_VERSION} SDK could not be installed. This computer needs a supported Python and platform wheel.`);
+        const imported = await processRunner(executable, versionArgs, { signal, timeout: 15000, env: environment() });
+        if (imported.code !== 0 || imported.stdout.trim() !== CUA_VERSION) fail('The private CUA SDK could not load with this Python interpreter. No app signatures or system permissions were changed.');
       }
       if (platform === 'linux') {
         const result = await processRunner(executable, ['-I', qemuPrepare, join(root, 'home', '.cua')], { signal, timeout: 420000, maxBytes: 2 * 1024 * 1024, env: environment() });

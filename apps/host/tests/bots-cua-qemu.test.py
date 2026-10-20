@@ -9,13 +9,47 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
+from unittest.mock import Mock
 
 source = Path(__file__).parent.parent / "server/bots-runtime/cua-qemu-prepare.py"
 spec = importlib.util.spec_from_file_location("private_qemu", source)
 qemu = importlib.util.module_from_spec(spec); spec.loader.exec_module(qemu)
 
 
+def process_state(pid):
+    if sys.platform.startswith("linux"):
+        try:
+            return (Path('/proc') / str(pid) / 'stat').read_text().split(') ', 1)[1].split()[0]
+        except FileNotFoundError:
+            return 'gone'
+    result = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'stat='], env={'PATH': '/usr/bin:/bin', 'LC_ALL': 'C'}, capture_output=True, text=True, timeout=1)
+    if result.returncode == 1 and not result.stdout.strip():
+        return 'gone'
+    if result.returncode != 0 or not result.stdout.strip():
+        raise RuntimeError('Could not independently verify the owned fixture process.')
+    return result.stdout.strip()[0]
+
+
 class PrivateQEMU(unittest.TestCase):
+    def test_darwin_group_state_excludes_zombies_and_rejects_untrusted_snapshots(self):
+        reply = subprocess.CompletedProcess([], 0, '111 S+\n222 Z\n111 Zs\n444 ?\n555 S?\n')
+        with patch.object(qemu.subprocess, 'run', return_value=reply) as run:
+            self.assertTrue(qemu.darwin_group_active(111)); self.assertFalse(qemu.darwin_group_active(222)); self.assertFalse(qemu.darwin_group_active(333))
+            self.assertTrue(qemu.darwin_group_active(444)); self.assertTrue(qemu.darwin_group_active(555))
+            self.assertEqual(run.call_args.args[0], ['/bin/ps', '-axo', 'pgid=,stat='])
+            self.assertEqual(set(run.call_args.kwargs['env']), {'PATH', 'LC_ALL'})
+        for reply in [subprocess.CompletedProcess([], 1, ''), subprocess.CompletedProcess([], 0, ''), subprocess.CompletedProcess([], 0, '111 S+ private-command'), subprocess.CompletedProcess([], 0, 'not-a-group S')]:
+            with patch.object(qemu.subprocess, 'run', return_value=reply), self.assertRaises(RuntimeError): qemu.darwin_group_active(111)
+        with patch.object(qemu.subprocess, 'run', side_effect=subprocess.TimeoutExpired('ps', 1)), self.assertRaises(RuntimeError): qemu.darwin_group_active(111)
+
+    def test_darwin_signal_permission_race_requires_a_followup_group_snapshot(self):
+        child = Mock(pid=111)
+        with patch.object(qemu.sys, 'platform', 'darwin'), patch.object(qemu, 'darwin_group_active', side_effect=[True, False, False]), patch.object(qemu.os, 'killpg', side_effect=PermissionError):
+            qemu.stop_group(child)
+        child.wait.assert_called_once()
+        with patch.object(qemu.sys, 'platform', 'darwin'), patch.object(qemu, 'darwin_group_active', return_value=True), patch.object(qemu.os, 'killpg', side_effect=PermissionError), self.assertRaisesRegex(RuntimeError, 'could not signal'):
+            qemu.stop_group(child)
+
     def test_configuration_disables_global_parts_main_hooks_sources_and_all_writable_state(self):
         with tempfile.TemporaryDirectory() as temporary:
             stage = Path(temporary)
@@ -88,36 +122,40 @@ class PrivateQEMU(unittest.TestCase):
             with self.assertRaises(ProcessLookupError): os.kill(int(path.read_text()), 0)
             self.assertFalse(qemu.ACTIVE)
 
-    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux descendant state proof uses /proc")
+    @unittest.skipUnless(sys.platform.startswith("linux") or sys.platform == "darwin", "Requires Unix process groups")
     def test_leader_exit_does_not_skip_TERM_resistant_descendant_group_cleanup(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "descendant"
             code = "import os,signal,pathlib,time\np=os.fork()\nif p==0:\n os.close(1);os.close(2);signal.signal(signal.SIGTERM,signal.SIG_IGN);pathlib.Path(" + repr(str(path)) + ").write_text(str(os.getpid()));time.sleep(30)\nelse:\n while not pathlib.Path(" + repr(str(path)) + ").exists():time.sleep(.01)\n"
             qemu.run(sys.executable, ["-c", code], os.environ.copy(), 2)
             pid = int(path.read_text())
-            try: fields = (Path('/proc') / str(pid) / 'stat').read_text().split(') ', 1)[1].split()
-            except FileNotFoundError: fields = ['gone']
-            self.assertIn(fields[0], ('gone', 'Z')); self.assertFalse(qemu.ACTIVE)
+            self.assertIn(process_state(pid), ('gone', 'Z')); self.assertFalse(qemu.ACTIVE)
 
-    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux descendant state proof uses /proc")
+    @unittest.skipUnless(sys.platform.startswith("linux") or sys.platform == "darwin", "Requires Unix process groups")
     def test_helper_TERM_forwards_to_its_detached_child_group_and_escalates(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "descendant"
             childcode = "import os,signal,pathlib,time\np=os.fork()\nif p==0:\n signal.signal(signal.SIGTERM,signal.SIG_IGN);pathlib.Path(" + repr(str(path)) + ").write_text(str(os.getpid()));time.sleep(30)\nelse:time.sleep(30)"
             code = "import importlib.util,signal,os,sys\ns=importlib.util.spec_from_file_location('q'," + repr(str(source)) + ");q=importlib.util.module_from_spec(s);s.loader.exec_module(q);signal.signal(signal.SIGTERM,q.cancelled);q.run(sys.executable,['-c'," + repr(childcode) + "],os.environ.copy(),30)"
             helper = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+            pid = group = None
             try:
                 deadline = time.monotonic() + 3
                 while not path.exists() and time.monotonic() < deadline: time.sleep(.01)
                 self.assertTrue(path.exists())
-                helper.send_signal(signal.SIGTERM); helper.communicate(timeout=2)
-                pid = int(path.read_text())
-                try: fields = (Path('/proc') / str(pid) / 'stat').read_text().split(') ', 1)[1].split()
-                except FileNotFoundError: fields = ['gone']
-                self.assertIn(fields[0], ('gone', 'Z'))
+                pid = int(path.read_text()); group = os.getpgid(pid)
+                helper.send_signal(signal.SIGTERM); _, errors = helper.communicate(timeout=2)
+                state = process_state(pid)
+                self.assertIn(state, ('gone', 'Z'), f'owned PID={pid} PGID={group}, helper exit={helper.returncode}, state={state}, helper stderr={errors.decode(errors="replace")[-6000:]}')
             finally:
                 if helper.poll() is None:
                     os.killpg(helper.pid, signal.SIGKILL); helper.communicate(timeout=2)
+                if pid is not None:
+                    try:
+                        if os.getpgid(pid) == group:
+                            os.killpg(group, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
 
 
 if __name__ == "__main__": unittest.main()

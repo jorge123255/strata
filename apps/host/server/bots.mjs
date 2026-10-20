@@ -147,7 +147,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
       catch { throw fault(400, 'Choose an existing workspace folder on this computer.'); }
     }
     const avatarConfig = input.avatarConfig ?? old.avatarConfig;
-    if (avatarConfig !== undefined && (!avatarConfig || typeof avatarConfig !== 'object' || Array.isArray(avatarConfig) || Object.keys(avatarConfig).length !== 3 || !['cloud','violet','orange','sky','graphite','slate'].includes(avatarConfig.color) || !['star','round','happy','calm','plus','delight'].includes(avatarConfig.eyes) || !['scalloped','round','small'].includes(avatarConfig.ears))) throw fault(400, 'Choose a valid bot color, eyes and ears.');
+    if (avatarConfig !== undefined && (!avatarConfig || typeof avatarConfig !== 'object' || Array.isArray(avatarConfig) || Object.keys(avatarConfig).some(key => !['kind','color','eyes','ears'].includes(key)) || !['cloud','violet','orange','sky','graphite','slate'].includes(avatarConfig.color) || !['star','round','happy','calm','plus','delight'].includes(avatarConfig.eyes) || !['scalloped','round','small'].includes(avatarConfig.ears) || Object.hasOwn(avatarConfig, 'kind') && !['koala','fox','cat','robot'].includes(avatarConfig.kind))) throw fault(400, 'Choose a valid bot character, color, eyes and ears.');
     const avatar = input.avatar ?? old.avatar ?? '🤖';
     if (!BOT_AVATARS.includes(avatar)) throw fault(400, 'Choose one of the bot avatars.');
     let modelSource, modelDestination, modelLabel;

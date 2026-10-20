@@ -259,7 +259,10 @@ class HelperTests(unittest.IsolatedAsyncioTestCase):
             root = str(Path(root).resolve())
             sdk.__file__ = str(Path(root) / "site-packages/cua/__init__.py")
             child = NS(pid=2000000000, returncode=0, communicate=lambda **kw: (b'{}', b''), poll=lambda: 0)
-            with patch.object(bridge.Path, "is_file", return_value=True), patch.object(bridge.subprocess, "Popen", return_value=child) as spawn:
+            # The fake CLI leader has exited and owns no remaining process
+            # group. Keep Darwin's bounded ps snapshot separate from Popen's
+            # fake CLI; subprocess.run otherwise receives this same stub.
+            with patch.object(bridge.Path, "is_file", return_value=True), patch.object(bridge.subprocess, "Popen", return_value=child) as spawn, patch.object(bridge.subprocess, "run", return_value=NS(returncode=0, stdout="1 Ss\n")):
                 target = instance(sdk, root)
                 target.cleanup_confirmed = False
                 await target.resume_owned()

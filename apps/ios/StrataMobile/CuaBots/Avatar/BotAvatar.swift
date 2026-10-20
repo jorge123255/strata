@@ -116,16 +116,42 @@ public enum EarShape: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// Everything that makes a bot's face its own.
+public enum AvatarKind: String, Codable, CaseIterable, Identifiable, Sendable {
+    case koala, fox, cat, robot
+    public var id: String { rawValue }
+    public var name: String { rawValue.capitalized }
+}
+
+/// Everything that makes a bot's face its own. Koala keeps its original wire shape.
 public struct AvatarConfig: Codable, Hashable, Sendable {
     public var color: BotColor
     public var eyes: EyeStyle
     public var ears: EarShape
+    public var kind: AvatarKind
 
-    public init(color: BotColor = .sky, eyes: EyeStyle = .star, ears: EarShape = .scalloped) {
+    public init(color: BotColor = .sky, eyes: EyeStyle = .star, ears: EarShape = .scalloped, kind: AvatarKind = .koala) {
         self.color = color
         self.eyes = eyes
         self.ears = ears
+        self.kind = kind
+    }
+
+    private enum CodingKeys: String, CodingKey { case color, eyes, ears, kind }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        color = try values.decode(BotColor.self, forKey: .color)
+        eyes = try values.decode(EyeStyle.self, forKey: .eyes)
+        ears = try values.decode(EarShape.self, forKey: .ears)
+        kind = values.contains(.kind) ? try values.decode(AvatarKind.self, forKey: .kind) : .koala
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(color, forKey: .color)
+        try values.encode(eyes, forKey: .eyes)
+        try values.encode(ears, forKey: .ears)
+        if kind != .koala { try values.encode(kind, forKey: .kind) }
     }
 
     public static func `default`(for name: String) -> AvatarConfig {
@@ -186,6 +212,7 @@ public enum BotMood: String, Codable, Sendable, CaseIterable {
 /// The koala head: a flat blob with scalloped ears, the Cua mark's nose and
 /// type-mark eyes. Flat fills only: no outline, gradient or shadow.
 public struct KoalaAvatar: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     public var config: AvatarConfig
     public var mood: BotMood
     public var animated: Bool
@@ -197,7 +224,7 @@ public struct KoalaAvatar: View {
     }
 
     public var body: some View {
-        if animated && mood.isAnimated {
+        if animated && mood.isAnimated && !reduceMotion {
             TimelineView(.periodic(from: .now, by: 0.1)) { context in
                 canvas(t: context.date.timeIntervalSinceReferenceDate)
             }
@@ -211,7 +238,7 @@ public struct KoalaAvatar: View {
             KoalaRenderer.draw(in: &ctx, size: size, config: config, mood: mood, t: t)
         }
         .aspectRatio(1, contentMode: .fit)
-        .accessibilityLabel("\(config.color.name) koala, \(mood.rawValue)")
+        .accessibilityLabel("\(config.color.name) \(config.kind.rawValue), \(mood == .needsApproval ? "needs approval" : mood.rawValue)")
     }
 }
 
@@ -219,6 +246,11 @@ public enum KoalaRenderer {
     static let headPath = SVGPath.parse(KoalaGeometry.head)
     static let earPath = SVGPath.parse(KoalaGeometry.ear)
     static let nosePath = SVGPath.parse(KoalaGeometry.nose)
+    static let characterHeads: [AvatarKind: Path] = [
+        .fox: SVGPath.parse(AvatarCharacterGeometry.foxHead),
+        .cat: SVGPath.parse(AvatarCharacterGeometry.catHead),
+        .robot: SVGPath.parse(AvatarCharacterGeometry.robotHead),
+    ]
 
     /// The head radius that fits the whole koala (ears included) in a square.
     public static func radius(for size: CGSize) -> CGFloat { min(size.width, size.height) / 2.85 }
@@ -230,17 +262,34 @@ public enum KoalaRenderer {
         let unit = CGAffineTransform(translationX: center.x, y: center.y).scaledBy(x: R, y: R)
         let face = GraphicsContext.Shading.color(config.color.face)
 
-        // Ears, behind the head.
-        for side in [-1.0, 1.0] {
-            ctx.fill(ear(config.ears, side: side).applying(unit), with: face)
+        // Ears, behind the head; character coordinates match the embedded SVG.
+        if config.kind == .koala {
+            for side in [-1.0, 1.0] { ctx.fill(ear(config.ears, side: side).applying(unit), with: face) }
+        } else {
+            drawCharacterEars(in: &ctx, unit: unit, config: config)
         }
 
-        let head = headPath.applying(unit)
+        let head = (characterHeads[config.kind] ?? headPath).applying(unit)
         ctx.fill(head, with: face)
 
         var inner = ctx
         inner.clip(to: head)
-        inner.fill(nosePath.applying(unit), with: .color(config.color.nose))
+        inner.stroke(SVGPath.parse(AvatarCharacterGeometry.highlight).applying(unit), with: .color(.white.opacity(0.18)), style: StrokeStyle(lineWidth: 0.1 * R, lineCap: .round))
+        if config.kind == .fox {
+            inner.fill(SVGPath.parse(AvatarCharacterGeometry.foxMask).applying(unit), with: .color(.white.opacity(0.52)))
+        }
+        if config.kind == .cat {
+            inner.stroke(SVGPath.parse(AvatarCharacterGeometry.catWhiskers).applying(unit), with: .color(config.color.nose.opacity(0.65)), style: StrokeStyle(lineWidth: 0.045 * R, lineCap: .round))
+        }
+        switch config.kind {
+        case .koala:
+            inner.fill(nosePath.applying(unit), with: .color(config.color.nose))
+        case .robot:
+            inner.fill(Path(roundedRect: CGRect(x: -0.28, y: 0.34, width: 0.56, height: 0.13), cornerRadius: 0.065).applying(unit), with: .color(config.color.nose))
+        case .fox, .cat:
+            inner.fill(SVGPath.parse(AvatarCharacterGeometry.animalNose).applying(unit), with: .color(config.color.nose))
+            inner.stroke(SVGPath.parse(AvatarCharacterGeometry.animalMouth).applying(unit), with: .color(config.color.nose), style: StrokeStyle(lineWidth: 0.04 * R, lineCap: .round))
+        }
 
         let lag = t - 0.05  // the right eye swaps a beat after the left
         let pair = mood.eyes(style: config.eyes, at: t)
@@ -252,6 +301,23 @@ public enum KoalaRenderer {
                 color: config.color.eye, spin: spin)
         drawEye(right, at: KoalaGeometry.rightEye, in: &inner, unit: unit,
                 color: config.color.eye, spin: spin)
+    }
+
+    static func drawCharacterEars(in ctx: inout GraphicsContext, unit: CGAffineTransform, config: AvatarConfig) {
+        let size = config.ears == .small ? 0.78 : config.ears == .round ? 0.92 : 1.0
+        for side in [-1.0, 1.0] {
+            let mirror = CGAffineTransform(scaleX: side, y: 1).concatenating(unit)
+            if config.kind == .robot {
+                ctx.fill(Path(roundedRect: CGRect(x: 0.96, y: -0.29, width: 0.23, height: 0.46 * size), cornerRadius: 0.1).applying(mirror), with: .color(config.color.face))
+                ctx.stroke(SVGPath.parse(AvatarCharacterGeometry.robotAntenna).applying(mirror), with: .color(config.color.nose), style: StrokeStyle(lineWidth: 0.09 * abs(unit.a)))
+                ctx.fill(Path(ellipseIn: CGRect(x: 0.425, y: -1.235, width: 0.21, height: 0.21)).applying(mirror), with: .color(config.color.face))
+            } else {
+                let placement = CGAffineTransform(translationX: 0.67, y: -0.58).scaledBy(x: size, y: size).concatenating(mirror)
+                let shape = config.ears == .round ? AvatarCharacterGeometry.roundEar : AvatarCharacterGeometry.pointedEar
+                ctx.fill(SVGPath.parse(shape).applying(placement), with: .color(config.color.face))
+                ctx.fill(SVGPath.parse(AvatarCharacterGeometry.innerEar).applying(placement), with: .color(config.color.nose.opacity(0.4)))
+            }
+        }
     }
 
     static func ear(_ shape: EarShape, side: Double) -> Path {

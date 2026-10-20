@@ -58,7 +58,7 @@ export function BotsWorkView({ tab, bots, sessions, work, onOpenChat, onRoutine,
     if (mounted.current && revision === navigationRevision.current && hash === window.location.hash) onOpenChat(bot, result.conversation);
   }
   return <section className="cua-work" aria-label={tab === 'scheduled' ? 'Scheduled bot work' : tab === 'approvals' ? 'Bot approvals' : 'Bot outputs'}>
-    <header className="cua-content-head"><div><h2>{tab === 'scheduled' ? 'Scheduled' : tab === 'approvals' ? 'Approvals' : 'Outputs'}</h2><p>{tab === 'scheduled' ? 'Routines your bots run while Strata is open.' : tab === 'approvals' ? 'The decisions your bots are waiting for.' : 'Finished files, saved in each bot’s private Volume.'}</p></div>{tab === 'scheduled' ? <Btn icon="plus" disabled={!bots.length} onClick={() => onRoutine()}>New routine</Btn> : null}</header>
+    <header className="cua-content-head"><div><h2 className="cua-visually-hidden">{tab === 'scheduled' ? 'Scheduled' : tab === 'approvals' ? 'Approvals' : 'Outputs'}</h2><p>{tab === 'scheduled' ? 'Routines your bots run while Strata is open.' : tab === 'approvals' ? 'The decisions your bots are waiting for.' : 'Finished files, saved in each bot’s private Volume.'}</p></div>{tab === 'scheduled' ? <Btn icon="plus" disabled={!bots.length} onClick={() => onRoutine()}>New routine</Btn> : null}</header>
     {error ? <ErrorNotice message={error} action="Dismiss" onRetry={() => setError('')}/> : null}
     {tab === 'approvals' ? approvals.length ? <div className="cua-work-list">{approvals.map(({ chat, row, tool }) => {
       const bot = bots.find(item => item.id === chat.preferences?.botId)!;

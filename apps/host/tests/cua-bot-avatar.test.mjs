@@ -15,7 +15,7 @@ const component = new URL('../src/components/CuaBotAvatar.tsx', import.meta.url)
 const source = await readFile(component, 'utf8')
 const { code } = await transform(source.replace(/^import '\.\/CuaBotAvatar.css'\n/m, ''), { loader: 'tsx', format: 'esm', jsx: 'automatic' })
 const resolved = code.replace(/from "(react(?:\/jsx-runtime)?)"/g, (_, name) => `from ${JSON.stringify(pathToFileURL(require.resolve(name)).href)}`)
-const { CuaBotAvatar, CuaBotAvatarPicker, CUA_BOT_COLORS, CUA_BOT_EYES, CUA_BOT_EARS, defaultCuaBotAvatar, normalizeCuaBotAvatarConfig } = await import(`data:text/javascript;base64,${Buffer.from(resolved).toString('base64')}`)
+const { CuaBotAvatar, CuaBotAvatarPicker, CUA_BOT_COLORS, CUA_BOT_EYES, CUA_BOT_EARS, CUA_BOT_KINDS, defaultCuaBotAvatar, normalizeCuaBotAvatarConfig } = await import(`data:text/javascript;base64,${Buffer.from(resolved).toString('base64')}`)
 const svg = (config, rest = {}) => renderToStaticMarkup(createElement(CuaBotAvatar, { config, animated: false, ...rest }))
 
 test('React uses every exact original Swift head, ear and nose path with native radius and clipping', async () => {
@@ -94,14 +94,40 @@ test('picker changes one field only, remains controlled, and exposes labeled pre
     walk(node.props?.children)
   }
   walk(tree)
-  assert.equal(buttons.length, 15)
-  assert.equal(buttons.filter(button => button.props['aria-pressed']).length, 3)
+  assert.equal(buttons.length, 19)
+  assert.equal(buttons.filter(button => button.props['aria-pressed']).length, 4)
   for (const button of buttons) { assert.equal(button.props.type, 'button'); assert.ok(button.props['aria-label']) }
   buttons.find(button => button.props['aria-label'] === 'Orange').props.onClick()
   buttons.find(button => button.props['aria-label'] === 'Happy').props.onClick()
   buttons.find(button => button.props['aria-label'] === 'Small').props.onClick()
   assert.deepEqual(changes, [{ ...value, color: 'orange' }, { ...value, eyes: 'happy' }, { ...value, ears: 'small' }])
   assert.deepEqual(value, before)
+})
+
+test('four character families render distinct faces and preserve legacy koala configuration', () => {
+  const outputs = new Set()
+  for (const kind of CUA_BOT_KINDS) for (const color of CUA_BOT_COLORS) for (const eyes of CUA_BOT_EYES) for (const ears of CUA_BOT_EARS) {
+    const output = svg({ kind, color, eyes, ears }).replace(/cua-koala-[a-zA-Z0-9_-]+/g, 'clip')
+    assert.match(output, new RegExp(`data-character="${kind}"`))
+    assert.doesNotMatch(output, /NaN|undefined|Infinity/)
+    outputs.add(output)
+  }
+  assert.equal(outputs.size, 432)
+  const legacy = { color: 'sky', eyes: 'calm', ears: 'round' }
+  assert.deepEqual(normalizeCuaBotAvatarConfig(legacy), legacy)
+  assert.deepEqual(normalizeCuaBotAvatarConfig({ ...legacy, kind: 'koala' }), legacy)
+  assert.deepEqual(normalizeCuaBotAvatarConfig({ ...legacy, kind: 'fox' }), { ...legacy, kind: 'fox' })
+  const changes = []
+  const tree = CuaBotAvatarPicker({ value: { ...legacy, kind: 'robot' }, onChange: config => changes.push(config) })
+  function find(node, label) {
+    if (!node || typeof node !== 'object') return
+    if (Array.isArray(node)) return node.map(item => find(item, label)).find(Boolean)
+    if (node.type === 'button' && node.props['aria-label'] === label) return node
+    return find(node.props?.children, label)
+  }
+  find(tree, 'Fox').props.onClick()
+  find(tree, 'Koala').props.onClick()
+  assert.deepEqual(changes, [{ ...legacy, kind: 'fox' }, legacy])
 })
 
 test('shipped public assets retain the full original license and pinned source attribution', async () => {

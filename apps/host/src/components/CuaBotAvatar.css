@@ -15,7 +15,7 @@
 .cua-avatar-color > span { width: 26px; height: 26px; border: 1px solid color-mix(in srgb, currentColor 12%, transparent); border-radius: 50%; box-sizing: border-box; }
 .cua-bot-avatar-picker .cua-avatar-color[aria-pressed="true"] { border-color: var(--st-accent, #61bcff); }
 .cua-avatar-eyes { display: grid; grid-template-columns: repeat(6, 58px); gap: 8px; }
-.cua-avatar-ears { display: flex; flex-wrap: wrap; gap: 8px; }
+.cua-avatar-ears, .cua-avatar-characters { display: flex; flex-wrap: wrap; gap: 8px; }
 .cua-bot-avatar-picker .cua-avatar-option {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 4px; width: 58px; height: 66px; min-height: 0; margin: 0; padding: 0;

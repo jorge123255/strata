@@ -16,3 +16,7 @@ shapes (108 configurations), normalized drawing coordinates, clipped nose,
 glyph strokes, right-eye delay and mood expression timing. It uses SVG instead
 of SwiftUI Canvas. It respects reduced motion. The picker is controlled by its
 parent and does not perform requests or write configuration itself.
+
+Strata adds a subtle highlight to the retained koala and original fox, cat and
+robot vector characters using the same palette, eye grid and expressions. The
+optional `kind` field defaults to koala; legacy three-field faces stay unchanged.

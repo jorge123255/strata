@@ -43,6 +43,22 @@ test('catalog projects no API secrets and stores private configuration atomicall
   assert.equal((await bots.list()).bots[0].providerSettings.apiKeySet, false);
 });
 
+test('avatar families round-trip, reject unknown fields and freeze existing conversation faces', t => {
+  const { bots, chats, create } = fixture(t);
+  const face = { color: 'sky', eyes: 'star', ears: 'round' };
+  const bot = create({ avatarConfig: face });
+  const chat = bots.createConversation(bot.id).conversation;
+  for (const kind of ['koala', 'fox', 'cat', 'robot']) {
+    assert.deepEqual(bots.update(bot.id, { avatarConfig: { ...face, kind } }).bot.avatarConfig, { ...face, kind });
+  }
+  assert.deepEqual(chats.detail(chat.id).conversation.preferences.botAvatarConfig, face);
+  const next = bots.createConversation(bot.id).conversation;
+  assert.deepEqual(next.preferences.botAvatarConfig, { ...face, kind: 'robot' });
+  for (const invalid of [{ ...face, kind: null }, { ...face, kind: 'external' }, { ...face, image: 'https://external' }, { color: 'sky', eyes: 'star' }]) {
+    assert.throws(() => bots.update(bot.id, { avatarConfig: invalid }), error => error.status === 400);
+  }
+});
+
 test('Mac and phone continue exact conversation and retain Thinking after restart', async t => {
   const { bots, chats, create, directory } = fixture(t);
   const bot = create(); const { conversation } = bots.createConversation(bot.id);

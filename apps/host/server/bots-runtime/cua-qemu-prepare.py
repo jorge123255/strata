@@ -46,6 +46,30 @@ KEYRING = Path("/usr/share/keyrings/ubuntu-archive-keyring.gpg")
 ACTIVE = set()
 
 
+def darwin_group_active(group):
+    # Darwin can return EPERM for killpg(..., 0) while a terminated member
+    # becomes a zombie. Inspect only group IDs and state, never command lines
+    # or environments. An unreadable/invalid snapshot is not cleanup proof.
+    try:
+        result = subprocess.run(["/bin/ps", "-axo", "pgid=,stat="], env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"}, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=1)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError("Private CUA cleanup could not inspect owned process-group state.") from error
+    if result.returncode != 0 or not result.stdout.strip() or len(result.stdout) > 2 * 1024 * 1024:
+        raise RuntimeError("Private CUA cleanup could not inspect owned process-group state.")
+    active = False
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        fields = line.split()
+        # ps can transiently report '?' while a process changes state. It
+        # remains potentially live; only an explicit zombie state is excluded.
+        if len(fields) != 2 or not fields[0].isdigit() or not re.fullmatch(r"[A-Za-z?][A-Za-z0-9?+<>-]*", fields[1]):
+            raise RuntimeError("Private CUA cleanup received invalid process-group state.")
+        if int(fields[0]) == group and not fields[1].startswith("Z"):
+            active = True
+    return active
+
+
 def group_active(child):
     child.poll()  # Reap our own leader before checking its remaining group.
     if sys.platform.startswith("linux"):
@@ -59,6 +83,8 @@ def group_active(child):
             except (FileNotFoundError, ProcessLookupError, PermissionError):
                 pass
         return False
+    if sys.platform == "darwin":
+        return darwin_group_active(child.pid)
     try:
         os.killpg(child.pid, 0)
         return True
@@ -74,6 +100,9 @@ def stop_group(child):
         os.killpg(child.pid, signal.SIGTERM)
     except ProcessLookupError:
         pass
+    except PermissionError:
+        if sys.platform != "darwin" or group_active(child):
+            raise RuntimeError("Private CUA cleanup could not signal the owned process group.")
     began = time.monotonic()
     killed = False
     while group_active(child):
@@ -82,6 +111,9 @@ def stop_group(child):
                 os.killpg(child.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+            except PermissionError:
+                if sys.platform != "darwin" or group_active(child):
+                    raise RuntimeError("Private CUA cleanup could not signal the owned process group.")
             killed = True
         if time.monotonic() - began >= .7:
             raise RuntimeError("Private QEMU preparation could not confirm subprocess cleanup.")

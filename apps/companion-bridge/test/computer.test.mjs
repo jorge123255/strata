@@ -112,15 +112,19 @@ test('unpair and bridge disable release owned leases; failures never expose raw 
   assert.equal(result.status, 501); assert.ok(!result.text.includes('PRIVATE-SDK-ERROR'));
 });
 
-test('avatar customization accepts only the actual sample enum schema and keeps existing chat faces frozen', async t => {
+test('avatar customization accepts legacy and character enum schemas while restricting appearance-only writes', async t => {
   const { bridge, token, calls } = await fixture(t, () => ({ saved: true }));
   const avatarConfig = { color: 'violet', eyes: 'happy', ears: 'small' };
   assert.equal((await request(bridge, '/v1/bots/bot_fixture/avatar', { token, method: 'POST', body: { avatarConfig } })).status, 200);
   assert.deepEqual(calls[0], { path: '/api/bots/bot_fixture', method: 'PATCH', body: { avatarConfig } });
-  for (const body of [{ avatarConfig: { ...avatarConfig, color: 'https://external' } }, { avatarConfig: { ...avatarConfig, credentials: 'secret' } }, { avatarConfig, providerSettings: {} }]) {
+  for (const kind of ['koala', 'fox', 'cat', 'robot']) {
+    assert.equal((await request(bridge, '/v1/bots/bot_fixture/avatar', { token, method: 'POST', body: { avatarConfig: { ...avatarConfig, kind } } })).status, 200);
+    assert.deepEqual(calls.at(-1).body.avatarConfig, { ...avatarConfig, kind });
+  }
+  for (const body of [{ avatarConfig: { ...avatarConfig, color: 'https://external' } }, { avatarConfig: { ...avatarConfig, credentials: 'secret' } }, { avatarConfig: { ...avatarConfig, kind: 'external' } }, { avatarConfig: { ...avatarConfig, kind: null } }, { avatarConfig, providerSettings: {} }]) {
     assert.equal((await request(bridge, '/v1/bots/bot_fixture/avatar', { token, method: 'POST', body })).status, 400);
   }
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 5);
   const hostCalls = [];
   const host = new HostClient({ upstream: 'http://127.0.0.1:47831', fetcher: async (url, options) => { hostCalls.push({ url, ...options }); return new Response('{}'); } });
   await host.request('/api/bots/bot_fixture', { method: 'PATCH', body: { avatarConfig } });

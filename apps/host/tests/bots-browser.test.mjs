@@ -30,7 +30,7 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
   const computers = [{ id: 'local', kind: 'local', name: 'This Mac', available: true, detail: 'Local execution computer.' }, { id: 'ssh_garage', kind: 'ssh', name: 'Garage server', available: true, detail: 'Saved SSH computer.', execution: { kind: 'ssh', host: 'garage', user: 'operator', port: 2222 } }];
   const models = [{ id: 'bm_maya', connectionId: 'maya', connectionName: 'My Maya', model: 'Maya-S24', name: 'Maya-S24', available: true }, { id: 'bm_strata', connectionId: 'strata', connectionName: 'Remote Strata', model: 'coder', name: 'Coder', available: true }, { id: 'bm_unsupported', connectionId: 'unsupported', connectionName: 'Unsupported protocol', model: 'other', name: 'Other', available: false }];
   const conversations = [{ id: 'existing-chat', title: 'Existing work', updatedAt: at, createdAt: at, workspace: '/workspace', preferences: { botId: 'existing', botName: 'Project partner', botComputerMode: 'cua', botComputer: 'Frozen SSH computer', botModel: 'Frozen model', mode: 'manual' }, messages: [], active: false }];
-  let failWork = false, blockWork = false;
+  let failWork = false, blockWork = false, allowCreatedConversation = false;
   const workWaiters = [];
   const work = { memory: 'Remember these fixture notes.', rules: [{ id: 'rule-existing', action: 'Ask before sending messages', behavior: 'ask' }], routines: [], outputs: [{ path: 'outputs/report.md', name: 'report.md', size: 22, modified: at }], files: [] };
   const calls = [], errors = [], blocked = [], unexpected = [];
@@ -52,14 +52,20 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
       if (req.method === 'PATCH') { if (body.memory !== undefined) work.memory = body.memory; if (body.rules !== undefined) work.rules = body.rules; return respond(res, work); }
     }
     if (/^\/api\/bots\/(existing|created)\/work\/file$/.test(path)) return respond(res, { text: 'Fixture report content.' });
-    if (path === '/api/bots/existing/computer' && req.method === 'GET') return respond(res, { available: false, running: false, detail: 'Prepared. Start the isolated computer explicitly.' });
+    if (path === '/api/bots/existing/computer' && req.method === 'GET') return respond(res, { available: true, running: false, detail: 'Prepared. Start the isolated computer explicitly.' });
+    if (path === '/api/bots/created/computer' && req.method === 'GET') return respond(res, { available: true, running: false, detail: 'The private CUA runtime is ready. The desktop is stopped.' });
     if (path === '/api/bots/computers/prepare-cua') return respond(res, { available: true, prepared: true, detail: 'The private CUA runtime is ready.' });
     if (path === '/api/bots' && req.method === 'GET') return respond(res, { bots: profiles, providers, computers, models });
     if (path === '/api/bots' && req.method === 'POST') { const bot = { ...body, id: 'created', createdAt: at, updatedAt: at, available: false }; profiles = [bot, ...profiles]; return respond(res, { bot }); }
     if (path === '/api/bots/created' && req.method === 'PATCH') { const bot = { ...profiles.find(profile => profile.id === 'created'), ...body }; profiles = profiles.map(profile => profile.id === 'created' ? bot : profile); return respond(res, { bot }); }
     if (path === '/api/bots/computers/check') return respond(res, { available: false, detail: 'The SSH computer needs the private bot helper.' });
     if (path === '/api/bots/computers/prepare') return respond(res, { available: true, prepared: true, detail: 'The private bot helper is ready on this SSH computer.' });
-    if (path === '/api/bots/created/conversations') return respond(res, { error: 'The remote computer is offline. No conversation was opened.' }, 409);
+    if (path === '/api/bots/created/conversations') {
+      if (!allowCreatedConversation) return respond(res, { error: 'The remote computer is offline. No conversation was opened.' }, 409);
+      const profile = profiles.find(item => item.id === 'created'), model = models.find(item => item.id === body.modelId);
+      const conversation = { id: 'fox-shared-chat', title: 'Fox shared work', createdAt: at, updatedAt: at, workspace: body.workspace, preferences: { botId: 'created', botName: profile.name, botComputerMode: 'cua', botComputer: 'Garage server', botModel: model ? model.connectionName + ' · ' + model.name : 'Profile model', botAvatarConfig: structuredClone(profile.avatarConfig) }, messages: [], active: false };
+      conversations.unshift(conversation); return respond(res, { conversation });
+    }
     if (path === '/api/bots/existing/conversations') { const conversation = { id: 'new-shared-chat', title: 'New shared work', createdAt: at, updatedAt: at, workspace: body.workspace, preferences: { botId: 'existing', botName: 'Project partner', botComputerMode: 'host', botComputer: 'This Mac', botModel: 'codex · Provider default' }, messages: [], active: false }; conversations.unshift(conversation); return respond(res, { conversation }); }
     unexpected.push(req.method + ' ' + path);
     return respond(res, { error: 'Unexpected fixture request' }, 404);
@@ -77,6 +83,9 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
   assert.equal(calls.filter(call => call.method !== 'GET').length, 0, 'Opening the embedded section performs no mutation.');
   assert.equal(calls.some(call => call.path.includes('/desktop')), false, 'The section never launches a separate app.');
   await page.getByRole('complementary', { name: 'Project partner profile' }).getByText('Frozen SSH computer', { exact: true }).waitFor();
+  await page.getByRole('complementary', { name: 'Project partner profile' }).getByText('Computer stopped', { exact: true }).waitFor();
+  assert.equal(await page.locator('.cua-bots-sidebar footer').count(), 0, 'Bots uses Strata’s existing branding and status chrome.');
+  await screenshot('embedded-bots-overview');
   // Current profile is host mode, but this selected chat owns a frozen CUA computer.
   await page.getByRole('button', { name: 'Open shared computer', exact: true }).click();
   const computer = page.getByRole('complementary', { name: 'Bot computer', exact: true });
@@ -115,10 +124,12 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
   await page.getByRole('textbox', { name: 'Bot name', exact: true }).fill('Remote developer');
   await page.getByRole('button', { name: 'Continue', exact: true }).click();
   await page.getByRole('heading', { name: 'Make Remote developer yours', exact: true }).waitFor();
+  for (const name of ['Koala', 'Fox', 'Cat', 'Robot']) await page.getByRole('button', { name, exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Fox', exact: true }).click();
   await page.getByRole('button', { name: 'Orange', exact: true }).click();
   await page.getByRole('button', { name: 'Plus', exact: true }).click();
   await page.getByRole('button', { name: 'Small', exact: true }).click();
-  await screenshot('embedded-bot-koala-picker');
+  await screenshot('embedded-bot-character-picker');
   await page.getByRole('button', { name: 'Continue', exact: true }).click();
   await page.getByRole('combobox', { name: 'Bot provider', exact: true }).click();
   for (const provider of providers) await page.getByRole('option', { name: provider.name, exact: true }).waitFor();
@@ -143,11 +154,12 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
   await screenshot('embedded-bot-configuration');
   await page.getByRole('button', { name: 'Create Remote developer', exact: true }).click();
   await page.waitForURL('**/#/bots/created');
+  await page.getByRole('complementary', { name: 'Remote developer profile' }).getByText('Setup needed', { exact: true }).waitFor();
   const created = calls.find(call => call.path === '/api/bots' && call.method === 'POST');
   assert.deepEqual(created.body.execution, { kind: 'ssh', host: 'my-server', user: 'another-user', port: 2222 });
   assert.equal(created.body.provider, 'grok'); assert.equal(created.body.capabilities, 'both'); assert.equal(created.body.policy, 'manual');
   assert.equal(created.body.computerMode, 'cua'); assert.equal(created.body.workspace, '/workspace');
-  assert.deepEqual(created.body.avatarConfig, { color: 'orange', eyes: 'plus', ears: 'small' });
+  assert.deepEqual(created.body.avatarConfig, { color: 'orange', eyes: 'plus', ears: 'small', kind: 'fox' });
   assert.equal(calls.some(call => call.path.endsWith('/conversations') && call.method === 'POST'), false, 'Saving a profile starts no conversation.');
   const profile = page.getByRole('complementary', { name: 'Remote developer profile' });
   await profile.getByRole('button', { name: 'Bot settings', exact: true }).click();
@@ -175,7 +187,13 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
   await chooser.getByText('The remote computer is offline. No conversation was opened.', { exact: true }).waitFor();
   assert.deepEqual(calls.find(call => call.path === '/api/bots/created/conversations').body, { computerId: 'ssh_garage', workspace: '/workspace', modelId: 'bm_strata' });
   assert.equal(await page.evaluate(() => window.botFixtureCalls.some(call => call[0] === 'adopt' && call[1].preferences?.botId === 'created')), false);
-  await chooser.getByRole('button', { name: 'Cancel', exact: true }).click();
+  allowCreatedConversation = true;
+  await chooser.getByRole('button', { name: 'Create conversation', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('[data-testid="shared-chat"]')?.dataset.session === 'fox-shared-chat');
+  const frozenFox = await page.evaluate(() => window.botFixtureCalls.filter(call => call[0] === 'adopt' && call[1].id === 'fox-shared-chat').at(-1)[1].preferences.botAvatarConfig);
+  assert.deepEqual(frozenFox, created.body.avatarConfig, 'A new shared chat retains the selected character configuration.');
+  await page.getByRole('complementary', { name: 'Remote developer profile' }).locator('svg[data-character="fox"]').waitFor();
+  await screenshot('embedded-bot-fox-profile');
   await page.getByRole('button', { name: 'Outputs', exact: true }).click();
   await page.getByRole('button', { name: /report.md Project partner/ }).click();
   const output = page.getByRole('dialog', { name: 'report.md', exact: true });

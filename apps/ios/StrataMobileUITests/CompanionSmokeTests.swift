@@ -383,6 +383,22 @@ final class CompanionSmokeTests: XCTestCase {
         XCTAssertTrue(bot.waitForExistence(timeout: 10)); bot.tap()
         let customize = app.buttons["customizeBotAvatarButton"]
         XCTAssertTrue(customize.waitForExistence(timeout: 5)); customize.tap()
+        app.buttons["Robot"].tap()
+        XCTAssertTrue(app.buttons["Robot"].isSelected)
+        attachScreenshot("Bots — robot character with shared palette and expressions")
+        app.buttons["Cat"].tap()
+        XCTAssertTrue(app.buttons["Cat"].isSelected)
+        app.buttons["Fox"].tap(); app.buttons["Orange"].tap(); app.buttons["avatar-eyes-round"].tap(); app.buttons["Small"].tap()
+        XCTAssertTrue(app.buttons["Fox"].isSelected)
+        attachScreenshot("Bots — fox character and native customization")
+        app.buttons["saveBotAvatarButton"].tap()
+        let firstSave = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.buttons["saveBotAvatarButton"])
+        XCTAssertEqual(XCTWaiter.wait(for: [firstSave], timeout: 10), .completed)
+        let foxState = try await fixtureControl(controlURL, action: "state")
+        XCTAssertEqual(foxState["botFace"] as? [String: String], ["kind": "fox", "color": "orange", "eyes": "round", "ears": "small"])
+        XCTAssertTrue(customize.waitForExistence(timeout: 5)); customize.tap()
+        XCTAssertTrue(app.buttons["Fox"].isSelected)
+        app.buttons["Koala"].tap()
         app.buttons["Violet"].tap(); app.buttons["Happy"].tap(); app.buttons["Small"].tap()
         attachScreenshot("Bots — actual sample koala color eyes and ears picker")
         app.buttons["saveBotAvatarButton"].tap()
@@ -700,5 +716,95 @@ final class CompanionSmokeTests: XCTestCase {
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
+    }
+}
+
+/// Explicit opt-in acceptance for an already paired device. This class never
+/// opens pairing, forgets a Mac, creates a conversation or submits a prompt.
+final class ExistingPairingComputerAcceptanceTests: XCTestCase {
+    private var app: XCUIApplication!
+    private var botID = ""
+
+    override func setUpWithError() throws {
+        guard ProcessInfo.processInfo.environment["STRATA_EXISTING_PAIRING_COMPUTER_TEST"] == "1",
+              let selected = ProcessInfo.processInfo.environment["STRATA_EXISTING_PAIRING_BOT_ID"],
+              selected.range(of: "^[A-Za-z0-9_-]{1,128}$", options: .regularExpression) != nil else {
+            throw XCTSkip("Explicit existing-pairing computer acceptance is disabled.")
+        }
+        continueAfterFailure = false
+        botID = selected
+        app = XCUIApplication()
+        app.launch()
+    }
+
+    @MainActor
+    func testExistingPairingCanControlPreparedTestGuestAndRelease() throws {
+        let botsTab = app.tabBars.buttons["Bots"]
+        XCTAssertTrue(botsTab.waitForExistence(timeout: 15)); botsTab.tap()
+        let bot = app.buttons["bot-\(botID)"]
+        XCTAssertTrue(bot.waitForExistence(timeout: 15), "The prepared TEST bot must be visible through the existing Mac pairing.")
+        reveal(bot); bot.tap()
+        let view = app.buttons["botComputerViewButton"]
+        XCTAssertTrue(view.waitForExistence(timeout: 10)); reveal(view); view.tap()
+        let takeover = app.buttons["takeOverComputerButton"]
+        XCTAssertTrue(takeover.waitForExistence(timeout: 20), "The TEST guest must already be running; this acceptance never starts it.")
+        screenshot("iPhone — existing pairing views the real TEST computer")
+        reveal(takeover); takeover.tap()
+        let confirm = app.buttons["Stop bots and take over"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5)); confirm.tap()
+        let release = app.buttons["releaseComputerControlButton"]
+        XCTAssertTrue(release.waitForExistence(timeout: 15))
+        defer {
+            if release.exists { reveal(release); if release.isHittable { release.tap() } }
+        }
+        let canvas = app.descendants(matching: .any).matching(identifier: "botComputerCanvas").firstMatch
+        reveal(canvas)
+        // The runtime acceptance fixture is a real 1280×800 guest HTML page.
+        // Its harmless input spans x64…1216, y336…426; account for letterboxing.
+        let frame = canvas.frame, scale = min(frame.width / 1280, frame.height / 800)
+        let dx = (frame.width - 1280 * scale) / 2 + 300 * scale
+        let dy = (frame.height - 800 * scale) / 2 + 380 * scale
+        canvas.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: dx, dy: dy)).tap()
+        let field = app.descendants(matching: .any).matching(identifier: "computerTypeField").firstMatch
+        reveal(field); field.tap(); field.typeText("IPHONE-CUA-READY-20261020")
+        let type = app.buttons["computerTypeButton"]
+        XCTAssertTrue(type.isEnabled); type.tap()
+        let sent = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let value = field.value as? String ?? ""
+            return value.isEmpty || value == "Text for the computer"
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [sent], timeout: 15), .completed)
+        let enter = app.buttons["computerKey-Enter"]
+        reveal(enter)
+        let keyReady = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: enter)
+        XCTAssertEqual(XCTWaiter.wait(for: [keyReady], timeout: 10), .completed); enter.tap()
+        // A response acknowledgement alone is not input proof. The parent
+        // acceptance also requires guest screenshot/readback of this marker.
+        let refresh = app.buttons["Refresh computer view"]
+        reveal(refresh)
+        let refreshed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: refresh)
+        XCTAssertEqual(XCTWaiter.wait(for: [refreshed], timeout: 10), .completed); refresh.tap()
+        reveal(canvas); screenshot("iPhone — real TEST guest after explicit click type and key")
+        reveal(release); release.tap()
+        XCTAssertTrue(takeover.waitForExistence(timeout: 15))
+        XCTAssertFalse(release.exists)
+        screenshot("iPhone — real TEST computer control released")
+    }
+
+    private func reveal(_ element: XCUIElement) {
+        for _ in 0..<7 {
+            if element.isHittable { return }
+            if app.scrollViews.firstMatch.exists { app.scrollViews.firstMatch.swipeUp() }
+            else if app.collectionViews.firstMatch.exists { app.collectionViews.firstMatch.swipeUp() }
+            else { app.swipeUp() }
+        }
+        if !element.isHittable, app.scrollViews.firstMatch.exists {
+            for _ in 0..<7 { if element.isHittable { return }; app.scrollViews.firstMatch.swipeDown() }
+        }
+        XCTAssertTrue(element.isHittable, "The existing-pairing test control must be reachable.")
+    }
+
+    private func screenshot(_ name: String) {
+        let image = XCTAttachment(screenshot: app.screenshot()); image.name = name; image.lifetime = .keepAlways; add(image)
     }
 }

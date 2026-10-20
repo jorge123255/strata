@@ -1,5 +1,6 @@
 import XCTest
 import Combine
+import SwiftUI
 @testable import StrataMobile
 
 @MainActor
@@ -1032,5 +1033,96 @@ final class BotComputerTests: XCTestCase {
         XCTAssertEqual(conversation.computerMode, "cua")
         XCTAssertThrowsError(try CompanionClient.computerPath(botId: "../private"))
         XCTAssertThrowsError(try CompanionClient.computerPath(botId: "bot_fixture", action: "prepare"))
+    }
+
+    func testNewAvatarCharacterSaveRetainsNarrowAPIAndFrozenHistory() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { request in
+            if request.url!.path == "/v1/bots" { return ["bots": [["id": "bot_fixture", "name": "Fixture", "provider": "codex", "model": "", "capabilities": "both", "policy": "manual", "execution": ["kind": "local"]]], "providers": [], "computers": []] }
+            if request.url!.path == "/v1/bots/bot_fixture/avatar" { return ["saved": true] }
+            return nil
+        }
+        let store = fixture.makeStore(), connection = store.connection
+        await store.refreshBots()
+        let saved = await store.saveBotAvatar(botId: "bot_fixture", avatar: AvatarConfig(color: .orange, eyes: .delight, ears: .round, kind: .fox))
+        XCTAssertTrue(saved)
+        let change = try XCTUnwrap(fixture.requests.first { $0.path.hasSuffix("/avatar") })
+        XCTAssertEqual(Set(change.jsonBody?.keys.map { $0 } ?? []), Set(["avatarConfig"]))
+        XCTAssertEqual(change.jsonBody?["avatarConfig"] as? [String: String], ["kind": "fox", "color": "orange", "eyes": "delight", "ears": "round"])
+        XCTAssertEqual(store.connection, connection)
+        XCTAssertNil(store.currentConversation)
+        XCTAssertFalse(fixture.requests.contains { $0.path.contains("serving") || $0.path.contains("/messages") || $0.path.contains("/computer") })
+    }
+}
+
+@MainActor
+final class AvatarSchemaTests: XCTestCase {
+    func testLegacyAndExplicitKoalaEncodeExactlyThreeFields() throws {
+        let legacy: [String: String] = ["color": "violet", "eyes": "happy", "ears": "small"]
+        for json in [legacy, legacy.merging(["kind": "koala"], uniquingKeysWith: { _, value in value })] {
+            let face = try JSONDecoder().decode(AvatarConfig.self, from: JSONSerialization.data(withJSONObject: json))
+            XCTAssertEqual(face.kind, .koala)
+            let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(face)) as? [String: String]
+            XCTAssertEqual(encoded, legacy)
+        }
+    }
+
+    func testUnknownNullAndWrongTypeCharacterCannotSilentlyChangeIdentity() throws {
+        let invalidKinds: [Any] = ["unrecognized", NSNull(), 3, ["fox"]]
+        for kind in invalidKinds {
+            let json: [String: Any] = ["kind": kind, "color": "sky", "eyes": "star", "ears": "scalloped"]
+            XCTAssertThrowsError(try JSONDecoder().decode(AvatarConfig.self, from: JSONSerialization.data(withJSONObject: json)))
+        }
+    }
+
+    func testAll432CharacterConfigurationsRoundTripWithoutLegacyWireChanges() throws {
+        var faces = Set<AvatarConfig>()
+        for kind in AvatarKind.allCases { for color in BotColor.allCases { for eyes in EyeStyle.allCases { for ears in EarShape.allCases {
+            let face = AvatarConfig(color: color, eyes: eyes, ears: ears, kind: kind)
+            let encoded = try JSONEncoder().encode(face)
+            let fields = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: String])
+            XCTAssertEqual(Set(fields.keys), Set(kind == .koala ? ["color", "eyes", "ears"] : ["kind", "color", "eyes", "ears"]))
+            XCTAssertEqual(try JSONDecoder().decode(AvatarConfig.self, from: encoded), face)
+            faces.insert(face)
+        }}}}
+        XCTAssertEqual(faces.count, 432)
+    }
+
+    func testFamilySelectionPreservesPaletteEyesAndEars() throws {
+        var face = AvatarConfig(color: .graphite, eyes: .delight, ears: .small)
+        for kind in AvatarKind.allCases {
+            face.kind = kind
+            XCTAssertEqual(face.color, .graphite); XCTAssertEqual(face.eyes, .delight); XCTAssertEqual(face.ears, .small)
+            XCTAssertEqual(face.kind, kind)
+        }
+        face.kind = .koala
+        let fields = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(face)) as? [String: String])
+        XCTAssertNil(fields["kind"])
+    }
+
+    func testQuadraticPathsRenderTheirActualCurveAndCharacterHeadsStayInCanvas() {
+        let curve = SVGPath.parse("M0 0Q1 2 2 0").cgPath.boundingBoxOfPath
+        XCTAssertEqual(curve.width, 2, accuracy: 0.0001)
+        XCTAssertEqual(curve.height, 1, accuracy: 0.0001)
+        for kind in [AvatarKind.fox, .cat, .robot] {
+            let bounds = KoalaRenderer.characterHeads[kind]!.cgPath.boundingBoxOfPath
+            XCTAssertGreaterThan(bounds.width, 1.5); XCTAssertGreaterThan(bounds.height, 1.5)
+            XCTAssertTrue(bounds.minX.isFinite && bounds.maxY.isFinite)
+            XCTAssertGreaterThanOrEqual(bounds.minX, -1.425); XCTAssertLessThanOrEqual(bounds.maxX, 1.425)
+            XCTAssertGreaterThanOrEqual(bounds.minY, -1.485); XCTAssertLessThanOrEqual(bounds.maxY, 1.365)
+        }
+    }
+
+    func testEachFamilyRendersDistinctImageWithSharedPaletteAndExpression() throws {
+        var images = Set<Data>()
+        for kind in AvatarKind.allCases {
+            let view = KoalaAvatar(AvatarConfig(color: .violet, eyes: .happy, ears: .small, kind: kind), animated: false).frame(width: 96, height: 96)
+            let renderer = ImageRenderer(content: view)
+            renderer.scale = 1
+            let image = try XCTUnwrap(renderer.uiImage)
+            XCTAssertEqual(image.size.width, 96); XCTAssertEqual(image.size.height, 96)
+            images.insert(try XCTUnwrap(image.pngData()))
+        }
+        XCTAssertEqual(images.count, 4)
     }
 }

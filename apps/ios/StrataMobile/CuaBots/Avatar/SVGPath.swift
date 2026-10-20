@@ -4,7 +4,7 @@
 import SwiftUI
 
 /// A tiny SVG path reader for the koala geometry: absolute `M`, `L`, `H`,
-/// `V`, `C` and `Z`, the only commands the koala design's curves use.
+/// `V`, `C`, `Q` and `Z`, used by the koala and Strata character curves.
 enum SVGPath {
     static func parse(_ d: String) -> Path {
         var path = Path()
@@ -40,6 +40,11 @@ enum SVGPath {
                     let c2 = CGPoint(x: scanner.number(), y: scanner.number())
                     let p = CGPoint(x: scanner.number(), y: scanner.number())
                     path.addCurve(to: p, control1: c1, control2: c2)
+                    current = p
+                case "Q":
+                    let control = CGPoint(x: first, y: scanner.number())
+                    let p = CGPoint(x: scanner.number(), y: scanner.number())
+                    path.addQuadCurve(to: p, control: control)
                     current = p
                 default:
                     break

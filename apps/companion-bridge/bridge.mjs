@@ -21,9 +21,10 @@ const safeToolId = value => typeof value === 'string' && /^[a-zA-Z0-9_.:-]{1,300
 const shortText = (value, max) => typeof value === 'string' ? value.slice(0, max) : '';
 const botAvatars = new Set(['🤖', '🧑‍💻', '🦊', '🧠', '🚀', '🛠️', '🌿', '✨']);
 function avatarConfig(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 3 || Object.keys(value).some(key => !['color', 'eyes', 'ears'].includes(key))
-    || !['cloud', 'violet', 'orange', 'sky', 'graphite', 'slate'].includes(value.color) || !['star', 'round', 'happy', 'calm', 'plus', 'delight'].includes(value.eyes) || !['scalloped', 'round', 'small'].includes(value.ears)) throw fail(400, 'Choose a supported bot color, eyes and ears.');
-  return { color: value.color, eyes: value.eyes, ears: value.ears };
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !['kind', 'color', 'eyes', 'ears'].includes(key))
+    || !['cloud', 'violet', 'orange', 'sky', 'graphite', 'slate'].includes(value.color) || !['star', 'round', 'happy', 'calm', 'plus', 'delight'].includes(value.eyes) || !['scalloped', 'round', 'small'].includes(value.ears)
+    || Object.hasOwn(value, 'kind') && !['koala', 'fox', 'cat', 'robot'].includes(value.kind)) throw fail(400, 'Choose a supported bot character, color, eyes and ears.');
+  return { color: value.color, eyes: value.eyes, ears: value.ears, ...(value.kind ? { kind: value.kind } : {}) };
 }
 const computerRoute = /^\/api\/bots\/([a-zA-Z0-9_-]{1,120})\/computer(?:\/(start|stop|takeover|control|release))?(?:\?chatId=([a-zA-Z0-9_-]{1,120}))?$/;
 const leaseToken = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{16,256}$/.test(value);
