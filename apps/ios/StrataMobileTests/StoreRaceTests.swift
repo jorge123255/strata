@@ -587,6 +587,96 @@ final class BotsTests: XCTestCase {
         XCTAssertNil(store.conversations.first?.botId, "Older summaries remain decodable, with catalog conversation IDs as fallback.")
     }
 
+    func testNewChatSelectsOnlySavedComputerAndConfiguredModelWithoutChangingServing() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { request in
+            switch request.url!.path {
+            case "/v1/bots": return Self.selectableCatalog
+            case "/v1/bots/bot_coder/conversations": return Self.selectedDetail
+            default: return nil
+            }
+        }
+        let store = fixture.makeStore(); await store.refreshBots()
+        let bot = try XCTUnwrap(store.botCatalog?.bots.first)
+        XCTAssertEqual(bot.avatarText, "🦊")
+        XCTAssertEqual(store.botCatalog?.models?.first?.label, "Configured fixture · Fixture connection")
+        let created = await store.newBotConversation(bot, computerId: "ssh_fixture", modelId: "bm_fixture", workspace: "/srv/project")
+        XCTAssertTrue(created)
+        let posts = fixture.requests.filter { $0.method == "POST" }
+        XCTAssertEqual(posts.map(\.path), ["/v1/bots/bot_coder/conversations"])
+        XCTAssertEqual(posts.first?.body, ["computerId": "ssh_fixture", "modelId": "bm_fixture", "workspace": "/srv/project"])
+        XCTAssertEqual(store.currentConversation?.computerName, "Remote fixture")
+        XCTAssertEqual(store.currentConversation?.botModelName, "Configured fixture")
+        XCTAssertEqual(store.currentConversation?.botAvatar, "🧠", "Conversation identity comes from its frozen host snapshot.")
+        XCTAssertEqual(store.currentConversation?.workspace, "/srv/project")
+        XCTAssertTrue(fixture.requests.allSatisfy { !$0.path.contains("/load") && !$0.path.contains("/unload") && !$0.path.contains("/prepare") })
+    }
+
+    func testMissingUnavailableOrRemovedSelectionsNeverCreateAChat() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { $0.url!.path == "/v1/bots" ? Self.selectableCatalog : nil }
+        let store = fixture.makeStore(); await store.refreshBots()
+        let bot = try XCTUnwrap(store.botCatalog?.bots.first)
+        for id in ["missing", "ssh_unavailable"] {
+            let created = await store.newBotConversation(bot, computerId: id)
+            XCTAssertFalse(created)
+        }
+        for id in ["missing", "bm_unavailable"] {
+            let created = await store.newBotConversation(bot, modelId: id)
+            XCTAssertFalse(created)
+        }
+        let relative = await store.newBotConversation(bot, workspace: "relative/folder")
+        XCTAssertFalse(relative)
+        fixture.respond { request in
+            guard request.url!.path == "/v1/bots" else { return nil }
+            var catalog = Self.selectableCatalog; catalog["models"] = []
+            return catalog
+        }
+        await store.refreshBots()
+        let removed = await store.newBotConversation(bot, modelId: "bm_fixture")
+        XCTAssertFalse(removed)
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+        XCTAssertNil(store.currentConversation)
+    }
+
+    func testOlderBotsCatalogRejectsOverridesAndUntrustedAvatarUsesNativeFallback() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { request in
+            guard request.url!.path == "/v1/bots" else { return nil }
+            var value = Self.catalog
+            var bots = value["bots"] as! [[String: Any]]
+            bots[0]["avatar"] = "https://untrusted.invalid/image.png"; value["bots"] = bots
+            return value
+        }
+        let store = fixture.makeStore(); await store.refreshBots()
+        let bot = try XCTUnwrap(store.botCatalog?.bots.first)
+        XCTAssertEqual(bot.avatarText, "🤖")
+        let created = await store.newBotConversation(bot, computerId: "local")
+        XCTAssertFalse(created)
+        XCTAssertTrue(store.error?.contains("Update Strata") == true)
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+    }
+
+    private static var selectableCatalog: [String: Any] {
+        var result = catalog
+        var bots = result["bots"] as! [[String: Any]]
+        bots[0]["avatar"] = "🦊"; bots[0]["workspace"] = "/fixture/default"
+        result["bots"] = bots; result["selectionSupported"] = true
+        result["computers"] = [["id": "local", "name": "Your Mac", "kind": "local", "available": true, "detail": "Ready"],
+                               ["id": "ssh_fixture", "name": "Remote fixture", "kind": "ssh", "available": true, "detail": "Prepared on the Mac"],
+                               ["id": "ssh_unavailable", "name": "Unavailable computer", "kind": "ssh", "available": false, "detail": "Set up on Mac"]]
+        result["models"] = [["id": "bm_fixture", "name": "Configured fixture", "connectionName": "Fixture connection", "model": "fixture/model", "available": true],
+                            ["id": "bm_unavailable", "name": "Unavailable model", "connectionName": "Other connection", "model": "other/model", "available": false]]
+        return result
+    }
+    private static var selectedDetail: [String: Any] {
+        var result = botDetail, conversation = result["conversation"] as! [String: Any]
+        conversation["botAvatar"] = "🧠"; conversation["botName"] = "Original bot"
+        conversation["computerName"] = "Remote fixture"; conversation["botModelName"] = "Configured fixture"
+        conversation["workspace"] = "/srv/project"; result["conversation"] = conversation
+        return result
+    }
+
     private static var catalog: [String: Any] {
         ["bots": [["id": "bot_coder", "name": "Coder", "provider": "codex", "model": "default", "capabilities": "both", "policy": "manual",
                    "execution": ["kind": "local"], "conversations": ["mac-existing"]]],
@@ -769,5 +859,178 @@ private final class StoreURLProtocol: URLProtocol {
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: data)
         client?.urlProtocolDidFinishLoading(self)
+    }
+}
+
+@MainActor
+final class BotComputerTests: XCTestCase {
+    private let path = "/v1/bots/bot_fixture/computer"
+    private func frame(grant: Bool = false) -> [String: Any] {
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 100, height: 80), format: format).image { context in
+            UIColor.systemBlue.setFill(); context.fill(CGRect(x: 0, y: 0, width: 100, height: 80))
+        }
+        var value: [String: Any] = ["available": true, "computerName": "Isolated fixture", "detail": "Ready", "width": 100, "height": 80,
+            "image": ["mimeType": "image/png", "data": image.pngData()!.base64EncodedString()], "control": ["active": true, "owned": true]]
+        if grant { value["leaseToken"] = "fixture_lease_0123456789"; value["expiresAt"] = Date().timeIntervalSince1970 * 1000 + 60_000 }
+        return value
+    }
+
+    func testCanvasPixelsExcludeLetterboxingAndRejectInvalidGeometry() {
+        let canvas = CGSize(width: 300, height: 300), image = CGSize(width: 600, height: 400)
+        XCTAssertEqual(ComputerCanvasPosition.pixel(at: CGPoint(x: 150, y: 150), canvas: canvas, image: image), CGPoint(x: 300, y: 200))
+        XCTAssertEqual(ComputerCanvasPosition.pixel(at: CGPoint(x: 0, y: 50), canvas: canvas, image: image), CGPoint.zero)
+        XCTAssertNil(ComputerCanvasPosition.pixel(at: CGPoint(x: 150, y: 49), canvas: canvas, image: image))
+        XCTAssertNil(ComputerCanvasPosition.pixel(at: CGPoint(x: 300, y: 150), canvas: canvas, image: image))
+        XCTAssertNil(ComputerCanvasPosition.pixel(at: CGPoint(x: CGFloat.infinity, y: 0), canvas: canvas, image: image))
+        XCTAssertNil(ComputerCanvasPosition.pixel(at: .zero, canvas: .zero, image: image))
+    }
+
+    func testReadingDoesNotStartComputerOrAcquireControlAndOnlyExplicitLeaseCanSendInputs() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let state = frame(), grant = frame(grant: true)
+        fixture.respond { request in
+            if request.url!.path.hasSuffix("/takeover") { return grant }
+            if request.url!.path.hasSuffix("/control") { return ["accepted": true] }
+            if request.url!.path.hasSuffix("/release") { return ["released": true] }
+            if request.url!.path == self.path { return state }
+            return nil
+        }
+        let store = fixture.makeStore(), session = store.computerSession(botId: "bot_fixture", chatId: "s_frozen")
+        session.activate(); await session.refresh()
+        XCTAssertNotNil(session.image)
+        await session.click(x: 5, y: 6); await session.type("ignored"); await session.key("Enter")
+        XCTAssertEqual(fixture.requests.map(\.path), [path])
+        XCTAssertFalse(session.hasControl)
+        await session.takeOver()
+        XCTAssertTrue(session.hasControl)
+        await session.click(x: 50, y: 40); await session.type("hello"); await session.key("Control+L")
+        await session.type(String(repeating: "x", count: 4_001))
+        await session.key("unsupported"); await session.click(x: 100, y: 0)
+        let controls = fixture.requests.filter { $0.path.hasSuffix("/control") }
+        XCTAssertEqual(controls.count, 3)
+        guard controls.count == 3 else { return }
+        XCTAssertEqual(controls[0].jsonBody?["x"] as? Double, 50)
+        XCTAssertEqual(controls[0].jsonBody?["y"] as? Double, 40)
+        XCTAssertEqual(controls[0].jsonBody?["chatId"] as? String, "s_frozen")
+        XCTAssertEqual(controls[1].jsonBody?["text"] as? String, "hello")
+        XCTAssertEqual(controls[2].jsonBody?["key"] as? String, "Control+L")
+        await session.release()
+        XCTAssertFalse(session.hasControl)
+        await session.type("ignored after release")
+        XCTAssertEqual(fixture.requests.filter { $0.path.hasSuffix("/control") }.count, 3)
+        XCTAssertFalse(fixture.requests.contains { $0.path.hasSuffix("/start") || $0.path.hasSuffix("/messages") })
+        session.deactivate()
+    }
+
+    func testTakeoverCompletingAfterNavigationReleasesGrantWithoutRestoringControl() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { request in request.url!.path.hasSuffix("/release") ? ["released": true] : nil }
+        let store = fixture.makeStore(), session = store.computerSession(botId: "bot_fixture", chatId: "s_frozen")
+        let held = fixture.hold(path + "/takeover")
+        session.activate()
+        let takeover = Task { await session.takeOver() }
+        await fulfillment(of: [held.requested], timeout: 2)
+        session.deactivate(); held.finish(frame(grant: true)); await takeover.value
+        XCTAssertFalse(session.hasControl); XCTAssertNil(session.state); XCTAssertFalse(session.isBusy)
+        let release = try XCTUnwrap(fixture.requests.first { $0.path.hasSuffix("/release") })
+        XCTAssertEqual(release.body?["chatId"], "s_frozen")
+        XCTAssertEqual(release.body?["leaseToken"], "fixture_lease_0123456789")
+    }
+
+    func testForgetPairingSuppressesInFlightFrameAndFutureComputerCommands() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let store = fixture.makeStore(), session = store.computerSession(botId: "bot_fixture")
+        let held = fixture.hold(path)
+        session.activate()
+        let refreshing = Task { await session.refresh() }
+        await fulfillment(of: [held.requested], timeout: 2)
+        store.forgetMac(); held.finish(frame()); await refreshing.value
+        await session.start(); await session.takeOver(); await session.key("Enter")
+        XCTAssertNil(session.state); XCTAssertFalse(session.hasControl)
+        XCTAssertEqual(fixture.requests.map(\.path), [path])
+        session.deactivate()
+    }
+
+    func testExpiredTakeoverIsReleasedAndCannotLeaveBusyState() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        var expired = frame(grant: true); expired["expiresAt"] = 1
+        fixture.respond { request in request.url!.path.hasSuffix("/takeover") ? expired : ["released": true] }
+        let store = fixture.makeStore(), session = store.computerSession(botId: "bot_fixture")
+        session.activate(); await session.takeOver()
+        XCTAssertFalse(session.hasControl); XCTAssertFalse(session.isBusy)
+        XCTAssertEqual(fixture.requests.map(\.path), [path + "/takeover", path + "/release"])
+        session.deactivate()
+    }
+
+    func testPreparedStoppedComputerIsNotRunningAndForgottenPairingClearsCachedImage() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        var stopped = frame(); stopped["running"] = false; stopped["cleanupConfirmed"] = false
+        fixture.respond { _ in stopped }
+        let store = fixture.makeStore(), session = store.computerSession(botId: "bot_fixture")
+        session.activate(); await session.refresh()
+        XCTAssertFalse(session.isRunning)
+        XCTAssertEqual(session.state?.cleanupConfirmed, false)
+        XCTAssertNotNil(session.image)
+        store.forgetMac(); session.deactivate(); session.activate()
+        XCTAssertNil(session.image); XCTAssertNil(session.state); XCTAssertFalse(session.hasControl)
+    }
+
+    func testCUAUsesItsActualWorkspaceAndPausedCatalogBlocksNewWork() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        var paused = true
+        fixture.respond { request in
+            switch request.url!.path {
+            case "/v1/bots": return ["bots": [["id": "bot_fixture", "name": "Fixture", "provider": "codex", "model": "", "capabilities": "both", "policy": "manual", "execution": ["kind": "local"], "workspace": "/workspace", "computerMode": "cua", "paused": paused]], "providers": [], "computers": [], "models": [], "selectionSupported": true]
+            case "/v1/bots/bot_fixture/conversations": return ["conversation": ["id": "s_frozen", "title": "Fixture", "active": false, "botId": "bot_fixture", "messages": []], "pending": []]
+            default: return nil
+            }
+        }
+        let store = fixture.makeStore()
+        await store.refreshBots()
+        let bot = try XCTUnwrap(store.botCatalog?.bots.first)
+        let pausedCreation = await store.newBotConversation(bot)
+        XCTAssertFalse(pausedCreation); XCTAssertTrue(store.error?.contains("paused") == true)
+        paused = false; await store.refreshBots()
+        let wrongFolder = await store.newBotConversation(bot, workspace: "/outside")
+        XCTAssertFalse(wrongFolder)
+        let created = await store.newBotConversation(bot)
+        XCTAssertTrue(created)
+        XCTAssertEqual(fixture.requests.first(where: { $0.path.hasSuffix("/conversations") && $0.method == "POST" })?.body, ["workspace": "/workspace"])
+        paused = true; await store.refreshBots()
+        let count = fixture.requests.count
+        await store.sendMessage("must not start")
+        XCTAssertEqual(fixture.requests.count, count)
+        XCTAssertTrue(store.error?.contains("paused") == true)
+    }
+
+    func testAvatarSaveUsesOnlyActualSampleConfigurationAndPreservesOtherConnectionState() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let catalog: [String: Any] = ["bots": [["id": "bot_fixture", "name": "Fixture", "provider": "codex", "model": "", "capabilities": "both", "policy": "manual", "execution": ["kind": "local"], "avatarConfig": ["color": "sky", "eyes": "star", "ears": "scalloped"]]], "providers": [], "computers": []]
+        fixture.respond { request in
+            if request.url!.path == "/v1/bots" { return catalog }
+            if request.url!.path == "/v1/bots/bot_fixture/avatar" { return ["saved": true] }
+            return nil
+        }
+        let store = fixture.makeStore(), connection = store.connection
+        await store.refreshBots()
+        let saved = await store.saveBotAvatar(botId: "bot_fixture", avatar: AvatarConfig(color: .violet, eyes: .happy, ears: .small))
+        XCTAssertTrue(saved)
+        let change = try XCTUnwrap(fixture.requests.first { $0.path.hasSuffix("/avatar") })
+        XCTAssertEqual(Set(change.jsonBody?.keys.map { $0 } ?? []), Set(["avatarConfig"]))
+        XCTAssertEqual(change.jsonBody?["avatarConfig"] as? [String: String], ["color": "violet", "eyes": "happy", "ears": "small"])
+        XCTAssertEqual(store.connection, connection); XCTAssertNil(store.currentConversation)
+        XCTAssertNil(store.savingBotAvatarId)
+        XCTAssertFalse(fixture.requests.contains { $0.path.contains("serving") || $0.path.contains("/messages") })
+    }
+
+    func testFrozenSampleAvatarAndComputerModeDecodeWithoutCatalogFallback() throws {
+        let json: [String: Any] = ["id": "s_frozen", "title": "Earlier bot", "active": false, "messages": [], "botId": "bot_fixture", "computerMode": "cua",
+            "botAvatarConfig": ["color": "violet", "eyes": "happy", "ears": "small"]]
+        let conversation = try JSONDecoder().decode(MacConversation.self, from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertEqual(conversation.botAvatarConfig, AvatarConfig(color: .violet, eyes: .happy, ears: .small))
+        XCTAssertEqual(conversation.computerMode, "cua")
+        XCTAssertThrowsError(try CompanionClient.computerPath(botId: "../private"))
+        XCTAssertThrowsError(try CompanionClient.computerPath(botId: "bot_fixture", action: "prepare"))
     }
 }

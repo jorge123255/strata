@@ -83,7 +83,7 @@ export function runBotProcess(command, args, { cwd, signal, timeout = 30_000, ma
   });
 }
 
-export function createBotTools({ directory, browserProbe = findBrowser, processRunner = runBotProcess, browserFactory, platform = process.platform } = {}) {
+export function createBotTools({ directory, browserProbe = findBrowser, processRunner = runBotProcess, browserFactory, platform = process.platform, browserHeadless = false } = {}) {
   const browsers = new Map(), leases = new Map(), inFlight = new Map();
   let helperPromise = null;
   function definitions(bot) {
@@ -96,7 +96,7 @@ export function createBotTools({ directory, browserProbe = findBrowser, processR
     if (!found.found) fail('Install Chrome, Edge or Chromium to use this bot’s browser.');
     const create = async () => {
       const { chromium } = await import('playwright-core');
-      const browser = await chromium.launch({ executablePath: found.path, headless: false });
+      const browser = await chromium.launch({ executablePath: found.path, headless: browserHeadless });
       const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
       const page = await context.newPage();
       return { browser, context, page, close: () => browser.close() };

@@ -317,7 +317,24 @@ final class CompanionSmokeTests: XCTestCase {
         if app.buttons["bot-fixture-bot"].exists { app.buttons["bot-fixture-bot"].tap() }
         let create = app.buttons["newBotConversationButton"]
         XCTAssertTrue(create.waitForExistence(timeout: 5)); reveal(create); create.tap()
+        let computer = app.buttons["botComputerPicker"]
+        XCTAssertTrue(computer.waitForExistence(timeout: 5)); computer.tap()
+        let remoteComputer = app.buttons["Remote fixture computer"]
+        XCTAssertTrue(remoteComputer.waitForExistence(timeout: 5)); remoteComputer.tap()
+        let model = app.buttons["botModelPicker"]
+        XCTAssertTrue(model.waitForExistence(timeout: 5)); model.tap()
+        let configuredModel = app.buttons["Configured fixture · Fixture connection"]
+        XCTAssertTrue(configuredModel.waitForExistence(timeout: 5)); configuredModel.tap()
+        app.buttons["clearBotWorkspaceButton"].tap()
+        let workspace = app.textFields["botWorkspaceInput"]
+        workspace.tap(); workspace.typeText("/srv/fixture-project")
+        let dismissKeyboard = app.buttons["dismissBotSetupKeyboardButton"]
+        if dismissKeyboard.waitForExistence(timeout: 2) { dismissKeyboard.tap() }
+        attachScreenshot("Bots — selected remote computer configured model and workspace")
+        let confirm = app.buttons["confirmBotConversationButton"]
+        reveal(confirm); confirm.tap()
         XCTAssertTrue(app.staticTexts["New Workspace companion conversation"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Configured fixture"].exists, "The chat shows its frozen selected model.")
         let input = app.descendants(matching: .any).matching(identifier: "messageInput").firstMatch
         XCTAssertTrue(input.waitForExistence(timeout: 5)); input.tap(); input.typeText("Continue bot fixture work")
         app.buttons["sendMessageButton"].tap()
@@ -333,7 +350,8 @@ final class CompanionSmokeTests: XCTestCase {
         let reopenedBot = app.buttons["bot-fixture-bot"]
         XCTAssertTrue(reopenedBot.waitForExistence(timeout: 10)); reopenedBot.tap()
         let saved = app.buttons["botConversation-fixture-bot-created"]
-        XCTAssertTrue(saved.waitForExistence(timeout: 10)); reveal(saved); saved.tap()
+        // Native List materializes later rows as they scroll into view.
+        reveal(saved); XCTAssertTrue(saved.waitForExistence(timeout: 10)); saved.tap()
         XCTAssertTrue(reply.waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["thinkingDisclosure-bot-assistant"].exists)
         attachScreenshot("Bots — shared history retained after relaunch")
@@ -342,7 +360,106 @@ final class CompanionSmokeTests: XCTestCase {
         XCTAssertEqual(calls.filter { ($0["path"] as? String) == "/api/bots/fixture-bot/conversations" }.count, 1)
         XCTAssertEqual(calls.filter { ($0["path"] as? String)?.hasSuffix("/messages") == true }.count, 1)
         let creation = try XCTUnwrap(calls.first { ($0["path"] as? String) == "/api/bots/fixture-bot/conversations" })
-        XCTAssertEqual((creation["body"] as? [String: Any])?.count, 0)
+        XCTAssertEqual(creation["body"] as? [String: String], ["computerId": "ssh_fixture", "modelId": "bm_fixture", "workspace": "/srv/fixture-project"])
+    }
+
+    @MainActor
+    func testActualSampleAvatarAndIsolatedComputerControl() async throws {
+        guard let raw = ProcessInfo.processInfo.environment["STRATA_TEST_INVITATION"],
+              let invitation = URLComponents(string: raw),
+              let control = ProcessInfo.processInfo.environment["STRATA_SHARED_FIXTURE_CONTROL"],
+              let controlURL = URL(string: control), controlURL.host == "127.0.0.1" else {
+            throw XCTSkip("Provide an isolated computer fixture invitation and loopback control URL.")
+        }
+        func item(_ name: String) -> String? { invitation.queryItems?.first { $0.name == name }?.value }
+        openManualPairing(); sensitivePairingVisible = true
+        fillPairing(address: try XCTUnwrap(item("url")), code: try XCTUnwrap(item("code")), fingerprint: try XCTUnwrap(item("fingerprint")))
+        submitPairing()
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.buttons["dismissPairingButton"])
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 25), .completed)
+        sensitivePairingVisible = false
+        tapTab("Bots")
+        let bot = app.buttons["bot-fixture-bot"]
+        XCTAssertTrue(bot.waitForExistence(timeout: 10)); bot.tap()
+        let customize = app.buttons["customizeBotAvatarButton"]
+        XCTAssertTrue(customize.waitForExistence(timeout: 5)); customize.tap()
+        app.buttons["Violet"].tap(); app.buttons["Happy"].tap(); app.buttons["Small"].tap()
+        attachScreenshot("Bots — actual sample koala color eyes and ears picker")
+        app.buttons["saveBotAvatarButton"].tap()
+        let saved = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.buttons["saveBotAvatarButton"])
+        XCTAssertEqual(XCTWaiter.wait(for: [saved], timeout: 10), .completed)
+        let faceState = try await fixtureControl(controlURL, action: "state")
+        XCTAssertEqual(faceState["botFace"] as? [String: String], ["color": "violet", "eyes": "happy", "ears": "small"])
+        let newConversation = app.buttons["newBotConversationButton"]
+        reveal(newConversation); newConversation.tap()
+        let isolatedWorkspace = app.textFields["botWorkspaceInput"]
+        XCTAssertTrue(isolatedWorkspace.waitForExistence(timeout: 5))
+        XCTAssertEqual(isolatedWorkspace.value as? String, "/workspace")
+        XCTAssertFalse(isolatedWorkspace.isEnabled)
+        XCTAssertFalse(app.buttons["clearBotWorkspaceButton"].exists)
+        app.buttons["Cancel"].tap()
+        let view = app.buttons["botComputerViewButton"]
+        XCTAssertTrue(view.waitForExistence(timeout: 5)); reveal(view); view.tap()
+        let start = app.buttons["startBotComputerButton"]
+        XCTAssertTrue(start.waitForExistence(timeout: 5))
+        let initial = try await fixtureControl(controlURL, action: "state")
+        XCTAssertEqual(initial["computerRunning"] as? Bool, false)
+        XCTAssertEqual(initial["computerControlled"] as? Bool, false)
+        start.tap()
+        let takeover = app.buttons["takeOverComputerButton"]
+        XCTAssertTrue(takeover.waitForExistence(timeout: 10))
+        attachScreenshot("Bots — view only isolated computer snapshots")
+        takeover.tap()
+        let confirmed = app.buttons["Stop bots and take over"]
+        XCTAssertTrue(confirmed.waitForExistence(timeout: 5)); confirmed.tap()
+        let release = app.buttons["releaseComputerControlButton"]
+        XCTAssertTrue(release.waitForExistence(timeout: 10))
+        let canvas = app.descendants(matching: .any).matching(identifier: "botComputerCanvas").firstMatch
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        let typeField = app.descendants(matching: .any).matching(identifier: "computerTypeField").firstMatch
+        reveal(typeField); typeField.tap(); typeField.typeText("Fixture computer text")
+        app.buttons["computerTypeButton"].tap()
+        let key = app.buttons["computerKey-Enter"]
+        reveal(key); key.tap()
+        attachScreenshot("Bots — explicit computer takeover with native controls")
+        reveal(release); release.tap()
+        XCTAssertTrue(takeover.waitForExistence(timeout: 10))
+        let released = try await fixtureControl(controlURL, action: "state")
+        XCTAssertEqual(released["computerControlled"] as? Bool, false)
+        // Leaving while holding a second grant must release it without a resume.
+        takeover.tap(); app.buttons["Stop bots and take over"].tap()
+        XCTAssertTrue(release.waitForExistence(timeout: 10))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        try await Task.sleep(for: .seconds(1))
+        let viewAgain = app.buttons["botComputerViewButton"]
+        XCTAssertTrue(viewAgain.waitForExistence(timeout: 5)); viewAgain.tap()
+        XCTAssertTrue(takeover.waitForExistence(timeout: 10)); takeover.tap()
+        app.buttons["Stop bots and take over"].tap()
+        XCTAssertTrue(release.waitForExistence(timeout: 10))
+        XCUIDevice.shared.press(.home)
+        try await Task.sleep(for: .seconds(1))
+        let backgrounded = try await fixtureControl(controlURL, action: "state")
+        XCTAssertEqual(backgrounded["computerControlled"] as? Bool, false)
+        app.activate()
+        XCTAssertTrue(takeover.waitForExistence(timeout: 10))
+        let stopComputer = app.buttons["stopBotComputerButton"]
+        reveal(stopComputer); stopComputer.tap()
+        app.buttons["Stop computer"].tap()
+        XCTAssertTrue(start.waitForExistence(timeout: 10))
+        attachScreenshot("Bots — isolated computer explicitly stopped")
+        let after = try await fixtureControl(controlURL, action: "state")
+        XCTAssertEqual(after["computerControlled"] as? Bool, false)
+        let calls = try XCTUnwrap(after["calls"] as? [[String: Any]])
+        let inputs = calls.filter { ($0["path"] as? String)?.hasSuffix("/computer/control") == true }
+        XCTAssertEqual(inputs.count, 3)
+        let clicked = try XCTUnwrap(inputs[0]["body"] as? [String: Any])
+        XCTAssertEqual(try XCTUnwrap(clicked["x"] as? Double), 320, accuracy: 1)
+        XCTAssertEqual(try XCTUnwrap(clicked["y"] as? Double), 200, accuracy: 1)
+        XCTAssertEqual((inputs[1]["body"] as? [String: Any])?["text"] as? String, "Fixture computer text")
+        XCTAssertEqual((inputs[2]["body"] as? [String: Any])?["key"] as? String, "Enter")
+        XCTAssertEqual(calls.filter { ($0["path"] as? String)?.hasSuffix("/computer/release") == true }.count, 3)
+        XCTAssertEqual(calls.filter { ($0["path"] as? String)?.hasSuffix("/computer/stop") == true }.count, 1)
+        XCTAssertFalse(calls.contains { ($0["path"] as? String)?.hasSuffix("/messages") == true }, "Computer viewing and input must never create a model prompt.")
     }
 
     /// Uses a real TLS bridge with synthetic catalog/jobs. No model files, real
@@ -558,7 +675,9 @@ final class CompanionSmokeTests: XCTestCase {
     private func reveal(_ element: XCUIElement) {
         for _ in 0..<5 {
             if element.isHittable { return }
-            app.scrollViews.firstMatch.swipeUp()
+            if app.scrollViews.firstMatch.exists { app.scrollViews.firstMatch.swipeUp() }
+            else if app.collectionViews.firstMatch.exists { app.collectionViews.firstMatch.swipeUp() }
+            else { app.swipeUp() }
         }
         XCTAssertTrue(element.isHittable, "The control must be reachable by scrolling.")
     }

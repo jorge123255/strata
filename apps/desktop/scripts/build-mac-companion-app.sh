@@ -27,6 +27,7 @@ fi
 /usr/bin/codesign --verify --strict "$task_control/python/bin/python3.12"
 node "$task_desktop/scripts/stage-companion.mjs"
 npm --prefix "$task_repo/apps/host" run build
+"$task_repo/apps/bots-macos/scripts/build-app.sh"
 mkdir -p "${task_output:h}"
 # APFS clones avoid duplicating hundreds of MB of unchanged engines on a full disk.
 if ! /bin/cp -cR "$task_source" "$task_output" 2>/dev/null; then
@@ -141,6 +142,10 @@ npm --prefix "$task_resources/host" ci --omit=dev --omit=optional --ignore-scrip
 /usr/bin/xcrun swiftc "$task_repo/apps/host/server/bots-computer.swift" -O -o "$task_resources/host/server/bots-computer"
 /usr/bin/codesign --force --sign - --timestamp=none "$task_resources/host/server/bots-computer"
 /usr/bin/ditto "$task_desktop/src-tauri/resources/companion-bridge" "$task_resources/companion-bridge"
+mkdir -p "$task_resources/bots"
+rm -rf "$task_resources/bots/StrataBots.app"
+/usr/bin/ditto "$task_repo/apps/bots-macos/build/StrataBots.app" "$task_resources/bots/StrataBots.app"
+/usr/bin/codesign --verify --deep --strict "$task_resources/bots/StrataBots.app"
 /usr/libexec/PlistBuddy -c 'Add NSLocalNetworkUsageDescription string Pair your iPhone with Strata on this Mac over an encrypted connection.' "$task_output/Contents/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c 'Set NSLocalNetworkUsageDescription Pair your iPhone with Strata on this Mac over an encrypted connection.' "$task_output/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Add NSScreenCaptureUsageDescription string Let your approved Strata bots see this Mac’s display.' "$task_output/Contents/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c 'Set NSScreenCaptureUsageDescription Let your approved Strata bots see this Mac’s display.' "$task_output/Contents/Info.plist"
 # Do not use --deep here: changing an engine signature would invalidate its component manifest.

@@ -69,7 +69,11 @@ import { createConversations } from './conversations.mjs';
 import { createConversationRoutes, addConversationEvents } from './conversation-routes.mjs';
 import { createBots, createBotRoutes } from './bots.mjs';
 import { createBotTools } from './bots-tools.mjs';
+import { createBotCUATools } from './bots-cua.mjs';
+import { createBotsDesktop } from './bots-desktop.mjs';
 import { createBotRuntime } from './bots-runtime/index.mjs';
+import { createRemoteBotSSH } from './bots-ssh.mjs';
+import { createBotModelClient, createBotModelSources } from './bots-models.mjs';
 import { appVersionFrom, appVersionToShow } from './app-version.mjs';
 import { createImageModels } from './image-models.mjs';
 import { createRuntimeModels } from './runtime-models.mjs';
@@ -507,11 +511,16 @@ const uploads = createUploads({ dir: join(store.DATA_DIR, 'uploads'), folderOf: 
 try { uploads.sweep(); } catch { /* best effort */ }
 const chatFolders = createChatFolders({ file: join(store.DATA_DIR, 'chat-folders.json') });
 /** Where a chat's files are: its chosen folder, else the folder its agent worked in, else the default workspace (chat-files.mjs). One source for every file route. */
-const chatRoot = chatId => chatRootOf({ chosen: bots?.workspace(chatId) ?? chatFolders.get(chatId), used: agent.workingFolder?.(chatId), fallback: workspaces[0]?.path ?? WORKSPACE });
+const chatRoot = chatId => { if (bots?.isRemoteConversation(chatId)) throw Object.assign(new Error('This bot’s files are on its execution computer. Use its file tools or Outputs.'), { status: 409 }); return chatRootOf({ chosen: bots?.workspace(chatId) ?? chatFolders.get(chatId), used: agent.workingFolder?.(chatId), fallback: workspaces[0]?.path ?? WORKSPACE }); };
 
-bots = createBots({ directory: store.DATA_DIR, runtime: createBotRuntime({ stateDir: join(store.DATA_DIR, 'bots-runtime') }), tools: createBotTools({ directory: store.DATA_DIR }),
+const botSSH = createRemoteBotSSH();
+const hostBotTools = createBotTools({ directory: store.DATA_DIR });
+const cuaBotTools = createBotCUATools({ directory: store.DATA_DIR, python: CONTROL?.python || 'python3' });
+const botTools = { definitions: bot => (bot.computerMode === 'cua' ? cuaBotTools : hostBotTools).definitions(bot), execute: options => (options.bot.computerMode === 'cua' ? cuaBotTools : hostBotTools).execute(options), async finish(chatId) { await Promise.all([hostBotTools.finish(chatId), cuaBotTools.finish(chatId)]); }, async close() { await Promise.all([hostBotTools.close(), cuaBotTools.close()]); } };
+const botModelSources = createBotModelSources({ providers: modelProviders, localInstances: () => native.readyInstances() });
+bots = createBots({ directory: store.DATA_DIR, remoteSSH: botSSH, cuaTools: cuaBotTools, modelProviders: botModelSources, modelRequest: createBotModelClient({ providers: botModelSources }), runtime: createBotRuntime({ stateDir: join(store.DATA_DIR, 'bots-runtime'), remoteSSH: botSSH }), tools: botTools,
   conversations: () => conversations, defaultWorkspace: () => workspaces[0]?.path ?? WORKSPACE, notify: (event, data) => hub.send(event, data) });
-const botRoutes = createBotRoutes({ bots, port: PORT });
+const botRoutes = createBotRoutes({ bots, port: PORT, desktop: createBotsDesktop({ port: PORT }) });
 conversations = createConversations({
   directory: store.DATA_DIR,
   enabled: () => companion.hasOptedIn() || bots.hasProfiles(),

@@ -53,18 +53,23 @@ test('bot catalog is a public projection with no provider credentials or SSH con
   assert.throws(() => publicBots({ bots: [] }), { status: 502 });
 });
 
-test('host permits only public bot listing and empty saved-bot conversation creation', async () => {
+test('host permits only public bot listing and bounded saved-bot conversation selections', async () => {
   const calls = [];
   const host = new HostClient({ upstream: 'http://127.0.0.1:47831', fetcher: async (url, options) => { calls.push({ url, ...options }); return new Response('{}'); } });
   await host.request('/api/bots');
   await host.request('/api/bots/bot_coder/conversations', { method: 'POST', body: {} });
+  await host.request('/api/bots/bot_coder/conversations', { method: 'POST', body: { computerId: 'ssh_fixture', modelId: 'bm_fixture', workspace: '/srv/project' } });
   for (const [path, method, body] of [
     ['/api/bots', 'POST', {}], ['/api/bots/bot_coder', 'GET'], ['/api/bots/bot_coder', 'DELETE'],
     ['/api/bots/providers', 'PUT', { apiKey: 'secret' }], ['/api/bots/bot_coder/conversations', 'GET'],
     ['/api/bots/bot_coder/conversations', 'POST', { policy: 'bypass' }],
+    ['/api/bots/bot_coder/conversations', 'POST', { computerId: 'https://external.test' }],
+    ['/api/bots/bot_coder/conversations', 'POST', { modelSource: { connectionId: 'private' } }],
+    ['/api/bots/bot_coder/conversations', 'POST', { workspace: 'relative' }],
+    ['/api/bots', 'GET', {}],
     ['/api/bots?apiKey=true', 'GET'], ['/api/bots/../settings/conversations', 'POST', {}],
   ]) await assert.rejects(host.request(path, { method, body }), { status: 403 });
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
   assert.throws(() => new HostClient({ upstream: 'https://remote.test:443' }));
 });
 
@@ -122,4 +127,65 @@ test('revocation while bot creation body arrives prevents any later host mutatio
   await waiting; bridge.authority.revoke(session.id); finishBody();
   assert.equal((await pending).status, 401);
   assert.equal(calls.length, 0, 'revoked devices cannot create a bot conversation after the body finishes');
+});
+
+function selectableCatalog() {
+  const value = structuredClone(catalog);
+  value.bots[0] = { ...value.bots[0], provider: 'configured', avatar: '🦊', workspace: '/srv/project', modelSource: { connectionId: 'CONNECTION-PRIVATE', model: 'fixture-model' } };
+  value.providers.push({ id: 'configured', name: 'Configured models', available: true, detail: 'Uses a saved model connection.' });
+  value.computers.push({ id: 'ssh_fixture', name: 'Remote fixture', kind: 'ssh', available: true, detail: 'Ready', execution: { host: 'PRIVATE-HOST', user: 'PRIVATE-USER' } });
+  value.models = [{ id: 'bm_fixture', connectionId: 'CONNECTION-PRIVATE', connectionName: 'Fixture connection', model: 'fixture-model', name: 'Configured fixture', available: true, detail: 'Ready', apiKey: 'MODEL-KEY', url: 'PRIVATE-ENDPOINT' }];
+  return value;
+}
+
+test('avatars, configured models and computers expose only display data and stable catalog IDs', () => {
+  const clean = publicBots(selectableCatalog()), encoded = JSON.stringify(clean);
+  assert.equal(clean.selectionSupported, true); assert.equal(clean.bots[0].avatar, '🦊');
+  assert.equal(clean.bots[0].modelId, 'bm_fixture'); assert.equal(clean.bots[0].provider, 'configured');
+  assert.equal(clean.bots[0].workspace, '/srv/project');
+  assert.deepEqual(clean.models[0], { id: 'bm_fixture', connectionName: 'Fixture connection', model: 'fixture-model', name: 'Configured fixture', available: true, detail: 'Ready' });
+  for (const secret of ['CONNECTION-PRIVATE', 'PRIVATE-HOST', 'PRIVATE-USER', 'MODEL-KEY', 'PRIVATE-ENDPOINT']) assert.ok(!encoded.includes(secret), secret);
+  const malformed = selectableCatalog(); malformed.bots[0].avatar = 'https://untrusted.test/avatar.png';
+  assert.equal(publicBots(malformed).bots[0].avatar, '🤖');
+  assert.equal(publicBots(catalog).selectionSupported, false, 'older hosts cannot silently ignore new selection fields');
+  const frozen = publicConversation({ ...detail.conversation, preferences: { ...detail.conversation.preferences, botName: 'Original bot', botAvatar: '🧠', botComputer: 'Original computer', botModel: 'Original model' } });
+  assert.equal(frozen.botName, 'Original bot'); assert.equal(frozen.botAvatar, '🧠');
+  assert.equal(frozen.computerName, 'Original computer'); assert.equal(frozen.botModelName, 'Original model');
+});
+
+test('new conversation forwards only freshly cataloged target/model IDs and an absolute workspace', async t => {
+  const { bridge, token, calls } = await fixture(t, path => path === '/api/bots' ? selectableCatalog() : detail);
+  const body = { computerId: 'ssh_fixture', modelId: 'bm_fixture', workspace: '/srv/selected-project' };
+  const result = await request(bridge, '/v1/bots/bot_coder/conversations', { token, method: 'POST', body });
+  assert.equal(result.status, 201);
+  assert.deepEqual(calls, [{ path: '/api/bots' }, { path: '/api/bots/bot_coder/conversations', method: 'POST', body }]);
+  assert.ok(!calls.some(call => /model-providers|native|prepare|serving|messages/.test(call.path)), 'selection does not change serving, prepare a server or start work');
+  const before = calls.filter(call => call.method === 'POST').length;
+  for (const body of [{ computerId: 'missing' }, { modelId: 'missing' }, { execution: { kind: 'ssh' } }, { modelSource: { connectionId: 'PRIVATE' } }, { workspace: '../relative' }, { workspace: '/tmp/\u0000invalid' }]) {
+    const rejected = await request(bridge, '/v1/bots/bot_coder/conversations', { token, method: 'POST', body });
+    assert.ok([400, 409].includes(rejected.status));
+  }
+  assert.equal(calls.filter(call => call.method === 'POST').length, before);
+});
+
+test('unavailable targets and older hosts cannot accept model or folder overrides', async t => {
+  const value = selectableCatalog(); value.computers[1].available = false; value.models[0].available = false;
+  let old = false;
+  const { bridge, token, calls } = await fixture(t, path => path === '/api/bots' ? old ? catalog : value : detail);
+  for (const body of [{ computerId: 'ssh_fixture' }, { modelId: 'bm_fixture' }]) {
+    assert.equal((await request(bridge, '/v1/bots/bot_coder/conversations', { token, method: 'POST', body })).status, 409);
+  }
+  old = true;
+  assert.equal((await request(bridge, '/v1/bots/bot_coder/conversations', { token, method: 'POST', body: { workspace: '/srv/project' } })).status, 409);
+  assert.ok(calls.every(call => call.path === '/api/bots'));
+});
+
+test('revocation during selection catalog lookup prevents bot creation', async t => {
+  let entered, resume;
+  const waiting = new Promise(resolve => { entered = resolve; }), blocked = new Promise(resolve => { resume = resolve; });
+  const { bridge, token, session, calls } = await fixture(t, async () => { entered(); await blocked; return selectableCatalog(); });
+  const pending = request(bridge, '/v1/bots/bot_coder/conversations', { token, method: 'POST', body: { computerId: 'ssh_fixture' } });
+  await waiting; bridge.authority.revoke(session.id); resume();
+  assert.equal((await pending).status, 401);
+  assert.deepEqual(calls, [{ path: '/api/bots' }]);
 });

@@ -25,7 +25,7 @@ test('provider list exposes all five without credentials or login claims', async
 });
 test('rejects unsupported targets and invalid workspaces before inference', async () => {
   const runtime = createBotRuntime({ fetch: () => { throw new Error('must not request'); } });
-  await assert.rejects(runtime.run({ ...baseInput('ollama'), bot: bot('ollama', { execution: { kind: 'ssh', host: 'example' } }) }), /does not grant SSH/);
+  await assert.rejects(runtime.run({ ...baseInput('ollama'), bot: bot('ollama', { execution: { kind: 'ssh', host: 'example' } }) }), /SSH Bots transport is not configured/);
   await assert.rejects(runtime.run({ ...baseInput('ollama'), bot: bot('ollama', { workspace: 'relative' }) }), /absolute workspace/);
   runtime.close();
 });

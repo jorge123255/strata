@@ -35,6 +35,7 @@ final class CompanionStore: ObservableObject {
     @Published private(set) var botsMessage: String?
     @Published private(set) var isLoadingBots = false
     @Published private(set) var creatingBotConversationId: String?
+    @Published private(set) var savingBotAvatarId: String?
     var isWorking: Bool { isSending || currentConversation?.active == true }
     var isLegacyConversation: Bool { currentChatId != nil }
     private var hasChosenConversation = false
@@ -70,6 +71,31 @@ final class CompanionStore: ObservableObject {
         if let saved = connection ?? (client == nil ? ConnectionKeychain.load() : nil) {
             self.connection = saved
             self.client = client ?? CompanionClient(baseURL: saved.baseURL, fingerprint: saved.fingerprint, token: saved.token)
+        }
+    }
+
+    func computerSession(botId: String, chatId: String? = nil) -> BotComputerSession {
+        let generation = connectionGeneration
+        return BotComputerSession(client: client, botId: botId, chatId: chatId, isCurrent: { [weak self] in
+            self?.connectionGeneration == generation && self?.isPaired == true
+        })
+    }
+
+    func saveBotAvatar(botId: String, avatar: AvatarConfig) async -> Bool {
+        guard let client, botCatalog?.bots.contains(where: { $0.id == botId }) == true, savingBotAvatarId == nil else { return false }
+        let generation = connectionGeneration
+        savingBotAvatarId = botId; error = nil
+        defer { if connectionGeneration == generation { savingBotAvatarId = nil } }
+        do {
+            struct AvatarUpdate: Encodable { var avatarConfig: AvatarConfig }
+            struct Saved: Decodable { var saved: Bool }
+            let result: Saved = try await client.perform("/v1/bots/\(botId)/avatar", method: "POST", jsonBody: AvatarUpdate(avatarConfig: avatar))
+            guard connectionGeneration == generation else { return false }
+            await refreshBots()
+            return result.saved
+        } catch {
+            if connectionGeneration == generation { self.error = error.localizedDescription }
+            return false
         }
     }
 
@@ -262,9 +288,41 @@ final class CompanionStore: ObservableObject {
     }
 
     @discardableResult
-    func newBotConversation(_ bot: CompanionBot) async -> Bool {
-        guard let client, botCatalog?.bots.contains(where: { $0.id == bot.id }) == true,
+    func newBotConversation(_ bot: CompanionBot, computerId: String? = nil, modelId: String? = nil, workspace: String? = nil) async -> Bool {
+        guard let client, let currentBot = botCatalog?.bots.first(where: { $0.id == bot.id }),
               !isSending, !isSubmittingMessage, creatingBotConversationId == nil else { return false }
+        if currentBot.paused == true { error = "This bot is paused. Resume it in Strata on your Mac."; return false }
+        var options: [String: String] = [:]
+        if computerId != nil || modelId != nil || workspace != nil || currentBot.computerMode == "cua" {
+            guard botCatalog?.selectionSupported == true else {
+                error = "Update Strata on your Mac to choose a computer or model for this conversation."; return false
+            }
+        }
+        if currentBot.computerMode == "cua" {
+            guard workspace == nil || workspace?.trimmingCharacters(in: .whitespacesAndNewlines) == "/workspace" else {
+                error = "This isolated computer uses /workspace."; return false
+            }
+            options["workspace"] = "/workspace"
+        }
+        if let computerId {
+            guard botCatalog?.computers.contains(where: { $0.id == computerId && $0.available }) == true else {
+                error = "This computer is not ready. Set it up on your Mac, then refresh Bots."; return false
+            }
+            options["computerId"] = computerId
+        }
+        if let modelId {
+            guard botCatalog?.models?.contains(where: { $0.id == modelId && $0.available }) == true else {
+                error = "This model connection is no longer available. Refresh Bots."; return false
+            }
+            options["modelId"] = modelId
+        }
+        if let workspace {
+            let path = workspace.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard path.hasPrefix("/"), path.utf16.count <= 4_000, path.rangeOfCharacter(from: .controlCharacters) == nil else {
+                error = "Enter the full workspace folder path on the selected computer."; return false
+            }
+            options["workspace"] = path
+        }
         let generation = connectionGeneration
         let selection = UUID()
         conversationGeneration = selection; hasChosenConversation = true
@@ -276,7 +334,7 @@ final class CompanionStore: ObservableObject {
             }
         }
         do {
-            let detail: MacConversationDetail = try await client.perform("/v1/bots/" + escapedComponent(bot.id) + "/conversations", method: "POST", body: [:])
+            let detail: MacConversationDetail = try await client.perform("/v1/bots/" + escapedComponent(bot.id) + "/conversations", method: "POST", body: options)
             guard connectionGeneration == generation, conversationGeneration == selection else { return false }
             currentChatId = nil; messages = []; apply(detail)
             await refresh(silently: true)
@@ -289,6 +347,7 @@ final class CompanionStore: ObservableObject {
     }
 
     private func clearBots() {
+        savingBotAvatarId = nil
         botsRequest = nil; isLoadingBots = false; botCatalog = nil; botsMessage = nil; creatingBotConversationId = nil
     }
 
@@ -496,6 +555,9 @@ final class CompanionStore: ObservableObject {
 
     func sendMessage(_ text: String) async {
         if isLegacyConversation { await sendLegacyMessage(text); return }
+        if let botId = currentConversation?.botId, botCatalog?.bots.first(where: { $0.id == botId })?.paused == true {
+            error = "This bot is paused. Resume it in Strata on your Mac."; return
+        }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let client, !isSubmittingMessage, creatingBotConversationId == nil, currentConversation?.active != true, !trimmed.isEmpty else { return }
         let generation = connectionGeneration

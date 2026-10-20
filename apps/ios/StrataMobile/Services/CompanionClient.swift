@@ -56,7 +56,7 @@ final class CompanionClient {
         }
         var req = URLRequest(url: baseURL.appendingPathComponent(String(path.dropFirst())))
         req.httpMethod = method
-        req.timeoutInterval = path.hasPrefix("/v1/model-management/") ? 180 : 20
+        req.timeoutInterval = path.hasPrefix("/v1/model-management/") ? 180 : (path.hasSuffix("/computer/start") ? 100 : 20)
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         if let body { req.httpBody = try JSONEncoder().encode(body) }
@@ -84,6 +84,30 @@ final class CompanionClient {
     func discard(_ path: String, method: String = "POST", body: [String: String]? = nil) async throws {
         let (data, response) = try await session.data(for: request(path, method: method, body: body))
         try Self.check(response, data: data)
+    }
+
+    // Only the saved conversation ID can become a query item. General requests
+    // continue to reject arbitrary query strings and URL forwarding.
+    func computer(botId: String, chatId: String?) async throws -> BotComputerState {
+        let path = try Self.computerPath(botId: botId)
+        var req = try request(path)
+        if let chatId {
+            guard Self.isSafeIdentifier(chatId), var url = URLComponents(url: req.url!, resolvingAgainstBaseURL: false) else { throw CompanionError.server("Choose a saved bot conversation.") }
+            url.queryItems = [URLQueryItem(name: "chatId", value: chatId)]
+            req.url = url.url
+        }
+        let (data, response) = try await session.data(for: req)
+        try Self.check(response, data: data)
+        return try JSONDecoder().decode(BotComputerState.self, from: data)
+    }
+
+    static func computerPath(botId: String, action: String? = nil) throws -> String {
+        guard isSafeIdentifier(botId), action == nil || ["start", "stop", "takeover", "control", "release"].contains(action!) else { throw CompanionError.server("Choose a saved bot computer.") }
+        return "/v1/bots/\(botId)/computer" + (action.map { "/" + $0 } ?? "")
+    }
+
+    static func isSafeIdentifier(_ value: String) -> Bool {
+        !value.isEmpty && value.utf8.count <= 120 && value.utf8.allSatisfy { (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) || $0 == 95 || $0 == 45 }
     }
 
     func stream(message: String, chatId: String?, onFrame: @escaping @MainActor (ChatFrame) -> Void) async throws {

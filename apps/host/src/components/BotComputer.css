@@ -1,0 +1,8 @@
+.bot-computer-view{width:min(1080px,94vw)}
+.bot-computer-frame{display:block;width:100%;height:auto;max-height:62vh;object-fit:contain;border:1px solid var(--border);border-radius:12px;background:#141414}
+.bot-computer-frame[data-controlling]{cursor:crosshair}
+.bot-computer-input{display:flex;align-items:end;gap:8px;margin-top:12px;flex-wrap:wrap}
+.bot-computer-input .input-field{flex:1;min-width:180px}
+.bot-computer-confirm,.bot-computer-offline{padding:20px;border:1px solid var(--border);border-radius:12px;margin:12px 0}
+.bot-computer-confirm p{margin-bottom:12px}
+@media(max-width:600px){.bot-computer-view{width:96vw}.bot-computer-input{align-items:stretch;flex-direction:column}}

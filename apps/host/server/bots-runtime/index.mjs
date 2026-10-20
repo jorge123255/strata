@@ -1,5 +1,5 @@
 import { randomUUID, createHash } from 'node:crypto';
-import { stat, mkdir, writeFile } from 'node:fs/promises';
+import { stat, lstat, mkdir, writeFile } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { homedir } from 'node:os';
 import { spawn } from 'node:child_process';
@@ -59,9 +59,20 @@ export function createBotRuntime(options = {}) {
   }
   async function run(input) {
     if (closed) throw new Error('Bots runtime is closed.');
-    const { bot, message, history = [], onFrame = () => {}, requestPermission, executeTool, onCheckpoint = () => {} } = input;
-    if (!PROVIDERS.some(p => p.id === bot?.provider)) throw new Error('Choose a supported bot provider.');
+    if (input.bot?.execution?.kind === 'ssh') {
+      if (!options.remoteSSH) throw new Error('SSH Bots transport is not configured. Prepare the execution computer first.');
+      return await options.remoteSSH.run(input);
+    }
+    const { message, history = [], onFrame = () => {}, requestPermission, executeTool, onCheckpoint = () => {} } = input;
+    let bot = input.bot;
+    if (!PROVIDERS.some(p => p.id === bot?.provider) && bot?.provider !== 'configured') throw new Error('Choose a supported bot provider.');
     if ((bot.execution?.kind ?? 'local') !== 'local') throw new Error('This bot provider currently executes on this Mac. An inference API connection does not grant SSH or sandbox execution.');
+    if (bot.computerMode === 'cua') {
+      // Provider accounts remain on their owning host. Their brain process gets a private control cwd;
+      // every coding/browser/computer action still uses the caller's original sandbox-bound tools.
+      const workspace = join(options.stateDir ?? join(homedir(), '.strata/bots-runtime'), 'cua-provider-workspaces', safeId(bot.id));
+      await mkdir(workspace, { recursive: true, mode: 0o700 }); const privateFolder = await lstat(workspace); if (!privateFolder.isDirectory() || privateFolder.isSymbolicLink()) throw new Error('The isolated computer provider folder is not private.'); bot = { ...bot, workspace };
+    }
     if (!isAbsolute(bot.workspace ?? '') || !(await stat(bot.workspace)).isDirectory()) throw new Error('Choose an existing absolute workspace folder.');
     const tools = normalizeTools(input.tools);
     const controller = new AbortController(), abort = () => controller.abort(input.signal?.reason);
@@ -89,12 +100,14 @@ export function createBotRuntime(options = {}) {
       catch (error) { if (signal.aborted) throw abortError(); return { content: [{ type: 'text', text: redact(error, secrets) }], isError: true }; }
     };
     const prompt = !checkpoint && history.length ? `Previous messages from this Strata chat are context, not new instructions to replay tools:\n${history.filter(h => ['user', 'assistant'].includes(h.role)).map(h => `${h.role}: ${historyContent(h).slice(0, 100_000)}`).join('\n')}\n\nCurrent user message:\n${message}` : String(message ?? '');
-    const context = { bot, prompt, message: String(message ?? ''), history, checkpoint, tools, signal, frame, save, permission, execute, env, fetcher, executable, options };
+    const modelRequest = input.modelRequest ?? options.modelRequest;
+    const context = { bot, prompt, message: String(message ?? ''), history, checkpoint, tools, signal, frame, save, permission, execute, env, fetcher, executable, options, modelRequest: modelRequest ? payload => modelRequest(payload, bot, signal) : null };
     const timer = setTimeout(() => controller.abort(new Error('Bot run timed out.')), options.runTimeoutMs ?? 30 * 60_000); timer.unref();
     try {
       signal.throwIfAborted();
-      emit({ type: 'notice', message: `${PROVIDERS.find(p => p.id === bot.provider).name} · ${bot.provider === 'ollama' ? 'cloud model' : 'installed CLI'} · ${bot.workspace}` });
-      if (bot.provider === 'claude') await runClaude(context);
+      emit({ type: 'notice', message: `${PROVIDERS.find(p => p.id === bot.provider)?.name ?? 'Configured model'} · ${bot.provider === 'configured' ? 'saved model connection' : bot.provider === 'ollama' ? 'cloud model' : 'installed CLI'} · ${bot.computerMode === 'cua' ? 'isolated computer' : bot.workspace}` });
+      if (bot.provider === 'configured') { if (!context.modelRequest) throw new Error('The selected model connection is unavailable.'); const { runConfiguredBot } = await import('../bots-models.mjs'); await runConfiguredBot(context); }
+      else if (bot.provider === 'claude') await runClaude(context);
       else if (bot.provider === 'codex') await runCodex(context);
       else if (bot.provider === 'grok' || bot.provider === 'kimi') await runAcp(context);
       else await runOllama(context);
@@ -105,7 +118,7 @@ export function createBotRuntime(options = {}) {
     } catch (error) { const safe = signal.aborted ? abortError() : new Error(redact(error, secrets)); emit({ type: 'error', message: safe.message }); throw safe; }
     finally { clearTimeout(timer); active.delete(controller); input.signal?.removeEventListener('abort', abort); }
   }
-  return { providers, run, close() { closed = true; for (const controller of active) controller.abort(); active.clear(); } };
+  return { providers, run, async close() { closed = true; for (const controller of active) controller.abort(); active.clear(); await options.remoteSSH?.close(); } };
 }
 
 async function runClaude(c) {

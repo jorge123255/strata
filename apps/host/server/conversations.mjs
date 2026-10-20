@@ -110,7 +110,7 @@ export function createConversations({ directory, enabled = () => true, notify = 
     const at = now(), id = `s_${randomUUID()}`;
     const session = { id, title: 'New conversation', defaultTitle: true, createdAt: at, updatedAt: at,
       messages: [], workspace: bot?.workspace ?? defaultWorkspace(), tokensIn: 0, tokensOut: 0,
-      preferences: { mode: bot?.policy ?? 'manual', ...(bot ? { botId: bot.id, botName: bot.name } : {}), ...(selection.remoteModel ? { remoteModel: copy(selection.remoteModel) } : {}), ...(selection.nativeModelId ? { nativeModelId: selection.nativeModelId } : {}) } };
+      preferences: { mode: bot?.policy ?? 'manual', ...(bot ? { botId: bot.id, botName: bot.name, botComputerMode: bot.computerMode ?? 'host', ...(bot.avatarConfig ? { botAvatarConfig: copy(bot.avatarConfig) } : {}), ...(bot.avatar ? { botAvatar: bot.avatar } : {}), ...(bot.computerLabel ? { botComputer: bot.computerLabel } : {}), ...(bot.modelLabel ? { botModel: bot.modelLabel } : {}) } : {}), ...(selection.remoteModel ? { remoteModel: copy(selection.remoteModel) } : {}), ...(selection.nativeModelId ? { nativeModelId: selection.nativeModelId } : {}) } };
     entries.set(id, { session, revision: 0, status: null }); touch(id, true);
     return detail(id);
   }

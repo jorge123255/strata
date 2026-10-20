@@ -60,10 +60,17 @@ struct ChatView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(value.title).font(.subheadline.weight(.semibold)).foregroundStyle(StrataTheme.ink).lineLimit(2)
                     .accessibilityIdentifier("macConversationTitle")
-                Text((conversationBot.map { $0.name + " · " } ?? "") + value.permissionLabel + (value.workspace.map { " · " + URL(fileURLWithPath: $0).lastPathComponent } ?? ""))
+                Text([conversationBotName, value.permissionLabel, value.computerName,
+                      value.workspace.map { URL(fileURLWithPath: $0).lastPathComponent }].compactMap { $0 }.joined(separator: " · "))
                     .font(.caption2).foregroundStyle(StrataTheme.secondaryInk).lineLimit(2)
             }
             Spacer(minLength: 5)
+            if value.computerMode == "cua", let botId = value.botId {
+                NavigationLink {
+                    BotComputerView(store: store, botId: botId, chatId: value.id, name: value.botName ?? "Bot computer")
+                } label: { Image(systemName: "display").frame(width: 36, height: 36) }
+                    .accessibilityLabel("Computer view").accessibilityIdentifier("chatComputerViewButton")
+            }
             if value.active {
                 Label("Live", systemImage: "circle.fill").font(.caption2.weight(.semibold)).foregroundStyle(StrataTheme.accentText)
                     .accessibilityElement(children: .combine).accessibilityIdentifier("macConversationLiveBadge")
@@ -172,9 +179,9 @@ struct ChatView: View {
     private var liveStatus: String {
         if !store.pendingApprovals.isEmpty { return "Waiting for your approval" }
         if let tool = store.currentConversation?.messages.flatMap({ $0.tools ?? [] }).last(where: \.isRunning) {
-            return tool.isBrowser ? "Using the browser on your Mac…" : tool.title + "…"
+            return tool.isBrowser ? (store.currentConversation?.botId == nil ? "Using the browser on your Mac…" : "Using the browser…") : tool.title + "…"
         }
-        return store.currentConversation?.status?.isEmpty == false ? store.currentConversation!.status! : "Your Mac is working…"
+        return store.currentConversation?.status?.isEmpty == false ? store.currentConversation!.status! : store.currentConversation?.botId == nil ? "Your Mac is working…" : "Your bot is working…"
     }
 
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
@@ -208,8 +215,12 @@ struct ChatView: View {
             VStack(alignment: .leading, spacing: 12) {
                 if !isUser {
                     HStack(spacing: 6) {
-                        StrataMark(size: 22)
-                        Text(conversationBot?.name.uppercased() ?? "STRATA").font(.system(.caption2, weight: .bold)).tracking(1.5).foregroundStyle(StrataTheme.secondaryInk)
+                        if store.currentConversation?.botId != nil {
+                            BotAvatarView(avatar: store.currentConversation?.botAvatar ?? "🤖", size: 22,
+                                          config: store.currentConversation?.botAvatarConfig ?? conversationBot?.avatarConfig,
+                                          name: conversationBotName ?? "Bot")
+                        } else { StrataMark(size: 22) }
+                        Text(conversationBotName?.uppercased() ?? "STRATA").font(.system(.caption2, weight: .bold)).tracking(1.5).foregroundStyle(StrataTheme.secondaryInk)
                     }
                 }
                 if message.role == "assistant", message.thinkingText != nil {
@@ -257,7 +268,7 @@ struct ChatView: View {
     private var composer: some View {
         VStack(spacing: 8) {
             HStack(alignment: .bottom, spacing: 10) {
-                TextField("Message your Mac…", text: $draft, axis: .vertical)
+                TextField(conversationBotName.map { "Message " + $0 + "…" } ?? "Message your Mac…", text: $draft, axis: .vertical)
                     .lineLimit(1...6).font(.body).foregroundStyle(StrataTheme.ink).focused($composerFocused)
                     .padding(.vertical, 12).padding(.leading, 16).accessibilityIdentifier("messageInput")
                 if store.isWorking {
@@ -287,22 +298,25 @@ struct ChatView: View {
     }
 
     private var canSend: Bool {
-        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && store.isPaired &&
+        conversationBot?.paused != true && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && store.isPaired &&
         store.status?.hostConnected == true && !store.isWorking && !store.isSubmittingMessage && !store.isSelectingConversation
     }
     private var composerNote: String {
+        if conversationBot?.paused == true { return "This bot is paused. Resume it in Strata on your Mac." }
         if store.status?.hostConnected != true { return "Your Mac is unavailable. Check Connection to reconnect." }
+        if store.currentConversation?.botId != nil { return "Same bot conversation · updates live while this screen is open" }
         return store.isLegacyConversation ? "Earlier iPhone conversation · saved on your Mac" : "Same Mac conversation · updates live while this screen is open"
     }
     private var chatSubtitle: String {
         guard store.isPaired else { return "Your Mac’s conversations, within reach." }
         guard store.status?.hostConnected == true else { return "Mac unavailable · check Connection" }
-        return store.currentConversation?.modelName ?? store.status?.modelName ?? "Connected to your Mac"
+        return store.currentConversation?.botModelName ?? store.currentConversation?.modelName ?? store.status?.modelName ?? "Connected to your Mac"
     }
     private var conversationBot: CompanionBot? {
         guard let botId = store.currentConversation?.botId else { return nil }
         return store.botCatalog?.bots.first { $0.id == botId }
     }
+    private var conversationBotName: String? { store.currentConversation?.botName ?? conversationBot?.name }
     private func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canSend else { return }

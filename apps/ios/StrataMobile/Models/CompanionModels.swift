@@ -126,6 +126,8 @@ struct CompanionBots: Decodable, Equatable {
     var bots: [CompanionBot]
     var providers: [BotProvider]
     var computers: [BotComputer]
+    var models: [BotConfiguredModel]?
+    var selectionSupported: Bool?
     var reason: String?
 }
 
@@ -139,6 +141,19 @@ struct CompanionBot: Decodable, Identifiable, Equatable {
     var policy: String
     var execution: Execution
     var conversations: [String]?
+    var avatar: String?
+    var workspace: String?
+    var modelId: String?
+    var computerMode: String?
+    var avatarConfig: AvatarConfig?
+    var paused: Bool?
+
+    var face: AvatarConfig { avatarConfig ?? .default(for: name) }
+
+    var avatarText: String {
+        if let avatar, BotAvatar.allowed.contains(avatar) { return avatar }
+        return "🤖"
+    }
 
     var capabilityLabel: String {
         switch capabilities { case "computer": return "Computer control"; case "both": return "Code & computer"; default: return "Coding" }
@@ -147,11 +162,26 @@ struct CompanionBot: Decodable, Identifiable, Equatable {
         switch capabilities { case "computer": return "cursorarrow.motionlines"; case "both": return "desktopcomputer"; default: return "chevron.left.forwardslash.chevron.right" }
     }
     var executionLabel: String {
-        switch execution.kind { case "ssh": return "SSH computer"; case "sandbox": return "Sandbox"; default: return "Your Mac" }
+        if computerMode == "cua" { return "Isolated computer" }
+        return switch execution.kind { case "ssh": "SSH computer"; case "sandbox": "Sandbox"; default: "Your Mac" }
     }
     var policyLabel: String {
         switch policy { case "plan": return "Plan mode"; case "bypass": return "Full access"; default: return "Ask before actions" }
     }
+}
+
+enum BotAvatar {
+    static let allowed = ["🤖", "🧑‍💻", "🦊", "🧠", "🚀", "🛠️", "🌿", "✨"]
+}
+
+struct BotConfiguredModel: Decodable, Identifiable, Equatable {
+    var id: String
+    var name: String
+    var connectionName: String
+    var model: String
+    var available: Bool
+    var detail: String?
+    var label: String { connectionName.isEmpty ? name : name + " · " + connectionName }
 }
 
 struct BotProvider: Decodable, Identifiable, Equatable {
@@ -217,11 +247,17 @@ struct MacConversation: Decodable, Identifiable, Equatable {
     var status: String?
     var messages: [MacChatMessage]
     var botId: String? = nil
+    var botName: String? = nil
+    var botAvatar: String? = nil
+    var computerName: String? = nil
+    var botModelName: String? = nil
+    var computerMode: String? = nil
+    var botAvatarConfig: AvatarConfig? = nil
 
     var permissionLabel: String {
         switch mode {
         case "plan": return "Plan mode"
-        case "bypass": return "Full access on Mac"
+        case "bypass": return "Full access"
         case "accept-edits": return "Accept edits"
         case "auto": return "Automatic permissions"
         default: return "Ask before actions"

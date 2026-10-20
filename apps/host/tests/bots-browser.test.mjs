@@ -26,7 +26,8 @@ test('Mac Bots creates profiles without work, preserves provider and target choi
   const at = '2026-10-20T12:00:00Z';
   let profiles = [{ id: 'existing', name: 'Project partner', instructions: 'Review code and use the browser when needed.', provider: 'codex', model: '', capabilities: 'both', policy: 'manual', workspace: '/fixture/project', execution: { kind: 'local' }, createdAt: at, updatedAt: at, available: true }];
   const providers = [['claude', 'Claude Code'], ['codex', 'Codex'], ['grok', 'Grok'], ['kimi', 'Kimi'], ['ollama', 'Ollama Cloud']].map(([id, name]) => ({ id, name, available: id === 'codex', detail: id === 'codex' ? 'Installed CLI is available.' : 'Sign in to the provider on this computer.' }));
-  const computers = [{ id: 'local', kind: 'local', name: 'This Mac', available: true, detail: 'Local execution computer.' }, { id: 'ssh', kind: 'ssh', name: 'SSH computer', available: false, detail: 'A remote bot runtime must be configured before work can start.' }];
+  const computers = [{ id: 'local', kind: 'local', name: 'This Mac', available: true, detail: 'Local execution computer.' }, { id: 'ssh_garage', kind: 'ssh', name: 'Garage server', available: true, detail: 'Saved SSH computer.', execution: { kind: 'ssh', host: 'garage', user: 'operator', port: 2222 } }];
+  const models = [{ id: 'bm_maya', connectionId: 'maya', connectionName: 'My Maya', model: 'Maya-S24', name: 'Maya-S24', available: true }, { id: 'bm_strata', connectionId: 'strata', connectionName: 'Remote Strata', model: 'coder', name: 'Coder', available: true }, { id: 'bm_unsupported', connectionId: 'unsupported', connectionName: 'Unsupported protocol', model: 'other', name: 'Other', available: false }];
   const calls = [], errors = [], blocked = [];
   const respond = (res, body, status = 200, type = 'application/json') => { res.writeHead(status, { 'content-type': type }); res.end(type === 'application/json' ? JSON.stringify(body) : body); };
   const server = http.createServer(async (req, res) => {
@@ -39,10 +40,12 @@ test('Mac Bots creates profiles without work, preserves provider and target choi
     if (path === '/favicon.ico') { res.writeHead(204); return res.end(); }
     let input = ''; for await (const chunk of req) input += chunk;
     const body = input ? JSON.parse(input) : undefined; calls.push({ path, method: req.method, body });
-    if (path === '/api/bots' && req.method === 'GET') return respond(res, { bots: profiles, providers, computers });
+    if (path === '/api/bots' && req.method === 'GET') return respond(res, { bots: profiles, providers, computers, models });
     if (path === '/api/bots' && req.method === 'POST') { const bot = { ...body, id: 'created', createdAt: at, updatedAt: at, available: false }; profiles = [bot, ...profiles]; return respond(res, { bot }); }
     if (path === '/api/bots/created' && req.method === 'PATCH') { const bot = { ...profiles.find(profile => profile.id === 'created'), ...body }; profiles = profiles.map(profile => profile.id === 'created' ? bot : profile); return respond(res, { bot }); }
-    if (path === '/api/bots/created/conversations') return respond(res, { error: 'Configure the remote bot runtime before starting a conversation.' }, 409);
+    if (path === '/api/bots/computers/check') return respond(res, { available: false, detail: 'The SSH computer needs the private bot helper.' });
+    if (path === '/api/bots/computers/prepare') return respond(res, { available: true, prepared: true, detail: 'The private bot helper is ready on this SSH computer.' });
+    if (path === '/api/bots/created/conversations') return respond(res, { error: 'The remote computer is offline. No conversation was opened.' }, 409);
     if (path === '/api/bots/existing/conversations') return respond(res, { conversation: { id: 'new-shared-chat', preferences: { botId: 'existing', botName: 'Project partner' }, messages: [] } });
     return respond(res, { error: 'Unexpected fixture request' }, 404);
   });
@@ -61,13 +64,20 @@ test('Mac Bots creates profiles without work, preserves provider and target choi
   await page.getByRole('button', { name: 'New bot', exact: true }).click();
   const editor = page.getByRole('dialog', { name: 'New bot', exact: true });
   await editor.getByRole('textbox', { name: 'Name', exact: true }).fill('Remote developer');
+  await editor.getByRole('radio', { name: 'Fox', exact: true }).click();
   await editor.getByRole('combobox', { name: 'Bot provider', exact: true }).click();
   await page.getByRole('option', { name: 'Grok', exact: true }).click();
   await editor.getByRole('combobox', { name: 'Bot execution computer', exact: true }).click();
-  await page.getByRole('option', { name: 'SSH computer', exact: true }).click();
+  await page.getByRole('option', { name: 'Another SSH computer…', exact: true }).click();
   await editor.getByRole('textbox', { name: 'SSH host or alias', exact: true }).fill('my-server');
   await editor.getByRole('textbox', { name: 'SSH user', exact: true }).fill('another-user');
   await editor.getByRole('spinbutton', { name: 'SSH port', exact: true }).fill('2222');
+  assert.equal(calls.some(call => call.path.startsWith('/api/bots/computers/')), false, 'Choosing a computer does not connect or install anything.');
+  await editor.getByRole('button', { name: 'Check SSH computer', exact: true }).click();
+  await editor.getByText('The SSH computer needs the private bot helper.', { exact: true }).waitFor();
+  assert.equal(calls.some(call => call.path.endsWith('/prepare')), false, 'Read-only checking never prepares implicitly.');
+  await editor.getByRole('button', { name: 'Prepare SSH computer', exact: true }).click();
+  await editor.getByText('The private bot helper is ready on this SSH computer.', { exact: true }).waitFor();
   await editor.getByRole('textbox', { name: 'Instructions', exact: true }).fill('Review this project and help with browser checks.');
   await editor.locator('.dialog-body').evaluate(element => { element.scrollTop = 0; });
   await screenshot('bot-editor-ssh');
@@ -76,11 +86,36 @@ test('Mac Bots creates profiles without work, preserves provider and target choi
   const created = calls.find(call => call.path === '/api/bots' && call.method === 'POST');
   assert.deepEqual(created.body.execution, { kind: 'ssh', host: 'my-server', user: 'another-user', port: 2222 });
   assert.equal(created.body.provider, 'grok'); assert.equal(created.body.capabilities, 'both'); assert.equal(created.body.policy, 'manual');
+  assert.equal(created.body.avatar, '🦊');
   assert.equal(calls.some(call => call.path.endsWith('/conversations')), false, 'Saving starts no conversation or provider turn.');
   const remote = page.locator('.bot-card').filter({ has: page.getByRole('heading', { name: 'Remote developer', exact: true }) });
+  await remote.getByRole('button', { name: 'Edit Remote developer', exact: true }).click();
+  const modelEditor = page.getByRole('dialog', { name: 'Edit bot', exact: true });
+  await modelEditor.getByRole('combobox', { name: 'Bot provider', exact: true }).click();
+  await page.getByRole('option', { name: 'Choose from Models', exact: true }).click();
+  await modelEditor.getByRole('combobox', { name: 'Configured bot model', exact: true }).click();
+  assert.equal(await page.getByRole('option', { name: 'Unsupported protocol · Other', exact: true }).getAttribute('aria-disabled'), 'true');
+  await page.getByRole('option', { name: 'My Maya · Maya-S24', exact: true }).click();
+  await modelEditor.getByRole('button', { name: 'Save bot', exact: true }).click();
+  await remote.getByText('My Maya · Maya-S24', { exact: true }).waitFor();
+  const changed = calls.find(call => call.path === '/api/bots/created' && call.method === 'PATCH');
+  assert.equal(changed.body.provider, 'configured');
+  assert.deepEqual(changed.body.modelSource, { connectionId: 'maya', model: 'Maya-S24' });
+  assert.equal(changed.body.avatar, '🦊');
   await remote.getByRole('button', { name: 'New chat', exact: true }).click();
-  await page.getByText('Configure the remote bot runtime before starting a conversation.', { exact: true }).waitFor();
+  const chooser = page.getByRole('dialog', { name: 'New bot conversation', exact: true });
+  assert.equal(calls.some(call => call.path.endsWith('/conversations')), false, 'Opening the target sheet creates no conversation.');
+  await chooser.getByRole('combobox', { name: 'Conversation computer', exact: true }).click();
+  await page.getByRole('option', { name: 'Garage server · operator@garage:2222', exact: true }).click();
+  await chooser.getByRole('textbox', { name: 'Workspace on this computer', exact: true }).fill('/home/operator/project');
+  await chooser.getByRole('combobox', { name: 'Conversation model', exact: true }).click();
+  await page.getByRole('option', { name: 'Remote Strata · Coder', exact: true }).click();
+  await screenshot('bot-conversation-target');
+  await chooser.getByRole('button', { name: 'Open conversation', exact: true }).click();
+  await chooser.getByText('The remote computer is offline. No conversation was opened.', { exact: true }).waitFor();
+  assert.deepEqual(calls.find(call => call.path === '/api/bots/created/conversations').body, { computerId: 'ssh_garage', workspace: '/home/operator/project', modelId: 'bm_strata' });
   assert.equal(await page.evaluate(() => window.botFixtureCalls.length), 0, 'A failed capability check opens no fabricated chat.');
+  await chooser.getByRole('button', { name: 'Cancel', exact: true }).click();
   await page.evaluate(() => { document.documentElement.dataset.theme = 'light'; }); await screenshot('bots-light');
   await page.setViewportSize({ width: 390, height: 844 }); await page.locator('.bots-providers > summary').click(); await screenshot('bots-mobile');
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'The Bots screen fits a phone-width web view.');
@@ -89,6 +124,7 @@ test('Mac Bots creates profiles without work, preserves provider and target choi
   assert.equal(await page.evaluate(() => window.location.hash), '#/chat/existing-chat');
   await page.goto(origin + '/#/bots');
   await page.locator('.bot-card').filter({ has: page.getByRole('heading', { name: 'Project partner', exact: true }) }).getByRole('button', { name: 'New chat', exact: true }).click();
+  await page.getByRole('dialog', { name: 'New bot conversation', exact: true }).getByRole('button', { name: 'Open conversation', exact: true }).click();
   await page.waitForURL('**/#/chat/new-shared-chat');
   assert.equal(await page.evaluate(() => window.location.hash), '#/chat/new-shared-chat');
   assert.deepEqual(await page.evaluate(() => window.botFixtureCalls.slice(-2).map(call => call[0])), ['adopt', 'select']);

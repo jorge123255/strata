@@ -1,3 +1,4 @@
+import { botAvatar } from '../lib/bots';
 import {localeTag} from '../lib/i18n';
 import { tr } from '../lib/i18n';
 import { UsageDashboard } from '../components/UsageDashboard';
@@ -439,7 +440,7 @@ export function ChatScreen() {
         }}>
 
             <div className="chat__inner">
-              {tr(session.messages.length === 0 ? (botId ? <div className="bot-chat-empty"><Icon name="experts" size={34}/><h2 className="h3">{session.preferences?.botName ?? tr('Your bot')}</h2><p className="small">{tr('Send a message to start work. Replies, supported thinking and tool activity stay in this conversation on your Mac and paired iPhone.')}</p><a className="small" href={href('bots', botId)}>{tr('Open bot profile')}</a></div> : session.statsAvailable === false ? <p className="small muted">{tr("Editing from an earlier message. Update the prompt below.")}</p> :
+              {tr(session.messages.length === 0 ? (botId ? <div className="bot-chat-empty"><span style={{ fontSize: 34 }} aria-hidden="true">{botAvatar(session.preferences?.botAvatar)}</span><h2 className="h3">{session.preferences?.botName ?? tr('Your bot')}</h2><p className="xs muted">{[session.preferences?.botComputer, session.preferences?.botModel].filter(Boolean).join(' · ')}</p><p className="small">{tr('Send a message to start work. Replies, supported thinking and tool activity stay in this conversation on your Mac and paired iPhone.')}</p><a className="small" href={href('bots', botId)}>{tr('Open bot profile')}</a></div> : session.statsAvailable === false ? <p className="small muted">{tr("Editing from an earlier message. Update the prompt below.")}</p> :
             <UsageDashboard loaded={!!loaded}/>) : (session.messages.map((m, i) => (<Message key={m.id} message={m} isLast={i === session.messages.length - 1} onEditPrompt={editPrompt} onPreview={openPreview} onOpenTimeSkip={openTimeSkip} timeSkipDone={!!allTimeSkipRuns.find(r => r.id === m.timeSkipId)?.completedAt} timeSkipReal={!!allTimeSkipRuns.find(r => r.id === m.timeSkipId)?.job} timeSkipRun={allTimeSkipRuns.find(r => r.id === m.timeSkipId)} onOpenLink={openLink}/>))))}
               <QueuedMessages chatId={session.id}/>
             </div>

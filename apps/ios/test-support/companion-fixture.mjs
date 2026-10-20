@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { spawn } from 'node:child_process';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -35,11 +35,22 @@ const conversation = {
 };
 const pending = [];
 let createdBotConversation;
+const fixtureComputerMode = process.argv[2] === '--test-computer' ? 'cua' : 'host';
+let botFace = { color: 'sky', eyes: 'star', ears: 'scalloped' };
+let computerRunning = false;
+let computerControl;
+const computerImage = readFileSync(new URL('./computer-fixture.png', import.meta.url)).toString('base64');
+const computerState = () => ({ available: true, running: computerRunning, computerName: 'Fixture isolated computer',
+  detail: computerRunning ? 'Synthetic isolated computer. No VM, provider or SSH session is running.' : 'Prepared fixture. Start explicitly to see the synthetic screen.',
+  ...(computerRunning ? { width: 640, height: 400, image: { mimeType: 'image/png', data: computerImage } } : {}),
+  control: { active: !!computerControl, owned: !!computerControl, ...(computerControl ? { expiresAt: computerControl.expiresAt } : {}) } });
 const botsCatalog = () => ({
-  bots: [{ id: 'fixture-bot', name: 'Workspace companion', provider: 'codex', model: 'Fixture model', capabilities: 'both', policy: 'manual', execution: { kind: 'local' },
+  bots: [{ id: 'fixture-bot', name: 'Workspace companion', avatar: '🦊', avatarConfig: botFace, computerMode: fixtureComputerMode, provider: 'codex', model: 'Fixture model', workspace: fixtureComputerMode === 'cua' ? '/workspace' : '/fixture/default', capabilities: 'both', policy: 'manual', execution: { kind: 'local' },
     conversations: [conversation.id, ...(createdBotConversation ? [createdBotConversation.id] : [])] }],
-  providers: ['claude', 'codex', 'grok', 'kimi', 'ollama'].map(id => ({ id, name: ({ claude: 'Claude Code', codex: 'Codex', grok: 'Grok', kimi: 'Kimi', ollama: 'Ollama Cloud' })[id], available: true, detail: 'Synthetic provider. No account or model is used.' })),
-  computers: [{ id: 'local', name: 'Fixture Mac', kind: 'local', available: true, detail: 'Synthetic computer. No tools are executed.' }],
+  providers: ['claude', 'codex', 'grok', 'kimi', 'ollama', 'configured'].map(id => ({ id, name: ({ claude: 'Claude Code', codex: 'Codex', grok: 'Grok', kimi: 'Kimi', ollama: 'Ollama Cloud', configured: 'Configured models' })[id], available: true, detail: 'Synthetic provider. No account or model is used.' })),
+  computers: [{ id: 'local', name: 'Fixture Mac', kind: 'local', available: true, detail: 'Synthetic computer. No tools are executed.' },
+    { id: 'ssh_fixture', name: 'Remote fixture computer', kind: 'ssh', available: true, detail: 'Prepared synthetic target. No SSH connection is made.' }],
+  models: [{ id: 'bm_fixture', connectionId: 'fixture-provider', connectionName: 'Fixture connection', model: 'configured-model', name: 'Configured fixture', available: true, detail: 'Synthetic configured model. Existing serving choices are unchanged.' }],
 });
 const remoteTargetId = 'remote-aaaaaaaaaaaaaaaaaaaaaaaa';
 const downloadJobs = new Map([['local', []], [remoteTargetId, []]]);
@@ -70,9 +81,24 @@ const host = {
     if (path === '/api/serving') return { requests: [] };
     if (path === '/api/model-providers') return { connections: [{ id: 'fixture-provider', name: 'Fixture Mac', models: [{ id: 'fixture-model', name: 'Fixture model' }] }] };
     if (path === '/api/bots') return botsCatalog();
+    if (path === '/api/bots/fixture-bot' && options.method === 'PATCH') { botFace = structuredClone(options.body.avatarConfig); return {}; }
+    const computer = /^\/api\/bots\/fixture-bot\/computer(?:\/(start|stop|takeover|control|release))?(?:\?chatId=([A-Za-z0-9_-]+))?$/.exec(path);
+    if (computer) {
+      const action = computer[1];
+      if (action === 'start') computerRunning = true;
+      if (action === 'stop') { computerRunning = false; computerControl = null; return { stopped: true }; }
+      if (action === 'takeover') { if (!computerRunning) throw Object.assign(new Error('Start fixture first'), { status: 409 }); computerControl = { leaseToken: 'fixture_lease_0123456789', expiresAt: Date.now() + 120_000 }; return { ...computerState(), ...computerControl }; }
+      if (action === 'control') { if (!computerControl || options.body.leaseToken !== computerControl.leaseToken) throw Object.assign(new Error('No control'), { status: 403 }); return { accepted: true }; }
+      if (action === 'release') { computerControl = null; return { released: true }; }
+      return computerState();
+    }
     if (path === '/api/bots/fixture-bot/conversations') {
       createdBotConversation = { id: 'fixture-bot-created', title: 'New Workspace companion conversation', active: false, mode: 'manual',
-        preferences: { botId: 'fixture-bot' }, modelName: 'Fixture model', messages: [] };
+        workspace: options.body?.workspace ?? '/fixture/default',
+        preferences: { botId: 'fixture-bot', botName: 'Workspace companion', botAvatar: '🦊', botAvatarConfig: structuredClone(botFace), botComputerMode: fixtureComputerMode,
+          botComputer: options.body?.computerId === 'ssh_fixture' ? 'Remote fixture computer' : 'Fixture Mac',
+          botModel: options.body?.modelId === 'bm_fixture' ? 'Configured fixture' : 'Fixture model' },
+        modelName: options.body?.modelId === 'bm_fixture' ? 'Configured fixture' : 'Fixture model', messages: [] };
       return structuredClone({ conversation: createdBotConversation, pending: [] });
     }
     if (createdBotConversation && path.startsWith(`/api/companion/conversations/${createdBotConversation.id}`)) {
@@ -223,7 +249,7 @@ try {
         response.writeHead(404).end(); return;
       }
       response.setHeader('Content-Type', 'application/json');
-      response.end(JSON.stringify({ conversation, pending, calls, downloadJobs: Object.fromEntries(downloadJobs), planCount: nextPlan, downloadCount: nextDownload }));
+      response.end(JSON.stringify({ conversation, pending, calls, computerRunning, computerControlled: !!computerControl, botFace, downloadJobs: Object.fromEntries(downloadJobs), planCount: nextPlan, downloadCount: nextDownload }));
     } catch (error) {
       response.writeHead(500, { 'Content-Type': 'application/json' });
       response.end(JSON.stringify({ error: error.message }));
@@ -231,7 +257,7 @@ try {
   });
   await new Promise((resolve, reject) => { control.once('error', reject); control.listen(0, '127.0.0.1', resolve); });
   const connection = { invitation: bridge.invitation(), control: `http://127.0.0.1:${control.address().port}` };
-  if (['--test', '--test-downloads', '--test-bots'].includes(process.argv[2])) {
+  if (['--test', '--test-downloads', '--test-bots', '--test-computer'].includes(process.argv[2])) {
     const destination = process.argv[3];
     if (!destination) throw new Error('Supply an installed simulator destination after --test.');
     const platforms = destination.split(',').map(value => value.trim()).filter(value => value.startsWith('platform='));
@@ -244,7 +270,7 @@ try {
       testProcess = spawn('xcodebuild', [
         '-project', project, '-scheme', 'StrataMobile', '-destination', destination,
         '-derivedDataPath', derivedData,
-        '-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation' })[process.argv[2]],
+        '-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation', '--test-computer': 'testActualSampleAvatarAndIsolatedComputerControl' })[process.argv[2]],
         '-parallel-testing-enabled', 'NO', 'test',
       ], { stdio: 'inherit', env: { ...process.env,
         TEST_RUNNER_STRATA_TEST_INVITATION: connection.invitation,
@@ -257,7 +283,7 @@ try {
     process.exitCode = status;
     await close();
   } else {
-    if (process.argv.length > 2) throw new Error('Usage: companion-fixture.mjs [--test|--test-downloads|--test-bots <simulator destination>]');
+    if (process.argv.length > 2) throw new Error('Usage: companion-fixture.mjs [--test|--test-downloads|--test-bots|--test-computer <simulator destination>]');
     const connectionFile = join(root, 'connection.json');
     writeFileSync(connectionFile, JSON.stringify(connection), { mode: 0o600 });
     console.log(JSON.stringify({ connectionFile }));

@@ -35,7 +35,9 @@ Requests go through the Mac. A configured API provider may run remotely. Earlier
 
 ## Work with a bot
 
-Open **Bots**, choose a bot configured on the Mac, then open one of its conversations or choose **New conversation**. New bot conversations inherit that bot's saved provider, model, computer, workspace and permissions; a message starts the work. Opening a bot does not start a task. Its conversation opens in the existing Chat screen, with shared history, available Thinking, action approvals and Stop. Existing bot history remains readable when a provider needs attention.
+Open **Bots**, choose a bot configured on the Mac, then open one of its conversations or choose **New conversation**. In the new-conversation sheet, retain the bot defaults or choose a saved ready computer, a model from your configured connections, and the folder on that computer. Remote computers must first be set up on the Mac. Creating the conversation freezes these choices; a message starts the work. Existing conversations keep their original settings. Opening a bot does not start a task. Its conversation opens in the existing Chat screen, with shared history, available Thinking, action approvals and Stop. Existing bot history remains readable when a provider needs attention.
+
+Bot avatars use a small native emoji set shared with the Mac. A conversation keeps its original avatar, computer and model labels after the bot profile changes. Selecting a configured model applies only to that new conversation and does not switch serving or another chat's Maya connection. An older Mac keeps the saved-default flow and explains when selection needs an update.
 
 Create bots, sign in to providers, and configure computer access in the Mac app. Provider credentials and SSH connection details stay on the Mac. Bot providers and execution computers are separate from the existing model library and Maya connections. Older Mac builds show an update message without affecting existing chats or model controls.
 
@@ -88,3 +90,8 @@ The optional live TLS and pairing/chat tests require `STRATA_TEST_INVITATION` in
 ## Connection security
 
 The QR invitation includes the SHA-256 fingerprint of the Mac's TLS certificate. The app checks that exact certificate before transmitting the pairing code or token, and refuses redirects. The phone saves its connection in the device-only Keychain. The bridge stores token hashes, checks every request, limits pairing guesses, and supports immediate revocation. The control routes are deliberately narrow; the desktop's whole API is never exposed to the phone.
+
+
+The Bots tab reuses the actual Cua Bots sample's SwiftUI koala renderer, color/eyes/ears picker and native list/profile layout, adapted to the existing CompanionStore. The copied sources and provenance are in `StrataMobile/CuaBots`, including FSL-1.1-MIT attribution and license. Appearance saves change only the bot avatar; existing conversations display their frozen avatar configuration.
+
+For a bot configured with a CUA isolated computer on Mac, **Computer view** opens read-only, refreshes PNG snapshots about once per second while visible, and starts no VM or model turn. **Start computer** is explicit and requires Mac preparation. New CUA conversations use `/workspace`; the folder override is disabled. Paused profiles are shown, and the Mac rejects new work until resumed. **Take over** asks for confirmation and stops all bot work using that target before granting temporary control. Taps map through aspect-fit margins to screenshot pixels; native text and keyboard buttons send input only with a valid device-bound lease. Backgrounding or leaving releases control, and release never resumes bot work. **Stop isolated computer** confirms shutdown with retained files. This is snapshot viewing, not decoded video. Host/computer setup and credentials remain on Mac.

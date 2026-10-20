@@ -15,6 +15,33 @@ test('all five providers are independent from the model server registry', () => 
   assert.deepEqual(profile.execution, { kind: 'local' });
   assert.equal(profile.providerSettings, undefined);
   assert.equal(profile.remoteModel, undefined);
+  assert.equal(profile.avatar, '🤖');
+});
+
+test('avatars are curated values and configured models bind one connection without borrowing another', () => {
+  assert.equal(bots.BOT_AVATARS.length, 8);
+  assert.equal(bots.botAvatar('🦊'), '🦊');
+  assert.equal(bots.botAvatar('https://example.test/avatar.png'), '🤖');
+  const draft = { ...bots.blankBot('/work/project'), name: 'Builder', provider: 'configured' };
+  assert.match(bots.botDraftError(draft), /saved Models connections/);
+  assert.match(bots.botDraftError({ ...draft, avatar: '<img>', modelSource: { connectionId: 'maya', model: 'same-name' } }), /available bot avatars/);
+  const models = [
+    { id: 'maya-row', connectionId: 'maya', connectionName: 'Maya', model: 'same-name', name: 'Maya model' },
+    { id: 'strata-row', connectionId: 'strata', connectionName: 'Strata', model: 'same-name', name: 'Strata model' },
+  ];
+  assert.equal(bots.configuredModel({ connectionId: 'maya', model: 'same-name' }, models).id, 'maya-row');
+  assert.equal(bots.configuredModel({ connectionId: 'strata', model: 'same-name' }, models).id, 'strata-row');
+  assert.equal(bots.configuredModel({ connectionId: 'removed', model: 'same-name' }, models), undefined);
+  assert.equal(bots.botDraftError({ ...draft, model: 'same-name', modelSource: { connectionId: 'maya', model: 'same-name' } }), null);
+});
+
+test('saved SSH computer identity includes user and port, while custom targets stay explicit', () => {
+  const computers = [{ id: 'ssh-garage', kind: 'ssh', execution: { kind: 'ssh', host: 'garage', user: 'operator', port: 22, name: 'Garage' } }];
+  assert.equal(bots.botComputerSelection({ kind: 'ssh', host: 'garage', user: 'operator' }, computers), 'custom-ssh', 'Omitted port honors SSH configuration and must not become an explicit port 22.');
+  assert.equal(bots.botComputerSelection({ kind: 'ssh', host: 'garage', user: 'operator', port: 22 }, computers), 'ssh-garage');
+  assert.equal(bots.botComputerSelection({ kind: 'ssh', host: 'garage', user: 'other' }, computers), 'custom-ssh');
+  assert.equal(bots.botComputerSelection({ kind: 'ssh', host: 'garage', user: 'operator', port: 2222 }, computers), 'custom-ssh');
+  assert.equal(bots.botComputerSelection({ kind: 'local' }, computers), 'local');
 });
 
 test('bot history follows identity even when providers and computers overlap', () => {

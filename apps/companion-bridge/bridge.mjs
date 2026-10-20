@@ -19,6 +19,49 @@ const encode = value => encodeURIComponent(String(value));
 const safeId = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,120}$/.test(value);
 const safeToolId = value => typeof value === 'string' && /^[a-zA-Z0-9_.:-]{1,300}$/.test(value);
 const shortText = (value, max) => typeof value === 'string' ? value.slice(0, max) : '';
+const botAvatars = new Set(['🤖', '🧑‍💻', '🦊', '🧠', '🚀', '🛠️', '🌿', '✨']);
+function avatarConfig(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 3 || Object.keys(value).some(key => !['color', 'eyes', 'ears'].includes(key))
+    || !['cloud', 'violet', 'orange', 'sky', 'graphite', 'slate'].includes(value.color) || !['star', 'round', 'happy', 'calm', 'plus', 'delight'].includes(value.eyes) || !['scalloped', 'round', 'small'].includes(value.ears)) throw fail(400, 'Choose a supported bot color, eyes and ears.');
+  return { color: value.color, eyes: value.eyes, ears: value.ears };
+}
+const computerRoute = /^\/api\/bots\/([a-zA-Z0-9_-]{1,120})\/computer(?:\/(start|stop|takeover|control|release))?(?:\?chatId=([a-zA-Z0-9_-]{1,120}))?$/;
+const leaseToken = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{16,256}$/.test(value);
+function computerRequest(path, method, body, deviceId) {
+  const match = computerRoute.exec(path);
+  if (!match || !/^[a-f0-9]{32}$/.test(deviceId ?? '')) throw fail(403, 'Unsupported isolated-computer request.');
+  const [, botId, action, chatId] = match;
+  if (method !== (action ? 'POST' : 'GET') || action && chatId) throw fail(403, 'Unsupported isolated-computer method.');
+  if (!action) {
+    if (body !== undefined) throw fail(400, 'Read the computer without changing settings.');
+    return { botId, chatId };
+  }
+  const keys = action === 'control' ? ['chatId', 'leaseToken', 'action', 'x', 'y', 'text', 'key'] : action === 'release' ? ['chatId', 'leaseToken'] : ['chatId'];
+  if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !keys.includes(key)) || body.chatId !== undefined && !safeId(body.chatId)) throw fail(400, 'Choose the saved bot conversation.');
+  if (['control', 'release'].includes(action) && !leaseToken(body.leaseToken)) throw fail(400, 'Take over this computer before controlling it.');
+  if (action === 'control') {
+    if (!['click', 'type', 'key'].includes(body.action)) throw fail(400, 'Choose a supported computer action.');
+    const fields = body.action === 'click' ? ['x', 'y'] : body.action === 'type' ? ['text'] : ['key'];
+    if (['x', 'y', 'text', 'key'].some(key => body[key] !== undefined && !fields.includes(key))) throw fail(400, 'Send one computer action at a time.');
+    if (body.action === 'click' && ![body.x, body.y].every(value => Number.isFinite(value) && value >= 0 && value < 16384)) throw fail(400, 'Choose a position inside the computer view.');
+    if (body.action === 'type' && (typeof body.text !== 'string' || !body.text || body.text.length > 4000 || body.text.includes('\0'))) throw fail(400, 'Type between 1 and 4,000 characters.');
+    if (body.action === 'key' && (typeof body.key !== 'string' || !/^[A-Za-z0-9+_-]{1,80}$/.test(body.key))) throw fail(400, 'Choose a supported keyboard key.');
+  }
+  return { botId, action, chatId: body.chatId };
+}
+function botSelection(body, status = 400) {
+  if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !['computerId', 'modelId', 'workspace'].includes(key))) throw fail(status, 'Choose a saved computer and model for this conversation.');
+  const selection = {};
+  for (const key of ['computerId', 'modelId']) if (body[key] !== undefined) {
+    if (!safeId(body[key])) throw fail(status, 'Choose a saved computer and model for this conversation.');
+    selection[key] = body[key];
+  }
+  if (body.workspace !== undefined) {
+    if (typeof body.workspace !== 'string' || !body.workspace.startsWith('/') || body.workspace.length > 4_000 || /[\u0000-\u001f]/.test(body.workspace)) throw fail(status, 'Enter the full workspace folder path on the selected computer.');
+    selection.workspace = body.workspace;
+  }
+  return selection;
+}
 const managementTarget = '(?:local|remote-[a-f0-9]{16,64})';
 const managementRoute = new RegExp(`^/api/model-management/targets(?:/(${managementTarget})(?:/(plan|downloads)(?:/([a-zA-Z0-9_-]{1,120})/cancel)?)?)?$`);
 
@@ -167,6 +210,8 @@ export class HostClient {
   async request(path, { method = 'GET', body, signal, deviceId } = {}) {
     const conversation = /^\/api\/companion\/conversations(?:\/[a-zA-Z0-9_-]{1,120}(?:\/(messages|stop|approval))?)?$/.exec(path);
     const bots = path === '/api/bots' || /^\/api\/bots\/[a-zA-Z0-9_-]{1,120}\/conversations$/.test(path);
+    const avatar = /^\/api\/bots\/[a-zA-Z0-9_-]{1,120}$/.test(path) && method === 'PATCH';
+    const computer = path.includes('/computer') ? computerRequest(path, method, body, deviceId) : null;
     const management = path.startsWith('/api/model-management/') ? managementRequest(path, method, body, deviceId) : null;
     // Callers cannot supply full URLs, query strings, arbitrary files, settings or operations.
     if (!/^\/api\/(setup|hardware|monitor|models|native|runtime|serving|model-providers|chat\/stream)$/.test(path)
@@ -175,12 +220,16 @@ export class HostClient {
       && path !== '/api/native/operations'
       && !/^\/api\/native\/instances\/[a-zA-Z0-9_-]+\/unload$/.test(path)
       && !/^\/api\/serving\/requests\/[a-zA-Z0-9_-]+\/cancel$/.test(path)
-      && !conversation && !management && !bots) throw fail(403, 'Unsupported host control.');
+      && !conversation && !management && !bots && !computer && !avatar) throw fail(403, 'Unsupported host control.');
     const mutation = path.endsWith('/load') || path.endsWith('/unload') || path.endsWith('/cancel') || path === '/api/native/operations' || path === '/api/chat/stream';
-    if (management) {
+    if (avatar) {
+      if (!body || Object.keys(body).length !== 1 || !body.avatarConfig) throw fail(403, 'Only bot appearance can be changed from iPhone.');
+      avatarConfig(body.avatarConfig);
+    } else if (management || computer) {
       // The paired device comes from the bridge's authenticated session, never a phone field.
     } else if (bots) {
-      if (method !== (path === '/api/bots' ? 'GET' : 'POST') || (body !== undefined && (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length))) throw fail(403, 'Unsupported bot control.');
+      if (method !== (path === '/api/bots' ? 'GET' : 'POST') || (path === '/api/bots' && body !== undefined)) throw fail(403, 'Unsupported bot control.');
+      if (body !== undefined) botSelection(body, 403);
     } else if (conversation) {
       const create = path === '/api/companion/conversations' && method === 'POST';
       if (method !== (conversation[1] || create ? 'POST' : 'GET')) throw fail(403, 'Unsupported host control method.');
@@ -189,7 +238,7 @@ export class HostClient {
     if (path === '/api/native/operations' && (body?.kind !== 'load' || !safeId(body?.args?.model) || Object.keys(body).some(key => !['kind', 'args'].includes(key)) || Object.keys(body.args).some(key => !['model', 'values'].includes(key)) || Object.keys(body.args.values ?? {}).length)) throw fail(403, 'Only an installed model can be loaded from iPhone.');
     const origin = await this.origin();
     try {
-      return await this.fetcher(`${origin}${path}`, { method, redirect: 'error', headers: { 'content-type': 'application/json', ...(this.authorization ? { authorization: this.authorization } : {}), ...(management ? { 'x-strata-companion-device': deviceId } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}), signal: signal ?? AbortSignal.timeout(management ? 170_000 : 15_000) });
+      return await this.fetcher(`${origin}${path}`, { method, redirect: 'error', headers: { 'content-type': 'application/json', ...(this.authorization ? { authorization: this.authorization } : {}), ...(management || computer ? { 'x-strata-companion-device': deviceId } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}), signal: signal ?? AbortSignal.timeout(management ? 170_000 : computer?.action === 'start' ? 90_000 : 15_000) });
     } catch (error) {
       if (!this.fixed) this.cached = null;
       if (error.name === 'AbortError') throw error;
@@ -382,6 +431,18 @@ export function publicConversation(conversation, { summary = false } = {}) {
   if (typeof mode === 'string') result.mode = shortText(mode, 40);
   const botId = conversation.preferences?.botId ?? conversation.botId;
   if (safeId(botId)) result.botId = botId;
+  const botName = conversation.preferences?.botName ?? conversation.botName;
+  if (typeof botName === 'string') result.botName = shortText(botName, 200);
+  const avatar = conversation.preferences?.botAvatar ?? conversation.botAvatar;
+  if (botAvatars.has(avatar)) result.botAvatar = avatar;
+  const face = conversation.preferences?.botAvatarConfig ?? conversation.botAvatarConfig;
+  if (face !== undefined) { try { result.botAvatarConfig = avatarConfig(face); } catch {} }
+  for (const [output, key] of [['computerName', 'botComputer'], ['botModelName', 'botModel']]) {
+    const value = conversation.preferences?.[key] ?? conversation[output];
+    if (typeof value === 'string') result[output] = shortText(value, 300);
+  }
+  const computerMode = conversation.preferences?.botComputerMode ?? conversation.computerMode;
+  if (['host', 'cua'].includes(computerMode)) result.computerMode = computerMode;
   const model = conversation.modelName ?? [...messages].reverse().find(message => typeof message.model === 'string')?.model;
   if (typeof model === 'string') result.modelName = shortText(model, 300);
   if (summary) {
@@ -414,10 +475,21 @@ function publicConversationDetail(body) {
 // remain on the Mac. Explicit projection also protects older or future hosts.
 export function publicBots(body) {
   if (!body || !Array.isArray(body.bots) || !Array.isArray(body.providers) || !Array.isArray(body.computers)) throw fail(502, 'Strata returned unreadable bot information.');
-  const providers = new Set(['claude', 'codex', 'grok', 'kimi', 'ollama']);
+  const providers = new Set(['claude', 'codex', 'grok', 'kimi', 'ollama', 'configured']);
   return {
+    selectionSupported: Array.isArray(body.models),
     bots: body.bots.slice(0, 500).filter(bot => bot && safeId(bot.id) && providers.has(bot.provider)).map(bot => ({
       id: bot.id, name: shortText(bot.name, 200) || 'Bot', provider: bot.provider, model: shortText(bot.model, 300),
+      avatar: botAvatars.has(bot.avatar) ? bot.avatar : '🤖',
+      ...(() => { try { return { avatarConfig: avatarConfig(bot.avatarConfig) }; } catch { return {}; } })(),
+      computerMode: bot.computerMode === 'cua' ? 'cua' : 'host',
+      paused: bot.paused === true,
+      ...(typeof bot.workspace === 'string' ? { workspace: shortText(bot.workspace, 4_000) } : {}),
+      ...(() => {
+        const model = bot.provider === 'configured' && typeof bot.modelSource?.connectionId === 'string' && typeof bot.modelSource?.model === 'string'
+          ? (Array.isArray(body.models) ? body.models : []).find(model => safeId(model?.id) && model.connectionId === bot.modelSource.connectionId && model.model === bot.modelSource.model) : null;
+        return model ? { modelId: model.id } : {};
+      })(),
       capabilities: ['code', 'computer', 'both'].includes(bot.capabilities) ? bot.capabilities : 'code',
       policy: ['manual', 'plan', 'bypass'].includes(bot.policy) ? bot.policy : 'manual',
       execution: { kind: ['local', 'ssh', 'sandbox'].includes(bot.execution?.kind) ? bot.execution.kind : 'local' },
@@ -431,7 +503,30 @@ export function publicBots(body) {
       id: computer.id, name: shortText(computer.name, 200), kind: shortText(computer.kind, 40),
       available: computer.available === true, detail: shortText(computer.detail, 1_000),
     })),
+    models: (Array.isArray(body.models) ? body.models : []).slice(0, 1_000).filter(model => model && safeId(model.id)).map(model => ({
+      id: model.id, name: shortText(model.name, 300), connectionName: shortText(model.connectionName, 200), model: shortText(model.model, 300), available: model.available === true,
+      ...(typeof model.detail === 'string' ? { detail: shortText(model.detail, 1_000) } : {}),
+    })),
   };
+}
+
+export function publicComputer(body) {
+  if (!body || typeof body !== 'object') throw fail(502, 'Strata returned an unreadable computer view.');
+  const result = { available: body.available === true, detail: shortText(body.detail, 2_000), computerName: shortText(body.computerName, 200) || 'Isolated computer' };
+  if (typeof body.running === 'boolean') result.running = body.running;
+  if (typeof body.cleanupConfirmed === 'boolean') result.cleanupConfirmed = body.cleanupConfirmed;
+  if (safeId(body.activeChatId)) result.activeChatId = body.activeChatId;
+  if (body.control && typeof body.control === 'object') result.control = { active: body.control.active === true, owned: body.control.owned === true,
+    ...(Number.isFinite(body.control.expiresAt) ? { expiresAt: body.control.expiresAt } : {}) };
+  if (body.image !== undefined && body.image !== null) {
+    const { width, height, image } = body;
+    if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0 || width > 8192 || height > 8192 || width * height > 16_777_216
+      || image.mimeType !== 'image/png' || typeof image.data !== 'string' || image.data.length > 11_184_812 || !/^[A-Za-z0-9+/]*={0,2}$/.test(image.data)) throw fail(502, 'Strata returned an unsupported computer image.');
+    const data = Buffer.from(image.data, 'base64');
+    if (data.length < 24 || data.length > 8_388_608 || data.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a' || data.toString('ascii', 12, 16) !== 'IHDR' || data.readUInt32BE(16) !== width || data.readUInt32BE(20) !== height) throw fail(502, 'Strata returned an invalid computer image.');
+    result.width = width; result.height = height; result.image = { mimeType: 'image/png', data: image.data };
+  }
+  return result;
 }
 
 function sendJSON(res, status, value) {
@@ -471,6 +566,19 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
   if (!Array.isArray(chats)) throw new Error('Invalid bridge chats file.');
   if (existsSync(chatFile)) chmodSync(chatFile, 0o600);
   const active = new Map();
+  // Tokens stay in memory and belong to this paired device and frozen chat target.
+  const computerLeases = new Map();
+  const computerRequests = new Set();
+  const leaseReleases = new Set();
+  async function releaseComputerLease(token, lease) {
+    computerLeases.delete(token);
+    const pending = host.json(`/api/bots/${lease.botId}/computer/release`, { method: 'POST', body: { ...(lease.chatId ? { chatId: lease.chatId } : {}), leaseToken: token }, deviceId: lease.owner, signal: AbortSignal.timeout(5_000) }).catch(() => {});
+    leaseReleases.add(pending);
+    try { await pending; } finally { leaseReleases.delete(pending); }
+  }
+  function releaseComputerLeases(owner) {
+    return Promise.all([...computerLeases].filter(([, lease]) => !owner || lease.owner === owner).map(([token, lease]) => releaseComputerLease(token, lease)));
+  }
   const invalidAuth = new Map();
   const macName = hostname().replace(/\.local$/, '');
   const adminSecret = randomBytes(24).toString('base64url');
@@ -524,6 +632,7 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
     if (typeof sessionId !== 'string' || !/^[a-f0-9]{32}$/.test(sessionId)) throw fail(400, 'Choose a paired device.');
     authority.revoke(sessionId);
     for (const request of active.values()) if (request.owner === sessionId) request.abort.abort();
+    void releaseComputerLeases(sessionId);
     return localState();
   }
   async function snapshot() {
@@ -558,7 +667,9 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
       const url = new URL(req.url, 'https://bridge.invalid');
       const path = url.pathname;
       const method = req.method;
-      if (url.search || !path.startsWith('/v1/')) throw fail(404, 'Unknown companion endpoint.');
+      const computerPath = /^\/v1\/bots\/([a-zA-Z0-9_-]{1,120})\/computer(?:\/(start|stop|takeover|control|release))?$/.exec(path);
+      const queryEntries = [...url.searchParams];
+      if (!path.startsWith('/v1/') || url.search && (!computerPath || computerPath[2] || method !== 'GET' || queryEntries.length !== 1 || queryEntries[0][0] !== 'chatId' || !safeId(queryEntries[0][1]))) throw fail(404, 'Unknown companion endpoint.');
       if (path === '/v1/pair' && method === 'POST') {
         const body = await readBody(req, 1_000);
         if (closing) throw fail(409, 'iPhone pairing is disabled.');
@@ -581,6 +692,7 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
       if (path === '/v1/session' && method === 'DELETE') {
         authority.revoke(session.id);
         for (const request of active.values()) if (request.owner === session.id) request.abort.abort();
+        await releaseComputerLeases(session.id);
         return sendJSON(res, 200, { revoked: true });
       }
       if (path === '/v1/status' && method === 'GET') {
@@ -630,18 +742,96 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
         requireCurrentSession();
         return sendJSON(res, 200, publicBots(body));
       }
+      const botAvatar = /^\/v1\/bots\/([a-zA-Z0-9_-]{1,120})\/avatar$/.exec(path);
+      if (botAvatar) {
+        if (method !== 'POST') throw fail(405, 'This appearance action is unavailable.');
+        const input = await readBody(req, 1_000);
+        if (!input || typeof input !== 'object' || Object.keys(input).length !== 1 || !input.avatarConfig) throw fail(400, 'Choose a bot appearance.');
+        const body = { avatarConfig: avatarConfig(input.avatarConfig) };
+        requireCurrentSession();
+        try { await host.json(`/api/bots/${botAvatar[1]}`, { method: 'PATCH', body }); }
+        catch (error) {
+          requireCurrentSession();
+          throw fail(error.status === 409 ? 409 : 503, error.status === 409 ? 'Wait for this bot to finish before changing its appearance.' : 'Save the bot appearance in Strata on your Mac, then try again.');
+        }
+        requireCurrentSession();
+        return sendJSON(res, 200, { saved: true });
+      }
+      if (computerPath) {
+        const action = computerPath[2];
+        const input = method === 'POST' ? await readBody(req, 45_000) : undefined;
+        const upstreamPath = path.replace(/^\/v1\//, '/api/') + (queryEntries.length ? `?chatId=${encode(queryEntries[0][1])}` : '');
+        const route = computerRequest(upstreamPath, method, input, session.id);
+        requireCurrentSession();
+        if (['control', 'release'].includes(action)) {
+          const lease = computerLeases.get(input.leaseToken);
+          if (!lease || lease.owner !== session.id || lease.botId !== route.botId || lease.chatId !== route.chatId || lease.expiresAt <= now()) throw fail(403, 'Take over this computer from this iPhone before controlling it.');
+          if (action === 'release') computerLeases.delete(input.leaseToken);
+        }
+        let finish;
+        const completed = new Promise(resolve => { finish = resolve; });
+        computerRequests.add(completed);
+        try {
+          let body;
+          try { body = await host.json(upstreamPath, { method, ...(input !== undefined ? { body: input } : {}), deviceId: session.id }); }
+          catch (error) {
+            requireCurrentSession();
+            const messages = { 400: 'Choose a supported computer action.', 403: 'Take over this computer again before controlling it.', 404: 'Update Strata on your Mac to use isolated computers.', 409: 'This computer is busy or needs attention. Check Strata on your Mac.', 501: 'Prepare isolated computers in Strata on your Mac first.' };
+            throw fail(messages[error.status] ? error.status : 503, messages[error.status] ?? 'The isolated computer is unavailable. Check Strata on your Mac.');
+          }
+          if (action === 'takeover') {
+            if (!leaseToken(body?.leaseToken)) throw fail(502, 'Strata could not confirm computer control.');
+            const lease = { owner: session.id, botId: route.botId, chatId: route.chatId, expiresAt: body.expiresAt };
+            if (!Number.isFinite(lease.expiresAt) || lease.expiresAt <= now() || lease.expiresAt > now() + 900_000 || closing || res.destroyed || !authority.sessions.some(saved => saved.id === session.id)) {
+              await releaseComputerLease(body.leaseToken, lease);
+              requireCurrentSession();
+              throw fail(409, 'Computer control was not acquired. Open the view and try again.');
+            }
+            // Validate the public frame before retaining or exporting a new grant.
+            let state;
+            try { state = publicComputer(body); } catch (error) { await releaseComputerLease(body.leaseToken, lease); throw error; }
+            for (const [token, old] of computerLeases) if (old.owner === lease.owner && old.botId === lease.botId && old.chatId === lease.chatId) computerLeases.delete(token);
+            computerLeases.set(body.leaseToken, lease);
+            return sendJSON(res, 200, { ...state, leaseToken: body.leaseToken, expiresAt: lease.expiresAt });
+          }
+          requireCurrentSession();
+          if (action === 'release') return sendJSON(res, 200, { released: true });
+          if (action === 'control') {
+            const lease = computerLeases.get(input.leaseToken);
+            const expiry = body?.expiresAt ?? body?.control?.expiresAt;
+            if (lease && Number.isFinite(expiry) && expiry > now() && expiry <= now() + 900_000) lease.expiresAt = expiry;
+            return sendJSON(res, 200, { accepted: true, ...(lease ? { expiresAt: lease.expiresAt } : {}) });
+          }
+          if (action === 'stop') {
+            for (const [token, lease] of computerLeases) if (lease.botId === route.botId && lease.chatId === route.chatId) computerLeases.delete(token);
+            return sendJSON(res, 200, { stopped: true });
+          }
+          return sendJSON(res, 200, publicComputer(body));
+        } finally { computerRequests.delete(completed); finish(); }
+      }
       const botConversation = /^\/v1\/bots\/([a-zA-Z0-9_-]{1,120})\/conversations$/.exec(path);
       if (botConversation) {
         if (method !== 'POST') throw fail(405, 'This bot action is unavailable.');
-        const input = await readBody(req, 1_000);
-        if (Object.keys(input).length) throw fail(400, 'Create a conversation using the saved bot settings on your Mac.');
+        const input = botSelection(await readBody(req, 5_000));
         requireCurrentSession();
+        if (Object.keys(input).length) {
+          let catalog;
+          try { catalog = publicBots(await host.json('/api/bots')); }
+          catch { requireCurrentSession(); throw fail(503, 'Refresh Bots to choose a saved computer and model.'); }
+          requireCurrentSession();
+          if (!catalog.selectionSupported) throw fail(409, 'Update Strata on your Mac to choose a computer or model for this conversation.');
+          const selectedBot = catalog.bots.find(bot => bot.id === botConversation[1]);
+          if (!selectedBot) throw fail(404, 'This bot is no longer available. Refresh Bots.');
+          if (selectedBot.computerMode === 'cua' && input.workspace !== undefined && input.workspace !== '/workspace') throw fail(400, 'This isolated computer uses /workspace.');
+          if (input.computerId && !catalog.computers.some(computer => computer.id === input.computerId && computer.available)) throw fail(409, 'Set up this computer in Strata on your Mac, then refresh Bots.');
+          if (input.modelId && !catalog.models.some(model => model.id === input.modelId && model.available)) throw fail(409, 'This model connection is no longer available. Refresh Bots.');
+        }
         let body;
-        try { body = await host.json(`/api/bots/${encode(botConversation[1])}/conversations`, { method: 'POST', body: {} }); }
+        try { body = await host.json(`/api/bots/${encode(botConversation[1])}/conversations`, { method: 'POST', body: input }); }
         catch (error) {
           requireCurrentSession();
           const messages = {
-            400: 'Check this bot’s settings in Strata on your Mac.',
+            400: 'Check the selected folder, computer and model, then try again.',
             401: 'Sign in to this bot’s provider in Strata on your Mac.',
             403: 'This bot is unavailable. Check its permissions in Strata on your Mac.',
             404: 'This bot is unavailable. Refresh Bots or update Strata on your Mac.',
@@ -890,6 +1080,7 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
     async close() {
       if (closing) return closed;
       closing = true;
+      const releases = releaseComputerLeases();
       const running = [...active.values()];
       for (const request of running) request.abort.abort();
       // Disabling access also ends held requests; a client cannot delay shutdown
@@ -898,7 +1089,7 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
         server.close(resolve);
         server.closeAllConnections();
       }));
-      closed = Promise.all([...listeners, ...running.map(request => request.finished)]);
+      closed = Promise.all([...listeners, releases, ...leaseReleases, ...computerRequests, ...running.map(request => request.finished)]);
       await closed;
     },
   };

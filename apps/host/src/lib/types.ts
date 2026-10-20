@@ -444,7 +444,7 @@ export interface Session {
   previewOpen?: string;
   closedPreviews?: string[];
   showcaseAgentStates?: boolean;
-  preferences?: { /** Host-owned bot identity; model and permissions come from its profile. */ botId?: string; botName?: string; nativeModelId?: string; access?: 'read' | 'write' | 'full'; thinking?: string; thinkingBudget?: number; mode?: ChatMode; useTools?:boolean; /** false: plain conversation, no tools of any kind. */ agent?: boolean; /** This chat's API model; absent or null means the local model. */ remoteModel?: RemoteModelSelection | null };
+  preferences?: { /** Host-owned bot identity; model and permissions come from its profile. */ botId?: string; botName?: string; botAvatar?: string; botComputerMode?: 'host' | 'cua'; botComputer?: string; botModel?: string; nativeModelId?: string; access?: 'read' | 'write' | 'full'; thinking?: string; thinkingBudget?: number; mode?: ChatMode; useTools?:boolean; /** false: plain conversation, no tools of any kind. */ agent?: boolean; /** This chat's API model; absent or null means the local model. */ remoteModel?: RemoteModelSelection | null };
   /** A branch does not have retained per-turn input usage. */
   statsAvailable?: boolean;
   id: string;
