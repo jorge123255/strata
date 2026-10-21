@@ -38,6 +38,8 @@
   background: transparent; color: inherit; box-shadow: none; cursor: pointer;
 }
 .cua-avatar-option > span { color: var(--st-ink-muted, #878b94); font-size: 11px; line-height: 1.2; }
+.cua-bot-avatar-picker .cua-avatar-option:disabled { opacity: .5; cursor: default; }
+.cua-avatar-unsupported { margin: 0; color: var(--st-warn-text); font-size: 12px; line-height: 1.6; }
 .cua-bot-avatar-picker .cua-avatar-option[aria-pressed="true"] { border-color: var(--st-accent, #61bcff); background: color-mix(in srgb, var(--st-accent, #61bcff) 12%, transparent); }
 .cua-bot-avatar-picker button:focus-visible { outline: 2px solid var(--st-focus, var(--st-accent, #61bcff)); outline-offset: 3px; }
 @media (max-width: 440px) { .cua-avatar-eyes { grid-template-columns: repeat(3, 58px); } }

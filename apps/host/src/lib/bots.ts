@@ -23,7 +23,7 @@ export interface Bot {
   id: string;
   name: string;
   avatar?: string;
-  avatarConfig?: { kind?: 'koala'|'fox'|'cat'|'robot'; color: 'cloud'|'violet'|'orange'|'sky'|'graphite'|'slate'; eyes: 'star'|'round'|'happy'|'calm'|'plus'|'delight'; ears: 'scalloped'|'round'|'small' };
+  avatarConfig?: { kind?: 'koala'|'fox'|'cat'|'robot'; shape?: 'orb'|'pebble'|'tile'|'diamond'|'spark'|'hexagon'|'classic'; color: 'cloud'|'violet'|'orange'|'sky'|'graphite'|'slate'; eyes: 'star'|'round'|'happy'|'calm'|'plus'|'delight'; ears: 'scalloped'|'round'|'small' };
   computerMode?: 'host' | 'cua';
   paused?: boolean;
   instructions: string;
@@ -46,7 +46,7 @@ export interface BotProvider { id: BotProviderId; name: string; available: boole
 export interface BotComputer { id: string; name: string; kind: BotExecution['kind']; available: boolean; detail: string; execution?: BotExecution }
 export interface BotConfiguredModel { id: string; connectionId: string; connectionName: string; model: string; name: string; available: boolean; detail?: string }
 export interface BotComputerCheck { available: boolean; detail: string; prepared?: boolean; providers?: unknown }
-export interface BotsSnapshot { bots: Bot[]; providers: BotProvider[]; computers: BotComputer[]; models?: BotConfiguredModel[] }
+export interface BotsSnapshot { bots: Bot[]; providers: BotProvider[]; computers: BotComputer[]; models?: BotConfiguredModel[]; avatarShapes?: string[] }
 
 /** Collaboration records contain public identities and task links, never credentials. */
 export interface BotTeamLimits { maxParallel: number; maxDepth: number; maxHops: number; maxTurns: number; maxDurationMs: number }
@@ -114,6 +114,15 @@ export function botReplySignal(botId: string, sessions: Session[]): string | und
     const reply = [...chat.messages].reverse().find(message => message.role === 'assistant' && !message.streaming && !message.error);
     if (reply) return `${chat.id}:${reply.id}`;
   }
+}
+
+/** A roster preview uses the bot's own shared messages, never another model's chat. */
+export function botRosterPreview(botId: string, sessions: Session[]): { text: string; updatedAt: string } | undefined {
+  const chat = botConversations(sessions, botId)[0];
+  if (!chat) return undefined;
+  const message = [...chat.messages].reverse().find(row => row.content?.trim());
+  const text = message?.content?.replace(/\s+/g, ' ').trim() || chat.title?.trim();
+  return text ? { text, updatedAt: chat.updatedAt } : undefined;
 }
 
 export function botSetupStepError(step: number, draft: BotDraft): string | null {

@@ -15,7 +15,7 @@ const component = new URL('../src/components/CuaBotAvatar.tsx', import.meta.url)
 const source = await readFile(component, 'utf8')
 const { code } = await transform(source.replace(/^import '\.\/CuaBotAvatar.css'\n/m, ''), { loader: 'tsx', format: 'esm', jsx: 'automatic' })
 const resolved = code.replace(/from "(react(?:\/jsx-runtime)?)"/g, (_, name) => `from ${JSON.stringify(pathToFileURL(require.resolve(name)).href)}`)
-const { CuaBotAvatar, CuaBotAvatarPicker, CUA_BOT_COLORS, CUA_BOT_EYES, CUA_BOT_EARS, CUA_BOT_KINDS, defaultCuaBotAvatar, normalizeCuaBotAvatarConfig } = await import(`data:text/javascript;base64,${Buffer.from(resolved).toString('base64')}`)
+const { CuaBotAvatar, CuaBotAvatarPicker, CUA_BOT_COLORS, CUA_BOT_EYES, CUA_BOT_EARS, CUA_BOT_KINDS, CUA_BOT_SHAPES, STRATA_GEOMETRIC_PATHS, STRATA_GEOMETRIC_EYE_GRID, defaultCuaBotAvatar, normalizeCuaBotAvatarConfig } = await import(`data:text/javascript;base64,${Buffer.from(resolved).toString('base64')}`)
 const svg = (config, rest = {}) => renderToStaticMarkup(createElement(CuaBotAvatar, { config, animated: false, ...rest }))
 
 test('React uses every exact original Swift head, ear and nose path with native radius and clipping', async () => {
@@ -138,4 +138,50 @@ test('shipped public assets retain the full original license and pinned source a
   assert.match(notice, /Copyright \(c\) 2026 Cua AI, Inc\./)
   assert.match(notice, /ef61a985d58958c6b9bc392f0ea0da785aa36ce9/)
   assert.match(notice, /FSL-1\.1-MIT/)
+})
+
+
+test('six original geometric faces match the shared native fixture without animal features', async () => {
+  const fixture = JSON.parse(await readFile(new URL('./fixtures/strata-geometric-avatars.json', import.meta.url), 'utf8'))
+  assert.deepEqual(CUA_BOT_SHAPES, fixture.shapes.map(row => row.id))
+  assert.deepEqual(STRATA_GEOMETRIC_EYE_GRID, fixture.eyeGrid)
+  for (const {id, path} of fixture.shapes) {
+    assert.equal(STRATA_GEOMETRIC_PATHS[id], path)
+    const config = {color:'sky', eyes:'round', ears:'scalloped', shape:id}
+    const output = svg(config)
+    assert.match(output, new RegExp(`data-character="${id}" data-shape="${id}"`))
+    assert.ok(output.includes(`data-face="${id}" d="${path}"`))
+    assert.match(output, /translate\(-0\.37 -0\.06\) rotate\(-12\)/)
+    assert.match(output, /translate\(0\.37 -0\.06\) rotate\(-12\)/)
+    assert.equal((output.match(/width="\.16" height="\.34" rx="\.08"/g) ?? []).length, 2)
+    assert.equal((output.match(/<path /g) ?? []).length, 2, 'Only the head and its clip path remain; no animal ears, nose or highlight.')
+    assert.equal((output.match(/<circle /g) ?? []).length, 0)
+    assert.deepEqual(normalizeCuaBotAvatarConfig(config), config)
+    assert.equal(svg({...config, ears:'small'}).replace(/cua-koala-[a-zA-Z0-9_-]+/g,'clip'), output.replace(/cua-koala-[a-zA-Z0-9_-]+/g,'clip'), 'Ears are retained in data but do not change a geometric face.')
+  }
+})
+
+test('geometric character selection is capability gated and animal selection explicitly clears it', () => {
+  const face = {color:'orange', eyes:'calm', ears:'small'}
+  function buttons(value, shapes) {
+    const tree = CuaBotAvatarPicker({value,shapes,onChange: config => changes.push(config)})
+    const result=[]
+    function walk(node) { if(!node||typeof node!=='object') return; if(Array.isArray(node)) return node.forEach(walk); if(node.type==='button') result.push(node); walk(node.props?.children) }
+    walk(tree); return result
+  }
+  const changes=[]
+  assert.equal(buttons(face).some(row => row.props['aria-label']==='Orb'), false)
+  const geometric = {...face, kind:'koala', shape:'orb'}
+  const supported = buttons(geometric, CUA_BOT_SHAPES)
+  assert.equal(supported.filter(row=>row.props['aria-pressed']).length, 3, 'Character, color and eyes; ear controls are hidden.')
+  assert.equal(supported.some(row=>row.props['aria-label']==='Small'), false)
+  supported.find(row=>row.props['aria-label']==='Fox').props.onClick()
+  supported.find(row=>row.props['aria-label']==='Koala').props.onClick()
+  buttons(face, CUA_BOT_SHAPES).find(row=>row.props['aria-label']==='Tile').props.onClick()
+  assert.deepEqual(changes, [{...face,shape:'classic',kind:'fox'}, {...face,shape:'classic'}, {...face,kind:'koala',shape:'tile'}])
+  const unavailable = buttons(geometric)
+  assert.equal(unavailable.find(row=>row.props['aria-label']==='Orb').props.disabled, true)
+  assert.equal(unavailable.some(row=>row.props['aria-label']==='Tile'), false)
+  assert.equal(unavailable.some(row=>row.props['aria-label']==='Classic'), false)
+  assert.deepEqual(normalizeCuaBotAvatarConfig({...face,shape:'untrusted'}),face)
 })

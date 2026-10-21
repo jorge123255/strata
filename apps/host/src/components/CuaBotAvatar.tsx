@@ -9,9 +9,12 @@ export const CUA_BOT_COLORS = ['cloud', 'violet', 'orange', 'sky', 'graphite', '
 export const CUA_BOT_EYES = ['star', 'round', 'happy', 'calm', 'plus', 'delight'] as const
 export const CUA_BOT_EARS = ['scalloped', 'round', 'small'] as const
 export const CUA_BOT_KINDS = ['koala', 'fox', 'cat', 'robot'] as const
+export const CUA_BOT_SHAPES = ['orb', 'pebble', 'tile', 'diamond', 'spark', 'hexagon'] as const
 export type CuaBotAvatarConfig = {
   /** Missing on legacy faces; keep their serialized form unchanged. */
   kind?: typeof CUA_BOT_KINDS[number]
+  /** Classic explicitly clears a geometric face when editing a saved profile. */
+  shape?: typeof CUA_BOT_SHAPES[number] | 'classic'
   color: typeof CUA_BOT_COLORS[number]
   eyes: typeof CUA_BOT_EYES[number]
   ears: typeof CUA_BOT_EARS[number]
@@ -47,6 +50,7 @@ export function normalizeCuaBotAvatarConfig(value: unknown, name = ''): CuaBotAv
   const config = value as Record<string, unknown>
   return {
     ...(CUA_BOT_KINDS.includes(config.kind as typeof CUA_BOT_KINDS[number]) && config.kind !== 'koala' ? { kind: config.kind as CuaBotAvatarConfig['kind'] } : {}),
+    ...(CUA_BOT_SHAPES.includes(config.shape as typeof CUA_BOT_SHAPES[number]) || config.shape === 'classic' ? { shape: config.shape as CuaBotAvatarConfig['shape'] } : {}),
     color: CUA_BOT_COLORS.find(item => item === config.color) ?? fallback.color,
     eyes: CUA_BOT_EYES.find(item => item === config.eyes) ?? fallback.eyes,
     ears: CUA_BOT_EARS.find(item => item === config.ears) ?? fallback.ears,
@@ -60,6 +64,17 @@ const characterHeads = {
   cat: 'M-.98 -.44Q-.98-.88-.56-.92Q0-1 .56-.92Q.98-.88.98-.44L.95 .27Q.87 .83 0 .87Q-.87 .83-.95 .27Z',
   robot: 'M-.73-.87H.73Q1-.87 1-.6V.57Q1 .84.73 .84H-.73Q-1 .84-1 .57V-.6Q-1-.87-.73-.87Z',
 } as const
+
+// Original Strata geometric faces; parity fixture: tests/fixtures/strata-geometric-avatars.json.
+export const STRATA_GEOMETRIC_PATHS = {
+  orb: "M0-1.04C.58-1.04 1.04-.58 1.04 0C1.04.58.58 1.04 0 1.04C-.58 1.04-1.04.58-1.04 0C-1.04-.58-.58-1.04 0-1.04Z",
+  pebble: "M-.81-.65C-.47-1.09.21-1.12.68-.77C1.09-.46 1.15.19.83.67C.53 1.12-.18 1.15-.65.87C-1.12.59-1.16-.19-.81-.65Z",
+  tile: "M-.65-1.02H.65Q1.02-1.02 1.02-.65V.65Q1.02 1.02.65 1.02H-.65Q-1.02 1.02-1.02.65V-.65Q-1.02-1.02-.65-1.02Z",
+  diamond: "M-.19-1.01Q0-1.2.19-1.01L1.01-.19Q1.2 0 1.01.19L.19 1.01Q0 1.2-.19 1.01L-1.01.19Q-1.2 0-1.01-.19Z",
+  spark: "M0-1.13L.31-.74L.8-.8L.74-.31L1.13 0L.74.31L.8.8L.31.74L0 1.13L-.31.74L-.8.8L-.74.31L-1.13 0L-.74-.31L-.8-.8L-.31-.74Z",
+  hexagon: "M-.43-1H.43Q.59-1 .67-.86L1.1-.14Q1.18 0 1.1.14L.67.86Q.59 1 .43 1H-.43Q-.59 1-.67.86L-1.1.14Q-1.18 0-1.1-.14L-.67-.86Q-.59-1-.43-1Z",
+} as const
+export const STRATA_GEOMETRIC_EYE_GRID = { leftX: -.37, rightX: .37, y: -.06 } as const
 
 type Glyph = 'star' | 'round' | 'dash' | 'caret' | 'plus' | 'cross' | 'greater' | 'less' | 'slash' | 'backslash'
 const restingEyes: Record<CuaBotAvatarConfig['eyes'], readonly [Glyph, Glyph]> = {
@@ -93,8 +108,9 @@ const glyphs: Record<Glyph, { path?: string; width: number; rotate: number; scal
   backslash: { path: 'M-.11 -.21L.11 .21', width: .08, rotate: 0, scale: 1.1 },
 }
 
-function Eye({ glyph, side, spin }: { glyph: Glyph; side: 'left' | 'right'; spin: number }) {
-  const eye = side === 'left' ? { x: -.53029, y: -.04019 } : { x: .53510, y: -.04055 }
+function Eye({ glyph, side, spin, geometric = false }: { glyph: Glyph; side: 'left' | 'right'; spin: number; geometric?: boolean }) {
+  const eye = geometric ? { x: side === 'left' ? STRATA_GEOMETRIC_EYE_GRID.leftX : STRATA_GEOMETRIC_EYE_GRID.rightX, y: STRATA_GEOMETRIC_EYE_GRID.y } : side === 'left' ? { x: -.53029, y: -.04019 } : { x: .53510, y: -.04055 }
+  if (geometric && glyph === 'round') return <g data-eye={side} data-glyph={glyph} transform={`translate(${eye.x} ${eye.y}) rotate(-12)`}><rect className="cua-avatar-eye-glyph" x="-.08" y="-.17" width=".16" height=".34" rx=".08" fill="currentColor" stroke="none"/></g>
   const style = glyphs[glyph]
   const angle = style.rotate + (glyph === 'plus' ? spin : 0)
   return <g data-eye={side} data-glyph={glyph} transform={`translate(${eye.x} ${eye.y}) rotate(${angle}) scale(${style.scale * .94409} ${style.scale})`} strokeWidth={style.width}>
@@ -205,16 +221,18 @@ export function CuaBotAvatar({ config: supplied, name = '', size = 48, className
   const spin = mood === 'working' ? 15 : 0
   const colorName = config.color[0].toUpperCase() + config.color.slice(1)
   const kind = config.kind ?? 'koala'
-  const head = kind === 'koala' ? geometry.head : characterHeads[kind]
+  const geometric = kind === 'koala' && CUA_BOT_SHAPES.includes(config.shape as typeof CUA_BOT_SHAPES[number])
+  const shape = geometric ? config.shape as typeof CUA_BOT_SHAPES[number] : undefined
+  const head = shape ? STRATA_GEOMETRIC_PATHS[shape] : kind === 'koala' ? geometry.head : characterHeads[kind]
   const earSize = config.ears === 'small' ? .78 : config.ears === 'round' ? .92 : 1
   return <svg ref={motion.ref} className={`cua-bot-avatar ${className}`.trim()} width={dimension} height={dimension}
     viewBox="-1.425 -1.485 2.85 2.85" fill="none" role="img"
     data-mood={mood} data-motion={motion.active ? 'active' : 'paused'} onPointerMove={motion.gaze} onPointerLeave={motion.resetGaze} onPointerEnter={motion.blink} onPointerDown={motion.flourish}
-    data-character={kind} aria-label={`${name ? `${name}, ` : ''}${colorName} ${kind}, ${mood === 'needsApproval' ? 'needs approval' : mood}`}>
+    data-character={shape ?? kind} data-shape={shape} aria-label={`${name ? `${name}, ` : ''}${colorName} ${shape ?? kind}, ${mood === 'needsApproval' ? 'needs approval' : mood}`}>
     <defs><clipPath id={clipID}><path d={head} /></clipPath></defs>
     <g className="cua-avatar-body">
     <g fill={colors.face}>
-      {kind === 'koala' ? ([-1, 1] as const).map(side => config.ears === 'round'
+      {!geometric && (kind === 'koala' ? ([-1, 1] as const).map(side => config.ears === 'round'
         ? <circle key={side} cx={side * .9023 * .97} cy={-.4916 * 1.02} r={Math.sqrt(.598 / Math.PI)} />
         : <path key={side} d={geometry.ear} transform={`translate(${side * .9023 * (config.ears === 'small' ? .86 : 1)} ${-.4916 * (config.ears === 'small' ? .86 : 1)}) scale(${side * (config.ears === 'small' ? .72 : 1)} ${config.ears === 'small' ? .72 : 1})`} />)
         : ([-1, 1] as const).map(side => <g key={side} transform={`scale(${side} 1)`}>
@@ -223,19 +241,19 @@ export function CuaBotAvatar({ config: supplied, name = '', size = 48, className
               <path d={config.ears === 'round' ? 'M-.33 .15Q-.48-.66-.04-.61Q.44-.61.33 .33Z' : 'M-.34 .15L.22-.69Q.32-.78.34-.59L.4 .36Z'} />
               <path d="M-.13 .05L.2-.44L.25 .2Z" fill={colors.nose} opacity=".4" />
             </g>}
-        </g>)}
-      <path d={head} />
+        </g>))}
+      <path data-face={shape ?? kind} d={head} />
     </g>
     <g clipPath={`url(#${clipID})`}>
-      <path d="M-.83-.5Q-.68-.83-.23-.82" stroke="white" strokeOpacity=".18" strokeWidth=".1" strokeLinecap="round" />
+      {!geometric && <path d="M-.83-.5Q-.68-.83-.23-.82" stroke="white" strokeOpacity=".18" strokeWidth=".1" strokeLinecap="round" />}
       {kind === 'fox' && <path d="M-1 .02Q-.59-.04 0 .39Q.59-.04 1 .02L1 .95H-1Z" fill="white" opacity=".52" />}
       {kind === 'cat' && <g stroke={colors.nose} strokeWidth=".045" strokeLinecap="round" opacity=".65"><path d="M-.54 .34L-.88 .25M-.53 .45L-.9 .47M.54 .34L.88 .25M.53 .45L.9 .47" /></g>}
-      {kind === 'koala' ? <path d={geometry.nose} fill={colors.nose} />
+      {!geometric && (kind === 'koala' ? <path d={geometry.nose} fill={colors.nose} />
         : kind === 'robot' ? <rect x="-.28" y=".34" width=".56" height=".13" rx=".065" fill={colors.nose} />
-          : <><path d="M-.15 .26Q0 .18.15 .26L0 .43Z" fill={colors.nose} /><path d="M0 .42V.52M-.14 .52Q0 .65.14 .52" stroke={colors.nose} strokeWidth=".04" strokeLinecap="round" /></>}
-      <g className="cua-avatar-gaze"><g className="cua-avatar-blink" stroke={colors.eye} strokeLinecap="butt" strokeLinejoin="miter">
-        <Eye glyph={left} side="left" spin={spin} />
-        <Eye glyph={right} side="right" spin={spin} />
+          : <><path d="M-.15 .26Q0 .18.15 .26L0 .43Z" fill={colors.nose} /><path d="M0 .42V.52M-.14 .52Q0 .65.14 .52" stroke={colors.nose} strokeWidth=".04" strokeLinecap="round" /></>)}
+      <g className="cua-avatar-gaze"><g className="cua-avatar-blink" color={colors.eye} stroke={colors.eye} strokeLinecap="butt" strokeLinejoin="miter">
+        <Eye glyph={left} side="left" spin={spin} geometric={geometric} />
+        <Eye glyph={right} side="right" spin={spin} geometric={geometric} />
       </g></g>
     </g>
     </g>
@@ -247,19 +265,33 @@ export interface CuaBotAvatarPickerProps {
   onChange: (config: CuaBotAvatarConfig) => void
   name?: string
   className?: string
+  /** Missing on older hosts; their existing faces remain editable. */
+  shapes?: readonly string[]
 }
 
 const label = (value: string) => value[0].toUpperCase() + value.slice(1)
 
-export function CuaBotAvatarPicker({ value, onChange, name = '', className = '' }: CuaBotAvatarPickerProps) {
+export function CuaBotAvatarPicker({ value, onChange, name = '', className = '', shapes = [] }: CuaBotAvatarPickerProps) {
   const config = normalizeCuaBotAvatarConfig(value, name)
+  const geometric = config.kind === undefined || config.kind === 'koala' ? CUA_BOT_SHAPES.includes(config.shape as typeof CUA_BOT_SHAPES[number]) : false
+  const choices = CUA_BOT_SHAPES.filter(shape => shapes.includes(shape) || shape === config.shape)
+  const chooseAnimal = (kind: typeof CUA_BOT_KINDS[number]) => {
+    const { kind: _, shape: __, ...face } = config
+    // Explicitly clear a saved shape, including one introduced by a future host.
+    onChange({ ...face, ...(value.shape ? { shape: 'classic' as const } : {}), ...(kind !== 'koala' ? { kind } : {}) })
+  }
   return <div className={`cua-bot-avatar-picker ${className}`.trim()}>
     <fieldset><legend>Character</legend><div className="cua-avatar-characters">
       {CUA_BOT_KINDS.map(kind => <button type="button" key={kind} className="cua-avatar-option"
-        aria-label={label(kind)} aria-pressed={(config.kind ?? 'koala') === kind} onClick={() => { const { kind: _, ...face } = config; onChange(kind === 'koala' ? face : { ...face, kind }) }}>
-        <CuaBotAvatar config={{ ...config, kind }} size={46} animated={false} /><span>{label(kind)}</span>
+        aria-label={label(kind)} aria-pressed={!geometric && (config.kind ?? 'koala') === kind} onClick={() => chooseAnimal(kind)}>
+        <CuaBotAvatar config={{ ...config, kind, shape: undefined }} size={46} animated={false} /><span>{label(kind)}</span>
+      </button>)}
+      {choices.map(shape => <button type="button" key={shape} className="cua-avatar-option"
+        aria-label={label(shape)} aria-pressed={geometric && config.shape === shape} disabled={!shapes.includes(shape)} onClick={() => onChange({ ...config, kind: 'koala', shape })}>
+        <CuaBotAvatar config={{ ...config, kind: 'koala', shape }} size={46} animated={false}/><span>{label(shape)}</span>
       </button>)}
     </div></fieldset>
+    {geometric && !shapes.includes(config.shape!) ? <p className="cua-avatar-unsupported" role="status">This Strata host does not support this character. Choose an animal to save your changes.</p> : null}
     <fieldset><legend>Color</legend><div className="cua-avatar-colors">
       {CUA_BOT_COLORS.map(color => <button type="button" key={color} className="cua-avatar-color"
         aria-label={label(color)} aria-pressed={config.color === color} title={label(color)}
@@ -271,11 +303,11 @@ export function CuaBotAvatarPicker({ value, onChange, name = '', className = '' 
         <CuaBotAvatar config={{ ...config, eyes }} size={46} animated={false} /><span>{label(eyes)}</span>
       </button>)}
     </div></fieldset>
-    <fieldset><legend>Ears</legend><div className="cua-avatar-ears">
+    {!geometric ? <fieldset><legend>Ears</legend><div className="cua-avatar-ears">
       {CUA_BOT_EARS.map(ears => <button type="button" key={ears} className="cua-avatar-option"
         aria-label={label(ears)} aria-pressed={config.ears === ears} onClick={() => onChange({ ...config, ears })}>
         <CuaBotAvatar config={{ ...config, ears }} size={46} animated={false} /><span>{label(ears)}</span>
       </button>)}
-    </div></fieldset>
+    </div></fieldset> : null}
   </div>
 }

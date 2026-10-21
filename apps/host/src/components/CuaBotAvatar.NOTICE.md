@@ -20,3 +20,9 @@ parent and does not perform requests or write configuration itself.
 Strata adds a subtle highlight to the retained koala and original fox, cat and
 robot vector characters using the same palette, eye grid and expressions. The
 optional `kind` field defaults to koala; legacy three-field faces stay unchanged.
+
+The optional `shape` field adds six original Strata geometric characters: orb,
+pebble, tile, diamond, spark and hexagon. Their paths are drawn from basic
+geometric forms and recorded in `tests/fixtures/strata-geometric-avatars.json`.
+They use a separate eye grid and no animal ears, nose or highlight. No BotAI
+or recovered third-party character paths are included.

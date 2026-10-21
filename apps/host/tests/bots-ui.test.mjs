@@ -124,3 +124,15 @@ test('new reply signals are stable across streamed tokens and identify one compl
   assert.equal(bots.botReplySignal('bot-b', [completed]), undefined);
   assert.equal(bots.botReplySignal('bot-a', [{...completed,messages:[{...completed.messages[0],error:'Failed'}]}]), undefined);
 });
+
+
+test('roster previews belong to the latest bot conversation and use actual shared message text', () => {
+  const sessions = [
+    {id:'other',updatedAt:'2026-10-22',title:'Other title',preferences:{botId:'other'},messages:[{role:'assistant',content:'Do not borrow this preview.'}]},
+    {id:'older',updatedAt:'2026-10-19',title:'Old title',preferences:{botId:'own'},messages:[{role:'assistant',content:'Old reply.'}]},
+    {id:'latest',updatedAt:'2026-10-21',title:'Latest title',preferences:{botId:'own'},messages:[{role:'user',content:' Check\n this. '},{role:'assistant',content:' Actual shared\n reply. '}]},
+  ];
+  assert.deepEqual(bots.botRosterPreview('own',sessions),{text:'Actual shared reply.',updatedAt:'2026-10-21'});
+  assert.equal(bots.botRosterPreview('missing',sessions),undefined);
+  assert.deepEqual(bots.botRosterPreview('own',[{...sessions[2],messages:[]}]),{text:'Latest title',updatedAt:'2026-10-21'});
+});

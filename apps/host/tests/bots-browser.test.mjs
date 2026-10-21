@@ -30,7 +30,7 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
   const computers = [{ id: 'local', kind: 'local', name: 'This Mac', available: true, detail: 'Local execution computer.' }, { id: 'ssh_garage', kind: 'ssh', name: 'Garage server', available: true, detail: 'Saved SSH computer.', execution: { kind: 'ssh', host: 'garage', user: 'operator', port: 2222 } }];
   const models = [{ id: 'bm_maya', connectionId: 'maya', connectionName: 'My Maya', model: 'Maya-S24', name: 'Maya-S24', available: true }, { id: 'bm_strata', connectionId: 'strata', connectionName: 'Remote Strata', model: 'coder', name: 'Coder', available: true }, { id: 'bm_unsupported', connectionId: 'unsupported', connectionName: 'Unsupported protocol', model: 'other', name: 'Other', available: false }];
   const conversations = [{ id: 'existing-chat', title: 'Existing work', updatedAt: at, createdAt: at, workspace: '/workspace', preferences: { botId: 'existing', botName: 'Project partner', botComputerMode: 'cua', botComputer: 'Frozen SSH computer', botModel: 'Frozen model', mode: 'manual' }, messages: [], active: false }];
-  let failWork = false, blockWork = false, allowCreatedConversation = false;
+  let failWork = false, blockWork = false, allowCreatedConversation = false, shapesSupported = true;
   const workWaiters = [];
   const work = { memory: 'Remember these fixture notes.', rules: [{ id: 'rule-existing', action: 'Ask before sending messages', behavior: 'ask' }], routines: [], outputs: [{ path: 'outputs/report.md', name: 'report.md', size: 22, modified: at }], files: [] };
   const calls = [], errors = [], blocked = [], unexpected = [];
@@ -58,7 +58,7 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
     if (path === '/api/bots/existing/computer' && req.method === 'GET') return respond(res, { available: true, running: false, detail: 'Prepared. Start the isolated computer explicitly.' });
     if (path === '/api/bots/created/computer' && req.method === 'GET') return respond(res, { available: true, running: false, detail: 'The private CUA runtime is ready. The desktop is stopped.' });
     if (path === '/api/bots/computers/prepare-cua') return respond(res, { available: true, prepared: true, detail: 'The private CUA runtime is ready.' });
-    if (path === '/api/bots' && req.method === 'GET') return respond(res, { bots: profiles, providers, computers, models });
+    if (path === '/api/bots' && req.method === 'GET') return respond(res, { bots: profiles, providers, computers, models, ...(shapesSupported ? {avatarShapes: ['orb','pebble','tile','diamond','spark','hexagon']} : {}) });
     if (path === '/api/bots' && req.method === 'POST') { const bot = { ...body, id: 'created', createdAt: at, updatedAt: at, available: false }; profiles = [bot, ...profiles]; return respond(res, { bot }); }
     if (path === '/api/bots/created' && req.method === 'PATCH') { const bot = { ...profiles.find(profile => profile.id === 'created'), ...body }; profiles = profiles.map(profile => profile.id === 'created' ? bot : profile); return respond(res, { bot }); }
     if (path === '/api/bots/computers/check') return respond(res, { available: false, detail: 'The SSH computer needs the private bot helper.' });
@@ -124,6 +124,11 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
   await rules.getByRole('textbox', { name: 'Rule 1', exact: true }).waitFor();
   assert.equal(await rules.getByRole('textbox', { name: 'Rule 1', exact: true }).inputValue(), 'Ask before sending messages');
   await rules.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await page.getByRole('complementary',{name:'Project partner profile'}).getByRole('button',{name:/^Chat history/}).click();
+  const history=page.getByRole('dialog',{name:'Chat history',exact:true});
+  await history.getByRole('button',{name:'Open conversation Existing work',exact:true}).click();
+  await history.waitFor({state:'hidden'});
+  assert.equal(await page.locator('[data-testid=shared-chat]').getAttribute('data-session'),'existing-chat');
   const beforeCreate = calls.filter(call => call.method !== 'GET').length;
   await page.getByRole('button', { name: 'New bot', exact: true }).click();
   await page.getByRole('heading', { name: 'Meet your bot', exact: true }).waitFor();
@@ -136,6 +141,11 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
   await page.getByRole('button', { name: 'Plus', exact: true }).click();
   await page.getByRole('button', { name: 'Small', exact: true }).click();
   await screenshot('embedded-bot-character-picker');
+  for (const shape of ['Orb','Pebble','Tile','Diamond','Spark','Hexagon']) await page.getByRole('button',{name:shape,exact:true}).waitFor();
+  await page.getByRole('button',{name:'Orb',exact:true}).click();
+  assert.equal(await page.getByRole('button',{name:'Small',exact:true}).count(),0,'Geometric characters have no ear controls.');
+  assert.equal(await page.locator('.cua-new-identity > svg').getAttribute('data-shape'),'orb');
+  await screenshot('embedded-bot-geometric-picker');
   await page.getByRole('button', { name: 'Continue', exact: true }).click();
   await page.getByRole('combobox', { name: 'Bot provider', exact: true }).click();
   for (const provider of providers) await page.getByRole('option', { name: provider.name, exact: true }).waitFor();
@@ -180,7 +190,7 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
   assert.deepEqual(created.body.execution, { kind: 'ssh', host: 'my-server', user: 'another-user', port: 2222 });
   assert.equal(created.body.provider, 'grok'); assert.equal(created.body.capabilities, 'both'); assert.equal(created.body.policy, 'manual');
   assert.equal(created.body.computerMode, 'cua'); assert.equal(created.body.workspace, '/workspace');
-  assert.deepEqual(created.body.avatarConfig, { color: 'orange', eyes: 'plus', ears: 'small', kind: 'fox' });
+  assert.deepEqual(created.body.avatarConfig, { color: 'orange', eyes: 'plus', ears: 'small', kind: 'koala', shape:'orb' });
   assert.equal(calls.some(call => call.path.endsWith('/conversations') && call.method === 'POST'), false, 'Saving a profile starts no conversation.');
   const profile = page.getByRole('complementary', { name: 'Remote developer profile' });
   await profile.getByRole('button', { name: 'Bot settings', exact: true }).click();
@@ -193,7 +203,7 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
   await editor.getByRole('radio', { name: 'Bypass', exact: true }).check();
   await editor.getByRole('button', { name: 'Save settings', exact: true }).click();
   await editor.waitFor({ state: 'hidden' });
-  await profile.getByText('My Maya · Maya-S24', { exact: true }).waitFor();
+  await profile.getByRole('region', {name:'Customize',exact:true}).getByText('My Maya · Maya-S24', { exact: true }).waitFor();
   const changed = calls.find(call => call.path === '/api/bots/created' && call.method === 'PATCH');
   assert.equal(changed.body.provider, 'configured'); assert.deepEqual(changed.body.modelSource, { connectionId: 'maya', model: 'Maya-S24' });
   assert.deepEqual(changed.body.avatarConfig, created.body.avatarConfig);
@@ -215,9 +225,9 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
   allowCreatedConversation = true;
   await chooser.getByRole('button', { name: 'Create conversation', exact: true }).click();
   await page.waitForFunction(() => document.querySelector('[data-testid="shared-chat"]')?.dataset.session === 'fox-shared-chat');
-  const frozenFox = await page.evaluate(() => window.botFixtureCalls.filter(call => call[0] === 'adopt' && call[1].id === 'fox-shared-chat').at(-1)[1].preferences.botAvatarConfig);
-  assert.deepEqual(frozenFox, created.body.avatarConfig, 'A new shared chat retains the selected character configuration.');
-  await page.getByRole('complementary', { name: 'Remote developer profile' }).locator('svg[data-character="fox"]').waitFor();
+  const frozenCharacter = await page.evaluate(() => window.botFixtureCalls.filter(call => call[0] === 'adopt' && call[1].id === 'fox-shared-chat').at(-1)[1].preferences.botAvatarConfig);
+  assert.deepEqual(frozenCharacter, created.body.avatarConfig, 'A new shared chat retains the selected character configuration.');
+  await page.getByRole('complementary', { name: 'Remote developer profile' }).locator('svg[data-character="orb"]').waitFor();
   await screenshot('embedded-bot-fox-profile');
   assert.equal(conversations.find(chat => chat.id === 'fox-shared-chat').preferences.mode, 'plan');
   assert.equal(profiles.find(bot => bot.id === 'created').policy, 'bypass', 'A per-conversation choice never rewrites the profile.');
@@ -275,6 +285,29 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
   await compactProfile.waitFor({ state: 'hidden' });
   assert.equal(await page.getByTestId('shared-chat').getAttribute('data-session'), 'existing-chat', 'Explicit profile controls preserve the conversation.');
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'The embedded section fits a narrow view.');
+  // A newer saved face viewed through an old host stays visible, but cannot be silently overwritten.
+  await page.setViewportSize({width:1440,height:1000});
+  shapesSupported=false;
+  await page.getByRole('button',{name:'Refresh bots and shared work',exact:true}).click();
+  await page.getByRole('complementary',{name:'Bots navigation',exact:true}).getByRole('button',{name:'Open Remote developer',exact:true}).click();
+  await page.getByRole('button',{name:'Show profile',exact:true}).click();
+  await page.getByRole('complementary',{name:'Remote developer profile',exact:true}).getByRole('button',{name:'Bot settings',exact:true}).click();
+  const oldHostEditor=page.getByRole('dialog',{name:'Remote developer’s settings',exact:true});
+  const beforeUnsupportedSave=calls.filter(call=>call.path==='/api/bots/created'&&call.method==='PATCH').length;
+  await oldHostEditor.getByRole('button',{name:'Save settings',exact:true}).click();
+  await oldHostEditor.getByRole('alert').getByText('This Strata host does not support this character. Choose an animal to save your changes.',{exact:true}).waitFor();
+  assert.equal(calls.filter(call=>call.path==='/api/bots/created'&&call.method==='PATCH').length,beforeUnsupportedSave);
+  await oldHostEditor.getByText('Edit look',{exact:true}).click();
+  assert.equal(await oldHostEditor.getByRole('button',{name:'Orb',exact:true}).isDisabled(),true);
+  assert.equal(await oldHostEditor.getByRole('button',{name:'Tile',exact:true}).count(),0);
+  await oldHostEditor.getByRole('button',{name:'Fox',exact:true}).click();
+  assert.equal(await oldHostEditor.getByRole('button',{name:'Small',exact:true}).getAttribute('aria-pressed'),'true');
+  await oldHostEditor.getByRole('button',{name:'Save settings',exact:true}).click();
+  await oldHostEditor.waitFor({state:'hidden'});
+  const clearedForOldHost=calls.filter(call=>call.path==='/api/bots/created'&&call.method==='PATCH').at(-1);
+  assert.equal(clearedForOldHost.body.avatarConfig.kind,'fox');
+  assert.equal(Object.hasOwn(clearedForOldHost.body.avatarConfig,'shape'),false,'Old hosts never receive the new classic sentinel.');
+  assert.equal(conversations.find(chat=>chat.id==='fox-shared-chat').preferences.botAvatarConfig.shape,'orb','Old conversation keeps its original geometric face.');
   assert.equal(calls.some(call => ['/messages', '/model-providers', '/native', '/desktop'].some(segment => call.path.includes(segment)) || call.path.includes('/computer/') && ['start', 'takeover', 'control', 'stop'].some(action => call.path.endsWith('/' + action))), false, 'No provider prompt, serving change, app launch or VM was started.');
   assert.deepEqual(errors, []); assert.deepEqual(blocked, []); assert.deepEqual(unexpected, []);
   const directory = process.env.STRATA_BOTS_UI_EVIDENCE_DIR;
