@@ -179,10 +179,12 @@ class HelperTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(result["running"])
             options = next(c[1] for c in sdk.calls if c[0] == "create")
             self.assertEqual((options.on, options.kind, options.runtime, options.image, options.cpus, options.memory_mb), ("local", "vm", "qemu", bridge.IMAGE, 2, 4096))
-            command = next(c[1] for c in sdk.calls if c[0] == "guest-setup" and "mkdir" in c[1].args)
+            command = next(c[1] for c in sdk.calls if c[0] == "guest-setup" and "python3" in c[1].args)
             self.assertIn("/workspace", command.args)
             self.assertEqual(command.program, "sudo")
-            self.assertEqual(command.args, ["-n", "mkdir", "-p", "/workspace"])
+            self.assertEqual(command.args[:3], ["-n", "python3", "-c"])
+            self.assertEqual(command.args[3], bridge.WORKSPACE_SETUP)
+            self.assertEqual(command.args[-3:], ["/workspace", "1000", "1000"])
             self.assertFalse(hasattr(command, "user"))
             self.assertEqual(result["frame"]["width"], 800)
 
@@ -357,12 +359,46 @@ class HelperTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(marker.exists())
             self.assertFalse(target.cleanup_confirmed)
 
+    async def test_selected_guest_subfolder_controls_real_file_root_and_shell_cwd(self):
+        with tempfile.TemporaryDirectory() as root:
+            sdk = FakeSDK(); sdk.exists = True
+            target = instance(sdk, root, operation="tool", name="run_command", args={"command": "pwd"}, workspace="/workspace/team-project", start=True)
+            await target.handle()
+            setup = next(c[1] for c in sdk.calls if c[0] == "guest-setup" and "python3" in c[1].args)
+            self.assertEqual(setup.args[-3:], ["/workspace/team-project", "1000", "1000"])
+            self.assertIn("/workspace/team-project", sdk.last_command.args[-1])
+            self.assertIn("os.chdir(r)", "\n".join(sdk.last_command.args))
+            self.assertNotIn("os.chdir('/workspace')", "\n".join(sdk.last_command.args))
+            sdk2 = FakeSDK(); sdk2.exists = True
+            target = instance(sdk2, root, operation="tool", name="read_file", args={"path": "marker"}, workspace="/workspace/team-project")
+            # Capture argv rather than fabricate file output. No guest runs.
+            captured = []
+            async def command(env, program, args, *rest):
+                captured.append((program, args)); return NS(exit=NS(success=True), stdout=b'{"text":"marker"}')
+            target.command = command
+            await target.handle()
+            self.assertEqual(captured[-1][1][-2:], ["/workspace/team-project", "/workspace"])
+            for path in ("/Users/owner/botai", "/workspace/../escape", "/workspace//project", "/workspace/./project", "/workspaceX"):
+                with self.assertRaisesRegex(ValueError, "contained subfolder"):
+                    instance(FakeSDK(), root, operation="state", workspace=path)
+
 class FileTests(unittest.TestCase):
     def run_file(self, root, name, args):
         output = io.StringIO()
-        with patch.object(sys, "argv", ["guest-file-tool", json.dumps([name, args]), str(root)]), contextlib.redirect_stdout(output):
+        with patch.object(sys, "argv", ["guest-file-tool", json.dumps([name, args]), str(root.resolve()), str(root.resolve())]), contextlib.redirect_stdout(output):
             exec(compile(bridge.FILE_SCRIPT, "<actual-guest-file-tool>", "exec"), {})
         return json.loads(output.getvalue())
+
+    def test_actual_work_folder_setup_refuses_symlink_components_and_prepares_only_selected_folder(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve(); base = root / "workspace"; outside = root / "outside"; base.mkdir(); outside.mkdir()
+            (base / "escape").symlink_to(outside, target_is_directory=True)
+            def setup(path):
+                with patch.object(sys, "argv", ["guest-workspace-setup", str(path), str(bridge.os.getuid()), str(bridge.os.getgid())]):
+                    exec(compile(bridge.WORKSPACE_SETUP, "<actual-guest-workspace-setup>", "exec"), {})
+            with self.assertRaises(OSError): setup(base / "escape" / "must-not-exist")
+            self.assertFalse((outside / "must-not-exist").exists())
+            selected = base / "team" / "project"; setup(selected); self.assertTrue(selected.is_dir())
 
     def test_actual_guest_file_program_confines_symlinks_absolute_and_traversal(self):
         with tempfile.TemporaryDirectory() as temp:

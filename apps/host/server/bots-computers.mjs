@@ -1,7 +1,7 @@
 /** Explicit CUA computer lifecycle and short-lived human control, separate from model APIs. */
 import { randomBytes } from 'node:crypto';
 const fault = (status, message) => Object.assign(new Error(message), { status });
-const target = bot => JSON.stringify([bot.id, bot.execution.kind, bot.execution.host || '', bot.execution.user || '', bot.execution.port ?? null]);
+const target = bot => JSON.stringify([bot.computerOwnerId ?? bot.id, bot.execution.kind, bot.execution.host || '', bot.execution.user || '', bot.execution.port ?? null]);
 export function createBotComputers({ profile, cua, remoteSSH, busy, stopOwned, prepareOwned, checkClean = () => {}, clearUncertain = () => {}, markOwned = () => {}, markUncertain = () => {}, now = () => Date.now(), leaseMs = 30_000 }) {
   const leases = new Map(), operations = new Map();
   let closed = false;

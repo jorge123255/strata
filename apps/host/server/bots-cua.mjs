@@ -31,7 +31,7 @@ const computer = [
   tool('computer_type', 'Type into the focused app inside this bot’s CUA sandbox.', { text: property('Text to type') }, ['text']),
   tool('computer_key', 'Press a key or shortcut inside this bot’s CUA sandbox.', { key: property('Key or shortcut, such as Enter or Control+L') }, ['key']),
 ];
-export const cuaSandboxName = bot => `strata-bot-${createHash('sha256').update(String(bot?.id ?? '')).digest('hex').slice(0, 24)}`;
+export const cuaSandboxName = bot => `strata-bot-${createHash('sha256').update(String(bot?.computerOwnerId ?? bot?.id ?? '')).digest('hex').slice(0, 24)}`;
 const exists = async path => { try { await access(path); return true; } catch { return false; } };
 const fail = message => { throw new Error(message); };
 
@@ -74,14 +74,14 @@ export function createBotCUATools({ directory, processRunner = runBotProcess, br
   const inFlight = new Map(), leases = new Map(), uncertain = new Set();
   let preparing = null;
   const environment = () => ({ PATH: join(root, 'home', '.cua', 'bin') + delimiter + (process.env.PATH ?? '/usr/bin:/bin'), HOME: join(root, 'home'), CUA_HOME: join(root, 'home', '.cua'), LANG: 'en_US.UTF-8', PYTHONUNBUFFERED: '1', PYTHONDONTWRITEBYTECODE: '1', CUA_SPACES_AGENT_CREDENTIALS_HOME: 'none', CUA_SPACES_TELEPORT_HOME: join(root, 'teleport'), CUA_DEFAULT_ON: 'local' });
-  const checkBot = bot => { if (!bot?.id || bot.computerMode !== 'cua' || bot.execution?.kind !== 'local') fail('Choose this execution computer’s CUA sandbox.'); };
+  const checkBot = bot => { if (!bot?.id || bot.computerMode !== 'cua' || bot.execution?.kind !== 'local') fail('Choose this execution computer’s CUA sandbox.'); const folder = bot.workspace ?? '/workspace'; if (typeof folder !== 'string' || folder.length > 4000 || folder.includes('\0') || !/^\/workspace(?:\/[^/]+)*$/.test(folder) || folder.split('/').some(part => part === '.' || part === '..')) fail('Use /workspace or a contained subfolder inside the isolated CUA computer.'); if (bot.computerOwnerId !== undefined && (typeof bot.computerOwnerId !== 'string' || !/^bot_[A-Za-z0-9-]+$/.test(bot.computerOwnerId))) fail('Choose a saved shared computer owner.'); };
   async function request(operation, { bot, signal, ...args } = {}) {
     if (bot) checkBot(bot);
     if (!await exists(executable)) fail('Prepare CUA on this execution computer first.');
     if (signal?.aborted) fail('The bot was stopped.');
     const parameters = {};
     for (const key of ['action', 'x', 'y', 'text', 'key', 'name', 'args', 'start']) if (Object.hasOwn(args, key)) parameters[key] = args[key];
-    return bridge(executable, helper, { ...parameters, operation, directory: root, image: CUA_IMAGE, ...(bot ? { sandbox: cuaSandboxName(bot) } : {}) }, { signal, env: environment(), timeout: operation === 'start' ? 600000 : operation === 'prepare' ? 300000 : 150000 });
+    return bridge(executable, helper, { ...parameters, operation, directory: root, image: CUA_IMAGE, ...(bot ? { sandbox: cuaSandboxName(bot), workspace: bot.workspace ?? '/workspace' } : {}) }, { signal, env: environment(), timeout: operation === 'start' ? 600000 : operation === 'prepare' ? 300000 : 150000 });
   }
   async function probe(options = {}) {
     if (!await exists(executable)) return { available: false, prepared: false, detail: `Prepare CUA ${CUA_VERSION} on this computer to enable isolated computers. No sandbox has been started.` };
@@ -138,7 +138,7 @@ export function createBotCUATools({ directory, processRunner = runBotProcess, br
   };
   const state = options => request('state', options);
   const start = options => request('start', options);
-  const stop = async options => { const result = await request('stop', options); if (result.stopped === true && result.cleanupConfirmed === true) { const owner = leases.get(options.bot.id); if (owner) uncertain.delete(owner); leases.delete(options.bot.id); } return result; };
+  const stop = async options => { const result = await request('stop', options); if (result.stopped === true && result.cleanupConfirmed === true) { const owner = leases.get(options.bot.computerOwnerId ?? options.bot.id); if (owner) uncertain.delete(owner); leases.delete(options.bot.computerOwnerId ?? options.bot.id); } return result; };
   const control = options => {
     if (!['click', 'type', 'key'].includes(options?.action)) fail('Choose a supported CUA computer action.');
     return request('control', options);
@@ -155,8 +155,8 @@ export function createBotCUATools({ directory, processRunner = runBotProcess, br
       if (bot.policy === 'plan' || !await requestPermission?.({ id: toolCallId, name, args, reason: `Allow ${name.replaceAll('_', ' ')} inside ${bot.name}’s CUA sandbox?` })) { emit('denied', 'The action was not allowed.'); return { ...text('The action was not allowed. Do not retry it.'), isError: true }; }
     }
     if (signal?.aborted) fail('The bot was stopped.');
-    const owner = leases.get(bot.id); if (owner && owner !== chatId) fail('Another conversation is using this bot’s CUA computer. Wait for it to finish.');
-    leases.set(bot.id, chatId); emit('running');
+    const owner = leases.get(bot.computerOwnerId ?? bot.id); if (owner && owner !== chatId) fail('Another conversation is using this bot’s CUA computer. Wait for it to finish.');
+    leases.set(bot.computerOwnerId ?? bot.id, chatId); emit('running');
     try {
       // Inspecting a stopped computer must not create or resume it. Every
       // mutating tool has already crossed the application approval boundary.

@@ -3,6 +3,7 @@
 import { botAvatarConfig } from './bots-lifecycle.mjs';
 const error = (status, message) => Object.assign(new Error(message), { status });
 const id = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,120}$/.test(value);
+const computerId = value => typeof value === 'string' && /^(host:(local|ssh_[a-f0-9]{32})|cua:bot_[a-f0-9-]+)$/.test(value);
 const toolId = value => typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,300}$/.test(value);
 const text = (value, max) => typeof value === 'string' ? value.slice(0, max) : '';
 const date = value => Number.isFinite(value) && value >= 0 ? value : typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T[0-9:.+-]{8,30}Z?$/.test(value) ? value : undefined;
@@ -57,7 +58,13 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
     return route;
   }
   if (route.kind === 'teams' || route.kind === 'team') {
-    object(body, ['name', 'memberIds', 'coordinatorId', 'enabled', 'limits'], status);
+    object(body, ['name', 'memberIds', 'coordinatorId', 'enabled', 'limits', 'execution', 'expectedRevision'], status);
+    if (body.expectedRevision !== undefined && (!Number.isSafeInteger(body.expectedRevision) || body.expectedRevision < 1)) throw error(status, 'Review the current team revision.');
+    if (body.execution !== undefined) {
+      object(body.execution, body.execution.mode === 'individual' ? ['mode'] : ['mode', 'computerId', 'workspace'], status);
+      if (!['individual', 'shared'].includes(body.execution.mode)) throw error(status, 'Choose a supported team computer mode.');
+      if (body.execution.mode === 'shared') { if (!computerId(body.execution.computerId)) throw error(status, 'Choose a saved team computer.'); string(body.execution.workspace, 4000, status); }
+    }
     if (method === 'POST' || body.name !== undefined) string(body.name, 80, status);
     if (method === 'POST' || body.memberIds !== undefined) { ids(body.memberIds, status, id, 12); if (body.memberIds.length < 2) throw error(status, 'Choose at least two bots.'); }
     if (method === 'POST' || body.coordinatorId !== undefined) if (!id(body.coordinatorId)) throw error(status, 'Choose a coordinator.');
@@ -105,9 +112,18 @@ function channelPreview(value) {
     || value.author.type === 'bot' && !id(value.author.botId) || typeof value.content !== 'string' || value.content.length > 560 || value.content.includes('\0') || !value.content.isWellFormed() || Array.from(value.content).length > 280 || date(value.createdAt) === undefined) return undefined;
   return { id: value.id, sequence: value.sequence, kind: value.kind, author: { type: value.author.type, name: value.author.name, ...(value.author.type === 'bot' ? { botId: value.author.botId } : {}) }, content: value.content, createdAt: date(value.createdAt) };
 }
+function execution(value) {
+  if (!isObject(value)) return undefined;
+  if (value.mode === 'individual') return { mode: 'individual' };
+  if (value.mode === 'shared' && computerId(value.computerId) && typeof value.workspace === 'string' && value.workspace.length > 0 && value.workspace.length <= 4000 && !value.workspace.includes('\0')) return { mode: 'shared', computerId: value.computerId, workspace: value.workspace };
+}
+function teamComputer(value) {
+  if (!isObject(value) || !computerId(value.id) || !['host', 'cua'].includes(value.computerMode) || typeof value.name !== 'string' || !value.name.trim() || typeof value.workspace !== 'string' || value.workspace.length > 4000 || value.workspace.includes('\0') || typeof value.available !== 'boolean') return null;
+  return { id: value.id, name: text(value.name, 200), label: text(value.label, 400), computerMode: value.computerMode, workspace: value.workspace, available: value.available, ...(id(value.memberId) ? { memberId: value.memberId } : {}), ...(typeof value.detail === 'string' ? { detail: text(value.detail, 1000) } : {}) };
+}
 function team(value) {
   const preview = channelPreview(value.channelPreview);
-  return { id: value.id, name: text(value.name, 200), memberIds: safeIds(value.memberIds), coordinatorId: id(value.coordinatorId) ? value.coordinatorId : '', enabled: value.enabled === true, limits: Object.fromEntries(Object.entries(limits).filter(([k, [low, high]]) => Number.isInteger(value.limits?.[k]) && value.limits[k] >= low && value.limits[k] <= high).map(([k]) => [k, value.limits[k]])), createdAt: date(value.createdAt), updatedAt: date(value.updatedAt), ...(preview ? { channelPreview: preview } : {}) };
+  return { id: value.id, name: text(value.name, 200), memberIds: safeIds(value.memberIds), coordinatorId: id(value.coordinatorId) ? value.coordinatorId : '', enabled: value.enabled === true, limits: Object.fromEntries(Object.entries(limits).filter(([k, [low, high]]) => Number.isInteger(value.limits?.[k]) && value.limits[k] >= low && value.limits[k] <= high).map(([k]) => [k, value.limits[k]])), createdAt: date(value.createdAt), updatedAt: date(value.updatedAt), ...(preview ? { channelPreview: preview } : {}), ...(Number.isSafeInteger(value.revision) && value.revision > 0 ? { revision: value.revision } : {}), ...(execution(value.execution) ? { execution: execution(value.execution) } : {}) };
 }
 function run(value) {
   return { id: value.id, teamId: id(value.teamId) ? value.teamId : '', rootChatId: id(value.rootChatId) ? value.rootChatId : '', rootBotId: id(value.rootBotId) ? value.rootBotId : '', state: states.has(value.state) ? value.state : 'interrupted', limits: team(value).limits, consumedTurns: Number.isInteger(value.consumedTurns) ? value.consumedTurns : 0, createdAt: date(value.createdAt), updatedAt: date(value.updatedAt), ...(typeof value.detail === 'string' ? { detail: text(value.detail, 2_000) } : {}) };
@@ -142,7 +158,7 @@ export function publicBotWorkspace(body, route) {
   };
   if (route.kind === 'channel') return channelSnapshot(body, route);
   if (route.kind === 'channelMessage') return { channel: channelSnapshot(body.channel, route), ...(body.run && id(body.run.id) && body.run.teamId === route.teamId ? { run: run(body.run) } : {}) };
-  if (route.kind === 'teams' && Array.isArray(body.teams)) return { teams: rows('teams', team), runs: rows('runs', run), ...(body.channelsSupported === true ? { channelsSupported: true } : {}) };
+  if (route.kind === 'teams' && Array.isArray(body.teams)) return { teams: rows('teams', team), runs: rows('runs', run), ...(body.channelsSupported === true ? { channelsSupported: true } : {}), ...(body.teamSettingsSupported === true ? { teamSettingsSupported: true, teamComputers: (Array.isArray(body.teamComputers) ? body.teamComputers : []).slice(0, 1000).map(teamComputer).filter(Boolean) } : {}) };
   if (body.team && id(body.team.id)) return { team: team(body.team) };
   if (body.run && id(body.run.id)) return { run: run(body.run) };
   if (route.kind === 'activity') return { activity: rows('activity', v => ({ id: v.id, type: ['run', 'delivery', 'subagent'].includes(v.type) ? v.type : 'run', teamId: id(v.teamId) ? v.teamId : '', runId: id(v.runId) ? v.runId : '', title: text(v.title, 300), state: text(v.state, 60), ...Object.fromEntries(['botId', 'chatId', 'parentChatId', 'fromBotId', 'toBotId'].filter(k => id(v[k])).map(k => [k, v[k]])), createdAt: date(v.createdAt), updatedAt: date(v.updatedAt), ...(typeof v.detail === 'string' ? { detail: text(v.detail, 2_000) } : {}) })) };

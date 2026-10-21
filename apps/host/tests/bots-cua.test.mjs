@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { createBotCUATools, runCUABridge, cuaSandboxName, CUA_IMAGE } from '../server/bots-cua.mjs';
 
-const bot = { id: 'bot-owned', name: 'Builder', computerMode: 'cua', capabilities: 'both', policy: 'manual', workspace: '/host/private/project', execution: { kind: 'local' } };
+const bot = { id: 'bot-owned', name: 'Builder', computerMode: 'cua', capabilities: 'both', policy: 'manual', workspace: '/workspace', execution: { kind: 'local' } };
 const fixtureEnvironment = { PATH: process.env.PATH ?? '/usr/bin:/bin', PYTHONDONTWRITEBYTECODE: '0' };
 const pythonAvailable = spawnSync('python3', ['-I', '-B', '-c', 'pass'], { env: fixtureEnvironment, timeout: 5000, stdio: 'ignore' }).status === 0;
 
@@ -52,7 +52,7 @@ test('approved mutations carry only owned sandbox identity and use private crede
   await tools.execute({ bot, chatId: 'c1', name: 'run_command', args: { command: 'pwd' }, toolCallId: 'owned-call', requestPermission: async () => true, onFrame: frame => frames.push(frame) });
   const [, , request, options] = calls[0];
   assert.equal(request.operation, 'tool'); assert.equal(request.start, true); assert.equal(request.image, CUA_IMAGE); assert.equal(request.sandbox, cuaSandboxName(bot));
-  assert.equal(request.workspace, undefined); assert.equal(JSON.stringify(request).includes(bot.workspace), false);
+  assert.equal(request.workspace, '/workspace'); assert.equal(JSON.stringify(request).includes('/host/private/project'), false);
   assert.equal(options.env.HOME, join(directory, 'cua-runtime', 'home'));
   for (const key of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'SSH_AUTH_SOCK', 'CUA_API_KEY']) assert.equal(options.env[key], undefined);
   assert.equal(options.env.CUA_SPACES_AGENT_CREDENTIALS_HOME, 'none');
@@ -138,4 +138,20 @@ test('Mac preparation with no compatible independent interpreter leaves the fail
   const bin = join(directory, 'cua-runtime/venv/bin'); await mkdir(bin, { recursive: true }); await writeFile(join(bin, 'python'), 'retained');
   const tools = createBotCUATools({ directory, platform: 'darwin', pythonCandidates: [], processRunner: async () => ({ code: 1, stdout: '' }), bridge: async () => { throw Error('must not call SDK'); } });
   await assert.rejects(tools.prepare(), /independent Python 3.10/); assert.equal(await readFile(join(bin, 'python'), 'utf8'), 'retained'); assert.deepEqual(await readdir(join(directory, 'cua-runtime')), ['home', 'venv']); await tools.close();
+});
+
+test('shared CUA identity and folder reach the helper; a second member cannot enter the same guest lease', async t => {
+  const { tools, calls } = await fixture(t);
+  const first = { ...bot, id: 'bot_member-one', computerOwnerId: 'bot_anchor-123', workspace: '/workspace/team-project' };
+  const second = { ...first, id: 'bot_member-two' };
+  await tools.execute({ bot: first, chatId: 'shared-one', name: 'read_file', args: { path: 'marker' } });
+  assert.equal(calls[0][2].workspace, '/workspace/team-project');
+  assert.equal(calls[0][2].sandbox, cuaSandboxName({ id: first.computerOwnerId }));
+  assert.equal(cuaSandboxName(first), cuaSandboxName(second));
+  await assert.rejects(tools.execute({ bot: second, chatId: 'shared-two', name: 'read_file', args: { path: 'marker' } }), /Another conversation/);
+  assert.equal(calls.length, 1);
+  await tools.finish('shared-one');
+  await tools.execute({ bot: second, chatId: 'shared-two', name: 'read_file', args: { path: 'marker' } });
+  assert.equal(calls[1][2].sandbox, calls[0][2].sandbox);
+  for (const workspace of ['/host/private/project', '/workspace/../escape', '/workspace//escape', '/workspace/./escape']) await assert.rejects(tools.state({ bot: { ...first, workspace } }), /contained subfolder/);
 });

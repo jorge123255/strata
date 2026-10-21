@@ -4,13 +4,29 @@ Open **Bots** in Strata on Mac or in the paired iPhone app. The workspace has fo
 
 ## Create a team
 
-Choose **New team**, give it a name, select its members and choose a coordinator. Each member keeps its own saved model, permission mode, workspace and execution computer. Creating a team starts no model work.
+Choose **New team**, give it a name, select 2–12 members and choose a coordinator. By default, **Each bot’s computer** keeps every member’s saved computer and working folder. You can instead choose a shared computer and folder. Each member keeps its own model, permission mode and assigned tools. Creating or saving a team starts no model work. Review and enable the team before sending its first request.
 
 Write a request and choose **Send to team**. The coordinator receives it in a shared conversation. It can ask a teammate for help or delegate a child task using Strata’s tools. These assignments run asynchronously in separate shared conversations. A completion report returns to the assigning conversation, within the team’s limits.
 
 The default limits are two parallel tasks, two child levels, eight message hops, 24 conversation turns and ten minutes per request. A conversation turn can include multiple provider requests and tool calls; the time limit applies to the whole team request. Team settings expose these limits. A bot does not inherit another member’s private conversation history, memory or credentials. Temporary child work uses a selected existing member’s profile; it does not create an unlimited collection of saved bots.
 
 **Activity** shows queued, running, completed, failed, interrupted and stopped work. Open a task to follow its actual chat, thinking, tool cards and approvals. **Stop team** cancels queued assignments and requests cancellation of its running work and descendants. Strata shows unconfirmed cleanup instead of reporting success. Restarted work remains in history and is marked interrupted; Strata does not replay it automatically.
+
+## Change members, computer and working folder
+
+Open the team’s **Team details** menu. On Mac, choose **Edit members**, **Change** beside **Computer & working folder**, or **Team settings**. On iPhone, expand **Team settings** and choose **Edit team members & settings**. Add or remove members and choose the coordinator there. Earlier public messages and completed work stay in the same team when its roster changes. Members keep their private chats, memory, credentials and identities; joining a team does not share those with teammates.
+
+Choose **Shared team computer** when everyone should work in the same place:
+
+- **This Mac** uses an existing folder directly on the Strata Mac. On Mac, **Choose folder** opens its folder picker. On iPhone, enter or paste that folder’s full path on the Mac.
+- A saved **SSH computer** uses a full folder path on that computer. Enter the path on either device; the Mac folder picker cannot browse the remote host. The saved connection is checked when work starts.
+- A member’s **isolated CUA computer** uses that member’s existing guest, browser and desktop. Choose `/workspace` or a folder inside it, such as `/workspace/project`. Keep the member hosting that guest in the team, or select another computer before removing them. Selecting a guest does not mount folders from the Mac or SSH host into it.
+
+For example, to let the team work on a `~/botai` checkout on the Mac, choose **This Mac** and use **Choose folder** to select `botai` in your home folder. From iPhone, paste the checkout’s full absolute path on that Mac. If the checkout lives on an SSH computer, choose that saved computer and enter its full path there. A CUA guest has its own `/workspace`; selecting a host folder does not copy the checkout into the guest.
+
+Finish or stop active team work before saving changes. If another device has changed the settings, your draft stays open. Choose **Reload latest** on Mac or **Reload latest team** on iPhone to replace the draft with the current settings, then review and save again. Earlier conversations and completed tasks retain their original settings.
+
+Team details shows the saved computer and working folder. For a shared CUA guest, choose **Open team computer** to use its existing viewer and controls; returning leaves the team channel available. **Stop** or **Take over** cancels team runs using that guest, including queued sibling assignments. Taking over waits for running work to stop before granting control. Releasing control leaves canceled work stopped; it does not resume the team automatically. Direct Mac and SSH choices show the host and folder without a CUA desktop viewer.
 
 ## Choose effort
 

@@ -10,7 +10,7 @@ import { redact } from './process.mjs';
 
 const text = message => ({ content: [{ type: 'text', text: message }], isError: true });
 const identity = () => createHash('sha256').update(JSON.stringify([hostname(), process.getuid?.(), homedir()])).digest('hex');
-const cuaKey = bot => `cua_${createHash('sha256').update(String(bot.id)).digest('hex')}`;
+const cuaKey = bot => `cua_${createHash('sha256').update(String(bot.computerOwnerId ?? bot.id)).digest('hex')}`;
 const cuaMarker = (directory, bot) => join(directory, 'uncertain', `${cuaKey(bot)}.json`);
 async function requireCUACleanup(directory, bot) {
   try { await lstat(cuaMarker(directory, bot)); }
@@ -92,7 +92,7 @@ async function startWorkerTurn(input, { reader, send, directory, leaseMs = 12000
   const remoteIdentity = identity();
   if (input.expectedIdentity && input.expectedIdentity !== remoteIdentity) throw new Error('The SSH alias now reaches a different computer or account. Start a new bot chat.');
   await mkdir(directory, { recursive: true, mode: 0o700 });
-  const release = conversationOnly ? null : input.bot.computerMode === 'cua' ? await acquireComputerLease(directory, { key: cuaKey(input.bot) }) : input.bot.capabilities === 'code' ? null : await acquireComputerLease(directory);
+  const release = conversationOnly ? null : input.bot.computerMode === 'cua' ? await acquireComputerLease(directory, { key: cuaKey(input.bot) }) : input.bot.capabilities === 'code' && !input.bot.sharedComputer ? null : await acquireComputerLease(directory);
   if (!conversationOnly && input.bot.computerMode === 'cua') { try { await requireCUACleanup(directory, input.bot); } catch (error) { await release(); throw error; } }
   const runs = join(directory, 'runs'); await mkdir(runs, { recursive: true, mode: 0o700 });
   const nonce = randomUUID(), record = join(runs, `${process.pid}-${nonce}.json`);

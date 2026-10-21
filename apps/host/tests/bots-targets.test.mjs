@@ -192,8 +192,8 @@ test('Pause stops every owned chat, persists across restart and blocks frozen ch
 test('isolated CUA chats use the actual sandbox workspace and never accept a host path override', t => {
   const f = fixture(t), bot = f.create({ computerMode: 'cua', workspace: '/workspace' });
   assert.equal(f.bots.createConversation(bot.id).conversation.workspace, '/workspace');
-  assert.throws(() => f.bots.createConversation(bot.id, { workspace: '/home/operator/project' }), /uses \/workspace/);
-  assert.throws(() => f.create({ computerMode: 'cua' }), /uses \/workspace/);
+  assert.throws(() => f.bots.createConversation(bot.id, { workspace: '/home/operator/project' }), /contained subfolder/);
+  assert.throws(() => f.create({ computerMode: 'cua' }), /contained subfolder/);
 });
 
 test('native per-chat CUA preparation uses its frozen computer after the profile changes', async t => {

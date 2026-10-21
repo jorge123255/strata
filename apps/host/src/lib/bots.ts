@@ -50,11 +50,13 @@ export interface BotsSnapshot { bots: Bot[]; providers: BotProvider[]; computers
 
 /** Collaboration records contain public identities and task links, never credentials. */
 export interface BotTeamLimits { maxParallel: number; maxDepth: number; maxHops: number; maxTurns: number; maxDurationMs: number }
-export interface BotTeam { id: string; name: string; memberIds: string[]; coordinatorId: string; enabled: boolean; limits: BotTeamLimits; createdAt: string; updatedAt: string; channelPreview?: BotTeamChannelPreview }
+export type BotTeamExecution = { mode: 'individual' } | { mode: 'shared'; computerId: string; workspace: string };
+export interface BotTeamComputer { id: string; name: string; label: string; computerMode: 'host' | 'cua'; workspace: string; available: boolean; memberId?: string; detail?: string }
+export interface BotTeam { id: string; name: string; memberIds: string[]; coordinatorId: string; enabled: boolean; limits: BotTeamLimits; createdAt: string; updatedAt: string; revision?: number; execution?: BotTeamExecution; channelPreview?: BotTeamChannelPreview }
 export type BotTeamRunState = 'queued'|'running'|'completed'|'error'|'cancelled'|'interrupted'|'stopping'|'cleanup_pending';
 export interface BotTeamRun { id: string; teamId: string; rootChatId: string; rootBotId: string; state: BotTeamRunState; limits: BotTeamLimits; consumedTurns: number; createdAt: string; updatedAt: string; detail?: string }
 export interface BotTeamActivity { id: string; type: 'run'|'delivery'|'subagent'; teamId: string; runId: string; botId?: string; chatId?: string; parentChatId?: string; title: string; state: string; fromBotId?: string; toBotId?: string; createdAt: string; updatedAt: string; detail?: string }
-export interface BotTeamsSnapshot { teams: BotTeam[]; runs: BotTeamRun[]; channelsSupported?: boolean }
+export interface BotTeamsSnapshot { teams: BotTeam[]; runs: BotTeamRun[]; channelsSupported?: boolean; teamSettingsSupported?: boolean; teamComputers?: BotTeamComputer[] }
 /** Public, durable room messages are separate from each bot's private work chat. */
 export interface BotTeamChannelAuthor { type: 'user'|'bot'|'system'; botId?: string; name: string; avatarConfig?: Bot['avatarConfig'] }
 export interface BotTeamChannelMessage {
@@ -86,15 +88,29 @@ export interface BotProviderModels { provider: string; models: BotProviderModel[
 export const DEFAULT_BOT_TEAM_LIMITS: BotTeamLimits = { maxParallel: 2, maxDepth: 2, maxHops: 8, maxTurns: 24, maxDurationMs: 600000 };
 export function botTeamRunActive(state: string) { return ['queued', 'running', 'stopping', 'cleanup_pending'].includes(state); }
 export function botActivityLabel(state: string) { return ({ queued: 'Queued', running: 'Working', completed: 'Completed', error: 'Failed', cancelled: 'Stopped', interrupted: 'Interrupted', stopping: 'Stopping…', cleanup_pending: 'Checking cleanup', delivered: 'Delivered', pending: 'Waiting', accepted: 'Accepted', refused: 'Refused' } as Record<string, string>)[state] ?? state; }
-export function botTeamDraftError(draft: Pick<BotTeam, 'name'|'memberIds'|'coordinatorId'|'limits'>, bots: Pick<Bot,'id'>[]): string | null {
+export function botTeamDraftError(draft: Pick<BotTeam, 'name'|'memberIds'|'coordinatorId'|'limits'> & { execution?: BotTeamExecution }, bots: Pick<Bot,'id'>[], computers?: BotTeamComputer[]): string | null {
   if (!draft.name.trim() || draft.name.trim().length>80) return 'Give this team a name of up to 80 characters.';
   if (draft.memberIds.length<2 || draft.memberIds.length>12) return 'Choose from 2 to 12 team members.';
   if (new Set(draft.memberIds).size !== draft.memberIds.length || draft.memberIds.some(id => !bots.some(bot => bot.id === id))) return 'Choose available bots for this team.';
   if (!draft.memberIds.includes(draft.coordinatorId)) return 'Choose a coordinator from this team.';
+  if (draft.execution?.mode === 'shared') {
+    const execution = draft.execution;
+    if (!execution.computerId) return 'Choose a shared team computer.';
+    const computer = computers?.find(item => item.id === execution.computerId);
+    if (computer?.computerMode === 'cua' && (!computer.memberId || !draft.memberIds.includes(computer.memberId))) return 'Keep the teammate hosting this shared CUA computer in the team, or choose another computer.';
+    const path = draft.execution.workspace.trim();
+    if (!path || path.length > 4096 || path.includes('\0') || !/^(?:\/|[A-Za-z]:[\\/]|\\\\)/.test(path)) return 'Use the full working folder path on the shared computer.';
+    if (computer?.computerMode === 'cua' && !(path === '/workspace' || path.startsWith('/workspace/') && !path.split('/').includes('..'))) return 'Use /workspace or a folder inside /workspace on the shared CUA computer.';
+  }
   for (const [key, maximum] of [['maxParallel', 8], ['maxDepth', 4], ['maxHops', 32], ['maxTurns', 100], ['maxDurationMs', 3600000]] as const) {
     if (!Number.isInteger(draft.limits[key]) || draft.limits[key] < (key === 'maxDurationMs' ? 60000 : 1) || draft.limits[key] > maximum) return 'Choose bounded team work limits.';
   }
   return null;
+}
+export function botTeamWorkplace(team: Pick<BotTeam, 'execution'>, computers: BotTeamComputer[] = [], bots: Pick<Bot, 'id' | 'name'>[] = []) {
+  if (team.execution?.mode !== 'shared') return { shared: false, name: 'Each bot’s computer', label: 'Each teammate uses its saved computer.', workspace: 'Each bot’s saved working folder' };
+  const execution = team.execution, computer = computers.find(item => item.id === execution.computerId), owner = bots.find(item => item.id === computer?.memberId);
+  return { shared: true, name: computer?.name ?? (owner ? `${owner.name}’s computer` : 'Shared computer unavailable'), label: computer?.label ?? 'Shared team computer', workspace: team.execution.workspace };
 }
 export type BotDraft = Omit<Bot, 'id' | 'createdAt' | 'updatedAt' | 'conversations' | 'available' | 'detail' | 'providerSettings'> & {
   providerSettings?: { baseURL?: string; apiKey?: string; clearKey?: boolean };

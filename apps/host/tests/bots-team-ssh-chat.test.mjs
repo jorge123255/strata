@@ -69,3 +69,17 @@ test('ordinary SSH turns keep their tool, permission and checkpoint path', async
   });
   assert.equal(factoryCalls, 1); assert.equal(executed, 1); assert.equal(sent.filter(value => value.type === 'permission').length, 1); assert.equal(sent.filter(value => value.type === 'checkpoint').length, 1);
 });
+
+test('distinct SSH team members share one exact anchored CUA lease and uncertainty record', async t => {
+  const f = await fixture(t, { teamConversationOnly: undefined, computerOwnerId: 'bot_shared-anchor', sharedComputer: true });
+  const key = `cua_${createHash('sha256').update(f.bot.computerOwnerId).digest('hex')}`;
+  const release = await acquireComputerLease(f.directory, { key });
+  const sent=[];let tools=0;
+  await startWorker({ bot: {...f.bot,id:'bot_second-member'}, sessionId:'s_shared_guest', message:'Check shared guest' }, {
+    ...f, send: value=>sent.push(value), cuaFactory(){tools++;throw Error('The held resource must prevent tools');},runtimeFactory(){tools++;throw Error('The held resource must prevent model execution');}
+  });
+  assert.equal(tools,0);assert.match(sent.find(row=>row.type==='failure').message,/Another Bots worker/);await release();
+  await mkdir(join(f.directory,'uncertain'),{recursive:true});const marker=join(f.directory,'uncertain',key+'.json');await writeFile(marker,'{"retained":true}');
+  const again=[];await startWorker({ bot:{...f.bot,id:'bot_third-member'},sessionId:'s_uncertain_shared',message:'Check again' },{...f,reader:new Reader(),send:value=>again.push(value),cuaFactory(){tools++;throw Error('No tools during uncertainty');}});
+  assert.equal(tools,0);assert.match(again.find(row=>row.type==='failure').message,/cleanup is unconfirmed/);assert.equal(await readFile(marker,'utf8'),'{"retained":true}');
+});

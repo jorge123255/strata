@@ -2,7 +2,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { isAbsolute, join, resolve, posix } from 'node:path';
 import { json, error, readBody } from './util.mjs';
 import { isLocalCompanionRequest } from './companion-routes.mjs';
 import { botModelDestination } from './bots-models.mjs';
@@ -39,7 +39,8 @@ export function normalizeBotExecution(supplied = { kind: 'local' }) {
   }
   return { kind: supplied.kind, ...(name ? { name } : {}), ...(supplied.kind === 'sandbox' && supplied.host ? { host: cleanText(supplied.host, 200, 'sandbox target') } : {}) };
 }
-const cuaResource = bot => `cua:${bot.id}:${executionKey(bot.execution)}`;
+const guestWorkspace = raw => { if (typeof raw !== 'string' || raw.length > 4000 || raw.includes('\0') || !raw.startsWith('/workspace') || (raw !== '/workspace' && !raw.startsWith('/workspace/')) || raw.split('/').some(part => part === '..' || part === '.') || posix.normalize(raw) !== raw) throw fault(400, 'Use /workspace or a contained subfolder inside the isolated CUA computer.'); return raw; };
+const cuaResource = bot => `cua:${bot.computerOwnerId ?? bot.id}:${executionKey(bot.execution)}`;
 export function executionLabel(execution) {
   return execution.name || (execution.kind === 'local' ? 'This Mac' : execution.kind === 'sandbox' ? 'Sandbox' : `${execution.user ? `${execution.user}@` : ''}${execution.host}${execution.port ? `:${execution.port}` : ''}`);
 }
@@ -99,6 +100,45 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     for (const bot of profiles.values()) add(bot.execution);
     return [...computers.values()];
   }
+  function teamComputerRows() {
+    const rows = computerRows().map(row => ({ id: `host:${row.id}`, name: row.name, label: row.kind === 'local' ? 'Direct access to this Mac' : 'Direct access to the saved SSH computer', computerMode: 'host', workspace: row.kind === 'local' ? defaultWorkspace() : '', available: true, detail: row.kind === 'local' ? 'Uses this Mac’s folders directly.' : 'Uses folders on this SSH computer. Preparation is checked when work starts.' }));
+    for (const bot of profiles.values()) if (bot.computerMode === 'cua' && ['local', 'ssh'].includes(bot.execution.kind)) rows.push({ id: `cua:${bot.id}`, memberId: bot.id, name: `${bot.name}’s computer`, label: `${executionLabel(bot.execution)} · Isolated CUA desktop`, computerMode: 'cua', workspace: bot.workspace || '/workspace', available: true, detail: 'All team members use this exact isolated guest. Mac folders are not mounted into it.' });
+    return rows;
+  }
+  function resolveTeamExecution(selection, members) {
+    if (typeof selection.computerId !== 'string' || selection.computerId.length > 160 || typeof selection.workspace !== 'string') throw fault(400, 'Choose a shared team computer and its working folder.');
+    let execution, computerMode, computerOwnerId;
+    if (selection.computerId.startsWith('host:')) {
+      const row = computerRows().find(row => `host:${row.id}` === selection.computerId);
+      if (!row) throw fault(409, 'This saved team computer is unavailable. Choose another computer.');
+      execution = row.execution; computerMode = 'host';
+    } else if (selection.computerId.startsWith('cua:')) {
+      computerOwnerId = selection.computerId.slice(4);
+      if (!members.includes(computerOwnerId)) throw fault(400, 'Keep the shared isolated computer’s owner in this team, or choose another computer.');
+      const anchor = requireBot(computerOwnerId);
+      if (anchor.computerMode !== 'cua') throw fault(409, 'This team’s isolated computer changed. Choose its computer again.');
+      execution = anchor.execution; computerMode = 'cua';
+    } else throw fault(400, 'Choose a saved team computer.');
+    const raw = cleanText(selection.workspace, 4000, 'team working folder', true);
+    const workspace = computerMode === 'cua' ? guestWorkspace(raw) : execution.kind === 'local' ? resolve(raw.replace(/^~(?=\/|$)/, homedir())) : raw;
+    if (!isAbsolute(computerMode === 'cua' ? workspace : execution.kind === 'local' ? raw.replace(/^~(?=\/|$)/, homedir()) : raw)) throw fault(400, 'Enter the full working-folder path on the selected team computer.');
+    if (execution.kind === 'local' && computerMode === 'host') { try { if (!statSync(workspace).isDirectory()) throw new Error(); } catch { throw fault(400, 'Choose an existing working folder on this Mac.'); } }
+    return { execution: copy(execution), computerMode, workspace, sharedComputer: true, ...(computerOwnerId ? { computerOwnerId } : {}) };
+  }
+  function resourceBusy(bot, chatId) {
+    const resource = bot.computerMode === 'cua' ? cuaResource(bot) : `host:${executionKey(bot.execution)}`;
+    if ([...active.entries()].some(([id, run]) => id !== chatId && !run.conversationOnly && run.resource === resource && (bot.computerMode === 'cua' || bot.sharedComputer || run.sharedComputer))) return true;
+    // send() reserves a conversation before its provider microtask begins. Include
+    // that durable turn reservation so one scheduler tick cannot dispatch two
+    // members into the same guest and turn the second assignment into an error.
+    return [...chatProfiles.entries()].some(([id, other]) => id !== chatId && conversations()?.isRunning?.(id) && !['routing', 'conversation', 'bid'].includes(other.teamContext?.channelMode) && (other.computerMode === 'cua' ? cuaResource(other) : `host:${executionKey(other.execution)}`) === resource && (bot.computerMode === 'cua' || bot.sharedComputer || other.sharedComputer));
+  }
+  function chatBusy(id) {
+    const bot = chatProfiles.get(id); if (!bot || ['routing', 'conversation', 'bid'].includes(bot.teamContext?.channelMode)) return false;
+    if (resourceBusy(bot, id)) return true;
+    try { computer.checkRun(bot); } catch (error) { if (error.status === 409) return true; throw error; }
+    return false;
+  }
   async function computerAction(input, prepare = false, options = {}) {
     if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !['execution', 'computerId'].includes(key))) throw fault(400, 'Choose a saved or custom SSH computer.');
     const execution = input.computerId ? computerRows().find(c => c.id === input.computerId)?.execution : normalizeBotExecution(input.execution);
@@ -114,17 +154,17 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
   }
   const work = createBotWork({ directory, requireBot, chats: conversations, createConversation, notify });
   const team = createBotTeams({ directory, requireBot, conversations, createConversation: (id, teamContext) => createConversation(id, {}, teamContext), discardConversation: id => { conversations().remove(id); chatProfiles.delete(id); checkpoints.delete(id); save(); }, notify,
-    isBotBusy: id => [...active.values()].some(run => run.botId === id), stopDirect: id => stop(id, { team: false }) });
+    usesComputer: (source, target) => { const bot = typeof source === 'string' ? chatProfiles.get(source) : source; return bot?.computerMode === 'cua' && cuaResource(bot) === cuaResource(target); }, teamComputers: teamComputerRows, resolveExecution: resolveTeamExecution, isChatBusy: chatBusy, isBotBusy: id => [...active.values()].some(run => run.botId === id), stopDirect: id => stop(id, { team: false }) });
   const hasOwnedComputer = id => [...ownedComputers, ...uncertainTargets.keys()].some(key => key.startsWith(`cua:${id}:`));
   const markOwned = bot => { ownedComputers.add(cuaResource(bot)); save(); };
   const computer = createBotComputers({ cua: cuaTools, remoteSSH, profile: (id, chatId) => { const bot = requireBot(id); if (!chatId) return copy(bot); const snapshot = chatProfiles.get(chatId); if (!snapshot || snapshot.id !== id) throw fault(404, 'This computer does not belong to that conversation.'); return copy(snapshot); },
-    busy: bot => [...active.values()].some(run => run.botId === bot.id && run.target === executionKey(bot.execution)),
+    busy: bot => [...active.values()].some(run => run.resource === cuaResource(bot) && !run.conversationOnly),
     prepareOwned: (bot, options) => prepareCUA({ execution: bot.execution }, options),
     checkClean: bot => { if (uncertainTargets.has(cuaResource(bot))) throw fault(409, 'CUA cleanup is unconfirmed. Stop this isolated computer from its Computer view before continuing.'); if (uncertainTargets.has(executionKey(bot.execution))) throw fault(409, uncertainTargets.get(executionKey(bot.execution))); },
     markOwned,
     clearUncertain: bot => { uncertainTargets.delete(cuaResource(bot)); ownedComputers.delete(cuaResource(bot)); save(); },
     markUncertain: bot => { uncertainTargets.set(cuaResource(bot), 'CUA cleanup could not be confirmed. Stop this isolated computer from its Computer view before continuing.'); save(); },
-    stopOwned: async bot => { for (const [chatId, run] of [...active.entries()]) if (run.botId === bot.id && run.target === executionKey(bot.execution)) await stop(chatId); if (uncertainTargets.has(executionKey(bot.execution))) throw fault(409, 'Remote cleanup is unconfirmed. Check this computer on the Mac before taking over.'); } });
+    stopOwned: async bot => { await team.stopForComputer(bot); for (const [chatId, run] of [...active.entries()]) if (run.resource === cuaResource(bot) && !run.conversationOnly) await stop(chatId); if (uncertainTargets.has(executionKey(bot.execution))) throw fault(409, 'Remote cleanup is unconfirmed. Check this computer on the Mac before taking over.'); } });
   async function prepareCUA(input, options) {
     const execution = input?.computerId ? computerRows().find(c => c.id === input.computerId)?.execution : normalizeBotExecution(input?.execution);
     if (!execution) throw fault(404, 'This execution computer is no longer configured.');
@@ -139,7 +179,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     return bot;
   }
   function publicBot(bot) {
-    const { providerSettings, modelDestination, extensionSnapshots, ...safe } = copy(bot);
+    const { providerSettings, modelDestination, extensionSnapshots, computerOwnerId, sharedComputer, ...safe } = copy(bot);
     return { ...safe, avatar: BOT_AVATARS.includes(bot.avatar) ? bot.avatar : '🤖', ...(providerSettings ? { providerSettings: { ...(providerSettings.baseURL ? { baseURL: providerSettings.baseURL } : {}), apiKeySet: !!providerSettings.apiKey } } : {}),
       conversations: (conversations()?.list().conversations ?? []).filter(chat => chat.preferences?.botId === bot.id).map(chat => chat.id),
       active: [...active.values()].some(run => run.botId === bot.id) };
@@ -157,7 +197,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     const execution = normalizeBotExecution(input.execution ?? old.execution ?? { kind: 'local' });
     const rawWorkspace = cleanText(input.workspace ?? old.workspace ?? defaultWorkspace(), 4000, 'workspace folder', true);
     const workspace = execution.kind === 'local' ? resolve(rawWorkspace.replace(/^~(?=\/|$)/, homedir())) : rawWorkspace;
-    if (computerMode === 'cua' && workspace !== '/workspace') throw fault(400, 'The isolated CUA computer uses /workspace. Choose that folder for this bot.');
+    if (computerMode === 'cua') guestWorkspace(rawWorkspace);
     if (!isAbsolute(execution.kind === 'local' ? rawWorkspace.replace(/^~(?=\/|$)/, homedir()) : rawWorkspace)) throw fault(400, 'Choose the full path to the bot’s workspace on its execution computer.');
     if (execution.kind === 'local' && computerMode !== 'cua') {
       try { if (!statSync(workspace).isDirectory()) throw new Error(); }
@@ -213,6 +253,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
   }
   function remove(id) {
     const bot = requireBot(id);
+    if (team.sharedAnchor(id)) throw fault(409, 'Choose another shared computer for this team before removing its computer owner.');
     if (team.botInActiveRun(id)) throw fault(409, 'Stop this bot’s team work before removing its profile.');
     if ([...active.values()].some(run => run.botId === id)) throw fault(409, 'Stop this bot’s active conversations before removing its profile.');
     computer.checkRemove(bot);
@@ -290,7 +331,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     const current = requireBot(selection.botId), bot = chatProfiles.get(selection.chatId) ?? current;
     if (current.paused) throw fault(409, 'This bot is paused. Resume it before starting another turn.');
     const conversationOnly = ['routing', 'conversation', 'bid'].includes(bot.teamContext?.channelMode);
-    if (!conversationOnly) computer.checkRun(bot);
+    if (!conversationOnly) { computer.checkRun(bot); if (resourceBusy(bot, selection.chatId)) throw fault(409, 'Another teammate is using this shared computer. Wait for it to finish.'); }
     if (!conversationOnly && bot.computerMode === 'cua' && uncertainTargets.has(cuaResource(bot))) throw fault(409, 'CUA command cleanup is unconfirmed. Stop this isolated computer from its Computer view before continuing.');
     if (uncertainTargets.has(executionKey(bot.execution))) throw fault(409, uncertainTargets.get(executionKey(bot.execution)));
     if (bot.execution.kind === 'sandbox') throw fault(409, 'This bot’s sandbox execution adapter is not configured.');
@@ -321,7 +362,9 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
       if (!model) throw fault(404, 'This configured model is no longer available.');
       patch.provider = 'configured'; patch.modelSource = { connectionId: model.connectionId, model: model.model };
     }
-    const bot = { ...current, ...validate(patch, current) };
+    const shared = teamContext ? team.executionForRun(teamContext.teamRunId) : undefined;
+    if (shared) Object.assign(patch, { execution: shared.execution, computerMode: shared.computerMode, workspace: shared.workspace });
+    const bot = { ...current, ...validate(patch, current), ...(shared ? copy(shared) : {}) };
     if (teamContext) bot.teamContext = copy(teamContext);
     // Extension assignments and selected instructions are immutable for this chat.
     // Secrets never belong in these snapshots or in the public conversation preferences.
@@ -363,7 +406,8 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     let ended;
     const target = executionKey(bot.execution);
     if (!conversationOnly && bot.execution.kind === 'ssh' && bot.capabilities !== 'code' && computerLeases.has(target)) throw fault(409, 'Another bot conversation is using this computer. Wait for it to finish.');
-    const owner = { botId: bot.id, target, controller, pending: new Map(), ended: new Promise(resolve => { ended = resolve; }) };
+    if (!conversationOnly && resourceBusy(bot, session.id)) throw fault(409, 'Another teammate is using this shared computer. Wait for it to finish.');
+    const owner = { botId: bot.id, target, resource: bot.computerMode === 'cua' ? cuaResource(bot) : `host:${target}`, sharedComputer: bot.sharedComputer === true, conversationOnly, controller, pending: new Map(), ended: new Promise(resolve => { ended = resolve; }) };
     active.set(session.id, owner);
     if (!conversationOnly && bot.execution.kind === 'ssh' && bot.capabilities !== 'code') computerLeases.set(target, session.id);
     let terminal = null;
@@ -374,7 +418,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
       work.record(bot.id, frame);
       onFrame(frame);
     };
-    const fingerprint = createHash('sha256').update(JSON.stringify([bot.id, bot.provider, bot.model, bot.effort, bot.workspace, bot.instructions, bot.policy, bot.capabilities, bot.providerSettings?.baseURL, bot.execution, bot.modelSource, bot.modelDestination, bot.computerMode, bot.extensionSnapshots])).digest('hex');
+    const fingerprint = createHash('sha256').update(JSON.stringify([bot.id, bot.provider, bot.model, bot.effort, bot.workspace, bot.instructions, bot.policy, bot.capabilities, bot.providerSettings?.baseURL, bot.execution, bot.modelSource, bot.modelDestination, bot.computerMode, bot.extensionSnapshots, ...(bot.sharedComputer ? [{ computerOwnerId: bot.computerOwnerId, sharedComputer: true }] : [])])).digest('hex');
     const oldCheckpoint = checkpoints.get(session.id);
     const requestPolicyPermission = async ({ id, name, args = {}, reason = 'Allow this bot action?' }) => {
       if (combined.aborted || bot.policy === 'plan') return false;

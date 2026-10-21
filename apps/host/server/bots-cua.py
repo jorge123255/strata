@@ -7,7 +7,7 @@ import importlib.metadata
 import importlib.util
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import secrets
 import shutil
@@ -19,11 +19,25 @@ VERSION = "0.5.0"
 IMAGE = "ghcr.io/trycua/linux:24.04"
 WORKSPACE = "/workspace"
 GUEST_REBOOT_TIMEOUT = 90
+WORKSPACE_SETUP = r'''
+import os,sys
+parts=sys.argv[1].split('/')[1:]; uid,gid=int(sys.argv[2]),int(sys.argv[3]); fd=os.open('/',os.O_RDONLY|os.O_DIRECTORY)
+try:
+ for part in parts:
+  try: os.mkdir(part,0o755,dir_fd=fd)
+  except FileExistsError: pass
+  child=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd); os.close(fd); fd=child
+ os.fchown(fd,uid,gid)
+finally: os.close(fd)
+'''
+
 
 # These programs run inside the owned guest, never on the selected host.
 FILE_SCRIPT = r'''
 import json,os,pathlib,sys,tempfile
-op,a=json.loads(sys.argv[1]); root=pathlib.Path(sys.argv[2]).resolve(strict=True); p=a.get('path','.')
+op,a=json.loads(sys.argv[1]); root=pathlib.Path(sys.argv[2]); resolved_root=root.resolve(strict=True); p=a.get('path','.')
+if root!=resolved_root or not resolved_root.is_relative_to(pathlib.Path(sys.argv[3]).resolve(strict=True)): raise ValueError('Choose a contained CUA workspace without symlinks.')
+root=resolved_root
 if not isinstance(p,str) or '\0' in p or len(p)>4000 or pathlib.Path(p).is_absolute(): raise ValueError('Use a workspace-relative path.')
 target=root/p; resolved=target.resolve()
 if not resolved.is_relative_to(root): raise ValueError('This file points outside the CUA workspace.')
@@ -81,6 +95,9 @@ class Bridge:
     def __init__(self, request, sdk):
         self.request, self.sdk = request, sdk
         self.directory = Path(request["directory"]).resolve()
+        self.workdir = request.get("workspace", WORKSPACE)
+        if not isinstance(self.workdir, str) or len(self.workdir) > 4000 or "\0" in self.workdir or not (self.workdir == WORKSPACE or self.workdir.startswith(WORKSPACE + "/")) or any(part in (".", "..") for part in self.workdir.split("/")) or str(PurePosixPath(self.workdir)) != self.workdir:
+            raise ValueError("Use /workspace or a contained subfolder inside the isolated CUA computer.")
         self.name = request.get("sandbox")
         if self.name is not None and not re.fullmatch(r"strata-bot-[a-f0-9]{24}", self.name):
             raise ValueError("Choose an owned Strata CUA computer.")
@@ -327,12 +344,12 @@ class Bridge:
             json.dump({"operation": "prepare-owned-workspace"}, file)
         previous_cleanup = self.cleanup_confirmed
         self.cleanup_confirmed = False
-        for program, args in (("mkdir", ["-p", WORKSPACE]), ("chown", [":".join(identifiers), WORKSPACE])):
-            if identifiers[0] != "0":
-                program, args = "sudo", ["-n", program, *args]
-            setup = await asyncio.wait_for(env.run(self.sdk.SpacesdCommand(program=program, args=args, timeout_ms=5000)), 8)
-            if not setup.exit.success:
-                raise ValueError("The CUA guest could not prepare its owned /workspace folder. Stop this bot’s computer before retrying.")
+        program, args = "python3", ["-c", WORKSPACE_SETUP, self.workdir, *identifiers]
+        if identifiers[0] != "0":
+            program, args = "sudo", ["-n", program, *args]
+        setup = await asyncio.wait_for(env.run(self.sdk.SpacesdCommand(program=program, args=args, timeout_ms=5000)), 8)
+        if not setup.exit.success:
+            raise ValueError("The CUA guest could not prepare its contained working folder. Stop this bot’s computer before retrying.")
         marker.unlink()
         self.cleanup_confirmed = previous_cleanup
 
@@ -393,10 +410,10 @@ class Bridge:
         name, args = self.request.get("name"), self.request.get("args", {})
         if name in ("read_file", "list_files", "write_file"):
             if name == "write_file":
-                setup = await self.command(env, "mkdir", ["-p", WORKSPACE])
+                setup = await self.command(env, "mkdir", ["-p", self.workdir])
                 if not setup.exit.success:
                     raise ValueError("The CUA workspace could not be created.")
-            result = await self.command(env, "python3", ["-c", FILE_SCRIPT, json.dumps([name, args]), WORKSPACE])
+            result = await self.command(env, "python3", ["-c", FILE_SCRIPT, json.dumps([name, args]), self.workdir, WORKSPACE])
             if not result.exit.success:
                 raise ValueError("The CUA file operation failed. Check the workspace-relative path and permissions inside the sandbox.")
             return content(json.loads(bytes(result.stdout))["text"])
@@ -404,14 +421,14 @@ class Bridge:
             command = args.get("command")
             if not isinstance(command, str) or not command.strip() or len(command) > 32000:
                 raise ValueError("Enter a command of at most 32,000 characters.")
-            setup = await self.command(env, "mkdir", ["-p", WORKSPACE])
+            setup = await self.command(env, "mkdir", ["-p", self.workdir])
             if not setup.exit.success:
                 raise ValueError("The CUA workspace could not be created.")
             seconds = args.get("timeoutSeconds", 30)
             if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
                 seconds = 30
-            script = "import os,sys; os.chdir('/workspace'); os.execv('/bin/sh',['/bin/sh','-c',sys.argv[1]])"
-            result = await self.command(env, "python3", ["-c", script, command], int(min(120, max(1, seconds)) * 1000))
+            script = "import os,pathlib,sys; p=pathlib.Path(sys.argv[2]); r=p.resolve(strict=True);\nif r!=p or not r.is_relative_to(pathlib.Path('/workspace')): raise ValueError('Choose a contained CUA workspace without symlinks.')\nos.chdir(r); os.execv('/bin/sh',['/bin/sh','-c',sys.argv[1]])"
+            result = await self.command(env, "python3", ["-c", script, command, self.workdir], int(min(120, max(1, seconds)) * 1000))
             output = bytes(result.stdout) + b"\n" + bytes(result.stderr)
             if len(output) > 2 * 1024 * 1024:
                 raise ValueError("The command produced too much output. Run a smaller command.")
