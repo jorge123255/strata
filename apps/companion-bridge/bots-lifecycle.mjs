@@ -4,6 +4,17 @@ const fail = (status, message) => Object.assign(new Error(message), { status });
 const id = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,120}$/.test(value);
 const providers = ['claude', 'codex', 'grok', 'kimi', 'ollama', 'configured'];
 const avatars = ['🤖', '🧑‍💻', '🦊', '🧠', '🚀', '🛠️', '🌿', '✨'];
+export const BOT_AVATAR_SHAPES = Object.freeze(['orb', 'pebble', 'tile', 'diamond', 'spark', 'hexagon']);
+// Optional shapes leave the original kind/color vocabulary readable by older
+// phones. Their koala fallback ignores the new field without losing the catalog.
+export function botAvatarConfig(value, status = 400) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !['kind', 'color', 'eyes', 'ears', 'shape'].includes(key))
+    || !['cloud', 'violet', 'orange', 'sky', 'graphite', 'slate'].includes(value.color) || !['star', 'round', 'happy', 'calm', 'plus', 'delight'].includes(value.eyes) || !['scalloped', 'round', 'small'].includes(value.ears)
+    || Object.hasOwn(value, 'kind') && !['koala', 'fox', 'cat', 'robot'].includes(value.kind)
+    || Object.hasOwn(value, 'shape') && ![...BOT_AVATAR_SHAPES, 'classic'].includes(value.shape)
+    || BOT_AVATAR_SHAPES.includes(value.shape) && value.kind !== undefined && value.kind !== 'koala') throw fail(status, 'Choose a supported bot character, color, eyes and ears.');
+  return { color: value.color, eyes: value.eyes, ears: value.ears, ...(value.kind ? { kind: value.kind } : {}), ...(value.shape ? { shape: value.shape } : {}) };
+}
 export function botProfileDraft(body, edit = false, status = 400) {
   const keys = ['name', 'provider', 'model', 'modelId', 'computerId', 'workspace', 'instructions', 'capabilities', 'policy', 'computerMode', 'effort', 'avatar', 'avatarConfig', ...(edit ? ['expectedUpdatedAt'] : [])];
   if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !keys.includes(key))) throw fail(status, 'Choose only the displayed bot settings.');
@@ -17,8 +28,7 @@ export function botProfileDraft(body, edit = false, status = 400) {
   for (const key of ['modelId', 'computerId']) if (Object.hasOwn(body,key) && !id(body[key])) throw fail(status, 'Choose saved items from the current list.');
   for (const [key, values] of [['provider',providers],['capabilities',['code','computer','both']],['policy',['manual','plan','bypass']],['computerMode',['host','cua']],['avatar',avatars]]) if (Object.hasOwn(body,key) && !values.includes(body[key])) throw fail(status, 'Choose a supported bot option.');
   if (body.avatarConfig !== undefined) {
-    const a = body.avatarConfig;
-    if (!a || typeof a !== 'object' || Array.isArray(a) || Object.keys(a).some(key => !['kind','color','eyes','ears'].includes(key)) || !['cloud','violet','orange','sky','graphite','slate'].includes(a.color) || !['star','round','happy','calm','plus','delight'].includes(a.eyes) || !['scalloped','round','small'].includes(a.ears) || Object.hasOwn(a,'kind') && !['koala','fox','cat','robot'].includes(a.kind)) throw fail(status, 'Choose a supported bot appearance.');
+    botAvatarConfig(body.avatarConfig, status);
   }
   if (body.provider && body.provider !== 'configured' && body.modelId !== undefined) throw fail(status, 'Choose configured models with Configured Models.');
   if (!edit && body.provider === 'configured' && !id(body.modelId)) throw fail(status, 'Choose a saved configured model.');

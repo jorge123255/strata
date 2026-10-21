@@ -13,6 +13,20 @@ import { createBotTeams } from './bots-team.mjs';
 const fault = (status, message) => Object.assign(new Error(message), { status });
 const ids = new Set(['claude', 'codex', 'grok', 'kimi', 'ollama', 'configured']);
 export const BOT_AVATARS = ['🤖', '🧑‍💻', '🦊', '🧠', '🚀', '🛠️', '🌿', '✨'];
+export const BOT_AVATAR_SHAPES = Object.freeze(['orb', 'pebble', 'tile', 'diamond', 'spark', 'hexagon']);
+export function normalizeBotAvatar(value, previous) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !['kind', 'color', 'eyes', 'ears', 'shape'].includes(key))
+    || !['cloud', 'violet', 'orange', 'sky', 'graphite', 'slate'].includes(value.color) || !['star', 'round', 'happy', 'calm', 'plus', 'delight'].includes(value.eyes) || !['scalloped', 'round', 'small'].includes(value.ears)
+    || Object.hasOwn(value, 'kind') && !['koala', 'fox', 'cat', 'robot'].includes(value.kind)
+    || Object.hasOwn(value, 'shape') && ![...BOT_AVATAR_SHAPES, 'classic'].includes(value.shape)
+    || BOT_AVATAR_SHAPES.includes(value.shape) && value.kind !== undefined && value.kind !== 'koala') throw fault(400, 'Choose a valid bot character, color, eyes and ears.');
+  const result = structuredClone(value);
+  // Old paired clients cannot encode shape. Preserve it for edits to the same
+  // fallback character; new clients explicitly choose classic to clear it.
+  if (!Object.hasOwn(value, 'shape') && (value.kind ?? 'koala') === 'koala' && (previous?.kind ?? 'koala') === 'koala' && BOT_AVATAR_SHAPES.includes(previous?.shape)) result.shape = previous.shape;
+  if (result.shape === 'classic') delete result.shape;
+  return result;
+}
 export const executionKey = value => value?.kind === 'local' ? 'local' : `ssh_${createHash('sha256').update(JSON.stringify([value?.host, value?.user || '', value?.port ?? null])).digest('hex').slice(0, 32)}`;
 export function normalizeBotExecution(supplied = { kind: 'local' }) {
   if (!supplied || typeof supplied !== 'object' || Array.isArray(supplied) || !['local', 'ssh', 'sandbox'].includes(supplied.kind)) throw fault(400, 'Choose a valid execution computer.');
@@ -149,8 +163,8 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
       try { if (!statSync(workspace).isDirectory()) throw new Error(); }
       catch { throw fault(400, 'Choose an existing workspace folder on this computer.'); }
     }
-    const avatarConfig = input.avatarConfig ?? old.avatarConfig;
-    if (avatarConfig !== undefined && (!avatarConfig || typeof avatarConfig !== 'object' || Array.isArray(avatarConfig) || Object.keys(avatarConfig).some(key => !['kind','color','eyes','ears'].includes(key)) || !['cloud','violet','orange','sky','graphite','slate'].includes(avatarConfig.color) || !['star','round','happy','calm','plus','delight'].includes(avatarConfig.eyes) || !['scalloped','round','small'].includes(avatarConfig.ears) || Object.hasOwn(avatarConfig, 'kind') && !['koala','fox','cat','robot'].includes(avatarConfig.kind))) throw fault(400, 'Choose a valid bot character, color, eyes and ears.');
+    const suppliedAvatar = input.avatarConfig ?? old.avatarConfig;
+    const avatarConfig = suppliedAvatar === undefined ? undefined : normalizeBotAvatar(suppliedAvatar, old.avatarConfig);
     const avatar = input.avatar ?? old.avatar ?? '🤖';
     if (!BOT_AVATARS.includes(avatar)) throw fault(400, 'Choose one of the bot avatars.');
     let modelSource, modelDestination, modelLabel;
@@ -222,7 +236,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
       detail: provider.detail ?? [provider.transport, provider.version, provider.auth?.help].filter(Boolean).join(' · ') }));
     providers.push({ id: 'configured', name: 'Configured Models', available: modelRows().length > 0, detail: 'Choose a saved model API or a currently serving local model from Models.' });
     const computers = computerRows();
-    return { lifecycleSupported: true, defaultWorkspace: defaultWorkspace(), bots: [...profiles.values()].map(bot => {
+    return { lifecycleSupported: true, avatarShapes: [...BOT_AVATAR_SHAPES], defaultWorkspace: defaultWorkspace(), bots: [...profiles.values()].map(bot => {
       const provider = providers.find(p => p.id === bot.provider), computer = computers.find(c => c.id === executionKey(bot.execution));
       const ownKey = bot.provider === 'ollama' && !!bot.providerSettings?.apiKey;
       const configured = bot.provider === 'configured' && modelRows().some(row => row.connectionId === bot.modelSource?.connectionId && row.model === bot.modelSource?.model);

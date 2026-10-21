@@ -77,6 +77,8 @@ test('paired phone drafts round-trip configured identities, edits and frozen app
   const token = paired.json.token;
   const catalog = await request('/v1/bots', { token });
   assert.equal(catalog.status, 200); assert.equal(catalog.json.lifecycleSupported, true);
+  const shapes = ['orb', 'pebble', 'tile', 'diamond', 'spark', 'hexagon'];
+  assert.deepEqual(catalog.json.avatarShapes, shapes);
   const target = catalog.json.computers.find(row => row.kind === 'ssh');
   const selected = catalog.json.models.find(row => row.connectionName === 'Strata server');
   const other = catalog.json.models.find(row => row.connectionName === 'Maya separate');
@@ -106,6 +108,23 @@ test('paired phone drafts round-trip configured identities, edits and frozen app
   assert.equal((await request('/v1/bots', { method: 'POST', token, body: { ...draft, model: '' } })).status, 400, 'Configured model payload must agree with its saved identity');
   assert.equal((await request('/v1/bots', { method: 'POST', token, body: { ...draft, execution: { kind: 'ssh', host: 'foreign' } } })).status, 400);
   assert.equal((await request('/v1/bots', { method: 'POST', token, body: { ...draft, modelId: 'removed' } })).status, 409);
+  const geometric = { color: 'sky', eyes: 'round', ears: 'small' };
+  for (const shape of shapes) {
+    assert.equal((await request(`/v1/bots/${id}/avatar`, { method: 'POST', token, body: { avatarConfig: { ...geometric, shape } } })).status, 200);
+    const saved = (await request('/v1/bots', { token })).json.bots[0];
+    assert.deepEqual(saved.avatarConfig, { ...geometric, shape });
+  }
+  const beforeOldEdit = (await request('/v1/bots', { token })).json.bots[0];
+  const oldClientEdit = await request(`/v1/bots/${id}`, { method: 'PATCH', token, body: { avatarConfig: { ...geometric, color: 'orange' }, expectedUpdatedAt: beforeOldEdit.updatedAt } });
+  assert.equal(oldClientEdit.status, 200); assert.equal(oldClientEdit.json.bot.avatarConfig.shape, 'hexagon');
+  const geometricChat = await request(`/v1/bots/${id}/conversations`, { method: 'POST', token, body: {} });
+  assert.equal(geometricChat.status, 201); assert.equal(geometricChat.json.conversation.botAvatarConfig.shape, 'hexagon');
+  assert.deepEqual(chats.detail(oldChat.json.conversation.id).conversation.preferences.botAvatarConfig, draft.avatarConfig);
+  assert.equal((await request(`/v1/bots/${id}/avatar`, { method: 'POST', token, body: { avatarConfig: { ...geometric, shape: 'classic' } } })).status, 200);
+  assert.equal(Object.hasOwn((await request('/v1/bots', { token })).json.bots[0].avatarConfig, 'shape'), false);
+  for (const invalid of [{ ...geometric, shape: null }, { ...geometric, shape: 'external' }, { ...geometric, kind: 'fox', shape: 'orb' }]) {
+    assert.equal((await request(`/v1/bots/${id}/avatar`, { method: 'POST', token, body: { avatarConfig: invalid } })).status, 400);
+  }
   const final = await request('/v1/bots', { token });
   assert.equal(final.json.bots.length, 1); assert.equal(final.json.bots[0].name, 'Edited on phone');
   assert.equal(final.json.bots[0].modelId, selected.id);

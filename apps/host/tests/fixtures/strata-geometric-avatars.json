@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "provenance": "Original Strata vector paths, drawn from basic geometric forms. No BotAI or recovered third-party path data.",
+  "wire": {
+    "field": "shape",
+    "kinds": ["koala", "fox", "cat", "robot"],
+    "colors": ["cloud", "violet", "orange", "sky", "graphite", "slate"],
+    "clear": "classic",
+    "catalog": "avatarShapes",
+    "fallbackKind": "koala"
+  },
+  "eyeGrid": {"leftX": -0.37, "rightX": 0.37, "y": -0.06},
+  "roundEye": {"width": 0.16, "height": 0.34, "cornerRadius": 0.08, "rotationDegrees": -12},
+  "shapes": [
+    {"id": "orb", "name": "Orb", "path": "M0-1.04C.58-1.04 1.04-.58 1.04 0C1.04.58.58 1.04 0 1.04C-.58 1.04-1.04.58-1.04 0C-1.04-.58-.58-1.04 0-1.04Z"},
+    {"id": "pebble", "name": "Pebble", "path": "M-.81-.65C-.47-1.09.21-1.12.68-.77C1.09-.46 1.15.19.83.67C.53 1.12-.18 1.15-.65.87C-1.12.59-1.16-.19-.81-.65Z"},
+    {"id": "tile", "name": "Tile", "path": "M-.65-1.02H.65Q1.02-1.02 1.02-.65V.65Q1.02 1.02.65 1.02H-.65Q-1.02 1.02-1.02.65V-.65Q-1.02-1.02-.65-1.02Z"},
+    {"id": "diamond", "name": "Diamond", "path": "M-.19-1.01Q0-1.2.19-1.01L1.01-.19Q1.2 0 1.01.19L.19 1.01Q0 1.2-.19 1.01L-1.01.19Q-1.2 0-1.01-.19Z"},
+    {"id": "spark", "name": "Spark", "path": "M0-1.13L.31-.74L.8-.8L.74-.31L1.13 0L.74.31L.8.8L.31.74L0 1.13L-.31.74L-.8.8L-.74.31L-1.13 0L-.74-.31L-.8-.8L-.31-.74Z"},
+    {"id": "hexagon", "name": "Hexagon", "path": "M-.43-1H.43Q.59-1 .67-.86L1.1-.14Q1.18 0 1.1.14L.67.86Q.59 1 .43 1H-.43Q-.59 1-.67.86L-1.1.14Q-1.18 0-1.1-.14L-.67-.86Q-.59-1-.43-1Z"}
+  ]
+}
