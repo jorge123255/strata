@@ -588,6 +588,27 @@ final class BotsTests: XCTestCase {
         XCTAssertNil(store.conversations.first?.botId, "Older summaries remain decodable, with catalog conversation IDs as fallback.")
     }
 
+    func testRosterPreviewExcludesTeamRoutingWhileFullBotHistoryRemainsAvailable() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { request in
+            switch request.url!.path {
+            case "/v1/bots": return Self.catalog
+            case "/v1/conversations": return ["conversations": [
+                ["id": "public-direct", "title": "Direct work", "active": false, "botId": "bot_coder", "preview": "The requested change is ready."],
+                ["id": "private-router", "title": "Routing", "active": false, "botId": "bot_coder", "teamId": "team_fixture", "preview": "[Internal team routing instruction]"],
+            ]]
+            default: return nil
+            }
+        }
+        let store = fixture.makeStore(); await store.refreshBots(); await store.refresh()
+        let bot = try XCTUnwrap(store.botCatalog?.bots.first)
+        XCTAssertEqual(Set(store.botConversations(bot).map(\.id)), ["public-direct", "private-router"])
+        XCTAssertEqual(store.botRosterConversations(bot).map(\.id), ["public-direct"])
+        XCTAssertEqual(store.conversations.first { $0.id == "private-router" }?.teamId, "team_fixture")
+        XCTAssertNil(store.conversations.first { $0.id == "public-direct" }?.teamId)
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+    }
+
     func testNewChatSelectsOnlySavedComputerAndConfiguredModelWithoutChangingServing() async throws {
         let fixture = StoreTransport(); defer { fixture.close() }
         fixture.respond { request in
@@ -1240,6 +1261,22 @@ final class BotWorkspaceTests: XCTestCase {
     }
     private func channelSnapshot(_ rows: [[String: Any]], older: Bool = false) -> [String: Any] {
         ["teamId": "team_fixture", "supported": true, "messages": rows, "activeRuns": [], "nextSequence": rows.last?["sequence"] as? Int ?? 0, "hasMore": false, "hasMoreBefore": older]
+    }
+
+    func testTeamPublicPreviewDecodesUnicodeAndItsOwnActivityDate() throws {
+        var data = team(enabled: true)
+        data["createdAt"] = "2026-10-20T01:00:00.000Z"
+        data["channelPreview"] = ["id": "tm_public", "sequence": 3, "kind": "message", "author": ["type": "bot", "name": "Reviewer", "botId": "bot_reviewer"], "content": "Ready 👩🏽‍💻 — 你好", "createdAt": "2026-10-21T02:30:00.000Z"]
+        let value = try decode(data, as: BotTeam.self)
+        XCTAssertEqual(value.channelPreview?.line, "Reviewer: Ready 👩🏽‍💻 — 你好")
+        XCTAssertEqual(value.channelPreview?.sequence, 3)
+        XCTAssertGreaterThan(try XCTUnwrap(value.channelPreview?.createdAt.date), try XCTUnwrap(value.createdAt?.date))
+    }
+    func testTeamPreviewIsOptionalForEmptyAndOlderHostsAndSystemLineStaysUnattributed() throws {
+        let value = try decode(team(), as: BotTeam.self)
+        XCTAssertNil(value.channelPreview); XCTAssertNil(value.createdAt)
+        let preview = try decode(["id": "tm_status", "sequence": 5, "kind": "status", "author": ["type": "system", "name": "Strata"], "content": "Stopped by you.", "createdAt": 1_792_544_400_000], as: BotTeamChannelPreview.self)
+        XCTAssertEqual(preview.line, "Stopped by you."); XCTAssertNotNil(preview.createdAt.date)
     }
 
     func testTeamChannelReadsMergeOrderedHistoryAndKeepForwardCursorAfterOlderPages() async throws {

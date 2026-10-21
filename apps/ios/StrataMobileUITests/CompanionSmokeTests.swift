@@ -370,7 +370,7 @@ final class CompanionSmokeTests: XCTestCase {
     @MainActor
     func testPhoneBotCreationEditingCASAndApprovalModes() async throws {
         let control = try pairWorkspaceFixture()
-        try require(app.buttons["createBotButton"]); app.buttons["createBotButton"].tap()
+        try openCreateMenu(); try require(app.buttons["createBotButton"]); app.buttons["createBotButton"].tap()
         attachScreenshot("Bots — photo-led character-first creation")
         let name = app.textFields["profileBotNameInput"]; try require(name); name.tap(); name.typeText("Phone Builder")
         if app.keyboards.firstMatch.exists { app.buttons["Done"].firstMatch.tap() }
@@ -459,7 +459,7 @@ final class CompanionSmokeTests: XCTestCase {
             try require(search); XCTAssertTrue(search.isHittable)
             attachScreenshot("Photo-led roster — " + style + (large ? " accessibility" : ""))
             if !large { for title in ["Activity", "Skills", "Connections", "Team"] { try selectWorkspace(title) } }
-            try require(app.buttons["createBotButton"]); app.buttons["createBotButton"].tap()
+            try openCreateMenu(); try require(app.buttons["createBotButton"]); app.buttons["createBotButton"].tap()
             try require(app.textFields["profileBotNameInput"])
             attachScreenshot("Photo-led creation — " + style + (large ? " accessibility" : ""))
             try tapWorkspace(app.buttons["avatar-shape-hexagon"])
@@ -505,9 +505,7 @@ final class CompanionSmokeTests: XCTestCase {
         tapTab("Bots")
         let backToRoster = app.navigationBars.buttons["Bots"].firstMatch
         if backToRoster.exists { backToRoster.tap() }
-        let filters = app.segmentedControls["botRosterFilterPicker"]
-        try require(filters)
-        try tapWorkspace(filters.buttons["Working"]); try require(app.buttons["bot-fixture-bot"])
+        try selectRosterFilter("Working"); try require(app.buttons["bot-fixture-bot"])
         XCTAssertFalse(app.buttons["bot-fixture-reviewer"].exists)
         attachScreenshot("Bot roster — actual active work filter")
         tapTab("Chat")
@@ -525,7 +523,7 @@ final class CompanionSmokeTests: XCTestCase {
         _ = try await fixtureControl(control, action: "reply-error")
         let failed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "Error"), object: face)
         await fulfillment(of: [failed], timeout: 12)
-        tapTab("Bots"); try tapWorkspace(filters.buttons["Needs attention"]); try require(app.buttons["bot-fixture-bot"])
+        tapTab("Bots"); try selectRosterFilter("Needs attention"); try require(app.buttons["bot-fixture-bot"])
         attachScreenshot("Bot roster — needs-attention filter")
         state = try await fixtureControl(control, action: "state")
         XCTAssertTrue(try XCTUnwrap(state["calls"] as? [[String: Any]]).allSatisfy { ($0["method"] as? String) == "GET" }, "Viewing and animating avatars never sends a prompt or permission decision.")
@@ -545,7 +543,7 @@ final class CompanionSmokeTests: XCTestCase {
         guard XCTWaiter.wait(for: [dismissed], timeout: 25) == .completed else { throw acceptanceError("Fixture pairing did not complete.") }
         sensitivePairingVisible = false
         tapTab("Bots")
-        try require(app.segmentedControls["botsWorkspacePicker"])
+        try require(app.buttons["botsWorkspaceMenuButton"])
         return controlURL
     }
 
@@ -652,7 +650,7 @@ final class CompanionSmokeTests: XCTestCase {
         let controlURL = try pairWorkspaceFixture()
         let team = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "team-")).firstMatch
         try require(team); try tapWorkspace(team)
-        try require(app.navigationBars["Team channel"])
+        try require(app.buttons["teamChannelHeaderButton"])
         let input = app.descendants(matching: .any).matching(identifier: "botTeamTaskInput").firstMatch
         let send = app.buttons["startBotTeamTaskButton"]
         try tapWorkspace(input); input.typeText("Hi everyone")
@@ -661,14 +659,14 @@ final class CompanionSmokeTests: XCTestCase {
         let builderHello = app.staticTexts["Hi everyone! I am Builder. Ready to help the team."]
         try require(builderHello)
         try tapWorkspace(app.staticTexts["Hi everyone! I am Reviewer. Ready to help the team."], performTap: false)
-        XCTAssertTrue(app.navigationBars["Team channel"].exists, "Sending stays in the shared room.")
+        XCTAssertTrue(app.buttons["teamChannelHeaderButton"].exists, "Sending stays in the shared room.")
         attachScreenshot("Team channel — named peers talking together")
         let state = try await fixtureControl(controlURL, action: "team-room-state")
         let channel = try XCTUnwrap(state["teamChannel"] as? [String: Any])
         let entries = try XCTUnwrap(channel["messages"] as? [[String: Any]])
         let peer = try XCTUnwrap(entries.first { ($0["author"] as? [String: Any])?["name"] as? String == "Reviewer" && ($0["content"] as? String)?.contains("Hi everyone") == true })
         let peerId = try XCTUnwrap(peer["id"] as? String)
-        try tapWorkspace(app.buttons["replyTeamMessage-\(peerId)"])
+        try tapWorkspace(app.buttons["teamMessageOptions-\(peerId)"]); try require(app.buttons["replyTeamMessage-\(peerId)"]); app.buttons["replyTeamMessage-\(peerId)"].tap()
         try require(app.staticTexts["teamReplyContext"])
         input.typeText("Who wants this task?")
         app.buttons["dismissBotTeamTaskKeyboardButton"].tap()
@@ -679,16 +677,23 @@ final class CompanionSmokeTests: XCTestCase {
         if app.buttons["latestTeamMessagesButton"].exists { app.buttons["latestTeamMessagesButton"].tap() }
         try tapWorkspace(report, performTap: false)
         attachScreenshot("Team channel — bids ownership and public worker report")
+        let reportState = try await fixtureControl(controlURL, action: "team-room-state")
+        let reportEntries = try XCTUnwrap((reportState["teamChannel"] as? [String: Any])?["messages"] as? [[String: Any]])
+        let reportId = try XCTUnwrap(reportEntries.first { $0["content"] as? String == "The fixture task is complete. Coordinator, the checks passed." }?["id"] as? String)
+        try tapWorkspace(app.buttons["teamMessageOptions-\(reportId)"])
         let details = app.buttons.matching(NSPredicate(format: "label == %@", "Thinking & tools")).firstMatch
-        try tapWorkspace(details)
+        try require(details); details.tap()
         let thinking = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "thinkingDisclosure-")).firstMatch
         try require(thinking); thinking.tap()
+        XCTAssertTrue(app.tabBars.firstMatch.exists && app.tabBars.firstMatch.isHittable, "Opening shared Thinking restores global app navigation.")
         attachScreenshot("Team channel — explicit shared Thinking link")
         tapTab("Bots")
-        try require(app.navigationBars["Team channel"])
+        try require(app.buttons["teamChannelHeaderButton"])
         try tapWorkspace(input); input.typeText("Hold this synthetic task")
         app.buttons["dismissBotTeamTaskKeyboardButton"].tap()
         try waitEnabled(send); send.tap()
+        let ownMessage = app.staticTexts["Hold this synthetic task"]
+        try require(ownMessage); XCTAssertTrue(ownMessage.isHittable, "An explicit send reveals the latest message without a helper scroll.")
         let stop = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "stopBotTeamRun-")).firstMatch
         try require(stop); try waitEnabled(stop); stop.tap()
         try require(app.buttons["Stop all team work"]); app.buttons["Stop all team work"].tap()
@@ -737,8 +742,84 @@ final class CompanionSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testGroupRosterAndRoomPhotoLayoutWithRealMenus() async throws {
+        let controlURL = try pairWorkspaceFixture()
+        let initial = try await fixtureControl(controlURL, action: "team-room-state")
+        let teamId = try XCTUnwrap((initial["roomTeam"] as? [String: Any])?["id"] as? String)
+        let emptyId = try XCTUnwrap((initial["roomEmptyTeam"] as? [String: Any])?["id"] as? String)
+        let members = try XCTUnwrap((initial["roomTeam"] as? [String: Any])?["memberIds"] as? [String])
+        try require(app.buttons["team-" + teamId]); try require(app.buttons["team-" + emptyId])
+        try require(app.buttons["bot-" + members[1]])
+        let preview = app.staticTexts["teamRosterPreview-" + teamId]
+        try require(preview); XCTAssertEqual(preview.label, "Stopped by you.")
+        XCTAssertFalse(app.segmentedControls["botsWorkspacePicker"].exists)
+        XCTAssertFalse(app.segmentedControls["botRosterFilterPicker"].exists)
+        XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "[Strata team")).firstMatch.exists)
+        attachScreenshot("Group chat — mixed bot and team roster with public preview")
+        let beforePolling = try XCTUnwrap(initial["calls"] as? [[String: Any]]).filter { $0["path"] as? String == "/api/bots/teams" }.count
+        try await Task.sleep(for: .seconds(6))
+        let polled = try await fixtureControl(controlURL, action: "team-room-state")
+        let polledCalls = try XCTUnwrap(polled["calls"] as? [[String: Any]])
+        XCTAssertGreaterThan(polledCalls.filter { $0["path"] as? String == "/api/bots/teams" }.count, beforePolling)
+        XCTAssertFalse(polledCalls.contains { ($0["path"] as? String)?.hasSuffix("/channel") == true }, "Roster previews use the Team list, without per-room reads.")
+        try openCreateMenu(); try require(app.buttons["createBotButton"]); try require(app.buttons["createBotTeamButton"])
+        app.buttons["createBotButton"].tap(); try require(app.textFields["profileBotNameInput"])
+        attachScreenshot("Group chat roster — create bot remains a native action")
+        app.buttons["Cancel"].tap()
+        try openCreateMenu(); app.buttons["createBotTeamButton"].tap(); try require(app.textFields["botTeamNameInput"])
+        attachScreenshot("Group chat roster — create team remains a native action")
+        app.buttons["Cancel"].tap()
+        try tapWorkspace(app.buttons["team-" + emptyId])
+        try require(app.otherElements["teamChannelEmptyState"])
+        XCTAssertFalse(app.tabBars.firstMatch.exists && app.tabBars.firstMatch.isHittable)
+        attachScreenshot("Group chat — empty team canvas and pinned composer")
+        app.navigationBars.buttons["Bots"].firstMatch.tap()
+        try require(app.buttons["botsWorkspaceMenuButton"]); XCTAssertTrue(app.tabBars.firstMatch.isHittable)
+        for (style, large) in [("Light", false), ("Dark", false), ("Dark", true)] {
+            app.terminate()
+            _ = try await fixtureControl(controlURL, action: style == "Dark" ? "appearance-dark" : "appearance-light")
+            app.launchArguments = large ? ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"] : []
+            app.launch(); tapTab("Bots")
+            try tapWorkspace(app.buttons["team-" + teamId])
+            let header = app.buttons["teamChannelHeaderButton"]
+            try require(header); XCTAssertTrue(header.label.contains("Engineering"))
+            XCTAssertFalse(app.tabBars.firstMatch.exists && app.tabBars.firstMatch.isHittable)
+            let send = app.buttons["startBotTeamTaskButton"]
+            XCTAssertTrue(send.isHittable)
+            let input = app.descendants(matching: .any).matching(identifier: "botTeamTaskInput").firstMatch
+            XCTAssertTrue(input.isHittable); XCTAssertLessThanOrEqual(send.frame.maxY, app.windows.firstMatch.frame.maxY - 15)
+            try tapWorkspace(app.staticTexts["Stopped by you."], performTap: false)
+            app.scrollViews["teamChannelMessages"].swipeDown()
+            try require(app.buttons["latestTeamMessagesButton"]); app.buttons["latestTeamMessagesButton"].tap()
+            XCTAssertTrue(app.staticTexts["Stopped by you."].isHittable, "Latest returns to saved history without any incoming work.")
+            attachScreenshot("Group chat — " + style + (large ? " accessibility XXXL" : " normal"))
+            try openTeamDetails(); try tapWorkspace(app.buttons["botTeamSettingsDisclosure"])
+            try tapWorkspace(app.buttons["toggleBotTeamEnabledButton"], performTap: false)
+            try tapWorkspace(app.buttons["botTeamPreviousTasksDisclosure"])
+            try tapWorkspace(app.staticTexts["Cancelled"], performTap: false)
+            attachScreenshot("Group chat details — " + style + (large ? " accessibility XXXL" : " normal"))
+            app.buttons["closeTeamDetailsButton"].tap()
+            try require(app.buttons["teamComposerMenuButton"]); app.buttons["teamComposerMenuButton"].tap()
+            try require(app.buttons["teamChannelRecipientPicker"]); app.buttons["teamChannelRecipientPicker"].tap()
+            try require(app.buttons["Everyone"]); app.buttons["Everyone"].tap()
+            try require(app.staticTexts["To Everyone"])
+            app.navigationBars.buttons["Bots"].firstMatch.tap()
+            try require(app.buttons["botsWorkspaceMenuButton"]); XCTAssertTrue(app.tabBars.firstMatch.isHittable)
+        }
+        tapTab("Home")
+        let hidden = try await fixtureControl(controlURL, action: "team-room-state")
+        let hiddenReads = try XCTUnwrap(hidden["calls"] as? [[String: Any]]).filter { $0["path"] as? String == "/api/bots/teams" }.count
+        try await Task.sleep(for: .seconds(6))
+        let final = try await fixtureControl(controlURL, action: "team-room-state")
+        let finalCalls = try XCTUnwrap(final["calls"] as? [[String: Any]])
+        XCTAssertEqual(finalCalls.filter { $0["path"] as? String == "/api/bots/teams" }.count, hiddenReads, "Hidden roster and room stop their Team polling.")
+        XCTAssertTrue(finalCalls.allSatisfy { $0["method"] as? String == "GET" }, "Viewing rooms, previews, menus and details never executes work.")
+    }
+
+    @MainActor
     func testTeamExplicitTaskSharedThinkingStopAndActivity() async throws {
         let controlURL = try pairWorkspaceFixture()
+        try openCreateMenu()
         let create = app.buttons["createBotTeamButton"]
         try require(create); try waitEnabled(create); try tapWorkspace(create)
         let name = app.textFields["botTeamNameInput"]; try require(name)
@@ -750,14 +831,17 @@ final class CompanionSmokeTests: XCTestCase {
         try waitEnabled(app.buttons["confirmBotTeamButton"]); app.buttons["confirmBotTeamButton"].tap()
         let team = app.buttons["team-team_fixture"]
         try require(team); try tapWorkspace(team)
+        try openTeamDetails()
         try tapWorkspace(app.buttons["botTeamSettingsDisclosure"])
         let enabled = app.buttons["toggleBotTeamEnabledButton"]
         try tapWorkspace(enabled, performTap: false); try waitEnabled(enabled); enabled.tap()
+        app.buttons["closeTeamDetailsButton"].tap()
         let input = app.descendants(matching: .any).matching(identifier: "botTeamTaskInput").firstMatch
         try tapWorkspace(input); input.typeText("Review this synthetic workspace")
         app.buttons["dismissBotTeamTaskKeyboardButton"].tap()
         let start = app.buttons["startBotTeamTaskButton"]
         try waitEnabled(start); try tapWorkspace(start)
+        try openTeamDetails()
         try tapWorkspace(app.buttons["Open task conversation"])
         let thinking = app.buttons["thinkingDisclosure-team-assistant"]
         try require(thinking); thinking.tap()
@@ -767,11 +851,12 @@ final class CompanionSmokeTests: XCTestCase {
         let stop = app.buttons["stopBotTeamRun-run_fixture"]
         try require(stop)
         _ = try await fixtureControl(controlURL, action: "team-progress")
-        try require(app.staticTexts["7 turns"])
+        try openTeamDetails(); try require(app.staticTexts["7 turns"]); app.buttons["closeTeamDetailsButton"].tap()
         try waitEnabled(stop); stop.tap()
         try require(app.buttons["Stop all team work"]); app.buttons["Stop all team work"].tap()
-        try tapWorkspace(app.buttons["botTeamPreviousTasksDisclosure"])
+        try openTeamDetails(); try tapWorkspace(app.buttons["botTeamPreviousTasksDisclosure"])
         try require(app.staticTexts["Cancelled"])
+        app.buttons["closeTeamDetailsButton"].tap()
         app.navigationBars.buttons.firstMatch.tap()
         try selectWorkspace("Activity")
         try require(app.staticTexts["Reviewer subagent"])
@@ -790,11 +875,24 @@ final class CompanionSmokeTests: XCTestCase {
         guard element.waitForExistence(timeout: 10) else { throw acceptanceError("A required workspace control did not appear.") }
     }
     private func selectWorkspace(_ title: String) throws {
-        let button = app.segmentedControls["botsWorkspacePicker"].buttons[title]
-        try require(button)
-        button.tap()
-        let selected = XCTNSPredicateExpectation(predicate: NSPredicate(format: "selected == true"), object: button)
-        guard XCTWaiter.wait(for: [selected], timeout: 5) == .completed else { throw acceptanceError("Workspace selection did not change to \(title).") }
+        let menu = app.buttons["botsWorkspaceMenuButton"]
+        try require(menu); menu.tap()
+        let button = app.buttons["botsWorkspaceDestination-" + title]
+        try require(button); button.tap()
+        try require(app.navigationBars[title == "Team" ? "Bots" : title])
+    }
+    private func selectRosterFilter(_ title: String) throws {
+        let menu = app.buttons["botsWorkspaceMenuButton"]
+        try require(menu); menu.tap()
+        let filter = app.buttons["botRosterFilter-" + title]
+        try require(filter); filter.tap()
+    }
+    private func openCreateMenu() throws {
+        try require(app.buttons["createBotMenuButton"]); app.buttons["createBotMenuButton"].tap()
+    }
+    private func openTeamDetails() throws {
+        try require(app.buttons["teamChannelHeaderButton"]); app.buttons["teamChannelHeaderButton"].tap()
+        try require(app.buttons["closeTeamDetailsButton"])
     }
     private func waitEnabled(_ element: XCUIElement) throws {
         try require(element)
@@ -822,12 +920,12 @@ final class CompanionSmokeTests: XCTestCase {
             // The persistent roster controls sit above the tab bar. Swiping
             // from that overlay cannot move the underlying list.
             let targetIdentifier = element.exists ? element.identifier : ""
-            let rosterFilter = app.segmentedControls["botRosterFilterPicker"]
-            if rosterFilter.exists, !["botRosterSearchInput", "botRosterFilterPicker"].contains(targetIdentifier) {
-                bottom = min(bottom, rosterFilter.frame.minY - 12)
+            let rosterMenu = app.buttons["botsWorkspaceMenuButton"]
+            if rosterMenu.exists, !["botRosterSearchInput", "botsWorkspaceMenuButton"].contains(targetIdentifier) {
+                bottom = min(bottom, rosterMenu.frame.minY - 12)
             }
             let teamInput = app.descendants(matching: .any).matching(identifier: "botTeamTaskInput").firstMatch
-            if teamInput.exists, !["botTeamTaskInput", "startBotTeamTaskButton", "teamChannelRecipientPicker"].contains(targetIdentifier) {
+            if !app.buttons["closeTeamDetailsButton"].exists, teamInput.exists, !["botTeamTaskInput", "startBotTeamTaskButton", "teamChannelRecipientPicker", "teamComposerMenuButton"].contains(targetIdentifier) {
                 bottom = min(bottom, teamInput.frame.minY - 54)
             }
             let frame = element.exists ? element.frame : .zero, y = frame.midY
