@@ -89,9 +89,9 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
   await page.getByRole('complementary', { name: 'Project partner profile' }).getByText('Computer stopped', { exact: true }).waitFor();
   assert.equal(await page.locator('.cua-bots-sidebar footer').count(), 0, 'Bots uses Strata’s existing branding and status chrome.');
   await screenshot('embedded-bots-overview');
-  const botSearch=page.getByRole('searchbox',{name:'Search bots',exact:true});await botSearch.fill('does-not-exist');await page.getByText('No bots match this search.',{exact:true}).waitFor();assert.equal(await page.getByTestId('shared-chat').getAttribute('data-session'),'existing-chat');await botSearch.fill('');
-  await page.getByRole('combobox',{name:'Filter bots',exact:true}).click();await page.getByRole('option',{name:'Working',exact:true}).click();await page.getByText('No bots are working.',{exact:true}).waitFor();
-  await page.getByRole('combobox',{name:'Filter bots',exact:true}).click();await page.getByRole('option',{name:'All bots',exact:true}).click();
+  const botSearch=page.getByRole('searchbox',{name:'Search bots',exact:true});await botSearch.fill('does-not-exist');await page.getByText('No conversations match this search.',{exact:true}).waitFor();assert.equal(await page.getByTestId('shared-chat').getAttribute('data-session'),'existing-chat');await botSearch.fill('');
+  await page.getByRole('combobox',{name:'Filter bots',exact:true}).click();await page.getByRole('option',{name:'Working',exact:true}).click();await page.getByText('No conversations are active.',{exact:true}).waitFor();
+  await page.getByRole('combobox',{name:'Filter bots',exact:true}).click();await page.getByRole('option',{name:'All conversations',exact:true}).click();
   // Current profile is host mode, but this selected chat owns a frozen CUA computer.
   await page.getByRole('button', { name: 'Open shared computer', exact: true }).click();
   const computer = page.getByRole('complementary', { name: 'Bot computer', exact: true });
@@ -266,13 +266,13 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
   await compactProfile.waitFor({ state: 'hidden' });
   assert.equal(await page.getByTestId('shared-chat').getAttribute('data-session'), 'existing-chat', 'Entering a compact window keeps the selected chat.');
   await page.getByRole('button', { name: 'Search and filter bots', exact: true }).click();
-  const filters = page.getByRole('dialog', { name: 'Find a bot', exact: true });
+  const filters = page.getByRole('dialog', { name: 'Find a conversation', exact: true });
   assert.equal(await filters.getByRole('searchbox', { name: 'Search bots', exact: true }).inputValue(), 'no-mobile-match', 'A narrow window preserves the chosen search.');
   assert.equal(await filters.getByRole('combobox', { name: 'Filter bots', exact: true }).textContent(), 'Working', 'A narrow window preserves the chosen activity filter.');
   await screenshot('embedded-bots-mobile-filter');
   await filters.getByRole('button', { name: 'Clear filters', exact: true }).click();
   assert.equal(await filters.getByRole('searchbox', { name: 'Search bots', exact: true }).inputValue(), '');
-  assert.equal(await filters.getByRole('combobox', { name: 'Filter bots', exact: true }).textContent(), 'All bots');
+  assert.equal(await filters.getByRole('combobox', { name: 'Filter bots', exact: true }).textContent(), 'All conversations');
   await filters.getByRole('button', { name: 'Done', exact: true }).click();
   await filters.waitFor({ state: 'hidden' });
   await page.getByRole('complementary', { name: 'Bots navigation', exact: true }).getByRole('button', { name: 'Open Project partner', exact: true }).waitFor();

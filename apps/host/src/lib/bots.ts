@@ -50,7 +50,7 @@ export interface BotsSnapshot { bots: Bot[]; providers: BotProvider[]; computers
 
 /** Collaboration records contain public identities and task links, never credentials. */
 export interface BotTeamLimits { maxParallel: number; maxDepth: number; maxHops: number; maxTurns: number; maxDurationMs: number }
-export interface BotTeam { id: string; name: string; memberIds: string[]; coordinatorId: string; enabled: boolean; limits: BotTeamLimits; createdAt: string; updatedAt: string }
+export interface BotTeam { id: string; name: string; memberIds: string[]; coordinatorId: string; enabled: boolean; limits: BotTeamLimits; createdAt: string; updatedAt: string; channelPreview?: BotTeamChannelPreview }
 export type BotTeamRunState = 'queued'|'running'|'completed'|'error'|'cancelled'|'interrupted'|'stopping'|'cleanup_pending';
 export interface BotTeamRun { id: string; teamId: string; rootChatId: string; rootBotId: string; state: BotTeamRunState; limits: BotTeamLimits; consumedTurns: number; createdAt: string; updatedAt: string; detail?: string }
 export interface BotTeamActivity { id: string; type: 'run'|'delivery'|'subagent'; teamId: string; runId: string; botId?: string; chatId?: string; parentChatId?: string; title: string; state: string; fromBotId?: string; toBotId?: string; createdAt: string; updatedAt: string; detail?: string }
@@ -62,6 +62,7 @@ export interface BotTeamChannelMessage {
   author: BotTeamChannelAuthor; content: string; createdAt: string; replyToId?: string;
   recipientIds?: string[]; runId?: string; chatId?: string; state?: string;
 }
+export interface BotTeamChannelPreview { id: string; sequence: number; kind: BotTeamChannelMessage['kind']; author: Pick<BotTeamChannelAuthor, 'type'|'name'|'botId'>; content: string; createdAt: string }
 export interface BotTeamChannelSnapshot { teamId: string; supported: boolean; messages: BotTeamChannelMessage[]; activeRuns: BotTeamRun[]; nextSequence: number; hasMore?: boolean; hasMoreBefore?: boolean; firstSequence?: number }
 /** Cursor pages may overlap; keep stable identities, order and only this room's rows. */
 export function mergeBotTeamChannelMessages(previous: BotTeamChannelMessage[], incoming: BotTeamChannelMessage[], teamId: string): BotTeamChannelMessage[] {
@@ -137,11 +138,34 @@ export function botReplySignal(botId: string, sessions: Session[]): string | und
 
 /** A roster preview uses the bot's own shared messages, never another model's chat. */
 export function botRosterPreview(botId: string, sessions: Session[]): { text: string; updatedAt: string } | undefined {
-  const chat = botConversations(sessions, botId)[0];
+  const chat = botConversations(sessions.filter(session => !session.preferences?.teamId), botId)[0];
   if (!chat) return undefined;
   const message = [...chat.messages].reverse().find(row => row.content?.trim());
   const text = message?.content?.replace(/\s+/g, ' ').trim() || chat.title?.trim();
   return text ? { text, updatedAt: chat.updatedAt } : undefined;
+}
+
+/** One conversation list uses only each bot's direct chat or a team's public journal. */
+export interface BotConversationRosterItem { kind: 'bot'|'team'; id: string; name: string; updatedAt: string; preview?: string; state: 'idle'|'working'|'attention'|'paused' }
+export function botTeamRosterPreview(team: BotTeam): { text: string; updatedAt: string } | undefined {
+  const row = team.channelPreview;
+  if (!row || typeof row.content !== 'string' || !row.content.trim() || !Number.isFinite(Date.parse(row.createdAt)) || !row.author || typeof row.author.name !== 'string') return undefined;
+  const author = row.author.type === 'user' ? 'You' : row.author.type === 'system' ? 'Team update' : row.author.name;
+  return { text: `${author}: ${row.content.replace(/\s+/g, ' ').trim()}`, updatedAt: row.createdAt };
+}
+export function botConversationRoster(bots: Bot[], teams: BotTeamsSnapshot | null, sessions: Session[]): BotConversationRosterItem[] {
+  const rows: BotConversationRosterItem[] = bots.map(bot => {
+    const preview = botRosterPreview(bot.id, sessions), mood = botAvatarActivity(bot, sessions);
+    return { kind: 'bot', id: bot.id, name: bot.name, updatedAt: preview?.updatedAt ?? bot.createdAt, preview: preview?.text,
+      state: mood === 'paused' ? 'paused' : ['needsApproval', 'error'].includes(mood) ? 'attention' : ['thinking', 'working'].includes(mood) ? 'working' : 'idle' };
+  });
+  for (const team of teams?.teams ?? []) {
+    const preview = botTeamRosterPreview(team), runs = (teams?.runs ?? []).filter(run => run.teamId === team.id).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    rows.push({ kind: 'team', id: team.id, name: team.name, updatedAt: preview?.updatedAt ?? team.createdAt, preview: preview?.text,
+      state: runs.some(run => run.state === 'cleanup_pending') ? 'attention' : runs.some(run => ['queued', 'running', 'stopping'].includes(run.state)) ? 'working' : ['error', 'interrupted'].includes(runs[0]?.state) ? 'attention' : 'idle' });
+  }
+  const time = (value: string) => Number.isFinite(Date.parse(value)) ? Date.parse(value) : 0;
+  return rows.sort((a, b) => time(b.updatedAt) - time(a.updatedAt) || a.name.localeCompare(b.name) || `${a.kind}:${a.id}`.localeCompare(`${b.kind}:${b.id}`));
 }
 
 export function botSetupStepError(step: number, draft: BotDraft): string | null {

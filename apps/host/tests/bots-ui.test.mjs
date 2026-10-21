@@ -136,3 +136,35 @@ test('roster previews belong to the latest bot conversation and use actual share
   assert.equal(bots.botRosterPreview('missing',sessions),undefined);
   assert.deepEqual(bots.botRosterPreview('own',[{...sessions[2],messages:[]}]),{text:'Latest title',updatedAt:'2026-10-21'});
 });
+
+test('unified roster shows public team activity while keeping private team work out of direct captions', () => {
+  const profiles = ['ava', 'iris'].map(id => ({id, name:id === 'ava' ? 'Ava' : 'Iris', createdAt:'2026-10-01T12:00:00Z', updatedAt:'2026-10-25T12:00:00Z'}));
+  const sessions = [
+    {id:'direct', updatedAt:'2026-10-21T12:00:00Z', preferences:{botId:'iris'}, messages:[{role:'assistant', content:'Direct review is ready.'}]},
+    {id:'private-work', updatedAt:'2026-10-23T12:00:00Z', preferences:{botId:'iris', teamId:'crew', teamRunId:'run'}, messages:[{role:'user', content:'INTERNAL_ROUTER_MARKER'}]},
+  ];
+  const publicTeam = {id:'crew', name:'Product studio', createdAt:'2026-10-02T12:00:00Z', updatedAt:'2026-10-24T12:00:00Z', channelPreview:{id:'m9',sequence:9,kind:'message',author:{type:'bot',botId:'ava',name:'Ava'},content:'Public\n review is ready.',createdAt:'2026-10-22T12:00:00Z'}};
+  const emptyTeam = {id:'empty',name:'Quiet room',createdAt:'2026-10-03T12:00:00Z',updatedAt:'2026-10-26T12:00:00Z'};
+  const snapshot = {teams:[emptyTeam,publicTeam],runs:[{id:'run',teamId:'crew',state:'running',updatedAt:'2026-10-22T12:00:00Z'}]};
+  const before=structuredClone({profiles,sessions,snapshot});
+  const roster=bots.botConversationRoster(profiles,snapshot,sessions);
+  assert.deepEqual(roster.map(row=>`${row.kind}:${row.id}`),['team:crew','bot:iris','team:empty','bot:ava']);
+  assert.deepEqual(roster[0],{kind:'team',id:'crew',name:'Product studio',updatedAt:'2026-10-22T12:00:00Z',preview:'Ava: Public review is ready.',state:'working'});
+  assert.equal(roster[1].preview,'Direct review is ready.');
+  assert.equal(roster[2].preview,undefined);
+  assert.equal(roster[2].updatedAt,emptyTeam.createdAt,'A settings edit is not conversation activity.');
+  assert.equal(JSON.stringify(roster).includes('INTERNAL_ROUTER_MARKER'),false);
+  assert.deepEqual(bots.botConversations(sessions,'iris').map(row=>row.id),['private-work','direct'],'Full existing bot history remains available.');
+  assert.deepEqual({profiles,sessions,snapshot},before,'Deriving the roster does not change saved state.');
+});
+
+test('team previews validate real times and attribution, and mixed row activity comes from live runs', () => {
+  const team={id:'crew',name:'Crew',createdAt:'2026-10-01',updatedAt:'2026-10-28',channelPreview:{id:'m1',sequence:1,kind:'message',author:{type:'user',name:'Device owner'},content:' Hello everyone. ',createdAt:'2026-10-21'}};
+  assert.deepEqual(bots.botTeamRosterPreview(team),{text:'You: Hello everyone.',updatedAt:'2026-10-21'});
+  assert.deepEqual(bots.botTeamRosterPreview({...team,channelPreview:{...team.channelPreview,author:{type:'system',name:'Strata'}}}),{text:'Team update: Hello everyone.',updatedAt:'2026-10-21'});
+  assert.equal(bots.botTeamRosterPreview({...team,channelPreview:{...team.channelPreview,createdAt:'invalid'}}),undefined);
+  assert.equal(bots.botTeamRosterPreview({...team,channelPreview:{...team.channelPreview,content:'  '}}),undefined);
+  const state=runState=>bots.botConversationRoster([],{teams:[team],runs:[{id:'r',teamId:'crew',state:runState,updatedAt:'2026-10-21'}]},[])[0].state;
+  assert.equal(state('cleanup_pending'),'attention');assert.equal(state('running'),'working');assert.equal(state('error'),'attention');assert.equal(state('cancelled'),'idle');
+  assert.deepEqual(bots.botConversationRoster([],null,[]),[],'Older hosts without teams retain an empty group roster.');
+});

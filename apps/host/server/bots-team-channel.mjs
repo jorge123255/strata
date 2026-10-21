@@ -52,8 +52,19 @@ export function createTeamChannels({ directory, now = Date.now, notify = () => {
     const hasMoreBefore = rows.length ? all.some(row => row.sequence < rows[0].sequence) : options.after !== undefined && all.some(row => row.sequence <= options.after);
     return { teamId, supported: true, messages: copy(rows), nextSequence: rows.at(-1)?.sequence ?? options.after ?? 0, hasMore: options.after !== undefined && filtered.length > rows.length, hasMoreBefore, ...(rows.length ? { firstSequence: rows[0].sequence } : {}) };
   }
+  function preview(teamId) {
+    const message = channels.get(teamId)?.messages.at(-1);
+    if (!message) return undefined;
+    if (!id(message.id) || !cursor(message.sequence) || message.sequence < 1 || !kinds.has(message.kind) || !['user', 'bot', 'system'].includes(message.author?.type)
+      || typeof message.author.name !== 'string' || !message.author.name.trim() || message.author.name.length > 200 || message.author.name.includes('\0') || !message.author.name.isWellFormed()
+      || message.author.type === 'bot' && !id(message.author.botId) || typeof message.createdAt !== 'string' || !Number.isFinite(Date.parse(message.createdAt))) return undefined;
+    const publicAuthor = { type: message.author.type, name: message.author.name, ...(message.author.type === 'bot' ? { botId: message.author.botId } : {}) };
+    // A roster caption is derived only from the public journal. Never consult a
+    // bot's private chat, model checkpoint, memory or operational error detail.
+    return { id: message.id, sequence: message.sequence, kind: message.kind, author: publicAuthor, content: Array.from(message.content.toWellFormed().replaceAll('\0', '')).slice(0, 280).join(''), createdAt: message.createdAt };
+  }
   return {
-    append, appendAndRemember: append, snapshot,
+    append, appendAndRemember: append, snapshot, preview,
     find: (teamId, messageId) => copy(channels.get(teamId)?.messages.find(row => row.id === messageId)),
     recent: (teamId, limit = 30) => copy((channels.get(teamId)?.messages ?? []).slice(-limit)),
     receipt: (teamId, requestId) => copy(receipts.get(`${teamId}:${requestId}`)),

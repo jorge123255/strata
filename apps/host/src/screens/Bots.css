@@ -371,3 +371,16 @@ button.cua-profile-row:disabled { opacity: .5; cursor: default; }
   .cua-work-identity > .st-btn { font-size: 10px; }
   .bot-chat-identity { max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
 }
+
+/* Direct and team conversations share one chronological roster. */
+.cua-roster-team-actions { border-top: 1px solid var(--st-line-soft); margin: 14px 3px 0; padding-top: 8px; }
+.cua-roster-team > .bot-team-mark { position: relative; display: block; flex: 0 0 40px; height: 40px; padding: 0; }
+.cua-roster-team > .bot-team-mark > .cua-bot-avatar { position: absolute; margin: 0; filter: drop-shadow(0 0 2px var(--st-surface-2)); }
+.cua-roster-team > .bot-team-mark > .cua-bot-avatar:nth-child(1) { left: 1px; top: 0; z-index: 3; }
+.cua-roster-team > .bot-team-mark > .cua-bot-avatar:nth-child(2) { left: -4px; bottom: 0; z-index: 2; }
+.cua-roster-team > .bot-team-mark > .cua-bot-avatar:nth-child(3) { right: -5px; bottom: 1px; z-index: 1; }
+.cua-roster-team > .bot-team-mark:has(> :only-child) > .cua-bot-avatar { left: 7px; top: 7px; }
+@media (max-width: 760px) {
+  .cua-roster-team > .bot-team-mark { display: block; flex: 0 0 36px; height: 38px; }
+  .cua-roster-team-actions { margin-inline: 0; }
+}

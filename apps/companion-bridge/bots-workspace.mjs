@@ -97,8 +97,17 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
 }
 const safeIds = value => (Array.isArray(value) ? value : []).filter(id).slice(0, 500);
 const safeTools = value => (Array.isArray(value) ? value : []).filter(toolId).slice(0, 1_000);
+function channelPreview(value) {
+  // This optional caption may be absent on older hosts. Malformed captions
+  // cannot hide the roster or carry internal fields into a paired client.
+  if (!isObject(value) || !id(value.id) || !Number.isSafeInteger(value.sequence) || value.sequence < 1 || !['message', 'assignment', 'report', 'status'].includes(value.kind)
+    || !isObject(value.author) || !['user', 'bot', 'system'].includes(value.author.type) || typeof value.author.name !== 'string' || !value.author.name.trim() || value.author.name.length > 200 || value.author.name.includes('\0') || !value.author.name.isWellFormed()
+    || value.author.type === 'bot' && !id(value.author.botId) || typeof value.content !== 'string' || value.content.length > 560 || value.content.includes('\0') || !value.content.isWellFormed() || Array.from(value.content).length > 280 || date(value.createdAt) === undefined) return undefined;
+  return { id: value.id, sequence: value.sequence, kind: value.kind, author: { type: value.author.type, name: value.author.name, ...(value.author.type === 'bot' ? { botId: value.author.botId } : {}) }, content: value.content, createdAt: date(value.createdAt) };
+}
 function team(value) {
-  return { id: value.id, name: text(value.name, 200), memberIds: safeIds(value.memberIds), coordinatorId: id(value.coordinatorId) ? value.coordinatorId : '', enabled: value.enabled === true, limits: Object.fromEntries(Object.entries(limits).filter(([k, [low, high]]) => Number.isInteger(value.limits?.[k]) && value.limits[k] >= low && value.limits[k] <= high).map(([k]) => [k, value.limits[k]])), createdAt: date(value.createdAt), updatedAt: date(value.updatedAt) };
+  const preview = channelPreview(value.channelPreview);
+  return { id: value.id, name: text(value.name, 200), memberIds: safeIds(value.memberIds), coordinatorId: id(value.coordinatorId) ? value.coordinatorId : '', enabled: value.enabled === true, limits: Object.fromEntries(Object.entries(limits).filter(([k, [low, high]]) => Number.isInteger(value.limits?.[k]) && value.limits[k] >= low && value.limits[k] <= high).map(([k]) => [k, value.limits[k]])), createdAt: date(value.createdAt), updatedAt: date(value.updatedAt), ...(preview ? { channelPreview: preview } : {}) };
 }
 function run(value) {
   return { id: value.id, teamId: id(value.teamId) ? value.teamId : '', rootChatId: id(value.rootChatId) ? value.rootChatId : '', rootBotId: id(value.rootBotId) ? value.rootBotId : '', state: states.has(value.state) ? value.state : 'interrupted', limits: team(value).limits, consumedTurns: Number.isInteger(value.consumedTurns) ? value.consumedTurns : 0, createdAt: date(value.createdAt), updatedAt: date(value.updatedAt), ...(typeof value.detail === 'string' ? { detail: text(value.detail, 2_000) } : {}) };

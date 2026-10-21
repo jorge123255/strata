@@ -76,7 +76,7 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
     return { name: text(input.name ?? old.name, 80, 'team name'), memberIds: copy(memberIds), coordinatorId, enabled: input.enabled ?? old.enabled ?? false, limits };
   }
   const publicRun = run => { const { generation, requestHash, ...safe } = copy(run); return safe; };
-  function list() { return { teams: [...teams.values()].map(copy), runs: [...runs.values()].slice(-200).reverse().map(publicRun), channelsSupported: true }; }
+  function list() { return { teams: [...teams.values()].map(team => { const preview = channels.preview(team.id); return { ...copy(team), ...(preview ? { channelPreview: preview } : {}) }; }), runs: [...runs.values()].slice(-200).reverse().map(publicRun), channelsSupported: true }; }
   function create(input) {
     if (teams.size >= 50) throw fault(409, 'Keep up to 50 teams.');
     const at = stamp(), team = { id: `team_${randomUUID()}`, ...normalize(input), createdAt: at, updatedAt: at };
