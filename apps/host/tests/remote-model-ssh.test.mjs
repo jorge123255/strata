@@ -203,7 +203,7 @@ test('unsupported inference API connections explain the Terminal SSH option with
   assert.equal(sshCalls, 0);
 });
 
-const python = [process.env.STRATA_TEST_PYTHON, '/Applications/Strata.app/Contents/Resources/control/python/bin/python3', '/usr/bin/python3'].find(path => path && existsSync(path) && spawnSync(path, ['-c', 'import sys;sys.exit(0 if sys.version_info >= (3,10) else 1)']).status === 0);
+const python = [process.env.STRATA_TEST_PYTHON, '/Applications/Strata.app/Contents/Resources/control/python/bin/python3', '/usr/bin/python3'].find(path => path && existsSync(path) && spawnSync(path, ['-B', '-c', 'import sys;sys.exit(0 if sys.version_info >= (3,10) else 1)']).status === 0);
 test('static bootstrap installs one private content-hashed helper and transfers literal requests without shell interpretation', { skip: !python && 'Set STRATA_TEST_PYTHON to Python 3.10 or newer.' }, async t => {
   const directory = temporary(t), bin = join(directory, 'bin'), home = join(directory, 'home'); mkdirSync(bin); mkdirSync(home);
   writeFileSync(join(bin, 'python3'), `#!/bin/sh\nexec '${python.replace(/'/g, "'\\''")}' "$@"\n`, { mode: 0o700 });
