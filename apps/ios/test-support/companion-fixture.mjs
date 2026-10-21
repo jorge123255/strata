@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { spawn } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -35,7 +35,8 @@ const conversation = {
 };
 const pending = [];
 let createdBotConversation;
-const workspaceFlags = ['--test-workspace-skills', '--test-workspace-connections', '--test-workspace-teams', '--test-facelift'];
+const lifecycleMode = ['--test-bot-lifecycle', '--test-bot-avatar-states'].includes(process.argv[2]);
+const workspaceFlags = ['--test-bot-lifecycle', '--test-bot-avatar-states', '--test-workspace-skills', '--test-workspace-connections', '--test-workspace-teams', '--test-facelift'];
 const workspaceMode = workspaceFlags.includes(process.argv[2]);
 let teamConversation, savedTeam, teamRun;
 const teamLimits = { maxParallel: 2, maxDepth: 2, maxHops: 8, maxTurns: 24, maxDurationMs: 600000 };
@@ -45,6 +46,10 @@ const skillCatalog = () => ({ skills: [{ id: 'library.review', name: 'Library re
 const mcpConnection = { id: 'mcpc_fixture', name: 'Fixture tools', transport: 'stdio', inventoryDigest: 'a'.repeat(64), command: '/fixture/never-executed', args: [], env: { TEST_SECRET: 'PRIVATE-FIXTURE-SECRET' }, apiKey: 'PRIVATE-FIXTURE-KEY', apiKeySet: true, status: 'unchecked', detail: 'Synthetic connection; no program runs.', botIds: ['fixture-bot'], enabledToolIds: ['tool_read'], readOnlyToolIds: ['tool_read'], tools: [{ id: 'tool_read', name: 'Read workspace', description: 'Synthetic read-only inventory', readOnly: true }, { id: 'tool_write', name: 'Write workspace', description: 'Synthetic write inventory; approval policy applies', readOnly: false }] };
 const fixtureComputerMode = process.argv[2] === '--test-computer' ? 'cua' : 'host';
 let botFace = { color: 'sky', eyes: 'star', ears: 'scalloped' };
+if (process.argv[2] === '--test-bot-avatar-states') {
+  conversation.preferences = { botId: 'fixture-bot', botName: 'Workspace companion', botAvatarConfig: structuredClone(botFace),
+    botComputerMode: 'host', botComputer: 'Fixture Mac', botModel: 'Fixture model' };
+}
 let computerRunning = false;
 let computerControl;
 const computerImage = readFileSync(new URL('./computer-fixture.png', import.meta.url)).toString('base64');
@@ -54,13 +59,41 @@ const computerState = () => ({ available: true, running: computerRunning, comput
   control: { active: !!computerControl, owned: !!computerControl, ...(computerControl ? { expiresAt: computerControl.expiresAt } : {}) } });
 const botsCatalog = () => ({
   bots: [{ id: 'fixture-bot', name: 'Workspace companion', avatar: '🦊', avatarConfig: botFace, computerMode: fixtureComputerMode, provider: 'codex', model: 'Fixture model', workspace: fixtureComputerMode === 'cua' ? '/workspace' : '/fixture/default', capabilities: 'both', policy: 'manual', execution: { kind: 'local' },
-    conversations: [conversation.id, ...(createdBotConversation ? [createdBotConversation.id] : []), ...(teamConversation ? [teamConversation.id] : [])] },
+    conversations: [conversation.id, ...(createdBotConversation?.preferences?.botId === 'fixture-bot' ? [createdBotConversation.id] : []), ...(teamConversation ? [teamConversation.id] : [])] },
     ...(workspaceMode ? [{ id: 'fixture-reviewer', name: 'Review companion', avatarConfig: { color: 'violet', eyes: 'happy', ears: 'round', kind: 'cat' }, computerMode: 'host', provider: 'claude', model: 'Fixture reviewer', workspace: '/fixture/default', capabilities: 'code', policy: 'manual', execution: { kind: 'local' }, conversations: [] }] : [])],
   providers: ['claude', 'codex', 'grok', 'kimi', 'ollama', 'configured'].map(id => ({ id, name: ({ claude: 'Claude Code', codex: 'Codex', grok: 'Grok', kimi: 'Kimi', ollama: 'Ollama Cloud', configured: 'Configured models' })[id], available: true, detail: 'Synthetic provider. No account or model is used.' })),
   computers: [{ id: 'local', name: 'Fixture Mac', kind: 'local', available: true, detail: 'Synthetic computer. No tools are executed.' },
     { id: 'ssh_fixture', name: 'Remote fixture computer', kind: 'ssh', available: true, detail: 'Prepared synthetic target. No SSH connection is made.' }],
   models: [{ id: 'bm_fixture', connectionId: 'fixture-provider', connectionName: 'Fixture connection', model: 'configured-model', name: 'Configured fixture', available: true, detail: 'Synthetic configured model. Existing serving choices are unchanged.' }],
 });
+// The lifecycle UI fixture uses the actual host profile service in a private
+// directory, with injected inert providers. No provider/SSH/VM runtime is created.
+let lifecycleProfiles;
+const lifecycleWorkspace = join(root, 'profile-workspace');
+const lifecycleReloadedWorkspace = join(root, 'reloaded-workspace');
+if (lifecycleMode) {
+  mkdirSync(lifecycleWorkspace); mkdirSync(lifecycleReloadedWorkspace);
+  const { createBots } = await import('../../host/server/bots.mjs');
+  lifecycleProfiles = createBots({ directory: join(root, 'private-profile-store'),
+    runtime: { providers: async () => botsCatalog().providers.filter(p => p.id !== 'configured'),
+      run: async () => { throw new Error('A profile fixture must never run inference'); } },
+    tools: {}, defaultWorkspace: () => lifecycleWorkspace,
+    modelProviders: {
+      list: () => ({ connections: [{ id: 'fixture-provider', name: 'Fixture connection', models: [{ id: 'configured-model', name: 'Configured fixture' }] }] }),
+      resolve({ connectionId, modelId }) {
+        if (connectionId !== 'fixture-provider' || modelId !== 'configured-model') throw new Error('Unknown fixture model');
+        return { connection: { id: connectionId, name: 'Fixture connection', baseUrl: 'https://fixture.invalid/v1' }, model: { id: modelId, name: 'Configured fixture' } };
+      },
+    },
+  });
+}
+const currentBotsCatalog = async () => {
+  const base = botsCatalog();
+  if (!lifecycleProfiles) return base;
+  const real = await lifecycleProfiles.list();
+  return { ...base, ...real, bots: [...base.bots, ...real.bots], selectionSupported: true,
+    providers: base.providers, defaultPolicy: 'manual' };
+};
 const remoteTargetId = 'remote-aaaaaaaaaaaaaaaaaaaaaaaa';
 const downloadJobs = new Map([['local', []], [remoteTargetId, []]]);
 const downloadPlans = new Map();
@@ -89,7 +122,24 @@ const host = {
     if (path === '/api/monitor') return { phase: 'idle', outputTps: 12, hardware: { ramUsedGb: 8, ramTotalGb: 48 } };
     if (path === '/api/serving') return { requests: [] };
     if (path === '/api/model-providers') return { connections: [{ id: 'fixture-provider', name: 'Fixture Mac', models: [{ id: 'fixture-model', name: 'Fixture model' }] }] };
-    if (path === '/api/bots') return botsCatalog();
+    if (path === '/api/bots') return currentBotsCatalog();
+    const profileWrite = /^\/api\/bots(?:\/(bot_[a-f0-9-]+))?\/profile$/.exec(path);
+    if (lifecycleProfiles && profileWrite) {
+      const saved = await lifecycleProfiles.saveProfile(options.body, profileWrite[1]);
+      return { ...await currentBotsCatalog(), bot: saved.bot };
+    }
+    const profileChat = /^\/api\/bots\/(bot_[a-f0-9-]+)\/conversations$/.exec(path);
+    if (lifecycleProfiles && profileChat) {
+      const bot = (await lifecycleProfiles.list()).bots.find(value => value.id === profileChat[1]);
+      if (!bot) throw Object.assign(new Error('Missing saved profile'), { status: 404 });
+      const policy = options.body?.policy ?? bot.policy;
+      if (!['manual', 'plan', 'bypass'].includes(policy)) throw Object.assign(new Error('Unsupported approval mode'), { status: 400 });
+      createdBotConversation = { id: 'fixture-bot-created', title: bot.name + ' conversation', active: false, mode: policy,
+        workspace: bot.workspace, modelName: bot.model, messages: [],
+        preferences: { botId: bot.id, botName: bot.name, botAvatarConfig: bot.avatarConfig, botComputerMode: bot.computerMode,
+          botComputer: 'Fixture Mac', botModel: bot.model } };
+      return { conversation: createdBotConversation, pending: [] };
+    }
     if (path === '/api/bots/provider-models?provider=codex') return { provider: 'codex', models: [{ id: 'Fixture model', name: 'Fixture model', efforts: ['low', 'high'] }] };
     if (workspaceMode && path === '/api/bots/teams') {
       if (options.method === 'POST') { savedTeam = { id: 'team_fixture', ...structuredClone(options.body), enabled: false, limits: options.body.limits ?? teamLimits }; return { team: savedTeam }; }
@@ -212,6 +262,7 @@ async function close() {
       if (testProcess && testProcess.exitCode === null) testProcess.kill('SIGTERM');
       if (control?.listening) await new Promise(resolve => control.close(resolve));
       await bridge?.close();
+      await lifecycleProfiles?.close();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -224,13 +275,20 @@ for (const [signal, status] of [['SIGINT', 130], ['SIGTERM', 143]]) {
 
 try {
   bridge = await createBridge({ directory: join(root, 'bridge'), host, listen: '127.0.0.1', port: 0, adminPort: 0, advertiseHost: '127.0.0.1', qr: false });
-  control = http.createServer((request, response) => {
+  control = http.createServer(async (request, response) => {
     try {
       const action = request.url;
       if (request.method === 'POST') {
         switch (action) {
         case '/state':
           break;
+        case '/profile-change': {
+          if (!lifecycleProfiles) throw new Error('Lifecycle fixture required');
+          const bot = (await lifecycleProfiles.list()).bots[0];
+          if (!bot) throw new Error('Create a fixture profile first');
+          await lifecycleProfiles.saveProfile({ expectedUpdatedAt: bot.updatedAt, name: 'Mac reviewed bot', provider: 'codex', model: 'Fixture model', effort: 'high', policy: 'plan', computerId: 'local', workspace: lifecycleReloadedWorkspace }, bot.id);
+          break;
+        }
         case '/team-progress':
           if (!teamRun) throw new Error('Start a synthetic team first');
           teamRun.consumedTurns = 7;
@@ -274,6 +332,12 @@ try {
           assistant.tools.push(approval); pending.push(approval);
           break;
         }
+        case '/approval-resolved':
+          for (const action of pending) action.state = 'denied'; pending.splice(0);
+          break;
+        case '/reply-error':
+          conversation.active = false; assistant.streaming = false; assistant.error = 'Synthetic failed reply';
+          break;
         case '/complete':
           conversation.active = false; conversation.status = 'Ready';
           if (assistant.tools[0]) assistant.tools[0].state = 'done';
@@ -286,7 +350,7 @@ try {
         response.writeHead(404).end(); return;
       }
       response.setHeader('Content-Type', 'application/json');
-      response.end(JSON.stringify({ conversation, pending, calls, computerRunning, computerControlled: !!computerControl, botFace, downloadJobs: Object.fromEntries(downloadJobs), planCount: nextPlan, downloadCount: nextDownload }));
+      response.end(JSON.stringify({ conversation, createdBotConversation, pending, calls, ...(lifecycleProfiles ? { lifecycle: await lifecycleProfiles.list() } : {}), computerRunning, computerControlled: !!computerControl, botFace, downloadJobs: Object.fromEntries(downloadJobs), planCount: nextPlan, downloadCount: nextDownload }));
     } catch (error) {
       response.writeHead(500, { 'Content-Type': 'application/json' });
       response.end(JSON.stringify({ error: error.message }));
@@ -307,7 +371,7 @@ try {
       testProcess = spawn('xcodebuild', [
         '-project', project, '-scheme', 'StrataMobile', '-destination', destination,
         '-derivedDataPath', derivedData,
-        '-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation', '--test-computer': 'testActualSampleAvatarAndIsolatedComputerControl', '--test-facelift': 'testFaceliftPrincipalScreensAndSharedHistory', '--test-workspace-skills': 'testReviewedSkillAssignmentAndWorkspaceNavigation', '--test-workspace-connections': 'testSavedConnectionCheckAndReviewedAccess', '--test-workspace-teams': 'testTeamExplicitTaskSharedThinkingStopAndActivity' })[process.argv[2]],
+        '-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation', '--test-computer': 'testActualSampleAvatarAndIsolatedComputerControl', '--test-bot-lifecycle': 'testPhoneBotCreationEditingCASAndApprovalModes', '--test-bot-avatar-states': 'testBotAvatarStatesInteractionAndRosterFilters', '--test-facelift': 'testFaceliftPrincipalScreensAndSharedHistory', '--test-workspace-skills': 'testReviewedSkillAssignmentAndWorkspaceNavigation', '--test-workspace-connections': 'testSavedConnectionCheckAndReviewedAccess', '--test-workspace-teams': 'testTeamExplicitTaskSharedThinkingStopAndActivity' })[process.argv[2]],
         '-parallel-testing-enabled', 'NO', 'test',
       ], { stdio: 'inherit', env: { ...process.env,
         TEST_RUNNER_STRATA_TEST_INVITATION: connection.invitation,
@@ -318,10 +382,10 @@ try {
       testProcess.once('exit', code => resolve(code ?? 1));
     });
     process.exitCode = status;
-    if (process.env.STRATA_TEST_STATE_OUTPUT) writeFileSync(process.env.STRATA_TEST_STATE_OUTPUT, JSON.stringify({ calls, savedTeam, teamRun, skillAssignments, skills: skillCatalog(), connectionAccess: { botIds: mcpConnection.botIds, enabledToolIds: mcpConnection.enabledToolIds, readOnlyToolIds: mcpConnection.readOnlyToolIds } }), { mode: 0o600 });
+    if (process.env.STRATA_TEST_STATE_OUTPUT) writeFileSync(process.env.STRATA_TEST_STATE_OUTPUT, JSON.stringify({ calls, ...(lifecycleProfiles ? { lifecycle: await lifecycleProfiles.list() } : {}), savedTeam, teamRun, skillAssignments, skills: skillCatalog(), connectionAccess: { botIds: mcpConnection.botIds, enabledToolIds: mcpConnection.enabledToolIds, readOnlyToolIds: mcpConnection.readOnlyToolIds } }), { mode: 0o600 });
     await close();
   } else {
-    if (process.argv.length > 2) throw new Error('Usage: companion-fixture.mjs [--test|--test-downloads|--test-bots|--test-computer|--test-workspace-skills|--test-workspace-connections|--test-workspace-teams <simulator destination>]');
+    if (process.argv.length > 2) throw new Error('Usage: companion-fixture.mjs [--test|--test-downloads|--test-bots|--test-computer|--test-workspace-skills|--test-workspace-connections|--test-workspace-teams|--test-facelift|--test-bot-lifecycle|--test-bot-avatar-states <simulator destination>]');
     const connectionFile = join(root, 'connection.json');
     writeFileSync(connectionFile, JSON.stringify(connection), { mode: 0o600 });
     console.log(JSON.stringify({ connectionFile }));

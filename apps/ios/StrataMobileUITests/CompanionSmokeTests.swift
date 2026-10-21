@@ -364,6 +364,118 @@ final class CompanionSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testPhoneBotCreationEditingCASAndApprovalModes() async throws {
+        let control = try pairWorkspaceFixture()
+        try require(app.buttons["createBotButton"]); app.buttons["createBotButton"].tap()
+        let name = app.textFields["profileBotNameInput"]; try require(name); name.tap(); name.typeText("Phone Builder")
+        if app.keyboards.firstMatch.exists { app.buttons["Done"].firstMatch.tap() }
+        try tapWorkspace(app.buttons["profileBotProviderPicker"])
+        let configured = app.buttons.matching(NSPredicate(format: "label ==[c] %@", "Configured models")).firstMatch; try require(configured); configured.tap()
+        try tapWorkspace(app.buttons["profileBotConfiguredModelPicker"])
+        let savedModel = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Configured fixture")).firstMatch; try require(savedModel); savedModel.tap()
+        attachScreenshot("Bot creation — saved model and Ask default")
+        try waitEnabled(app.buttons["saveBotProfileButton"]); app.buttons["saveBotProfileButton"].tap()
+        let created = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: name)
+        await fulfillment(of: [created], timeout: 15)
+        var state = try await fixtureControl(control, action: "state")
+        let first = try XCTUnwrap((state["lifecycle"] as? [String: Any])?["bots"] as? [[String: Any]]).first
+        let id = try XCTUnwrap(first?["id"] as? String)
+        XCTAssertEqual(first?["policy"] as? String, "manual"); XCTAssertEqual(first?["model"] as? String, "configured-model")
+        XCTAssertNil(state["createdBotConversation"] as? [String: Any], "Saving a bot creates no conversation.")
+        let calls = try XCTUnwrap(state["calls"] as? [[String: Any]])
+        XCTAssertFalse(calls.contains { ($0["path"] as? String)?.hasSuffix("/messages") == true || ($0["path"] as? String)?.contains("/computer/") == true })
+        try tapWorkspace(app.buttons["bot-" + id]); try require(app.buttons["editBotProfileButton"]); app.buttons["editBotProfileButton"].tap()
+        try tapWorkspace(app.buttons["profileBotPolicyPicker"]); app.buttons["Bypass approvals"].tap()
+        try waitEnabled(app.buttons["saveBotProfileButton"]); app.buttons["saveBotProfileButton"].tap()
+        try require(app.buttons["Use Bypass approvals"]); app.buttons["Use Bypass approvals"].tap()
+        let saved = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: name)
+        await fulfillment(of: [saved], timeout: 15)
+        state = try await fixtureControl(control, action: "state")
+        XCTAssertEqual(((state["lifecycle"] as? [String: Any])?["bots"] as? [[String: Any]])?.first?["policy"] as? String, "bypass")
+        XCTAssertEqual((state["conversation"] as? [String: Any])?["mode"] as? String, "manual")
+        try require(app.buttons["editBotProfileButton"]); app.buttons["editBotProfileButton"].tap()
+        _ = try await fixtureControl(control, action: "profile-change")
+        try tapWorkspace(app.buttons["profileBotPolicyPicker"]); app.buttons["Plan mode"].tap()
+        try waitEnabled(app.buttons["saveBotProfileButton"]); app.buttons["saveBotProfileButton"].tap()
+        try require(app.staticTexts["profileBotSaveError"])
+        attachScreenshot("Bot editing — stale version requires review")
+        try require(app.buttons["reloadBotProfileButton"]); app.buttons["reloadBotProfileButton"].tap()
+        try XCTUnwrap(app.buttons.matching(identifier: "Reload latest bot").allElementsBoundByIndex.last(where: { $0.isHittable })).tap()
+        let model = app.textFields["profileBotModelInput"]
+        try tapWorkspace(model)
+        XCTAssertEqual(model.value as? String, "Fixture model", "Reload must preserve the Mac's model, not clear it through a picker callback.")
+        if app.keyboards.firstMatch.exists { app.buttons["Done"].firstMatch.tap() }
+        try require(app.buttons["profileBotEffortPicker"])
+        XCTAssertTrue(app.buttons["profileBotEffortPicker"].label.localizedCaseInsensitiveContains("high"))
+        attachScreenshot("Bot editing — reloaded model and effort retained")
+        try waitEnabled(app.buttons["saveBotProfileButton"]); app.buttons["saveBotProfileButton"].tap()
+        let reloaded = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: name)
+        await fulfillment(of: [reloaded], timeout: 15)
+        try tapWorkspace(app.buttons["newBotConversationButton"])
+        try tapWorkspace(app.buttons["botConversationPolicyPicker"]); app.buttons["Bypass approvals"].tap()
+        let confirm = app.buttons["confirmBotConversationButton"]
+        reveal(confirm); try waitEnabled(confirm)
+        attachScreenshot("Bot conversation — explicit Bypass choice before creation")
+        confirm.tap()
+        try require(app.buttons["Create with Bypass approvals"]); app.buttons["Create with Bypass approvals"].tap()
+        try require(app.staticTexts["macConversationTitle"])
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Bypass approvals")).firstMatch.exists)
+        state = try await fixtureControl(control, action: "state")
+        XCTAssertEqual((state["createdBotConversation"] as? [String: Any])?["mode"] as? String, "bypass")
+        XCTAssertEqual((state["conversation"] as? [String: Any])?["mode"] as? String, "manual")
+        let writes = try XCTUnwrap(state["calls"] as? [[String: Any]]).filter { ($0["method"] as? String) != "GET" }
+        XCTAssertFalse(writes.contains { ($0["path"] as? String)?.contains("/approval") == true || ($0["path"] as? String)?.hasSuffix("/messages") == true })
+        attachScreenshot("Bot conversation — explicit frozen Bypass mode")
+    }
+
+    @MainActor
+    func testBotAvatarStatesInteractionAndRosterFilters() async throws {
+        let control = try pairWorkspaceFixture()
+        let search = app.textFields["botRosterSearchInput"]; try tapWorkspace(search); search.typeText("no matching bot")
+        try require(app.staticTexts["botRosterFilteredEmpty"])
+        search.tap(); search.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: "no matching bot".count))
+        if app.keyboards.firstMatch.exists { app.buttons["Done"].firstMatch.exists ? app.buttons["Done"].firstMatch.tap() : app.keyboards.buttons["Search"].tap() }
+        try tapWorkspace(app.buttons["bot-fixture-bot"])
+        try tapWorkspace(app.buttons["botConversation-fixture-mac-research"])
+        let face = app.buttons["animateBotAvatarButton"]; try require(face)
+        _ = try await fixtureControl(control, action: "thinking")
+        let thinking = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "Thinking"), object: face)
+        await fulfillment(of: [thinking], timeout: 12)
+        face.tap(); attachScreenshot("Bot avatar — live Thinking and tap interaction")
+        _ = try await fixtureControl(control, action: "progress")
+        _ = try await fixtureControl(control, action: "browser")
+        let working = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "Working"), object: face)
+        await fulfillment(of: [working], timeout: 12)
+        tapTab("Bots")
+        let backToRoster = app.navigationBars.buttons["Bots"].firstMatch
+        if backToRoster.exists { backToRoster.tap() }
+        let filters = app.segmentedControls["botRosterFilterPicker"]
+        try require(filters)
+        try tapWorkspace(filters.buttons["Working"]); try require(app.buttons["bot-fixture-bot"])
+        XCTAssertFalse(app.buttons["bot-fixture-reviewer"].exists)
+        attachScreenshot("Bot roster — actual active work filter")
+        tapTab("Chat")
+        _ = try await fixtureControl(control, action: "allow")
+        let approval = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "Needs approval"), object: face)
+        await fulfillment(of: [approval], timeout: 12)
+        face.tap(); attachScreenshot("Bot avatar — pending approval remains explicit")
+        var state = try await fixtureControl(control, action: "state")
+        XCTAssertEqual((state["pending"] as? [Any])?.count, 1)
+        XCTAssertFalse((state["calls"] as? [[String: Any]])?.contains { ($0["path"] as? String)?.hasSuffix("/approval") == true } == true)
+        _ = try await fixtureControl(control, action: "approval-resolved")
+        _ = try await fixtureControl(control, action: "complete")
+        let done = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "Reply ready"), object: face)
+        await fulfillment(of: [done], timeout: 12)
+        _ = try await fixtureControl(control, action: "reply-error")
+        let failed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "Error"), object: face)
+        await fulfillment(of: [failed], timeout: 12)
+        tapTab("Bots"); try tapWorkspace(filters.buttons["Needs attention"]); try require(app.buttons["bot-fixture-bot"])
+        attachScreenshot("Bot roster — needs-attention filter")
+        state = try await fixtureControl(control, action: "state")
+        XCTAssertTrue(try XCTUnwrap(state["calls"] as? [[String: Any]]).allSatisfy { ($0["method"] as? String) == "GET" }, "Viewing and animating avatars never sends a prompt or permission decision.")
+    }
+
+    @MainActor
     private func pairWorkspaceFixture() throws -> URL {
         guard let raw = ProcessInfo.processInfo.environment["STRATA_TEST_INVITATION"],
               let invitation = URLComponents(string: raw),
