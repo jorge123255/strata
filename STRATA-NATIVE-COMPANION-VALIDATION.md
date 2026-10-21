@@ -24,3 +24,23 @@ The first compiler attempt stopped because an unstaged development Harness resou
 The first packaging attempt also exposed recursive Control manifest ancestry: the installed legacy `BUNDLE.json` had grown to 5,332,767,995 bytes. Only the task's verified packaging child was stopped. Packaging now reads bounded top-level metadata and records streamed parent hashes and byte counts, preserving runtime identity and current source provenance without nesting prior manifests again. Eleven regression tests exercise the actual embedded writer across thirty overlays, bounded reads of large/sparse legacy manifests, input mutation, malformed metadata and runtime compatibility. The old installed app and failed candidate are retained. Final source, compiler, signed package and activation results are recorded after their corresponding checks finish.
 
 Native tests and a disposable, distinctly named fixture use synthetic status and a separate preferences suite. They do not prompt owner bots, run tools, approve work, authenticate connectors or change production settings. Screen geometry and simulated lifecycle tests do not imply physical multi-monitor, notch, lock, sleep, Spaces or full-screen acceptance.
+
+## Accepted candidate; activation pending
+
+Packaged product source: `90cf20463348ea927c3f8a193e74c0e09e7340e9`, on `feature/iphone-companion`. A later evidence-only commit does not change the accepted product. The earlier `f496eb4c` candidate was withdrawn and was never installed.
+
+| Check | Result and scope |
+| --- | --- |
+| Host and Settings | 18 focused host/retained tests and 25 actual-component browser checks passed; TypeScript and production UI passed. |
+| Native transport, models and motion | 162 focused checks passed, including real concurrent cancellation, cancellation before start, repeated start, bounded HTTP transport, display geometry, finite motion and exact identity transitions. |
+| Native window workflows | Focus, Hide/Unhide, stale controls, static stale/list faces, exact destinations, in-flight disable and fresh recovery passed in isolated fixtures. All fixtures and their private preferences are cleaned up. |
+| Packaging and retained consumers | 59 tests passed. Thirty fixture overlays stayed bounded; the real legacy manifest was streamed rather than parsed recursively. Four retained path assertions first failed on `/var` versus `/private/var`; their canonical-temp-directory run passed without unrelated source changes. |
+| Final compiler | 29 Rust tests passed. Independent acceptance checked 75 native inputs, 67 generated UI inputs, actual arm64/macOS 15 compiler output, system Swift linkage and the exact production recipe. |
+| Independent source review | Corrected source has 0 P1 / 0 P2. |
+| Signed Mac app | All 41 package checks and 73 independent artifact checks passed. All 42,677 resources, 152 host files, 258 Control source records, 424 lifecycle archive entries, bridge, engine/Python contents, native compiler identity and strict recursive signatures were verified. |
+
+The new Control manifest is **29,207 bytes**, preserves Python `3.12.15` / build `20261009` and its exact runtime digest, and references both accepted 5,332,767,995-byte parent manifests by their full streamed hashes and sizes. There is no nested ancestry.
+
+The accepted app is staged at `apps/desktop/build/Strata-native-companion-r2-20261021.app`. Its full signed application aggregate is `4ab53995c0e20bdfe8623e7a79f3d67bd5036f8af1a254de7db5934f1c81b6c2`; its resource aggregate is `e3504e45cf257c2bc4e2fdccf71a3e366f5f5af987bcf155eb1a00b5fde174dc`.
+
+**Not installed yet:** the fresh idle check still found active bot conversations and team work. The running Mac app, Maya, paired devices, history and physical iPhone build 24 have not been replaced or restarted during this pass. The accepted candidate and immutable evidence are recorded in `mac-ready-awaiting-idle.json`. The existing idle follow-up will finish activation only after two complete idle snapshots, native draft inspection and an immediate pre-Quit check, then verify installed resources, signatures, pairing and history. The companion remains off until enabled in Settings → Appearance → Bot companion.
