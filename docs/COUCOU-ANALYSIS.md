@@ -56,6 +56,12 @@ These are bounded source observations and import risks, not a full security audi
 
 [Coucou source is MIT](https://github.com/jorge123255/coucou/blob/1e5180921c1326fc72e41d313e3e2855e9c10162/LICENSE), copyright Louis Raillé, 2026. Its [separate asset notice](https://github.com/jorge123255/coucou/blob/1e5180921c1326fc72e41d313e3e2855e9c10162/LICENSE-ASSETS.md) excludes the Coucou/Mochi names, character design and animations, icons, sounds and demo/design media from MIT distribution rights. Strata uses its existing avatars, colors and controls. No Coucou character, icon, sound, media, hosted endpoint, credential, OAuth registration or Apple identifier is imported. The first supervision implementation is original Strata code informed by the source architecture. The source license is retained in [the provenance notice](../third_party/coucou/NOTICE.md) for subsequent permitted code adaptations.
 
+## Original Strata personality — October 21, 2026
+
+The character pass adds original soft cheek marks, small mood-aware mouths, curved happy eyes, highlights, natural blinks and brief ear/head reactions to Strata’s existing animal and geometric avatar families. New-bot previews and the iPhone roster use a quiet companion stage; Mac Activity reflects the most urgent actual conversation. Saved shapes, colors, configurations and exact conversation destinations are retained. Historical finished cards keep a happy static face; only a newly observed completion can trigger a brief response.
+
+Motion follows Reduce Motion, app/document visibility and viewport clipping. Small idle list avatars stay still. The presentation sends no tools, prompts, approvals or provider requests, and adds no sounds, remote artwork or new permissions. Coucou’s Mochi artwork, character design, poses and animation sequences are not used. See [the personality validation](../STRATA-PERSONALITY-VALIDATION.md) for the measured scope and activation status.
+
 ## Next imports in order
 
 1. **Same-process Mac companion:** optional native compact panel with Strata's avatar, one urgent conversation and the other active bots; expand to review, jump to the existing Bots workspace, explicit screen choice and no-notch fallback. Keep approvals visible until resolved; do not steal text-entry focus.

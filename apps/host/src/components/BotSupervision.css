@@ -22,3 +22,14 @@
 .bot-supervision-footer { display: flex; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding-top: 20px; margin-top: auto; }
 .bot-supervision-footer time { color: var(--st-ink-muted); font-size: 10px; padding-bottom: 8px; }
 .bot-supervision[data-stale] .bot-supervision-state { color: var(--st-ink-muted); }
+
+/* A quiet original Strata companion stage; status remains in the text/cards. */
+.bot-supervision-companion { flex: none; width: 112px; display: flex; align-items: center; flex-direction: column; gap: 5px; padding-top: 2px; }
+.bot-supervision-companion > span { max-width: 112px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--st-ink-muted); font: 10px/1.4 var(--st-font); }
+.bot-supervision-companion-stage { position: relative; display: grid; place-items: center; width: 108px; height: 90px; border-radius: 42% 48% 42% 48%; background: radial-gradient(ellipse at 50% 100%, var(--st-accent-tint), transparent 74%); }
+.bot-supervision-companion-stage::after { content: ''; position: absolute; bottom: 1px; left: 26px; right: 26px; height: 5px; border-radius: 50%; background: color-mix(in srgb, var(--st-accent) 14%, transparent); z-index: 0; }
+.bot-supervision-companion-stage > svg { position: relative; z-index: 1; }
+.bot-supervision-companion-spark { position: absolute; width: 7px; height: 7px; border: 1px solid color-mix(in srgb, var(--st-accent) 44%, transparent); border-radius: 2px; transform: rotate(28deg); left: 8px; top: 19px; }
+.bot-supervision-companion-dot { position: absolute; width: 4px; height: 4px; background: color-mix(in srgb, var(--st-accent) 48%, transparent); border-radius: 50%; right: 8px; bottom: 24px; }
+.bot-supervision-companion[data-state='stale'] .bot-supervision-companion-stage { opacity: .65; }
+@media (max-width: 540px) { .bot-supervision-heading { gap: 12px; } .bot-supervision-companion { width: 90px; } .bot-supervision-companion-stage { width: 90px; } .bot-supervision-companion > span { max-width: 90px; } }

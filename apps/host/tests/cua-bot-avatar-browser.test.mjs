@@ -45,7 +45,9 @@ test('avatar motion follows activity and visibility without idle roster timers',
   assert.ok(await page.locator('#working svg').evaluate(node => node.getAnimations({ subtree: true }).length) > 0);
   const face = page.locator('#hero svg'), bounds = await face.boundingBox();
   assert.equal(await face.getAttribute('data-shape'),'orb');
-  assert.equal(await face.locator('path').count(),2,'Geometric face and clipping path have no animal details.');
+  assert.equal(await face.locator('path').count(),4,'Geometric face and clip keep their exact silhouette with only a Strata shine and tiny mouth.');
+  assert.equal(await face.locator('.cua-avatar-cheeks ellipse').count(),2);
+  assert.equal(await face.locator('.cua-avatar-ear').count(),0);
   await page.mouse.move(bounds.x + bounds.width * .8, bounds.y + bounds.height * .4);
   await page.waitForFunction(() => document.querySelector('#hero svg')?.style.getPropertyValue('--cua-gaze-x') !== '');
   await face.click();

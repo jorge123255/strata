@@ -576,11 +576,23 @@ final class CompanionSmokeTests: XCTestCase {
             try require(app.buttons["bot-fixture-bot"])
             let search = app.textFields["botRosterSearchInput"]
             try require(search); XCTAssertTrue(search.isHittable)
+            if style == "Dark", !large {
+                try tapWorkspace(app.buttons["featuredBotButton"])
+                try require(app.staticTexts["macConversationTitle"])
+                XCTAssertEqual(app.staticTexts["macConversationTitle"].label, "Mac browser research", "The decorated hero opens its exact saved personal conversation.")
+                attachScreenshot("Warm bot hero — exact saved chat action")
+                tapTab("Bots"); try require(app.navigationBars["Bots"])
+            }
             attachScreenshot("Photo-led roster — " + style + (large ? " accessibility" : ""))
             if !large { for title in ["Activity", "Skills", "Connections", "Team"] { try selectWorkspace(title) } }
             try openCreateMenu(); try require(app.buttons["createBotButton"]); app.buttons["createBotButton"].tap()
             try require(app.textFields["profileBotNameInput"])
             attachScreenshot("Photo-led creation — " + style + (large ? " accessibility" : ""))
+            try tapWorkspace(app.buttons["profileBotAvatarButton"])
+            try require(app.navigationBars["Customize avatar"])
+            attachScreenshot("Warm bot stage — Customize action — " + style + (large ? " accessibility" : ""))
+            app.navigationBars["Customize avatar"].buttons["Done"].tap()
+            try require(app.textFields["profileBotNameInput"])
             try tapWorkspace(app.buttons["avatar-shape-hexagon"])
             try tapWorkspace(app.buttons["avatarAppearanceDisclosure"])
             try tapWorkspace(app.buttons["avatar-eyes-round"])
@@ -1416,11 +1428,25 @@ final class CompanionSmokeTests: XCTestCase {
     }
     private func selectWorkspace(_ requested: String) throws {
         let title = requested == "Connections" ? "Connectors" : requested
+        if title == "Activity" {
+            let activity = app.buttons["botsActivityButton"]
+            try require(activity); XCTAssertTrue(activity.isHittable); activity.tap()
+            try require(app.navigationBars["Activity"])
+            return
+        }
         let menu = app.buttons["botsWorkspaceMenuButton"]
         try require(menu); menu.tap()
         let button = app.buttons["botsWorkspaceDestination-" + title]
         try require(button); button.tap()
-        try require(app.navigationBars[title == "Team" ? "Bots" : title])
+        let navigation = app.navigationBars[title == "Team" ? "Bots" : title]
+        if title == "Team", !navigation.waitForExistence(timeout: 2), button.exists, button.isHittable {
+            // iOS26's native Menu can keep this last visible row open after
+            // semantic tap. Use its observed visible row once, then still
+            // require the real destination; do not bypass application state.
+            attachScreenshot("Native Bots and teams menu — before bounded visible-row retry")
+            button.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        }
+        try require(navigation)
     }
     private func selectRosterFilter(_ title: String) throws {
         let menu = app.buttons["botsWorkspaceMenuButton"]

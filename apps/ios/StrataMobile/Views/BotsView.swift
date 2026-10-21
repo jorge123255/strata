@@ -111,11 +111,16 @@ struct BotsView: View {
                             Spacer(minLength: 32)
                             Button { openBot(featured) } label: {
                             VStack(spacing: 8) {
-                                ExpressiveBotAvatar(config: featured.face, size: 124, mood: store.botMood(featured), animated: true)
+                                StrataCompanionStage(size: 124, tint: featured.face.color.accent) {
+                                    ExpressiveBotAvatar(config: featured.face, size: 124, mood: store.botMood(featured), animated: true)
+                                }
                                 Text(featured.name).font(.subheadline.weight(.medium)).foregroundStyle(StrataTheme.secondaryInk)
+                                Text(companionGreeting(store.botMood(featured))).font(.caption)
+                                    .foregroundStyle(StrataTheme.secondaryInk).multilineTextAlignment(.center)
+                                    .fixedSize(horizontal: false, vertical: true)
                                 if store.openingBotConversationId == featured.id { ProgressView("Opening conversation…").font(.caption) }
                             }.frame(maxWidth: .infinity).padding(.vertical, 19)
-                            }.buttonStyle(.plain).disabled(!canOpenBot).accessibilityLabel("Chat with " + featured.name).accessibilityIdentifier("featuredBotButton")
+                            }.buttonStyle(.plain).disabled(!canOpenBot).accessibilityLabel("Chat with " + featured.name).accessibilityValue(store.botMood(featured).label).accessibilityIdentifier("featuredBotButton")
                             botProfileLink(featured, identifier: "featuredBotProfileButton")
                         }.listRowBackground(Color.clear).listRowSeparator(.hidden)
                     }
@@ -154,6 +159,17 @@ struct BotsView: View {
     }
     private var canCreateTeam: Bool {
         (store.botCatalog?.bots.count ?? 0) >= 2 && workspace?.teams != nil && workspace?.teams?.reason == nil && workspace?.mutation == nil
+    }
+    private func companionGreeting(_ mood: BotMood) -> String {
+        switch mood {
+        case .idle: return "Your next idea starts here."
+        case .thinking: return "Mulling it over…"
+        case .working: return "On the case."
+        case .needsApproval: return "A little help, please."
+        case .done: return "Something to show you."
+        case .paused: return "Taking a breather."
+        case .error: return "Let’s take another look."
+        }
     }
     private var canOpenBot: Bool {
         store.openingBotConversationId == nil && store.creatingBotConversationId == nil && !store.isSending && !store.isSubmittingMessage && !store.savingBotProfile

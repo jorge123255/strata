@@ -49,6 +49,7 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
     if (path === '/api/bots/teams') return respond(res, {teams:[],runs:[]});
     if (path === '/api/bots/provider-models') return respond(res, {provider:url.searchParams.get('provider'),models:url.searchParams.get('provider') === 'devin' ? [{id:'fixture-devin-model',name:'Fixture Devin model',efforts:['low','high']}] : []});
     if (path === '/api/bots/activity') return respond(res, {activity:[]});
+    if (path === '/api/bots/supervision' && req.method === 'GET') return respond(res, {supported:true,sessions:[],counts:{waiting:0,working:0,completed:0,errors:0},hasMore:false});
     if (path === '/api/companion/conversations') return respond(res, { available: true, conversations });
     if (/^\/api\/bots\/(existing|created)\/work$/.test(path)) {
       if (req.method === 'GET') { if (blockWork) await new Promise(resolve => workWaiters.push(resolve)); if (failWork) return respond(res, { error: 'Current work is temporarily unavailable.' }, 503); return respond(res, work); }
@@ -144,7 +145,7 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
   for (const shape of ['Orb','Pebble','Tile','Diamond','Spark','Hexagon']) await page.getByRole('button',{name:shape,exact:true}).waitFor();
   await page.getByRole('button',{name:'Orb',exact:true}).click();
   assert.equal(await page.getByRole('button',{name:'Small',exact:true}).count(),0,'Geometric characters have no ear controls.');
-  assert.equal(await page.locator('.cua-new-identity > svg').getAttribute('data-shape'),'orb');
+  assert.equal(await page.locator('.cua-new-identity .cua-companion-stage > .cua-bot-avatar').getAttribute('data-shape'),'orb');
   await screenshot('embedded-bot-geometric-picker');
   await page.getByRole('button', { name: 'Continue', exact: true }).click();
   await page.getByRole('combobox', { name: 'Bot provider', exact: true }).click();

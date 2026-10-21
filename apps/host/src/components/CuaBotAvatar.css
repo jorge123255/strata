@@ -3,19 +3,24 @@
  * Adapted from the CUA Bots AvatarPicker. See CuaBotAvatar.NOTICE.md.
  */
 .cua-bot-avatar { display: inline-block; flex: none; vertical-align: middle; overflow: visible; transform-origin: 50% 60%; }
-.cua-avatar-body, .cua-avatar-blink, .cua-avatar-eye-glyph { transform-box: fill-box; transform-origin: center; }
+/* These face details and motion cues are original Strata additions. */
+.cua-avatar-body, .cua-avatar-ear, .cua-avatar-blink, .cua-avatar-eye-glyph, .cua-avatar-delight { transform-box: fill-box; transform-origin: center; }
+.cua-avatar-ear { transform-origin: center 80%; }
 .cua-bot-avatar [data-eye='right'] .cua-avatar-eye-glyph { animation-delay: -50ms; }
-.cua-avatar-gaze { transform: translate(var(--cua-gaze-x, 0px), var(--cua-gaze-y, 0px)); transition: transform 130ms ease-out; }
-.cua-bot-avatar[data-motion='active'][data-mood='working'] .cua-avatar-body { animation: cua-avatar-working 1.8s ease-in-out infinite; }
-.cua-bot-avatar[data-motion='active'][data-mood='working'] .cua-avatar-eye-glyph { animation: cua-avatar-busy-eyes 1.3s ease-in-out infinite alternate; }
-.cua-bot-avatar[data-motion='active'][data-mood='thinking'] .cua-avatar-body { animation: cua-avatar-thinking 2.4s ease-in-out infinite; }
-.cua-bot-avatar[data-motion='active'][data-mood='thinking'] .cua-avatar-eye-glyph { animation: cua-avatar-consider 1.5s ease-in-out infinite alternate; }
-.cua-bot-avatar[data-motion='active'][data-mood='needsApproval'] .cua-avatar-eye-glyph { animation: cua-avatar-attention 2s ease-in-out 2; }
-@keyframes cua-avatar-working { 0%, 100% { transform: translateY(.01px) scale(1); } 50% { transform: translateY(-.055px) scale(1.025, 1.04); } }
-@keyframes cua-avatar-busy-eyes { from { transform: rotate(-12deg); } to { transform: rotate(12deg); } }
-@keyframes cua-avatar-thinking { 0%, 100% { transform: rotate(-2deg); } 50% { transform: rotate(3deg) translateY(-.025px); } }
-@keyframes cua-avatar-consider { 0%, 35% { transform: rotate(0); } 65%, 100% { transform: rotate(65deg); } }
-@keyframes cua-avatar-attention { 50% { transform: scale(1.12); } }
+.cua-avatar-gaze { transform: translate(var(--cua-gaze-x, 0px), var(--cua-gaze-y, 0px)); transition: transform 160ms ease-out; }
+.cua-bot-avatar[data-motion='paused'] .cua-avatar-gaze { transition: none; }
+.cua-bot-avatar[data-motion='active'][data-companion][data-mood='idle'] .cua-avatar-body { animation: cua-avatar-breathe 6s ease-in-out infinite; }
+.cua-bot-avatar[data-motion='active'][data-mood='working'] .cua-avatar-body { animation: cua-avatar-working 3.2s ease-in-out infinite; }
+.cua-bot-avatar[data-motion='active'][data-mood='working'] .cua-avatar-eye-glyph { animation: cua-avatar-busy-eyes 2.6s ease-in-out infinite alternate; }
+.cua-bot-avatar[data-motion='active'][data-mood='thinking'] .cua-avatar-body { animation: cua-avatar-thinking 4.8s ease-in-out infinite; }
+.cua-bot-avatar[data-motion='active'][data-mood='thinking'] .cua-avatar-eye-glyph { animation: cua-avatar-consider 3.6s ease-in-out infinite alternate; }
+.cua-bot-avatar[data-motion='active'][data-mood='needsApproval'] .cua-avatar-eye-glyph { animation: cua-avatar-attention 2.4s ease-in-out 2; }
+@keyframes cua-avatar-breathe { 0%, 100% { transform: translateY(0) scale(1); } 50% { transform: translateY(-.012px) scale(1.006, 1.012); } }
+@keyframes cua-avatar-working { 0%, 100% { transform: translateY(0) scale(1); } 50% { transform: translateY(-.02px) scale(1.008, 1.018); } }
+@keyframes cua-avatar-busy-eyes { from { transform: rotate(-4deg); } to { transform: rotate(4deg); } }
+@keyframes cua-avatar-thinking { 0%, 100% { transform: rotate(-1deg); } 50% { transform: rotate(1.5deg) translateY(-.012px); } }
+@keyframes cua-avatar-consider { 0%, 35% { transform: rotate(0); } 65%, 100% { transform: rotate(22deg); } }
+@keyframes cua-avatar-attention { 50% { transform: scale(1.06); } }
 :root[data-motion='reduced'] .cua-bot-avatar * { animation: none !important; transition: none !important; }
 @media (prefers-reduced-motion: reduce) { :root:not([data-motion='full']) .cua-bot-avatar * { animation: none !important; transition: none !important; } }
 .cua-bot-avatar-picker { display: flex; flex-direction: column; gap: 18px; }

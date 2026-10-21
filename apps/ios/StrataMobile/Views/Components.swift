@@ -15,6 +15,43 @@ struct StrataMark: View {
     }
 }
 
+/// A quiet, original stage for Strata's own characters. Motion belongs to the avatar.
+struct StrataCompanionStage<Face: View>: View {
+    let size: CGFloat
+    let tint: Color
+    let face: Face
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    init(size: CGFloat, tint: Color, @ViewBuilder face: () -> Face) {
+        self.size = size
+        self.tint = tint
+        self.face = face()
+    }
+
+    var body: some View {
+        ZStack {
+            ZStack {
+                if !reduceTransparency {
+                    Circle()
+                        .fill(RadialGradient(colors: [tint.opacity(0.13), tint.opacity(0)], center: .center, startRadius: 0, endRadius: size * 0.65))
+                        .frame(width: size * 1.35, height: size * 1.35)
+                }
+                Ellipse().fill(StrataTheme.line.opacity(0.65))
+                    .frame(width: size * 0.47, height: size * 0.045)
+                    .offset(y: size * 0.52)
+                Image(systemName: "sparkle")
+                    .font(.system(size: size * 0.075, weight: .medium))
+                    .foregroundStyle(tint.opacity(0.45))
+                    .offset(x: -size * 0.57, y: -size * 0.23)
+                Circle().fill(tint.opacity(0.4))
+                    .frame(width: size * 0.03, height: size * 0.03)
+                    .offset(x: size * 0.57, y: size * 0.18)
+            }.accessibilityHidden(true).allowsHitTesting(false)
+            face
+        }.frame(width: size * 1.35, height: size * 1.22)
+    }
+}
+
 struct StrataHeader: View {
     var isPaired: Bool
     var isOnline: Bool = false

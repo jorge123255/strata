@@ -55,9 +55,15 @@ struct BotProfileEditor: View {
             ScrollView {
                 VStack(spacing: 24) {
                     VStack(spacing: 18) {
+                        Text(original == nil ? "A new little teammate" : "Make it feel like you")
+                            .font(.subheadline.weight(.medium)).foregroundStyle(StrataTheme.secondaryInk)
+                            .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("profileBotGreeting")
                         Button { customizing = true } label: {
-                            ExpressiveBotAvatar(config: draft.avatarConfig, size: 168, mood: .idle,
-                                                animated: true, flourishToken: String(describing: draft.avatarConfig))
+                            StrataCompanionStage(size: 168, tint: draft.avatarConfig.color.accent) {
+                                ExpressiveBotAvatar(config: draft.avatarConfig, size: 168, mood: .idle,
+                                                    animated: true, flourishToken: String(describing: draft.avatarConfig))
+                            }
                         }.buttonStyle(.plain).accessibilityLabel("Customize bot avatar").accessibilityIdentifier("profileBotAvatarButton")
                         TextField("Name your bot", text: $draft.name)
                             .font(.title2.weight(.semibold)).multilineTextAlignment(.center).focused($focused, equals: .name)

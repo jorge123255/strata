@@ -90,7 +90,7 @@ if (connectorMode) {
 const fixtureComputerMode = process.argv[2] === '--test-computer' ? 'cua' : 'host';
 const configuredFixtureName = ['--test-bot-photos', '--test-team-channel-layout', '--test-group-chat-layout'].includes(process.argv[2]) ? 'Configured fixture / Qwen extended long model name for a separate remote Strata computer' : 'Configured fixture';
 let botFace = { color: 'sky', eyes: 'star', ears: 'scalloped' };
-if (process.argv[2] === '--test-bot-avatar-states' || directBotsMode) {
+if (['--test-bot-avatar-states', '--test-bot-photos'].includes(process.argv[2]) || directBotsMode) {
   conversation.preferences = { botId: 'fixture-bot', botName: 'Workspace companion', botAvatarConfig: structuredClone(botFace),
     botComputerMode: 'host', botComputer: 'Fixture Mac', botModel: 'Fixture model' };
 }

@@ -99,7 +99,7 @@ const glyphs: Record<Glyph, { path?: string; width: number; rotate: number; scal
   star: { path: 'M-.17 0H.17M-.085 -.147L.085 .147M.085 -.147L-.085 .147', width: .066, rotate: 0, scale: 1.1 },
   round: { width: .085, rotate: -12, scale: 1.2 },
   dash: { path: 'M-.225 0H.225', width: .075, rotate: 0, scale: 1.15 },
-  caret: { path: 'M-.17 .2L0 -.2L.17 .2', width: .08, rotate: 0, scale: 1.1 },
+  caret: { path: 'M-.17 .12Q0-.2.17 .12', width: .08, rotate: 0, scale: 1.1 },
   plus: { path: 'M-.22 0H.22M0 -.22V.22', width: .085, rotate: 0, scale: 1.1 },
   cross: { path: 'M-.22 0H.22M0 -.22V.22', width: .085, rotate: 45, scale: 1.1 },
   greater: { path: 'M-.17 -.17L.17 0L-.17 .17', width: .075, rotate: 0, scale: 1.1 },
@@ -110,16 +110,16 @@ const glyphs: Record<Glyph, { path?: string; width: number; rotate: number; scal
 
 function Eye({ glyph, side, spin, geometric = false }: { glyph: Glyph; side: 'left' | 'right'; spin: number; geometric?: boolean }) {
   const eye = geometric ? { x: side === 'left' ? STRATA_GEOMETRIC_EYE_GRID.leftX : STRATA_GEOMETRIC_EYE_GRID.rightX, y: STRATA_GEOMETRIC_EYE_GRID.y } : side === 'left' ? { x: -.53029, y: -.04019 } : { x: .53510, y: -.04055 }
-  if (geometric && glyph === 'round') return <g data-eye={side} data-glyph={glyph} transform={`translate(${eye.x} ${eye.y}) rotate(-12)`}><rect className="cua-avatar-eye-glyph" x="-.08" y="-.17" width=".16" height=".34" rx=".08" fill="currentColor" stroke="none"/></g>
+  if (glyph === 'round') return <g data-eye={side} data-glyph={glyph} transform={`translate(${eye.x} ${eye.y}) rotate(-12)`}><rect className="cua-avatar-eye-glyph" x="-.08" y="-.17" width=".16" height=".34" rx=".08" fill="currentColor" stroke="none"/></g>
   const style = glyphs[glyph]
   const angle = style.rotate + (glyph === 'plus' ? spin : 0)
   return <g data-eye={side} data-glyph={glyph} transform={`translate(${eye.x} ${eye.y}) rotate(${angle}) scale(${style.scale * .94409} ${style.scale})`} strokeWidth={style.width}>
-    <g className="cua-avatar-eye-glyph">{glyph === 'round' ? <ellipse cx="0" cy="0" rx=".165" ry=".2" /> : <path d={style.path} />}</g>
+    <g className="cua-avatar-eye-glyph"><path d={style.path} /></g>
   </g>
 }
 
 // A single observer gates every face. Idle roster faces have no frame loop or
-// timer; only visible large faces schedule an occasional blink.
+// timer; only visible large faces schedule an occasional blink or ear greeting.
 const observedFaces = new Map<Element, (visible: boolean) => void>()
 let faceObserver: IntersectionObserver | undefined
 function observeFace(node: SVGSVGElement, update: (visible: boolean) => void) {
@@ -135,7 +135,7 @@ function observeFace(node: SVGSVGElement, update: (visible: boolean) => void) {
 }
 
 function useAvatarMotion(mood: CuaBotMood, animated: boolean, size: number, messageSignal?: string | number) {
-  const ref = useRef<SVGSVGElement>(null), flourishAnimation = useRef<Animation | undefined>(undefined), blinkAnimation = useRef<Animation | undefined>(undefined)
+  const ref = useRef<SVGSVGElement>(null), flourishAnimation = useRef<Animation | undefined>(undefined), blinkAnimation = useRef<Animation | undefined>(undefined), earAnimations = useRef<Animation[]>([])
   const [visible, setVisible] = useState(false), [hidden, setHidden] = useState(false), [reduced, setReduced] = useState(true)
   const previousSignal = useRef(messageSignal), previousMood = useRef(mood)
   const active = animated && visible && !hidden && !reduced
@@ -153,20 +153,31 @@ function useAvatarMotion(mood: CuaBotMood, animated: boolean, size: number, mess
   }, [animated])
   const blink = useCallback(() => {
     const eyes = ref.current?.querySelector<SVGGElement>('.cua-avatar-blink')
-    if (!active || !eyes?.animate || mood === 'paused') return
+    if (!active || !eyes?.animate || ['paused', 'error'].includes(mood)) return
     blinkAnimation.current?.cancel()
-    blinkAnimation.current = eyes.animate([{ transform: 'scaleY(1)' }, { transform: 'scaleY(.08)', offset: .45 }, { transform: 'scaleY(1)' }], { duration: 180, easing: 'ease-in-out' })
+    const double = Math.random() < .22
+    blinkAnimation.current = eyes.animate(double ? [
+      { transform: 'scaleY(1)' }, { transform: 'scaleY(.08)', offset: .18 }, { transform: 'scaleY(1)', offset: .38 },
+      { transform: 'scaleY(1)', offset: .6 }, { transform: 'scaleY(.08)', offset: .8 }, { transform: 'scaleY(1)' },
+    ] : [{ transform: 'scaleY(1)' }, { transform: 'scaleY(.08)', offset: .45 }, { transform: 'scaleY(1)' }], { duration: double ? 410 : 170 + Math.random() * 40, easing: 'ease-in-out' })
+  }, [active, mood])
+  const greet = useCallback(() => {
+    if (!active || mood === 'paused' || mood === 'error') return
+    earAnimations.current.forEach(animation => animation.cancel())
+    earAnimations.current = Array.from(ref.current?.querySelectorAll<SVGGElement>('.cua-avatar-ear') ?? []).map((ear, index) => ear.animate([
+      { transform: 'rotate(0deg)' }, { transform: `rotate(${index ? 5 : -5}deg)`, offset: .38 }, { transform: 'rotate(0deg)' },
+    ], { duration: 640, easing: 'ease-in-out', delay: index * 80 }))
   }, [active, mood])
   const flourish = useCallback(() => {
     const node = ref.current
-    if (!active || !node?.animate) return
+    if (!active || !node?.animate || ['paused', 'error'].includes(mood)) return
     flourishAnimation.current?.cancel()
     flourishAnimation.current = node.animate([
-      { transform: 'scale(1) rotate(0)' }, { transform: 'translateY(-2px) scale(1.1,.92) rotate(-6deg)', offset: .3 },
-      { transform: 'scale(.97,1.04) rotate(3deg)', offset: .64 }, { transform: 'scale(1) rotate(0)' },
+      { transform: 'scale(1) rotate(0)' }, { transform: 'translateY(-1px) scale(1.055,.97) rotate(-3deg)', offset: .3 },
+      { transform: 'scale(.985,1.025) rotate(2deg)', offset: .64 }, { transform: 'scale(1) rotate(0)' },
     ], { duration: 540, easing: 'cubic-bezier(.2,.8,.25,1)' })
-    blink()
-  }, [active, blink])
+    blink(); greet()
+  }, [active, blink, greet, mood])
   useEffect(() => {
     const arrived = messageSignal !== undefined && previousSignal.current !== messageSignal
     const completed = mood === 'done' && previousMood.current !== mood
@@ -174,17 +185,17 @@ function useAvatarMotion(mood: CuaBotMood, animated: boolean, size: number, mess
     if (arrived || completed) flourish()
   }, [messageSignal, mood, flourish])
   useEffect(() => {
-    if (!active || size < 64 || mood !== 'idle') return
+    if (!active || size < 64 || !['idle', 'thinking', 'working'].includes(mood)) return
     let timer: ReturnType<typeof setTimeout>
-    const next = () => { timer = setTimeout(() => { blink(); next() }, 4800 + Math.random() * 2200) }
+    const next = () => { timer = setTimeout(() => { blink(); if (mood === 'idle' && Math.random() < .3) greet(); next() }, 4600 + Math.random() * 3600) }
     next(); return () => clearTimeout(timer)
-  }, [active, size, mood, blink])
+  }, [active, size, mood, blink, greet])
   useEffect(() => {
     if (active) return
-    flourishAnimation.current?.cancel(); blinkAnimation.current?.cancel()
+    flourishAnimation.current?.cancel(); blinkAnimation.current?.cancel(); earAnimations.current.forEach(animation => animation.cancel())
     ref.current?.style.removeProperty('--cua-gaze-x'); ref.current?.style.removeProperty('--cua-gaze-y')
   }, [active])
-  useEffect(() => () => { flourishAnimation.current?.cancel(); blinkAnimation.current?.cancel() }, [])
+  useEffect(() => () => { flourishAnimation.current?.cancel(); blinkAnimation.current?.cancel(); earAnimations.current.forEach(animation => animation.cancel()) }, [])
   const gaze = (event: PointerEvent<SVGSVGElement>) => {
     if (!active || event.pointerType !== 'mouse') return
     const bounds = event.currentTarget.getBoundingClientRect()
@@ -224,39 +235,47 @@ export function CuaBotAvatar({ config: supplied, name = '', size = 48, className
   const geometric = kind === 'koala' && CUA_BOT_SHAPES.includes(config.shape as typeof CUA_BOT_SHAPES[number])
   const shape = geometric ? config.shape as typeof CUA_BOT_SHAPES[number] : undefined
   const head = shape ? STRATA_GEOMETRIC_PATHS[shape] : kind === 'koala' ? geometry.head : characterHeads[kind]
+  const mouthY = geometric ? .43 : kind === 'koala' ? .64 : kind === 'robot' ? .43 : .54
+  const mouth = mood === 'error' ? `M-.11 ${mouthY + .04}Q0 ${mouthY - .075} .11 ${mouthY + .04}`
+    : mood === 'paused' ? `M-.08 ${mouthY}H.08`
+      : mood === 'needsApproval' || mood === 'thinking' ? `M-.07 ${mouthY}Q0 ${mouthY + .025} .07 ${mouthY}`
+        : `M-${mood === 'done' ? '.16' : '.12'} ${mouthY}Q0 ${mouthY + (mood === 'done' ? .16 : .1)} ${mood === 'done' ? '.16' : '.12'} ${mouthY}`
   const earSize = config.ears === 'small' ? .78 : config.ears === 'round' ? .92 : 1
   return <svg ref={motion.ref} className={`cua-bot-avatar ${className}`.trim()} width={dimension} height={dimension}
     viewBox="-1.425 -1.485 2.85 2.85" fill="none" role="img"
-    data-mood={mood} data-motion={motion.active ? 'active' : 'paused'} onPointerMove={motion.gaze} onPointerLeave={motion.resetGaze} onPointerEnter={motion.blink} onPointerDown={motion.flourish}
+    data-mood={mood} data-companion={dimension >= 64 || undefined} data-motion={motion.active ? 'active' : 'paused'} onPointerMove={motion.gaze} onPointerLeave={motion.resetGaze} onPointerEnter={motion.blink} onPointerDown={motion.flourish}
     data-character={shape ?? kind} data-shape={shape} aria-label={`${name ? `${name}, ` : ''}${colorName} ${shape ?? kind}, ${mood === 'needsApproval' ? 'needs approval' : mood}`}>
     <defs><clipPath id={clipID}><path d={head} /></clipPath></defs>
     <g className="cua-avatar-body">
     <g fill={colors.face}>
-      {!geometric && (kind === 'koala' ? ([-1, 1] as const).map(side => config.ears === 'round'
-        ? <circle key={side} cx={side * .9023 * .97} cy={-.4916 * 1.02} r={Math.sqrt(.598 / Math.PI)} />
-        : <path key={side} d={geometry.ear} transform={`translate(${side * .9023 * (config.ears === 'small' ? .86 : 1)} ${-.4916 * (config.ears === 'small' ? .86 : 1)}) scale(${side * (config.ears === 'small' ? .72 : 1)} ${config.ears === 'small' ? .72 : 1})`} />)
-        : ([-1, 1] as const).map(side => <g key={side} transform={`scale(${side} 1)`}>
+      {!geometric && (kind === 'koala' ? ([-1, 1] as const).map(side => <g key={side} className="cua-avatar-ear">{config.ears === 'round'
+        ? <circle cx={side * .9023 * .97} cy={-.4916 * 1.02} r={Math.sqrt(.598 / Math.PI)} />
+        : <path d={geometry.ear} transform={`translate(${side * .9023 * (config.ears === 'small' ? .86 : 1)} ${-.4916 * (config.ears === 'small' ? .86 : 1)}) scale(${side * (config.ears === 'small' ? .72 : 1)} ${config.ears === 'small' ? .72 : 1})`} />}</g>)
+        : ([-1, 1] as const).map(side => <g key={side} className="cua-avatar-ear"><g transform={`scale(${side} 1)`}>
           {kind === 'robot' ? <><rect x=".96" y="-.29" width=".23" height={.46 * earSize} rx=".1" /><path d="M.53-.83V-1.08" stroke={colors.nose} strokeWidth=".09" /><ellipse cx=".53" cy="-1.13" rx=".105" ry=".105" /></>
             : <g transform={`translate(.67 -.58) scale(${earSize})`}>
               <path d={config.ears === 'round' ? 'M-.33 .15Q-.48-.66-.04-.61Q.44-.61.33 .33Z' : 'M-.34 .15L.22-.69Q.32-.78.34-.59L.4 .36Z'} />
               <path d="M-.13 .05L.2-.44L.25 .2Z" fill={colors.nose} opacity=".4" />
             </g>}
-        </g>))}
+        </g></g>))}
       <path data-face={shape ?? kind} d={head} />
     </g>
     <g clipPath={`url(#${clipID})`}>
-      {!geometric && <path d="M-.83-.5Q-.68-.83-.23-.82" stroke="white" strokeOpacity=".18" strokeWidth=".1" strokeLinecap="round" />}
+      <path className="cua-avatar-shine" d="M-.72-.5Q-.57-.76-.26-.77" stroke="white" strokeOpacity=".2" strokeWidth=".085" strokeLinecap="round" />
+      <g className="cua-avatar-cheeks" fill={config.color === 'graphite' ? '#F9B6C2' : '#F7829E'} opacity={mood === 'error' || mood === 'paused' ? .15 : mood === 'done' ? .38 : .25}><ellipse cx={geometric ? -.66 : -.7} cy=".29" rx=".13" ry=".065"/><ellipse cx={geometric ? .66 : .7} cy=".29" rx=".13" ry=".065"/></g>
       {kind === 'fox' && <path d="M-1 .02Q-.59-.04 0 .39Q.59-.04 1 .02L1 .95H-1Z" fill="white" opacity=".52" />}
       {kind === 'cat' && <g stroke={colors.nose} strokeWidth=".045" strokeLinecap="round" opacity=".65"><path d="M-.54 .34L-.88 .25M-.53 .45L-.9 .47M.54 .34L.88 .25M.53 .45L.9 .47" /></g>}
       {!geometric && (kind === 'koala' ? <path d={geometry.nose} fill={colors.nose} />
-        : kind === 'robot' ? <rect x="-.28" y=".34" width=".56" height=".13" rx=".065" fill={colors.nose} />
-          : <><path d="M-.15 .26Q0 .18.15 .26L0 .43Z" fill={colors.nose} /><path d="M0 .42V.52M-.14 .52Q0 .65.14 .52" stroke={colors.nose} strokeWidth=".04" strokeLinecap="round" /></>)}
-      <g className="cua-avatar-gaze"><g className="cua-avatar-blink" color={colors.eye} stroke={colors.eye} strokeLinecap="butt" strokeLinejoin="miter">
+        : kind === 'robot' ? <g fill={colors.nose} opacity=".65"><rect x="-.8" y=".29" width=".075" height=".17" rx=".037"/><rect x=".725" y=".29" width=".075" height=".17" rx=".037"/></g>
+          : <path d="M-.15 .26Q0 .18.15 .26L0 .43Z" fill={colors.nose} />)}
+      {mood === 'needsApproval' ? <ellipse className="cua-avatar-mouth" cx="0" cy={mouthY + .035} rx=".06" ry=".075" stroke={colors.eye} strokeOpacity=".68" strokeWidth=".04"/> : <path className="cua-avatar-mouth" d={mouth} stroke={colors.eye} strokeOpacity=".68" strokeWidth=".045" strokeLinecap="round"/>}
+      <g className="cua-avatar-gaze"><g className="cua-avatar-blink" color={colors.eye} stroke={colors.eye} strokeLinecap="round" strokeLinejoin="round">
         <Eye glyph={left} side="left" spin={spin} geometric={geometric} />
         <Eye glyph={right} side="right" spin={spin} geometric={geometric} />
       </g></g>
     </g>
     </g>
+    {mood === 'done' ? <g className="cua-avatar-delight" stroke={colors.face} strokeWidth=".055" strokeLinecap="round" aria-hidden="true"><path d="M1.08-.97V-.72M.955-.845h.25M-.96.68v.16M-1.04.76h.16"/><ellipse cx=".97" cy=".57" rx=".04" ry=".04" fill={colors.face} stroke="none"/></g> : null}
   </svg>
 }
 

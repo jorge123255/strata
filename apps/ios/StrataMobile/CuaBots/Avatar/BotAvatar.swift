@@ -253,10 +253,83 @@ struct AvatarMotionSample: Equatable {
     static func sample(mood: BotMood, time: Double, enabled: Bool) -> Self {
         guard enabled else { return Self() }
         switch mood {
-        case .working: return Self(lift: sin(time * 2.4) * -1.8, scale: 1 + sin(time * 3.1) * 0.025, tilt: sin(time * 1.5) * 1.7)
-        case .thinking: return Self(lift: sin(time * 1.2) * -0.7, scale: 1, tilt: sin(time * 0.8) * 2)
+        case .idle: return Self(lift: sin(time * 1.1) * -0.35, scale: 1 + sin(time * 1.1) * 0.006, tilt: sin(time * 0.43) * 0.65)
+        case .working: return Self(lift: sin(time * 1.8) * -0.65, scale: 1 + sin(time * 1.8) * 0.009, tilt: sin(time * 0.9) * 0.8)
+        case .thinking: return Self(lift: sin(time * 1.1) * -0.4, scale: 1, tilt: sin(time * 0.6) * 1.6)
         default: return Self()
         }
+    }
+}
+
+/// Original Strata face choreography. The quiet and double blinks have a long,
+/// uneven cadence; the stable offset keeps different characters from blinking
+/// together. This has no relationship to execution or persisted bot state.
+struct AvatarPersonalitySample: Equatable {
+    var blinking = false
+    var gaze: Double = 0
+    var earLift: Double = 0
+
+    static func phaseOffset(config: AvatarConfig) -> Double {
+        let identity = [config.color.rawValue, config.eyes.rawValue, config.ears.rawValue,
+                        config.kind.rawValue, config.shape?.rawValue ?? "classic"].joined(separator: ":")
+        let sum = identity.unicodeScalars.reduce(0) { ($0 &* 31 &+ Int($1.value)) % 997 }
+        return Double(sum) / 997 * 13.2
+    }
+
+    static func sample(mood: BotMood, time: Double, offset: Double, enabled: Bool) -> Self {
+        guard enabled, mood.isAnimated else { return Self() }
+        let phase = (max(0, time) + offset).truncatingRemainder(dividingBy: 13.2)
+        let blinking = (4.35..<4.51).contains(phase) || (9.3..<9.46).contains(phase) || (9.65..<9.79).contains(phase)
+        // A small ear perk only occasionally, rather than a constant wiggle.
+        let perk = (7.6..<8.4).contains(phase) ? sin((phase - 7.6) / 0.8 * .pi) * 0.045 : 0
+        return Self(blinking: blinking,
+                    gaze: sin((max(0, time) + offset) * (mood == .thinking ? 0.75 : 0.37)) * (mood == .thinking ? 0.05 : 0.018),
+                    earLift: perk)
+    }
+}
+
+/// A geometry update also arrives when a mounted avatar moves inside a scroll
+/// view. Intersecting the native clipping ancestors catches that case on iOS17
+/// as well as newer releases, without a display link or a second polling clock.
+private struct AvatarViewportObserver: UIViewRepresentable {
+    var position: CGRect
+    var onVisibility: (Bool, CGFloat) -> Void
+
+    func makeUIView(context: Context) -> Probe { Probe() }
+    func updateUIView(_ view: Probe, context: Context) {
+        view.onVisibility = onVisibility
+        view.scheduleVisibility()
+    }
+
+    final class Probe: UIView {
+        var onVisibility: ((Bool, CGFloat) -> Void)?
+        private var generation = 0
+        override func didMoveToWindow() { super.didMoveToWindow(); scheduleVisibility() }
+        override func layoutSubviews() { super.layoutSubviews(); scheduleVisibility() }
+
+        func scheduleVisibility() {
+            generation += 1
+            let current = generation
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.generation == current else { return }
+                self.onVisibility?(AvatarViewportState.isVisible(self), min(self.bounds.width, self.bounds.height))
+            }
+        }
+    }
+}
+
+enum AvatarViewportState {
+    static func isVisible(_ view: UIView) -> Bool {
+        guard let window = view.window, !view.bounds.isEmpty else { return false }
+        var visible = view.convert(view.bounds, to: window).intersection(window.bounds)
+        var ancestor: UIView? = view
+        while let current = ancestor {
+            guard !current.isHidden, current.alpha > 0.01 else { return false }
+            if current.clipsToBounds { visible = visible.intersection(current.convert(current.bounds, to: window)) }
+            guard !visible.isNull, visible.width > 1, visible.height > 1 else { return false }
+            ancestor = current.superview
+        }
+        return true
     }
 }
 
@@ -291,6 +364,8 @@ struct ExpressiveBotAvatar: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var interaction = 0
+    @State private var isVisible = false
+    @State private var isInViewport = false
 
     var body: some View {
         Group {
@@ -300,12 +375,23 @@ struct ExpressiveBotAvatar: View {
                     .accessibilityIdentifier("animateBotAvatarButton")
             } else { face }
         }
+        .background {
+            if animated || interactive {
+                GeometryReader { geometry in
+                    AvatarViewportObserver(position: geometry.frame(in: .global)) { visible, _ in
+                        if isInViewport != visible { isInViewport = visible }
+                    }.allowsHitTesting(false).accessibilityHidden(true)
+                }
+            }
+        }
+        .onAppear { isVisible = true }
+        .onDisappear { isVisible = false; isInViewport = false }
     }
 
     private var face: some View {
-        KoalaAvatar(config, mood: mood, animated: animated && scenePhase == .active)
+        KoalaAvatar(config, mood: mood, animated: animated && isVisible && scenePhase == .active)
             .frame(width: size, height: size)
-            .modifier(AvatarFlourish(trigger: flourishToken + ":" + String(interaction), enabled: !reduceMotion && scenePhase == .active))
+            .modifier(AvatarFlourish(trigger: flourishToken + ":" + String(interaction), enabled: ((animated && size >= 64) || interactive) && isVisible && isInViewport && !reduceMotion && scenePhase == .active))
     }
 }
 
@@ -315,9 +401,9 @@ private struct AvatarFlourish: ViewModifier {
     func body(content: Content) -> some View {
         if enabled {
             content.phaseAnimator([0, 1, 2], trigger: trigger) { view, phase in
-                view.scaleEffect(x: phase == 1 ? 1.10 : phase == 2 ? 0.98 : 1, y: phase == 1 ? 0.92 : phase == 2 ? 1.04 : 1)
-                    .rotationEffect(.degrees(phase == 1 ? -6 : phase == 2 ? 2 : 0))
-                    .offset(y: phase == 1 ? -2 : 0)
+                view.scaleEffect(x: phase == 1 ? 1.055 : phase == 2 ? 0.99 : 1, y: phase == 1 ? 0.96 : phase == 2 ? 1.025 : 1)
+                    .rotationEffect(.degrees(phase == 1 ? -3.5 : phase == 2 ? 1.5 : 0))
+                    .offset(y: phase == 1 ? -1.5 : 0)
             } animation: { phase in .spring(response: phase == 1 ? 0.22 : 0.34, dampingFraction: 0.68) }
         } else { content }
     }
@@ -325,14 +411,17 @@ private struct AvatarFlourish: ViewModifier {
 
 // MARK: - Drawing
 
-/// The koala head: a flat blob with scalloped ears, the Cua mark's nose and
-/// type-mark eyes. Flat fills only: no outline, gradient or shadow.
+/// Saved Strata silhouettes with original soft face details. The existing
+/// character, palette and expression choices remain the bot's identity.
 public struct KoalaAvatar: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
     public var config: AvatarConfig
     public var mood: BotMood
     public var animated: Bool
+    @State private var isVisible = false
+    @State private var isInViewport = false
+    @State private var renderedSize: CGFloat = 0
 
     public init(_ config: AvatarConfig, mood: BotMood = .idle, animated: Bool = false) {
         self.config = config
@@ -341,23 +430,42 @@ public struct KoalaAvatar: View {
     }
 
     public var body: some View {
-        if animated && mood.isAnimated && !reduceMotion && scenePhase == .active {
-            TimelineView(.animation(minimumInterval: 1 / 18)) { context in
-                canvas(t: context.date.timeIntervalSinceReferenceDate)
+        Group {
+            if motionEnabled && mood.isAnimated {
+                TimelineView(.animation(minimumInterval: 1 / 15)) { context in
+                    canvas(t: context.date.timeIntervalSinceReferenceDate)
+                }
+            } else {
+                canvas(t: 0)
             }
-        } else {
-            canvas(t: 0)
         }
+        .background {
+            if animated {
+                GeometryReader { geometry in
+                    AvatarViewportObserver(position: geometry.frame(in: .global)) { visible, size in
+                        if isInViewport != visible { isInViewport = visible }
+                        if renderedSize != size { renderedSize = size }
+                    }
+                    .allowsHitTesting(false).accessibilityHidden(true)
+                }
+            }
+        }
+        .onAppear { isVisible = true }
+        .onDisappear { isVisible = false; isInViewport = false }
+    }
+
+    private var motionEnabled: Bool {
+        animated && isVisible && isInViewport && !reduceMotion && scenePhase == .active && (mood != .idle || renderedSize >= 64)
     }
 
     private func canvas(t: Double) -> some View {
-        let motion = AvatarMotionSample.sample(mood: mood, time: t, enabled: animated && !reduceMotion && scenePhase == .active)
+        let motion = AvatarMotionSample.sample(mood: mood, time: t, enabled: motionEnabled)
         return Canvas { ctx, size in
-            KoalaRenderer.draw(in: &ctx, size: size, config: config, mood: mood, t: t)
+            KoalaRenderer.draw(in: &ctx, size: size, config: config, mood: mood, t: t, motionEnabled: motionEnabled)
         }
         .aspectRatio(1, contentMode: .fit)
         .offset(y: motion.lift).scaleEffect(motion.scale).rotationEffect(.degrees(motion.tilt))
-        .accessibilityLabel("\(config.color.name) \(config.characterName), \(mood == .needsApproval ? "needs approval" : mood.rawValue)")
+        .accessibilityLabel("\(config.color.name) \(config.characterName), \(mood.label)")
     }
 }
 
@@ -366,6 +474,14 @@ public enum KoalaRenderer {
     static let earPath = SVGPath.parse(KoalaGeometry.ear)
     static let nosePath = SVGPath.parse(KoalaGeometry.nose)
     static let geometricHeads = GeometricAvatarGeometry.paths.mapValues { SVGPath.parse($0) }
+    static let highlightPath = SVGPath.parse(AvatarCharacterGeometry.highlight)
+    static let foxMaskPath = SVGPath.parse(AvatarCharacterGeometry.foxMask)
+    static let catWhiskersPath = SVGPath.parse(AvatarCharacterGeometry.catWhiskers)
+    static let animalNosePath = SVGPath.parse(AvatarCharacterGeometry.animalNose)
+    static let robotAntennaPath = SVGPath.parse(AvatarCharacterGeometry.robotAntenna)
+    static let roundEarPath = SVGPath.parse(AvatarCharacterGeometry.roundEar)
+    static let pointedEarPath = SVGPath.parse(AvatarCharacterGeometry.pointedEar)
+    static let innerEarPath = SVGPath.parse(AvatarCharacterGeometry.innerEar)
     static let characterHeads: [AvatarKind: Path] = [
         .fox: SVGPath.parse(AvatarCharacterGeometry.foxHead),
         .cat: SVGPath.parse(AvatarCharacterGeometry.catHead),
@@ -376,18 +492,23 @@ public enum KoalaRenderer {
     public static func radius(for size: CGSize) -> CGFloat { min(size.width, size.height) / 2.85 }
 
     public static func draw(in ctx: inout GraphicsContext, size: CGSize, config: AvatarConfig,
-                            mood: BotMood, t: Double) {
+                            mood: BotMood, t: Double, motionEnabled: Bool = true) {
         let R = radius(for: size)
         let center = CGPoint(x: size.width / 2, y: size.height / 2 + 0.06 * R)
         let unit = CGAffineTransform(translationX: center.x, y: center.y).scaledBy(x: R, y: R)
         let face = GraphicsContext.Shading.color(config.color.face)
+        let personality = AvatarPersonalitySample.sample(mood: mood, time: t,
+            offset: AvatarPersonalitySample.phaseOffset(config: config), enabled: motionEnabled)
 
         let geometric = config.geometricShape.flatMap { geometricHeads[$0] }
         // Geometric characters have their own silhouette and eyes only.
         if geometric == nil {
             if config.kind == .koala {
-                for side in [-1.0, 1.0] { ctx.fill(ear(config.ears, side: side).applying(unit), with: face) }
-            } else { drawCharacterEars(in: &ctx, unit: unit, config: config) }
+                for side in [-1.0, 1.0] {
+                    let perk = CGAffineTransform(translationX: 0, y: -personality.earLift * (side < 0 ? 0.6 : 1))
+                    ctx.fill(ear(config.ears, side: side).applying(perk).applying(unit), with: face)
+                }
+            } else { drawCharacterEars(in: &ctx, unit: unit, config: config, earLift: personality.earLift) }
         }
 
         let head = (geometric ?? characterHeads[config.kind] ?? headPath).applying(unit)
@@ -395,32 +516,32 @@ public enum KoalaRenderer {
 
         var inner = ctx
         inner.clip(to: head)
+        inner.stroke(highlightPath.applying(unit), with: .color(.white.opacity(config.color == .cloud ? 0.32 : 0.19)), style: StrokeStyle(lineWidth: 0.09 * R, lineCap: .round))
         if geometric == nil {
-            inner.stroke(SVGPath.parse(AvatarCharacterGeometry.highlight).applying(unit), with: .color(.white.opacity(0.18)), style: StrokeStyle(lineWidth: 0.1 * R, lineCap: .round))
             if config.kind == .fox {
-                inner.fill(SVGPath.parse(AvatarCharacterGeometry.foxMask).applying(unit), with: .color(.white.opacity(0.52)))
+                inner.fill(foxMaskPath.applying(unit), with: .color(.white.opacity(0.52)))
             }
             if config.kind == .cat {
-                inner.stroke(SVGPath.parse(AvatarCharacterGeometry.catWhiskers).applying(unit), with: .color(config.color.nose.opacity(0.65)), style: StrokeStyle(lineWidth: 0.045 * R, lineCap: .round))
+                inner.stroke(catWhiskersPath.applying(unit), with: .color(config.color.nose.opacity(0.65)), style: StrokeStyle(lineWidth: 0.045 * R, lineCap: .round))
             }
             switch config.kind {
             case .koala:
                 inner.fill(nosePath.applying(unit), with: .color(config.color.nose))
             case .robot:
-                inner.fill(Path(roundedRect: CGRect(x: -0.28, y: 0.34, width: 0.56, height: 0.13), cornerRadius: 0.065).applying(unit), with: .color(config.color.nose))
+                break
             case .fox, .cat:
-                inner.fill(SVGPath.parse(AvatarCharacterGeometry.animalNose).applying(unit), with: .color(config.color.nose))
-                inner.stroke(SVGPath.parse(AvatarCharacterGeometry.animalMouth).applying(unit), with: .color(config.color.nose), style: StrokeStyle(lineWidth: 0.04 * R, lineCap: .round))
+                inner.fill(animalNosePath.applying(unit), with: .color(config.color.nose))
             }
 
         }
-        let lag = t - 0.05  // the right eye swaps a beat after the left
-        let pair = mood.eyes(style: config.eyes, at: t)
-        let right = mood.eyes(style: config.eyes, at: lag).right
+        drawWarmDetails(in: &inner, unit: unit, config: config, mood: mood, geometric: geometric != nil)
+        // Blink together, so even a very small face reads as a friendly blink.
+        let faceTime = motionEnabled ? t : 0
+        let pair = personality.blinking ? EyePair(.dash, .dash) : mood == .idle ? config.eyes.glyphs : mood.eyes(style: config.eyes, at: faceTime)
         // Working: the plus eyes rock between +15 and -15 degrees, a snap
         // then a hold, as in the koala design; they never pass 45 (an x).
-        let spin = mood == .working ? (t.truncatingRemainder(dividingBy: 1.2) < 0.6 ? 15.0 : -15.0) : 0
-        let gaze = mood == .thinking || mood == .idle ? sin(t * 0.72) * 0.035 : 0
+        let spin = mood == .working && motionEnabled ? sin(t * 1.8) * 8 : 0
+        let gaze = personality.gaze
         let leftEye = (x: (geometric != nil ? GeometricAvatarGeometry.leftX : KoalaGeometry.leftEye.x) + gaze,
                        y: geometric != nil ? GeometricAvatarGeometry.eyeY : KoalaGeometry.leftEye.y,
                        squash: geometric != nil ? 1 : KoalaGeometry.leftEye.squash)
@@ -429,23 +550,56 @@ public enum KoalaRenderer {
                         squash: geometric != nil ? 1 : KoalaGeometry.rightEye.squash)
         drawEye(pair.left, at: leftEye, in: &inner, unit: unit,
                 color: config.color.eye, spin: spin, geometric: geometric != nil)
-        drawEye(right, at: rightEye, in: &inner, unit: unit,
+        drawEye(pair.right, at: rightEye, in: &inner, unit: unit,
                 color: config.color.eye, spin: spin, geometric: geometric != nil)
     }
 
-    static func drawCharacterEars(in ctx: inout GraphicsContext, unit: CGAffineTransform, config: AvatarConfig) {
+    /// Low-contrast cheeks and a tiny mouth are deliberately separate from the
+    /// status glyphs. An approval stays attentive; a failure never smiles.
+    static func drawWarmDetails(in ctx: inout GraphicsContext, unit: CGAffineTransform, config: AvatarConfig, mood: BotMood, geometric: Bool) {
+        let blush = Color(hex: config.color == .graphite ? 0xF9B6C2 : 0xF7829E)
+        for side in [-1.0, 1.0] {
+            let cheek = Path(ellipseIn: CGRect(x: side * 0.67 - 0.16, y: 0.25, width: 0.32, height: 0.135))
+            ctx.fill(cheek.applying(unit), with: .color(blush.opacity(mood == .error ? 0.14 : mood == .done ? 0.38 : 0.25)))
+        }
+        let y: Double = geometric ? 0.38 : config.kind == .koala ? 0.63 : config.kind == .robot ? 0.4 : 0.53
+        let color = config.color.eye.opacity(config.color == .graphite ? 0.76 : 0.63)
+        if mood == .needsApproval {
+            ctx.stroke(Path(ellipseIn: CGRect(x: -0.065, y: y - 0.025, width: 0.13, height: 0.115)).applying(unit), with: .color(color), style: StrokeStyle(lineWidth: 0.038 * abs(unit.a)))
+        } else {
+            var mouth = Path()
+            let width = mood == .done ? 0.19 : 0.13
+            mouth.move(to: CGPoint(x: -width, y: y))
+            let curve: Double = mood == .error ? -0.11 : mood == .paused ? 0.015 : mood == .thinking ? 0.035 : mood == .done ? 0.19 : 0.11
+            mouth.addQuadCurve(to: CGPoint(x: width, y: y), control: CGPoint(x: 0, y: y + curve))
+            ctx.stroke(mouth.applying(unit), with: .color(color), style: StrokeStyle(lineWidth: 0.045 * abs(unit.a), lineCap: .round, lineJoin: .round))
+        }
+        if mood == .done {
+            // Two original little glints rest with a finished reply. No flash,
+            // loop, or success claim beyond the existing Reply ready state.
+            for side in [-1.0, 1.0] {
+                var glint = Path()
+                let x = side * 0.77, y = -0.45
+                glint.move(to: CGPoint(x: x - 0.055, y: y)); glint.addLine(to: CGPoint(x: x + 0.055, y: y))
+                glint.move(to: CGPoint(x: x, y: y - 0.065)); glint.addLine(to: CGPoint(x: x, y: y + 0.065))
+                ctx.stroke(glint.applying(unit), with: .color(.white.opacity(0.7)), style: StrokeStyle(lineWidth: 0.035 * abs(unit.a), lineCap: .round))
+            }
+        }
+    }
+
+    static func drawCharacterEars(in ctx: inout GraphicsContext, unit: CGAffineTransform, config: AvatarConfig, earLift: Double = 0) {
         let size = config.ears == .small ? 0.78 : config.ears == .round ? 0.92 : 1.0
         for side in [-1.0, 1.0] {
-            let mirror = CGAffineTransform(scaleX: side, y: 1).concatenating(unit)
+            let mirror = CGAffineTransform(translationX: 0, y: -earLift * (side < 0 ? 0.6 : 1)).scaledBy(x: side, y: 1).concatenating(unit)
             if config.kind == .robot {
                 ctx.fill(Path(roundedRect: CGRect(x: 0.96, y: -0.29, width: 0.23, height: 0.46 * size), cornerRadius: 0.1).applying(mirror), with: .color(config.color.face))
-                ctx.stroke(SVGPath.parse(AvatarCharacterGeometry.robotAntenna).applying(mirror), with: .color(config.color.nose), style: StrokeStyle(lineWidth: 0.09 * abs(unit.a)))
+                ctx.stroke(robotAntennaPath.applying(mirror), with: .color(config.color.nose), style: StrokeStyle(lineWidth: 0.09 * abs(unit.a)))
                 ctx.fill(Path(ellipseIn: CGRect(x: 0.425, y: -1.235, width: 0.21, height: 0.21)).applying(mirror), with: .color(config.color.face))
             } else {
                 let placement = CGAffineTransform(translationX: 0.67, y: -0.58).scaledBy(x: size, y: size).concatenating(mirror)
-                let shape = config.ears == .round ? AvatarCharacterGeometry.roundEar : AvatarCharacterGeometry.pointedEar
-                ctx.fill(SVGPath.parse(shape).applying(placement), with: .color(config.color.face))
-                ctx.fill(SVGPath.parse(AvatarCharacterGeometry.innerEar).applying(placement), with: .color(config.color.nose.opacity(0.4)))
+                let shape = config.ears == .round ? roundEarPath : pointedEarPath
+                ctx.fill(shape.applying(placement), with: .color(config.color.face))
+                ctx.fill(innerEarPath.applying(placement), with: .color(config.color.nose.opacity(0.4)))
             }
         }
     }
@@ -472,7 +626,7 @@ public enum KoalaRenderer {
     static func drawEye(_ glyph: Glyph, at eye: (x: Double, y: Double, squash: Double),
                         in ctx: inout GraphicsContext, unit: CGAffineTransform, color: Color,
                         spin: Double, geometric: Bool = false) {
-        if geometric, glyph == .round {
+        if glyph == .round {
             let transform = CGAffineTransform(translationX: eye.x, y: eye.y).rotated(by: -12 * .pi / 180).concatenating(unit)
             let capsule = Path(roundedRect: CGRect(x: -0.08, y: -0.17, width: 0.16, height: 0.34), cornerRadius: 0.08)
             ctx.fill(capsule.applying(transform), with: .color(color))
@@ -487,7 +641,7 @@ public enum KoalaRenderer {
         var g = ctx
         g.transform = t
         g.stroke(path, with: .color(color),
-                 style: StrokeStyle(lineWidth: width, lineCap: .butt, lineJoin: .miter))
+                 style: StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round))
     }
 
     /// The glyph in face units, its stroke width, its tilt and its scale, as
@@ -516,7 +670,9 @@ public enum KoalaRenderer {
         case .dash:
             return (lines([(-0.225, 0, 0.225, 0)]), 0.075, 0, 1.15)
         case .caret:
-            return (poly([(-0.17, 0.2), (0, -0.2), (0.17, 0.2)]), 0.08, 0, 1.1)
+            var happy = Path(); happy.move(to: CGPoint(x: -0.17, y: 0.1))
+            happy.addQuadCurve(to: CGPoint(x: 0.17, y: 0.1), control: CGPoint(x: 0, y: -0.24))
+            return (happy, 0.08, 0, 1.1)
         case .plus:
             return (lines([(-0.22, 0, 0.22, 0), (0, -0.22, 0, 0.22)]), 0.085, 0, 1.1)
         case .cross:

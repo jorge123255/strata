@@ -40,7 +40,7 @@ test('all 108 native configurations render distinct complete SVGs with supported
   }
   assert.equal(outputs.size, 108)
   assert.match(svg({ color: 'graphite', eyes: 'round', ears: 'round' }), /stroke="#F3F6FA"/)
-  assert.match(svg({ color: 'sky', eyes: 'round', ears: 'round' }), /rx="\.165" ry="\.2"/)
+  assert.equal((svg({ color: 'sky', eyes: 'round', ears: 'round' }).match(/width="\.16" height="\.34" rx="\.08"/g) ?? []).length, 2, 'Round eyes use the same soft capsules on every Strata character.')
 })
 
 test('ear shapes retain mirrored fan, native small-ear pull and equal-area round discs', () => {
@@ -154,7 +154,11 @@ test('six original geometric faces match the shared native fixture without anima
     assert.match(output, /translate\(-0\.37 -0\.06\) rotate\(-12\)/)
     assert.match(output, /translate\(0\.37 -0\.06\) rotate\(-12\)/)
     assert.equal((output.match(/width="\.16" height="\.34" rx="\.08"/g) ?? []).length, 2)
-    assert.equal((output.match(/<path /g) ?? []).length, 2, 'Only the head and its clip path remain; no animal ears, nose or highlight.')
+    assert.equal((output.match(/<path /g) ?? []).length, 4, 'The exact head and clip are joined only by the original Strata shine and tiny mouth, with no animal ears or nose.')
+    assert.match(output, /class="cua-avatar-shine" d="M-.72-.5Q-.57-.76-.26-.77"/)
+    assert.match(output, /class="cua-avatar-mouth" d="M-.12 0.43Q0 0.53 .12 0.43"/)
+    assert.match(output, /class="cua-avatar-cheeks"[^>]+><ellipse cx="-0.66" cy=".29" rx=".13" ry=".065"/)
+    assert.doesNotMatch(output, /class="cua-avatar-ear"/)
     assert.equal((output.match(/<circle /g) ?? []).length, 0)
     assert.deepEqual(normalizeCuaBotAvatarConfig(config), config)
     assert.equal(svg({...config, ears:'small'}).replace(/cua-koala-[a-zA-Z0-9_-]+/g,'clip'), output.replace(/cua-koala-[a-zA-Z0-9_-]+/g,'clip'), 'Ears are retained in data but do not change a geometric face.')
