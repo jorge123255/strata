@@ -128,6 +128,7 @@ struct CompanionBots: Decodable, Equatable {
     var computers: [BotComputer]
     var models: [BotConfiguredModel]?
     var selectionSupported: Bool?
+    var avatarShapes: [String]?
     var lifecycleSupported: Bool?
     var defaultWorkspace: String?
     var defaultPolicy: String?
@@ -258,6 +259,7 @@ struct BotProfileDraft: Encodable, Equatable {
               ["claude", "codex", "grok", "kimi", "ollama", "configured"].contains(provider) else {
             throw CompanionError.server("Check the bot's name, instructions and provider.")
         }
+        result.avatarConfig = try avatarConfig.validated(supportedShapes: catalog.avatarShapes)
         guard catalog.computers.contains(where: { $0.id == computerId }) else {
             throw CompanionError.server("Choose a saved computer. Set up more computers on your Mac.")
         }

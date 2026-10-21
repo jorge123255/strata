@@ -1053,6 +1053,22 @@ final class BotComputerTests: XCTestCase {
         XCTAssertNil(store.currentConversation)
         XCTAssertFalse(fixture.requests.contains { $0.path.contains("serving") || $0.path.contains("/messages") || $0.path.contains("/computer") })
     }
+    func testUnsupportedGeometricAvatarCannotWriteAndOldHostClassicUsesLegacyFields() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { request in
+            if request.url!.path == "/v1/bots" { return ["bots": [["id": "bot_fixture", "name": "Fixture", "provider": "codex", "model": "", "capabilities": "both", "policy": "manual", "execution": ["kind": "local"]]], "providers": [], "computers": []] }
+            if request.url!.path.hasSuffix("/avatar") { return ["saved": true] }
+            return nil
+        }
+        let store = fixture.makeStore(); await store.refreshBots()
+        let before = fixture.requests.count
+        let rejected = await store.saveBotAvatar(botId: "bot_fixture", avatar: AvatarConfig(shape: .orb))
+        XCTAssertFalse(rejected); XCTAssertEqual(fixture.requests.count, before)
+        let clear = await store.saveBotAvatar(botId: "bot_fixture", avatar: AvatarConfig(shape: .classic))
+        XCTAssertTrue(clear)
+        XCTAssertEqual(fixture.requests.first { $0.path.hasSuffix("/avatar") }?.jsonBody?["avatarConfig"] as? [String: String], ["color": "sky", "eyes": "star", "ears": "scalloped"])
+    }
+
 }
 
 @MainActor
@@ -1086,6 +1102,84 @@ final class AvatarSchemaTests: XCTestCase {
             faces.insert(face)
         }}}}
         XCTAssertEqual(faces.count, 432)
+    }
+
+    func testGeometricConfigurationRoundTripsAndLegacyDecoderKeepsStableFallback() throws {
+        struct LegacyFace: Decodable { var color: BotColor; var eyes: EyeStyle; var ears: EarShape; var kind: AvatarKind? }
+        for shape in AvatarShape.geometric {
+            let face = AvatarConfig(color: .violet, eyes: .round, ears: .small, shape: shape)
+            let data = try JSONEncoder().encode(face)
+            let fields = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: String])
+            XCTAssertEqual(fields, ["color": "violet", "eyes": "round", "ears": "small", "shape": shape.rawValue])
+            XCTAssertEqual(try JSONDecoder().decode(AvatarConfig.self, from: data), face)
+            let old = try JSONDecoder().decode(LegacyFace.self, from: data)
+            XCTAssertNil(old.kind); XCTAssertEqual(old.color, .violet); XCTAssertEqual(old.eyes, .round); XCTAssertEqual(old.ears, .small)
+        }
+    }
+
+    func testFutureGeometryDoesNotBreakRosterAndMalformedShapesAreRejected() throws {
+        let future: [String: Any] = ["color": "sky", "eyes": "star", "ears": "round", "shape": "future-shape"]
+        let decoded = try JSONDecoder().decode(AvatarConfig.self, from: JSONSerialization.data(withJSONObject: future))
+        XCTAssertNil(decoded.shape); XCTAssertEqual(decoded.kind, .koala)
+        let encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(decoded)) as? [String: String])
+        XCTAssertEqual(encoded, ["color": "sky", "eyes": "star", "ears": "round"])
+        for value: Any in [NSNull(), 7, ["orb"]] {
+            var malformed = future; malformed["shape"] = value
+            XCTAssertThrowsError(try JSONDecoder().decode(AvatarConfig.self, from: JSONSerialization.data(withJSONObject: malformed)))
+        }
+    }
+
+    func testExplicitKoalaChoiceClearsUnknownFutureShapeWithoutChangingUntouchedLegacyWire() throws {
+        let source = Data("{\"color\":\"sky\",\"eyes\":\"round\",\"ears\":\"small\",\"shape\":\"future-geometry\"}".utf8)
+        var face = try JSONDecoder().decode(AvatarConfig.self, from: source)
+        XCTAssertNil(face.shape)
+        let untouched = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(face)) as? [String: String])
+        XCTAssertNil(untouched["shape"])
+        face.chooseAnimal(.koala)
+        XCTAssertEqual(face.shape, .classic); XCTAssertEqual(face.kind, .koala)
+        XCTAssertEqual(face.color, .sky); XCTAssertEqual(face.eyes, .round); XCTAssertEqual(face.ears, .small)
+        let clear = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(face.validated(supportedShapes: ["orb"]))) as? [String: String])
+        XCTAssertEqual(clear["shape"], "classic")
+        let old = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(face.validated(supportedShapes: nil))) as? [String: String])
+        XCTAssertEqual(old, untouched)
+    }
+
+    func testShapeCapabilityBlocksUnsupportedGeometryAndClassicClearsExplicitly() throws {
+        let orb = AvatarConfig(shape: .orb)
+        XCTAssertThrowsError(try orb.validated(supportedShapes: nil))
+        XCTAssertThrowsError(try orb.validated(supportedShapes: ["tile", "future"]))
+        XCTAssertEqual(try orb.validated(supportedShapes: ["orb"]), orb)
+        XCTAssertThrowsError(try AvatarConfig(kind: .fox, shape: .orb).validated(supportedShapes: ["orb"]))
+        let clear = AvatarConfig(shape: .classic)
+        XCTAssertEqual(try clear.validated(supportedShapes: ["orb"]).shape, .classic)
+        XCTAssertNil(try clear.validated(supportedShapes: nil).shape, "Old Mac validators cannot accept a shape key.")
+    }
+
+    func testOriginalGeometricPathsAndEyeGridMatchSharedFixture() throws {
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("../../host/tests/fixtures/strata-geometric-avatars.json").standardizedFileURL
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: fixture)) as? [String: Any])
+        let shapes = try XCTUnwrap(object["shapes"] as? [[String: String]])
+        let paths = Dictionary(uniqueKeysWithValues: try shapes.map { value in (try XCTUnwrap(AvatarShape(rawValue: try XCTUnwrap(value["id"]))), try XCTUnwrap(value["path"])) })
+        XCTAssertEqual(GeometricAvatarGeometry.paths, paths)
+        let grid = try XCTUnwrap(object["eyeGrid"] as? [String: Double])
+        XCTAssertEqual(GeometricAvatarGeometry.leftX, grid["leftX"]); XCTAssertEqual(GeometricAvatarGeometry.rightX, grid["rightX"]); XCTAssertEqual(GeometricAvatarGeometry.eyeY, grid["y"])
+        for path in KoalaRenderer.geometricHeads.values {
+            let bounds = path.cgPath.boundingBoxOfPath
+            XCTAssertGreaterThan(bounds.width, 1.8); XCTAssertGreaterThan(bounds.height, 1.8)
+            XCTAssertGreaterThanOrEqual(bounds.minX, -1.425); XCTAssertLessThanOrEqual(bounds.maxX, 1.425)
+            XCTAssertGreaterThanOrEqual(bounds.minY, -1.425); XCTAssertLessThanOrEqual(bounds.maxY, 1.425)
+        }
+    }
+
+    func testSixOriginalGeometricCharactersRenderDistinctlyAndClassicPreservesKoala() throws {
+        func png(_ face: AvatarConfig) throws -> Data {
+            let renderer = ImageRenderer(content: KoalaAvatar(face, animated: false).frame(width: 96, height: 96)); renderer.scale = 1
+            return try XCTUnwrap(renderer.uiImage?.pngData())
+        }
+        var images = Set<Data>()
+        for shape in AvatarShape.geometric { images.insert(try png(AvatarConfig(color: .sky, eyes: .round, shape: shape))) }
+        XCTAssertEqual(images.count, 6)
+        XCTAssertEqual(try png(AvatarConfig()), try png(AvatarConfig(shape: .classic)))
     }
 
     func testFamilySelectionPreservesPaletteEyesAndEars() throws {
@@ -1346,6 +1440,18 @@ final class BotLifecycleTests: XCTestCase {
         XCTAssertEqual(checked.model, "provider/exact-model"); XCTAssertEqual(checked.modelId, "bm_saved"); XCTAssertNil(checked.effort)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(checked)) as? [String: Any])
         XCTAssertEqual(json["model"] as? String, "provider/exact-model"); XCTAssertNil(json["modelSource"])
+    }
+
+    func testProfileCannotSaveUnsupportedGeometryAndPreservesExactCapableShape() throws {
+        var value = draft(); value.avatarConfig.shape = .diamond
+        var catalog = try decode(Self.catalog, as: CompanionBots.self)
+        XCTAssertThrowsError(try value.validated(in: catalog, original: nil))
+        catalog.avatarShapes = ["diamond", "future-shape"]
+        let checked = try value.validated(in: catalog, original: nil)
+        XCTAssertEqual(checked.avatarConfig.shape, .diamond); XCTAssertEqual(checked.policy, .manual)
+        XCTAssertEqual(checked.computerId, "local")
+        value.avatarConfig.shape = .classic; catalog.avatarShapes = nil
+        XCTAssertNil(try value.validated(in: catalog, original: nil).avatarConfig.shape)
     }
 
     func testMissingSavedSelectionsAndOlderMacCannotSaveDraft() throws {

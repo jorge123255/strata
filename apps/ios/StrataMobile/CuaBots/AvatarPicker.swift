@@ -45,62 +45,92 @@ public struct AvatarBadge: View {
 public struct AvatarPicker: View {
     @Binding public var avatar: AvatarConfig
     public var name: String
+    public var supportedShapes: [String]
+    public var compact: Bool
+    @State private var detailsExpanded = false
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
-    public init(avatar: Binding<AvatarConfig>, name: String) {
-        _avatar = avatar
-        self.name = name
+    public init(avatar: Binding<AvatarConfig>, name: String, supportedShapes: [String] = [], compact: Bool = false) {
+        _avatar = avatar; self.name = name; self.supportedShapes = supportedShapes; self.compact = compact
     }
 
+    private var shapes: [AvatarShape] { AvatarShape.geometric.filter { supportedShapes.contains($0.rawValue) } }
+
     public var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 20) {
             section("Character") {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 70), spacing: 10)], spacing: 8) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: dynamicTypeSize.isAccessibilitySize ? 132 : 52), spacing: 8)], spacing: 10) {
                     ForEach(AvatarKind.allCases) { kind in
-                        option(selected: avatar.kind == kind, label: kind.name, identifier: "avatar-character-\(kind.rawValue)") {
-                            avatar.kind = kind
+                        option(selected: avatar.geometricShape == nil && avatar.kind == kind, label: kind.name, identifier: "avatar-character-\(kind.rawValue)") {
+                            avatar.chooseAnimal(kind)
                         } content: {
                             KoalaAvatar(AvatarConfig(color: avatar.color, eyes: avatar.eyes, ears: avatar.ears, kind: kind), animated: false)
+                        }
+                    }
+                    ForEach(shapes) { shape in
+                        option(selected: avatar.geometricShape == shape, label: shape.name, identifier: "avatar-shape-\(shape.rawValue)") {
+                            avatar.kind = .koala; avatar.shape = shape
+                        } content: {
+                            KoalaAvatar(AvatarConfig(color: avatar.color, eyes: avatar.eyes, ears: avatar.ears, shape: shape), animated: false)
                         }
                     }
                 }
             }
             section("Color") {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 44), spacing: 8)], spacing: 8) {
-                    ForEach(BotColor.allCases) { c in
-                        Button { avatar.color = c } label: {
-                            Circle().fill(c.face)
-                                .overlay(Circle().strokeBorder(.primary.opacity(0.12)))
-                                .frame(width: 26, height: 26)
-                                .padding(4)
-                                .overlay(Circle().strokeBorder(avatar.color == c ? StrataTheme.accentText : .clear, lineWidth: 2))
-                                .frame(width: 44, height: 44).contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .help(c.name)
-                        .accessibilityLabel(c.name)
-                        .accessibilityIdentifier("avatar-color-\(c.rawValue)")
-                        .accessibilityAddTraits(avatar.color == c ? .isSelected : [])
-                    }
-                }
-            }
-            section("Eyes") {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 70), spacing: 10)], spacing: 8) {
-                    ForEach(EyeStyle.allCases) { e in
-                        option(selected: avatar.eyes == e, label: e.name, identifier: "avatar-eyes-\(e.rawValue)") {
-                            avatar.eyes = e
-                        } content: {
-                            KoalaAvatar(AvatarConfig(color: avatar.color, eyes: e, ears: avatar.ears, kind: avatar.kind), animated: false)
-                        }
-                    }
-                }
-            }
-            section("Ears") {
                 HStack(spacing: 8) {
-                    ForEach(EarShape.allCases) { ear in
-                        option(selected: avatar.ears == ear, label: ear.name, identifier: "avatar-ears-\(ear.rawValue)") {
-                            avatar.ears = ear
+                    ForEach(BotColor.allCases) { color in
+                        Button { avatar.color = color } label: {
+                            Circle().fill(color.face)
+                                .overlay(Circle().strokeBorder(.primary.opacity(0.12)))
+                                .frame(width: 28, height: 28).padding(5)
+                                .overlay(Circle().strokeBorder(avatar.color == color ? StrataTheme.ink : .clear, lineWidth: 2))
+                                .frame(maxWidth: .infinity, minHeight: 44).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain).help(color.name).accessibilityLabel(color.name)
+                        .accessibilityIdentifier("avatar-color-\(color.rawValue)")
+                        .accessibilityAddTraits(avatar.color == color ? .isSelected : [])
+                    }
+                }
+            }
+            if let shape = avatar.geometricShape, !supportedShapes.contains(shape.rawValue) {
+                Text("This Mac cannot save this character yet. Update Strata on your Mac, or choose an animal.")
+                    .font(.caption).foregroundStyle(StrataTheme.warning).accessibilityIdentifier("avatarShapeUnsupported")
+            }
+            if compact {
+                VStack(alignment: .leading, spacing: 0) {
+                    Button { detailsExpanded.toggle() } label: {
+                        HStack { Text("More appearance options"); Spacer(); Image(systemName: detailsExpanded ? "chevron.down" : "chevron.right").font(.caption.weight(.semibold)) }
+                            .frame(maxWidth: .infinity, minHeight: 44).contentShape(Rectangle())
+                    }.buttonStyle(.plain).font(.subheadline).foregroundStyle(StrataTheme.secondaryInk)
+                        .accessibilityIdentifier("avatarAppearanceDisclosure").accessibilityValue(detailsExpanded ? "Expanded" : "Collapsed")
+                    if detailsExpanded { details.padding(.top, 16) }
+                }
+            } else { details }
+        }
+    }
+
+    private var details: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            section("Eyes") {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: dynamicTypeSize.isAccessibilitySize ? 132 : 60), spacing: 8)], spacing: 8) {
+                    ForEach(EyeStyle.allCases) { eyes in
+                        option(selected: avatar.eyes == eyes, label: eyes.name, identifier: "avatar-eyes-\(eyes.rawValue)") {
+                            avatar.eyes = eyes
                         } content: {
-                            KoalaAvatar(AvatarConfig(color: avatar.color, eyes: avatar.eyes, ears: ear, kind: avatar.kind), animated: false)
+                            KoalaAvatar(AvatarConfig(color: avatar.color, eyes: eyes, ears: avatar.ears, kind: avatar.kind, shape: avatar.shape), animated: false)
+                        }
+                    }
+                }
+            }
+            if avatar.geometricShape == nil {
+                section("Ears") {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: dynamicTypeSize.isAccessibilitySize ? 132 : 85), spacing: 8)], spacing: 8) {
+                        ForEach(EarShape.allCases) { ear in
+                            option(selected: avatar.ears == ear, label: ear.name, identifier: "avatar-ears-\(ear.rawValue)") {
+                                avatar.ears = ear
+                            } content: {
+                                KoalaAvatar(AvatarConfig(color: avatar.color, eyes: avatar.eyes, ears: ear, kind: avatar.kind), animated: false)
+                            }
                         }
                     }
                 }
@@ -109,8 +139,8 @@ public struct AvatarPicker: View {
     }
 
     private func section<C: View>(_ title: String, @ViewBuilder _ content: () -> C) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(StrataTheme.secondaryInk).accessibilityAddTraits(.isHeader)
+        VStack(alignment: .leading, spacing: 9) {
+            Text(title).font(.caption.weight(.medium)).foregroundStyle(StrataTheme.secondaryInk).accessibilityAddTraits(.isHeader)
             content()
         }
     }
@@ -118,17 +148,17 @@ public struct AvatarPicker: View {
     private func option<C: View>(selected: Bool, label: String, identifier: String, action: @escaping () -> Void,
                                  @ViewBuilder content: () -> C) -> some View {
         Button(action: action) {
-            VStack(spacing: 4) {
+            VStack(spacing: 3) {
                 content().frame(width: 46, height: 46)
-                Text(label).font(.caption).foregroundStyle(selected ? StrataTheme.ink : StrataTheme.secondaryInk).fixedSize(horizontal: false, vertical: true)
+                Text(label).font(.caption2).foregroundStyle(selected ? StrataTheme.ink : StrataTheme.secondaryInk)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .frame(maxWidth: .infinity, minHeight: 78).padding(.vertical, 5)
-            .background(RoundedRectangle(cornerRadius: 16).fill(selected ? StrataTheme.accentTint : StrataTheme.surfaceSecondary))
-            .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(selected ? StrataTheme.accentText : StrataTheme.line))
+            .frame(maxWidth: .infinity, minHeight: 70).padding(.vertical, 3)
+            .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(selected ? StrataTheme.grouped : .clear))
+            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(selected ? StrataTheme.ink : .clear, lineWidth: 1.5))
+            .contentShape(RoundedRectangle(cornerRadius: 18))
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(label)
-        .accessibilityIdentifier(identifier)
+        .buttonStyle(.plain).accessibilityLabel(label).accessibilityIdentifier(identifier)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }

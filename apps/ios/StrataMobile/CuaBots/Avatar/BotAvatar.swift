@@ -123,21 +123,33 @@ public enum AvatarKind: String, Codable, CaseIterable, Identifiable, Sendable {
     public var name: String { rawValue.capitalized }
 }
 
+/// Optional geometry retains the existing kind and palette wire values.
+public enum AvatarShape: String, Codable, CaseIterable, Identifiable, Sendable {
+    case classic, orb, pebble, tile, diamond, spark, hexagon
+    public var id: String { rawValue }
+    public var name: String { rawValue.capitalized }
+    public static var geometric: [Self] { allCases.filter { $0 != .classic } }
+}
+
 /// Everything that makes a bot's face its own. Koala keeps its original wire shape.
 public struct AvatarConfig: Codable, Hashable, Sendable {
     public var color: BotColor
     public var eyes: EyeStyle
     public var ears: EarShape
     public var kind: AvatarKind
+    public var shape: AvatarShape?
+    public var geometricShape: AvatarShape? { shape == .classic ? nil : shape }
+    public var characterName: String { geometricShape?.name ?? kind.name }
 
-    public init(color: BotColor = .sky, eyes: EyeStyle = .star, ears: EarShape = .scalloped, kind: AvatarKind = .koala) {
+    public init(color: BotColor = .sky, eyes: EyeStyle = .star, ears: EarShape = .scalloped, kind: AvatarKind = .koala, shape: AvatarShape? = nil) {
         self.color = color
         self.eyes = eyes
         self.ears = ears
         self.kind = kind
+        self.shape = shape
     }
 
-    private enum CodingKeys: String, CodingKey { case color, eyes, ears, kind }
+    private enum CodingKeys: String, CodingKey { case color, eyes, ears, kind, shape }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -145,6 +157,13 @@ public struct AvatarConfig: Codable, Hashable, Sendable {
         eyes = try values.decode(EyeStyle.self, forKey: .eyes)
         ears = try values.decode(EarShape.self, forKey: .ears)
         kind = values.contains(.kind) ? try values.decode(AvatarKind.self, forKey: .kind) : .koala
+        if values.contains(.shape) {
+            let rawShape = try values.decode(String.self, forKey: .shape)
+            shape = AvatarShape(rawValue: rawShape)
+            // A future host may add geometry. Keep the roster readable using
+            // the stable koala kind; omitted shape preserves it on that host.
+            if shape == nil { kind = .koala }
+        } else { shape = nil }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -153,6 +172,23 @@ public struct AvatarConfig: Codable, Hashable, Sendable {
         try values.encode(eyes, forKey: .eyes)
         try values.encode(ears, forKey: .ears)
         if kind != .koala { try values.encode(kind, forKey: .kind) }
+        try values.encodeIfPresent(shape, forKey: .shape)
+    }
+
+    mutating func chooseAnimal(_ kind: AvatarKind) {
+        self.kind = kind
+        shape = .classic
+    }
+
+    func validated(supportedShapes: [String]?) throws -> Self {
+        if let geometricShape {
+            guard kind == .koala, supportedShapes?.contains(geometricShape.rawValue) == true else {
+                throw CompanionError.server("Update Strata on your Mac to save this character, or choose an animal.")
+            }
+        }
+        var value = self
+        if shape == .classic, supportedShapes == nil { value.shape = nil }
+        return value
     }
 
     public static func `default`(for name: String) -> AvatarConfig {
@@ -321,7 +357,7 @@ public struct KoalaAvatar: View {
         }
         .aspectRatio(1, contentMode: .fit)
         .offset(y: motion.lift).scaleEffect(motion.scale).rotationEffect(.degrees(motion.tilt))
-        .accessibilityLabel("\(config.color.name) \(config.kind.rawValue), \(mood == .needsApproval ? "needs approval" : mood.rawValue)")
+        .accessibilityLabel("\(config.color.name) \(config.characterName), \(mood == .needsApproval ? "needs approval" : mood.rawValue)")
     }
 }
 
@@ -329,6 +365,7 @@ public enum KoalaRenderer {
     static let headPath = SVGPath.parse(KoalaGeometry.head)
     static let earPath = SVGPath.parse(KoalaGeometry.ear)
     static let nosePath = SVGPath.parse(KoalaGeometry.nose)
+    static let geometricHeads = GeometricAvatarGeometry.paths.mapValues { SVGPath.parse($0) }
     static let characterHeads: [AvatarKind: Path] = [
         .fox: SVGPath.parse(AvatarCharacterGeometry.foxHead),
         .cat: SVGPath.parse(AvatarCharacterGeometry.catHead),
@@ -345,35 +382,38 @@ public enum KoalaRenderer {
         let unit = CGAffineTransform(translationX: center.x, y: center.y).scaledBy(x: R, y: R)
         let face = GraphicsContext.Shading.color(config.color.face)
 
-        // Ears, behind the head; character coordinates match the embedded SVG.
-        if config.kind == .koala {
-            for side in [-1.0, 1.0] { ctx.fill(ear(config.ears, side: side).applying(unit), with: face) }
-        } else {
-            drawCharacterEars(in: &ctx, unit: unit, config: config)
+        let geometric = config.geometricShape.flatMap { geometricHeads[$0] }
+        // Geometric characters have their own silhouette and eyes only.
+        if geometric == nil {
+            if config.kind == .koala {
+                for side in [-1.0, 1.0] { ctx.fill(ear(config.ears, side: side).applying(unit), with: face) }
+            } else { drawCharacterEars(in: &ctx, unit: unit, config: config) }
         }
 
-        let head = (characterHeads[config.kind] ?? headPath).applying(unit)
+        let head = (geometric ?? characterHeads[config.kind] ?? headPath).applying(unit)
         ctx.fill(head, with: face)
 
         var inner = ctx
         inner.clip(to: head)
-        inner.stroke(SVGPath.parse(AvatarCharacterGeometry.highlight).applying(unit), with: .color(.white.opacity(0.18)), style: StrokeStyle(lineWidth: 0.1 * R, lineCap: .round))
-        if config.kind == .fox {
-            inner.fill(SVGPath.parse(AvatarCharacterGeometry.foxMask).applying(unit), with: .color(.white.opacity(0.52)))
-        }
-        if config.kind == .cat {
-            inner.stroke(SVGPath.parse(AvatarCharacterGeometry.catWhiskers).applying(unit), with: .color(config.color.nose.opacity(0.65)), style: StrokeStyle(lineWidth: 0.045 * R, lineCap: .round))
-        }
-        switch config.kind {
-        case .koala:
-            inner.fill(nosePath.applying(unit), with: .color(config.color.nose))
-        case .robot:
-            inner.fill(Path(roundedRect: CGRect(x: -0.28, y: 0.34, width: 0.56, height: 0.13), cornerRadius: 0.065).applying(unit), with: .color(config.color.nose))
-        case .fox, .cat:
-            inner.fill(SVGPath.parse(AvatarCharacterGeometry.animalNose).applying(unit), with: .color(config.color.nose))
-            inner.stroke(SVGPath.parse(AvatarCharacterGeometry.animalMouth).applying(unit), with: .color(config.color.nose), style: StrokeStyle(lineWidth: 0.04 * R, lineCap: .round))
-        }
+        if geometric == nil {
+            inner.stroke(SVGPath.parse(AvatarCharacterGeometry.highlight).applying(unit), with: .color(.white.opacity(0.18)), style: StrokeStyle(lineWidth: 0.1 * R, lineCap: .round))
+            if config.kind == .fox {
+                inner.fill(SVGPath.parse(AvatarCharacterGeometry.foxMask).applying(unit), with: .color(.white.opacity(0.52)))
+            }
+            if config.kind == .cat {
+                inner.stroke(SVGPath.parse(AvatarCharacterGeometry.catWhiskers).applying(unit), with: .color(config.color.nose.opacity(0.65)), style: StrokeStyle(lineWidth: 0.045 * R, lineCap: .round))
+            }
+            switch config.kind {
+            case .koala:
+                inner.fill(nosePath.applying(unit), with: .color(config.color.nose))
+            case .robot:
+                inner.fill(Path(roundedRect: CGRect(x: -0.28, y: 0.34, width: 0.56, height: 0.13), cornerRadius: 0.065).applying(unit), with: .color(config.color.nose))
+            case .fox, .cat:
+                inner.fill(SVGPath.parse(AvatarCharacterGeometry.animalNose).applying(unit), with: .color(config.color.nose))
+                inner.stroke(SVGPath.parse(AvatarCharacterGeometry.animalMouth).applying(unit), with: .color(config.color.nose), style: StrokeStyle(lineWidth: 0.04 * R, lineCap: .round))
+            }
 
+        }
         let lag = t - 0.05  // the right eye swaps a beat after the left
         let pair = mood.eyes(style: config.eyes, at: t)
         let right = mood.eyes(style: config.eyes, at: lag).right
@@ -381,12 +421,16 @@ public enum KoalaRenderer {
         // then a hold, as in the koala design; they never pass 45 (an x).
         let spin = mood == .working ? (t.truncatingRemainder(dividingBy: 1.2) < 0.6 ? 15.0 : -15.0) : 0
         let gaze = mood == .thinking || mood == .idle ? sin(t * 0.72) * 0.035 : 0
-        let leftEye = (x: KoalaGeometry.leftEye.x + gaze, y: KoalaGeometry.leftEye.y, squash: KoalaGeometry.leftEye.squash)
-        let rightEye = (x: KoalaGeometry.rightEye.x + gaze, y: KoalaGeometry.rightEye.y, squash: KoalaGeometry.rightEye.squash)
+        let leftEye = (x: (geometric != nil ? GeometricAvatarGeometry.leftX : KoalaGeometry.leftEye.x) + gaze,
+                       y: geometric != nil ? GeometricAvatarGeometry.eyeY : KoalaGeometry.leftEye.y,
+                       squash: geometric != nil ? 1 : KoalaGeometry.leftEye.squash)
+        let rightEye = (x: (geometric != nil ? GeometricAvatarGeometry.rightX : KoalaGeometry.rightEye.x) + gaze,
+                        y: geometric != nil ? GeometricAvatarGeometry.eyeY : KoalaGeometry.rightEye.y,
+                        squash: geometric != nil ? 1 : KoalaGeometry.rightEye.squash)
         drawEye(pair.left, at: leftEye, in: &inner, unit: unit,
-                color: config.color.eye, spin: spin)
+                color: config.color.eye, spin: spin, geometric: geometric != nil)
         drawEye(right, at: rightEye, in: &inner, unit: unit,
-                color: config.color.eye, spin: spin)
+                color: config.color.eye, spin: spin, geometric: geometric != nil)
     }
 
     static func drawCharacterEars(in ctx: inout GraphicsContext, unit: CGAffineTransform, config: AvatarConfig) {
@@ -427,7 +471,13 @@ public enum KoalaRenderer {
 
     static func drawEye(_ glyph: Glyph, at eye: (x: Double, y: Double, squash: Double),
                         in ctx: inout GraphicsContext, unit: CGAffineTransform, color: Color,
-                        spin: Double) {
+                        spin: Double, geometric: Bool = false) {
+        if geometric, glyph == .round {
+            let transform = CGAffineTransform(translationX: eye.x, y: eye.y).rotated(by: -12 * .pi / 180).concatenating(unit)
+            let capsule = Path(roundedRect: CGRect(x: -0.08, y: -0.17, width: 0.16, height: 0.34), cornerRadius: 0.08)
+            ctx.fill(capsule.applying(transform), with: .color(color))
+            return
+        }
         let (path, width, rotate, gs) = glyphPath(glyph)
         let spinAngle = (glyph == .plus ? spin : 0) + rotate
         let t = CGAffineTransform(translationX: eye.x, y: eye.y)

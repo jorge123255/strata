@@ -144,13 +144,17 @@ final class CompanionStore: ObservableObject {
 
     func saveBotAvatar(botId: String, avatar: AvatarConfig) async -> Bool {
         guard let client, botCatalog?.bots.contains(where: { $0.id == botId }) == true, savingBotAvatarId == nil, !savingBotProfile else { return false }
+        if let shape = avatar.geometricShape, botCatalog?.avatarShapes?.contains(shape.rawValue) != true {
+            error = "Update Strata on your Mac to save this character, or choose an animal."
+            return false
+        }
         let generation = connectionGeneration
         savingBotAvatarId = botId; error = nil
         defer { if connectionGeneration == generation { savingBotAvatarId = nil } }
         do {
             struct AvatarUpdate: Encodable { var avatarConfig: AvatarConfig }
             struct Saved: Decodable { var saved: Bool }
-            let result: Saved = try await client.perform("/v1/bots/\(botId)/avatar", method: "POST", jsonBody: AvatarUpdate(avatarConfig: avatar))
+            let result: Saved = try await client.perform("/v1/bots/\(botId)/avatar", method: "POST", jsonBody: AvatarUpdate(avatarConfig: try avatar.validated(supportedShapes: botCatalog?.avatarShapes)))
             guard connectionGeneration == generation else { return false }
             await refreshBots()
             return result.saved
