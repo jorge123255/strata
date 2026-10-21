@@ -48,6 +48,14 @@
 .cua-sidebar-count { font-size: 10px; font-weight: 500; padding: 2px 5px; border-radius: 5px; background: var(--st-surface); }
 .cua-sidebar-dot { flex: none; width: 6px; height: 6px; background: var(--st-warn); border-radius: 50%; }
 .cua-sidebar-dot[data-live] { background: var(--st-success); box-shadow: 0 0 0 3px var(--st-success-tint); }
+.cua-roster-search { display: flex; align-items: center; gap: 7px; margin: 16px 3px 8px; padding: 7px 8px; border: 1px solid var(--st-line); border-radius: var(--st-r-sm); color: var(--st-ink-muted); background: var(--st-bg); }
+.cua-roster-search input { min-width: 0; width: 100%; border: 0; outline: 0; color: var(--st-ink); background: transparent; font: 11px/18px var(--st-font); }
+.cua-roster-search:focus-within { outline: 2px solid var(--st-focus); outline-offset: 2px; }
+.cua-roster-filter { margin-inline: 3px; }
+.cua-roster-filter .select { min-height: 30px; height: 30px; font-size: 11px; padding-block: 3px; background: transparent; }
+.cua-roster-empty { padding: 8px 11px; color: var(--st-ink-muted); font-size: 11px; line-height: 1.6; }
+.cua-roster-compact { display: none; position: relative; }
+.cua-roster-compact[data-active]::after { content: ''; position: absolute; top: 5px; right: 5px; width: 5px; height: 5px; border-radius: 50%; background: var(--st-accent); }
 .cua-bots-main { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; position: relative; container-type: inline-size; }
 .cua-inline-error { flex: none; padding: 8px 16px; }
 
@@ -57,6 +65,7 @@
 .cua-toolbar-controls { padding-left: 10px; border-left: 1px solid var(--st-line-soft); }
 .cua-toolbar-label { font-size: 11px; color: var(--st-ink-muted); margin-right: 4px; }
 .cua-toolbar-status { font-size: 12px; color: var(--st-ink-muted); }
+.cua-frozen-policy { display: inline-flex; align-items: center; gap: 5px; color: var(--st-ink-muted); font-size: 10px; white-space: nowrap; }
 .cua-bot-toolbar .select { max-width: 300px; min-width: 0; }
 .cua-bot-detail { position: relative; flex: 1; min-height: 0; min-width: 0; display: flex; overflow: hidden; }
 .cua-bot-chat { min-width: 0; min-height: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden; }
@@ -129,6 +138,25 @@ button.cua-profile-row:disabled { opacity: .5; cursor: default; }
 .cua-config details > summary { cursor: pointer; font-size: 12px; color: var(--st-ink-muted); }
 .cua-config details[open] > summary { margin-bottom: 14px; }
 .cua-config .st-seg { width: 100%; }
+.cua-choice-field { border: 0; margin: 0; padding: 0; min-width: 0; }
+.cua-choice-field > legend { font-size: 12px; font-weight: 550; color: var(--st-ink); padding: 0; margin-bottom: 10px; }
+.cua-role-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 8px; }
+.cua-role-options label, .cua-permission-options label { position: relative; border: 1px solid var(--st-line); border-radius: var(--st-r-sm); color: var(--st-ink); background: var(--st-bg); cursor: pointer; }
+.cua-role-options label { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 14px 12px; }
+.cua-role-options label > svg { color: var(--st-ink-muted); }
+.cua-role-options strong, .cua-permission-options strong { font-size: 12px; font-weight: 550; }
+.cua-role-options span, .cua-permission-options span { display: block; font-size: 11px; color: var(--st-ink-muted); line-height: 1.5; }
+.cua-role-options label[data-selected], .cua-permission-options label[data-selected] { border-color: var(--st-accent); background: var(--st-accent-tint); }
+.cua-role-options input, .cua-permission-options input { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; }
+.cua-role-options label:focus-within, .cua-permission-options label:focus-within { outline: 2px solid var(--st-focus); outline-offset: 2px; }
+.cua-role-options label:has(input:disabled), .cua-permission-options label:has(input:disabled) { opacity: .5; cursor: default; }
+.cua-permission-options { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.cua-permission-options label { display: flex; align-items: center; gap: 12px; padding: 13px 14px; }
+.cua-permission-options label > svg { flex: none; color: var(--st-ink-muted); }
+.cua-permission-options label > div { flex: 1; min-width: 0; }
+.cua-permission-options span { margin-top: 3px; }
+.cua-choice-field > p { line-height: 1.6; }
+.cua-new-config > h2 { text-align: center; margin-bottom: 22px; font-size: 23px; }
 .cua-settings-dialog { width: min(640px, calc(100vw - 32px)); }
 .cua-edit-look > summary { display: flex; gap: 12px; align-items: center; cursor: pointer; color: var(--st-ink-muted); font-size: 13px; }
 .cua-edit-look > .cua-avatar-picker { margin: 18px auto; }
@@ -263,6 +291,7 @@ button.cua-profile-row:disabled { opacity: .5; cursor: default; }
   .cua-bot-computer { flex: 1 1 55%; min-width: 0; border-left: 0; border-top: 1px solid var(--st-line); }
   .cua-conversation-control { flex: 1; }
   .cua-toolbar-label { display: none; }
+  .cua-frozen-policy { display: none; }
   .cua-toolbar-controls { padding-left: 4px; gap: 2px; }
   .cua-toolbar-status { font-size: 11px; }
   .cua-bot-toolbar .select { max-width: 160px; }
@@ -306,6 +335,8 @@ button.cua-profile-row:disabled { opacity: .5; cursor: default; }
   .cua-bots-shell { grid-template-columns: 52px minmax(0, 1fr); }
   .cua-sidebar-item { justify-content: center; padding-inline: 4px; }
   .cua-sidebar-item > span, .cua-bots-sidebar h2, .cua-sidebar-count { display: none; }
+  .cua-roster-search, .cua-roster-filter, .cua-roster-empty { display: none; }
+  .cua-roster-compact { display: flex; margin-top: 8px; }
   .cua-roster-bot { min-height: 48px; }
   .cua-sidebar-dot, .cua-roster-bot > .st-icon { display: none; }
   .cua-bot-list { margin: 18px 0 22px; }

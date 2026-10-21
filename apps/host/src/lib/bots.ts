@@ -1,4 +1,5 @@
 /** Bot profiles are separate from model-serving connections and their credentials. */
+import type { Session } from './types';
 export const BOT_PROVIDERS = [
   { id: 'claude', name: 'Claude Code' },
   { id: 'codex', name: 'Codex' },
@@ -92,7 +93,40 @@ export function botCapabilityLabel(capability: BotCapability): string {
   return capability === 'code' ? 'Coding' : capability === 'computer' ? 'Computer control' : 'Coding + computer';
 }
 export function botPolicyLabel(policy: BotPolicy): string {
-  return policy === 'plan' ? 'Plan first' : policy === 'bypass' ? 'Automatic' : 'Ask before changes';
+  return policy === 'plan' ? 'Plan · inspect only' : policy === 'bypass' ? 'Bypass approvals' : 'Ask before changes';
+}
+
+/** Activity comes from shared work, never from a prepared or running computer. */
+export function botAvatarActivity(bot: Pick<Bot, 'id' | 'paused'>, sessions: Session[]): 'idle' | 'thinking' | 'working' | 'needsApproval' | 'paused' | 'error' {
+  if (bot.paused) return 'paused';
+  const chats = botConversations(sessions, bot.id);
+  if (chats.some(chat => chat.messages.some(message => message.tools?.some(tool => tool.live && tool.state === 'proposed')))) return 'needsApproval';
+  const active = chats.filter(chat => chat.active);
+  if (active.length) return active.some(chat => chat.messages.some(message => message.tools?.some(tool => tool.live && ['running', 'approved'].includes(tool.state)))) ? 'working' : 'thinking';
+  const latest = chats[0]?.messages.at(-1);
+  return latest?.role === 'assistant' && latest.error ? 'error' : 'idle';
+}
+
+/** A reply produces one signal when finished; streaming tokens produce none. */
+export function botReplySignal(botId: string, sessions: Session[]): string | undefined {
+  for (const chat of botConversations(sessions, botId)) {
+    if (chat.active) continue;
+    const reply = [...chat.messages].reverse().find(message => message.role === 'assistant' && !message.streaming && !message.error);
+    if (reply) return `${chat.id}:${reply.id}`;
+  }
+}
+
+export function botSetupStepError(step: number, draft: BotDraft): string | null {
+  if (step === 0) return !draft.name.trim() ? 'Give this bot a name.' : draft.name.trim().length > 120 ? 'Use a name of up to 120 characters.' : null;
+  if (step === 2 && draft.provider === 'configured' && (!draft.modelSource?.connectionId || !draft.modelSource.model)) return 'Choose a model from your saved Models connections.';
+  if (step === 3) {
+    if (draft.execution.kind !== 'local' && !draft.execution.host?.trim()) return draft.execution.kind === 'ssh' ? 'Enter the SSH host or alias.' : 'Enter the sandbox address.';
+    if (draft.execution.port !== undefined && (!Number.isInteger(draft.execution.port) || draft.execution.port < 1 || draft.execution.port > 65535)) return 'Use an SSH port from 1 to 65535.';
+    if (!draft.workspace.trim()) return 'Choose a workspace on the execution computer.';
+    if (!/^(?:\/|[A-Za-z]:[\\/]|\\\\)/.test(draft.workspace.trim())) return 'Use the full workspace path on the execution computer.';
+    if (draft.computerMode === 'cua' && draft.workspace.trim() !== '/workspace') return 'The isolated computer uses /workspace.';
+  }
+  return null;
 }
 export function botComputerLabel(execution: BotExecution): string {
   if (execution.kind === 'local') return 'This Mac';
@@ -127,8 +161,8 @@ export function botConversationContext(bot: Bot, chat?: { id: string; workspace?
 }
 
 export function botDraftError(draft: BotDraft): string | null {
-  if (!draft.name.trim()) return 'Give this bot a name.';
-  if (!draft.workspace.trim()) return 'Choose a workspace on the execution computer.';
+  const setupError = botSetupStepError(0, draft) || botSetupStepError(2, draft) || botSetupStepError(3, draft);
+  if (setupError) return setupError;
   if (draft.avatar && !BOT_AVATARS.some(avatar => avatar.value === draft.avatar)) return 'Choose one of the available bot avatars.';
   if (draft.provider === 'configured' && (!draft.modelSource?.connectionId || !draft.modelSource.model)) return 'Choose a model from your saved Models connections.';
   if (draft.execution.kind !== 'local' && !draft.execution.host?.trim()) return draft.execution.kind === 'ssh' ? 'Enter the SSH host or alias.' : 'Enter the sandbox address.';

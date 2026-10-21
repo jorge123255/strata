@@ -190,3 +190,22 @@ test('SSH client preserves acknowledged CUA uncertainty without broad transport 
   await assert.rejects(ssh.run({ bot: { ...bot, computerMode: 'cua' }, sessionId: 's_cua_fail', message: 'fixture', onFrame: f => frames.push(f) }), error => error.code === 'cua_cleanup_unconfirmed' && error.cleanupUnconfirmed === true);
   assert.equal(frames.some(f => f.type === 'done'), false); await ssh.close();
 });
+test('remote worker retains per-chat policy: Bypass writes without a permission RPC while Ask denies and Plan excludes mutation', async () => {
+  for (const provider of ['claude','codex','grok','kimi','ollama','configured']) for (const policy of ['manual','plan','bypass']) {
+    const reader = new Reader(), sent = [], marker = `policy-${provider}-${policy}.txt`;
+    await startWorker({ bot: { ...bot, provider, policy }, sessionId: `s_policy_${provider}_${policy}`, message: 'fixture' }, {
+      reader, directory: join(scratch, `policy-${provider}-${policy}`), leaseMs: 2000,
+      send(message) { sent.push(message); if (message.type === 'permission') setTimeout(() => reader.emit('line', JSON.stringify({ type:'reply', id:message.id, value:false })),0); },
+      runtimeFactory: () => ({ async run(input) {
+        assert.equal(input.bot.policy, policy); assert.equal(input.bot.provider, provider);
+        if (policy === 'plan') { assert.ok(!input.tools.some(tool=>tool.name==='write_file')); await assert.rejects(input.executeTool('write_file',{path:marker,content:'not allowed'},'policy_write'),/not enabled/); }
+        else await input.executeTool('write_file',{path:marker,content:'bypass fixture'},'policy_write');
+        return {text:'fixture'};
+      },async close(){} }),
+    });
+    assert.equal(sent.filter(message=>message.type==='permission').length,policy==='manual'?1:0,`${provider} ${policy}`);
+    if(policy==='bypass')assert.equal(await readFile(join(bot.workspace,marker),'utf8'),'bypass fixture');
+    else await assert.rejects(access(join(bot.workspace,marker)),{code:'ENOENT'});
+    assert.equal(sent.some(message=>message.type==='cleanup'&&message.confirmed),true);
+  }
+});

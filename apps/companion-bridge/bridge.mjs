@@ -8,6 +8,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { botWorkspaceRequest, handleBotWorkspace } from './bots-workspace.mjs';
+import { botProfileDraft, botProfileRoute } from './bots-lifecycle.mjs';
 
 const run = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -52,7 +53,7 @@ function computerRequest(path, method, body, deviceId) {
   return { botId, action, chatId: body.chatId };
 }
 function botSelection(body, status = 400) {
-  if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !['computerId', 'modelId', 'workspace', 'effort'].includes(key))) throw fail(status, 'Choose a saved computer and model for this conversation.');
+  if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !['computerId', 'modelId', 'workspace', 'effort', 'policy'].includes(key))) throw fail(status, 'Choose a saved computer and model for this conversation.');
   const selection = {};
   for (const key of ['computerId', 'modelId']) if (body[key] !== undefined) {
     if (!safeId(body[key])) throw fail(status, 'Choose a saved computer and model for this conversation.');
@@ -65,6 +66,10 @@ function botSelection(body, status = 400) {
   if (body.effort !== undefined) {
     if (typeof body.effort !== 'string' || !/^[A-Za-z0-9_-]{0,40}$/.test(body.effort)) throw fail(status, 'Choose an effort supported by this model.');
     selection.effort = body.effort;
+  }
+  if (body.policy !== undefined) {
+    if (!['manual', 'plan', 'bypass'].includes(body.policy)) throw fail(status, 'Choose Ask, Plan or Bypass approvals.');
+    selection.policy = body.policy;
   }
   return selection;
 }
@@ -218,6 +223,7 @@ export class HostClient {
     const bots = path === '/api/bots' || /^\/api\/bots\/[a-zA-Z0-9_-]{1,120}\/conversations$/.test(path);
     const avatar = /^\/api\/bots\/[a-zA-Z0-9_-]{1,120}$/.test(path) && method === 'PATCH';
     const workspace = botWorkspaceRequest(path, method, body);
+    const profile = botProfileRoute(path, method, body);
     const computer = path.includes('/computer') ? computerRequest(path, method, body, deviceId) : null;
     const management = path.startsWith('/api/model-management/') ? managementRequest(path, method, body, deviceId) : null;
     // Callers cannot supply full URLs, query strings, arbitrary files, settings or operations.
@@ -227,9 +233,9 @@ export class HostClient {
       && path !== '/api/native/operations'
       && !/^\/api\/native\/instances\/[a-zA-Z0-9_-]+\/unload$/.test(path)
       && !/^\/api\/serving\/requests\/[a-zA-Z0-9_-]+\/cancel$/.test(path)
-      && !conversation && !management && !bots && !computer && !avatar && !workspace) throw fail(403, 'Unsupported host control.');
+      && !conversation && !management && !bots && !computer && !avatar && !workspace && !profile) throw fail(403, 'Unsupported host control.');
     const mutation = path.endsWith('/load') || path.endsWith('/unload') || path.endsWith('/cancel') || path === '/api/native/operations' || path === '/api/chat/stream';
-    if (workspace) {
+    if (workspace || profile) {
       // Fully validated narrow collaboration route; no arbitrary tool execution.
     } else if (avatar) {
       if (!body || Object.keys(body).length !== 1 || !body.avatarConfig) throw fail(403, 'Only bot appearance can be changed from iPhone.');
@@ -493,7 +499,11 @@ export function publicBots(body) {
   const providers = new Set(['claude', 'codex', 'grok', 'kimi', 'ollama', 'configured']);
   return {
     selectionSupported: Array.isArray(body.models),
+    lifecycleSupported: body.lifecycleSupported === true,
+    ...(body.lifecycleSupported === true && typeof body.defaultWorkspace === 'string' ? { defaultWorkspace: shortText(body.defaultWorkspace, 4_000) } : {}),
     bots: body.bots.slice(0, 500).filter(bot => bot && safeId(bot.id) && providers.has(bot.provider)).map(bot => ({
+      ...(body.lifecycleSupported === true ? { instructions: shortText(bot.instructions, 32_000), updatedAt: shortText(bot.updatedAt, 60), ...(safeId(bot.computerId) ? { computerId: bot.computerId } : {}) } : {}),
+      active: bot.active === true,
       id: bot.id, name: shortText(bot.name, 200) || 'Bot', provider: bot.provider, model: shortText(bot.model, 300),
       ...(typeof bot.effort === 'string' ? { effort: shortText(bot.effort, 40) } : {}),
       avatar: botAvatars.has(bot.avatar) ? bot.avatar : '🤖',
@@ -518,6 +528,7 @@ export function publicBots(body) {
     computers: body.computers.slice(0, 100).filter(computer => computer && safeId(computer.id)).map(computer => ({
       id: computer.id, name: shortText(computer.name, 200), kind: shortText(computer.kind, 40),
       available: computer.available === true, detail: shortText(computer.detail, 1_000),
+      ...(Array.isArray(computer.providers) ? { providers: computer.providers.filter(provider => provider && providers.has(provider.id)).map(provider => ({ id: provider.id, available: (provider.available ?? provider.ready) === true })) } : {}),
     })),
     models: (Array.isArray(body.models) ? body.models : []).slice(0, 1_000).filter(model => model && safeId(model.id)).map(model => ({
       id: model.id, name: shortText(model.name, 300), connectionName: shortText(model.connectionName, 200), model: shortText(model.model, 300), available: model.available === true,
@@ -763,6 +774,34 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
         requireCurrentSession();
         return sendJSON(res, 200, publicBots(body));
       }
+      const botProfile = /^\/v1\/bots(?:\/([a-zA-Z0-9_-]{1,120}))?$/.exec(path);
+      if (botProfile && (method === 'POST' && !botProfile[1] || method === 'PATCH' && botProfile[1])) {
+        const input = botProfileDraft(await readBody(req, 150_000), !!botProfile[1]);
+        requireCurrentSession();
+        let catalog;
+        try { catalog = publicBots(await host.json('/api/bots')); }
+        catch { requireCurrentSession(); throw fail(503, 'Refresh Bots in Strata on your Mac before saving.'); }
+        requireCurrentSession();
+        if (!catalog.lifecycleSupported) throw fail(409, 'Update Strata on your Mac to create or edit bots from iPhone.');
+        if (input.computerId && !catalog.computers.some(computer => computer.id === input.computerId)) throw fail(409, 'This saved execution computer was removed. Refresh Bots.');
+        if (input.modelId && !catalog.models.some(model => model.id === input.modelId)) throw fail(409, 'This configured model was removed. Refresh Bots.');
+        if (botProfile[1] && !catalog.bots.some(bot => bot.id === botProfile[1])) throw fail(404, 'This bot is no longer available. Refresh Bots.');
+        if (botProfile[1] && catalog.bots.find(bot => bot.id === botProfile[1]).updatedAt !== input.expectedUpdatedAt) throw fail(409, 'This bot changed. Refresh its settings before saving.');
+        // The owning host repeats version and inventory checks immediately before
+        // saving, so a stale bridge catalog cannot select a removed connection.
+        const upstream = botProfile[1] ? `/api/bots/${encode(botProfile[1])}/profile` : '/api/bots/profile';
+        let result;
+        try { result = await host.json(upstream, { method, body: input }); }
+        catch (error) {
+          requireCurrentSession();
+          const messages = { 400: 'Check the selected bot settings and workspace folder.', 404: 'This bot or saved selection is no longer available. Refresh Bots.', 409: 'This bot or its selections changed, are unavailable, or are busy. Refresh and review its settings before saving.', 405: 'Update Strata on your Mac to edit bots from iPhone.', 501: 'Update Strata on your Mac to edit bots from iPhone.' };
+          throw fail(messages[error.status] ? error.status : 503, messages[error.status] ?? 'Strata could not save this bot. Open the Mac app and try again.');
+        }
+        requireCurrentSession();
+        const projected = publicBots(result), bot = projected.bots.find(bot => bot.id === result.bot?.id);
+        if (!bot) throw fail(502, 'Refresh Bots to see the saved profile.');
+        return sendJSON(res, botProfile[1] ? 200 : 201, { ...projected, bot });
+      }
       const botAvatar = /^\/v1\/bots\/([a-zA-Z0-9_-]{1,120})\/avatar$/.exec(path);
       if (botAvatar) {
         if (method !== 'POST') throw fail(405, 'This appearance action is unavailable.');
@@ -841,6 +880,7 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
           catch { requireCurrentSession(); throw fail(503, 'Refresh Bots to choose a saved computer and model.'); }
           requireCurrentSession();
           if (!catalog.selectionSupported) throw fail(409, 'Update Strata on your Mac to choose a computer or model for this conversation.');
+          if (input.policy !== undefined && !catalog.lifecycleSupported) throw fail(409, 'Update Strata on your Mac to choose approvals for a new conversation.');
           const selectedBot = catalog.bots.find(bot => bot.id === botConversation[1]);
           if (!selectedBot) throw fail(404, 'This bot is no longer available. Refresh Bots.');
           if (selectedBot.computerMode === 'cua' && input.workspace !== undefined && input.workspace !== '/workspace') throw fail(400, 'This isolated computer uses /workspace.');

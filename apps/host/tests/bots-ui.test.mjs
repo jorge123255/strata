@@ -86,3 +86,41 @@ test('missing or unrelated frozen settings never borrow the current profile comp
   const fresh = bots.botConversationContext(profile);
   assert.equal(fresh.computerMode, 'cua'); assert.equal(fresh.model, 'Codex · new'); assert.equal(fresh.workspace, '/new-folder');
 });
+
+test('approval vocabulary is explicit and guided setup validates the current stage', () => {
+  assert.equal(bots.botPolicyLabel('bypass'), 'Bypass approvals');
+  assert.equal(bots.botPolicyLabel('manual'), 'Ask before changes');
+  const draft = { ...bots.blankBot('/work/project'), name: 'Builder' };
+  assert.equal(bots.botSetupStepError(0, draft), null);
+  assert.match(bots.botSetupStepError(0, { ...draft, name: ' '.repeat(5) }), /name/);
+  assert.match(bots.botSetupStepError(2, { ...draft, provider: 'configured' }), /saved Models/);
+  assert.match(bots.botSetupStepError(3, { ...draft, execution: {kind:'ssh'} }), /SSH host/);
+  assert.match(bots.botSetupStepError(3, { ...draft, workspace:'relative/project' }), /full workspace path/);
+  assert.equal(bots.botSetupStepError(3, { ...draft, workspace:'C:\\work\\project' }), null);
+  assert.match(bots.botSetupStepError(3, { ...draft, computerMode:'cua' }), /\/workspace/);
+  assert.equal(bots.blankBot('/work').policy, 'manual');
+});
+
+test('avatar activity follows shared thinking, live tool work and approvals, never computer availability', () => {
+  const bot = { id:'bot-a', paused:false, available:true, computerMode:'cua' };
+  const chat = { id:'chat-a', updatedAt:'2026-10-20', preferences:{botId:'bot-a'}, active:false, messages:[] };
+  assert.equal(bots.botAvatarActivity(bot, [chat]), 'idle');
+  const thinking = { ...chat, active:true, messages:[{id:'m1',role:'assistant',reasoning:'Working out the approach.',streaming:true}] };
+  assert.equal(bots.botAvatarActivity(bot, [thinking]), 'thinking');
+  const working = { ...thinking, messages:[{id:'m1',role:'assistant',tools:[{id:'t1',state:'running',live:true}]}] };
+  assert.equal(bots.botAvatarActivity(bot, [working]), 'working');
+  const pending = { ...chat, messages:[{id:'m1',role:'assistant',tools:[{id:'t1',state:'proposed',live:true}]}] };
+  assert.equal(bots.botAvatarActivity(bot, [pending]), 'needsApproval');
+  assert.equal(bots.botAvatarActivity({...bot,paused:true}, [working]), 'paused');
+  assert.equal(bots.botAvatarActivity(bot, [{...chat,messages:[{id:'failed',role:'assistant',error:'Failed'}]}]), 'error');
+  assert.equal(bots.botAvatarActivity(bot, [{...working,preferences:{botId:'someone-else'}}]), 'idle');
+});
+
+test('new reply signals are stable across streamed tokens and identify one completed bot reply', () => {
+  const chat = { id:'chat-a', updatedAt:'2026-10-20', preferences:{botId:'bot-a'}, active:true, messages:[{id:'m1',role:'assistant',content:'Partial',streaming:true}] };
+  assert.equal(bots.botReplySignal('bot-a', [chat]), undefined);
+  const completed = {...chat,active:false,messages:[{id:'m1',role:'assistant',content:'Finished',streaming:false}]};
+  assert.equal(bots.botReplySignal('bot-a', [completed]), 'chat-a:m1');
+  assert.equal(bots.botReplySignal('bot-b', [completed]), undefined);
+  assert.equal(bots.botReplySignal('bot-a', [{...completed,messages:[{...completed.messages[0],error:'Failed'}]}]), undefined);
+});

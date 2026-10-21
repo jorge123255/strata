@@ -2,7 +2,22 @@
  * Copyright (c) 2026 Cua AI, Inc.
  * Adapted from the CUA Bots AvatarPicker. See CuaBotAvatar.NOTICE.md.
  */
-.cua-bot-avatar { display: inline-block; flex: none; vertical-align: middle; }
+.cua-bot-avatar { display: inline-block; flex: none; vertical-align: middle; overflow: visible; transform-origin: 50% 60%; }
+.cua-avatar-body, .cua-avatar-blink, .cua-avatar-eye-glyph { transform-box: fill-box; transform-origin: center; }
+.cua-bot-avatar [data-eye='right'] .cua-avatar-eye-glyph { animation-delay: -50ms; }
+.cua-avatar-gaze { transform: translate(var(--cua-gaze-x, 0px), var(--cua-gaze-y, 0px)); transition: transform 130ms ease-out; }
+.cua-bot-avatar[data-motion='active'][data-mood='working'] .cua-avatar-body { animation: cua-avatar-working 1.8s ease-in-out infinite; }
+.cua-bot-avatar[data-motion='active'][data-mood='working'] .cua-avatar-eye-glyph { animation: cua-avatar-busy-eyes 1.3s ease-in-out infinite alternate; }
+.cua-bot-avatar[data-motion='active'][data-mood='thinking'] .cua-avatar-body { animation: cua-avatar-thinking 2.4s ease-in-out infinite; }
+.cua-bot-avatar[data-motion='active'][data-mood='thinking'] .cua-avatar-eye-glyph { animation: cua-avatar-consider 1.5s ease-in-out infinite alternate; }
+.cua-bot-avatar[data-motion='active'][data-mood='needsApproval'] .cua-avatar-eye-glyph { animation: cua-avatar-attention 2s ease-in-out 2; }
+@keyframes cua-avatar-working { 0%, 100% { transform: translateY(.01px) scale(1); } 50% { transform: translateY(-.055px) scale(1.025, 1.04); } }
+@keyframes cua-avatar-busy-eyes { from { transform: rotate(-12deg); } to { transform: rotate(12deg); } }
+@keyframes cua-avatar-thinking { 0%, 100% { transform: rotate(-2deg); } 50% { transform: rotate(3deg) translateY(-.025px); } }
+@keyframes cua-avatar-consider { 0%, 35% { transform: rotate(0); } 65%, 100% { transform: rotate(65deg); } }
+@keyframes cua-avatar-attention { 50% { transform: scale(1.12); } }
+:root[data-motion='reduced'] .cua-bot-avatar * { animation: none !important; transition: none !important; }
+@media (prefers-reduced-motion: reduce) { :root:not([data-motion='full']) .cua-bot-avatar * { animation: none !important; transition: none !important; } }
 .cua-bot-avatar-picker { display: flex; flex-direction: column; gap: 18px; }
 .cua-bot-avatar-picker fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
 .cua-bot-avatar-picker legend { margin: 0 0 8px; padding: 0; color: var(--st-ink-muted, #878b94); font-family: inherit; font-size: 13px; font-weight: 500; line-height: 1.3; }

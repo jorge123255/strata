@@ -66,10 +66,10 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
     if (path === '/api/bots/created/conversations') {
       if (!allowCreatedConversation) return respond(res, { error: 'The remote computer is offline. No conversation was opened.' }, 409);
       const profile = profiles.find(item => item.id === 'created'), model = models.find(item => item.id === body.modelId);
-      const conversation = { id: 'fox-shared-chat', title: 'Fox shared work', createdAt: at, updatedAt: at, workspace: body.workspace, preferences: { botId: 'created', botName: profile.name, botComputerMode: 'cua', botComputer: 'Garage server', botModel: model ? model.connectionName + ' · ' + model.name : 'Profile model', botAvatarConfig: structuredClone(profile.avatarConfig) }, messages: [], active: false };
+      const conversation = { id: 'fox-shared-chat', title: 'Fox shared work', createdAt: at, updatedAt: at, workspace: body.workspace, preferences: { botId: 'created', botName: profile.name, botComputerMode: 'cua', botComputer: 'Garage server', botModel: model ? model.connectionName + ' · ' + model.name : 'Profile model', botAvatarConfig: structuredClone(profile.avatarConfig), mode: body.policy ?? profile.policy }, messages: [], active: false };
       conversations.unshift(conversation); return respond(res, { conversation });
     }
-    if (path === '/api/bots/existing/conversations') { const conversation = { id: 'new-shared-chat', title: 'New shared work', createdAt: at, updatedAt: at, workspace: body.workspace, preferences: { botId: 'existing', botName: 'Project partner', botComputerMode: 'host', botComputer: 'This Mac', botModel: 'codex · Provider default' }, messages: [], active: false }; conversations.unshift(conversation); return respond(res, { conversation }); }
+    if (path === '/api/bots/existing/conversations') { const conversation = { id: 'new-shared-chat', title: 'New shared work', createdAt: at, updatedAt: at, workspace: body.workspace, preferences: { botId: 'existing', botName: 'Project partner', botComputerMode: 'host', botComputer: 'This Mac', botModel: 'codex · Provider default', mode: body.policy ?? 'manual' }, messages: [], active: false }; conversations.unshift(conversation); return respond(res, { conversation }); }
     unexpected.push(req.method + ' ' + path);
     return respond(res, { error: 'Unexpected fixture request' }, 404);
   });
@@ -89,6 +89,9 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
   await page.getByRole('complementary', { name: 'Project partner profile' }).getByText('Computer stopped', { exact: true }).waitFor();
   assert.equal(await page.locator('.cua-bots-sidebar footer').count(), 0, 'Bots uses Strata’s existing branding and status chrome.');
   await screenshot('embedded-bots-overview');
+  const botSearch=page.getByRole('searchbox',{name:'Search bots',exact:true});await botSearch.fill('does-not-exist');await page.getByText('No bots match this search.',{exact:true}).waitFor();assert.equal(await page.getByTestId('shared-chat').getAttribute('data-session'),'existing-chat');await botSearch.fill('');
+  await page.getByRole('combobox',{name:'Filter bots',exact:true}).click();await page.getByRole('option',{name:'Working',exact:true}).click();await page.getByText('No bots are working.',{exact:true}).waitFor();
+  await page.getByRole('combobox',{name:'Filter bots',exact:true}).click();await page.getByRole('option',{name:'All bots',exact:true}).click();
   // Current profile is host mode, but this selected chat owns a frozen CUA computer.
   await page.getByRole('button', { name: 'Open shared computer', exact: true }).click();
   const computer = page.getByRole('complementary', { name: 'Bot computer', exact: true });
@@ -138,8 +141,15 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
   for (const provider of providers) await page.getByRole('option', { name: provider.name, exact: true }).waitFor();
   await page.getByRole('option', { name: 'Grok', exact: true }).click();
   assert.equal(calls.filter(call => call.method !== 'GET').length, beforeCreate, 'Wizard/name/look/provider choices start no work or connection.');
+  await page.getByRole('radio', { name: 'Coding', exact: true }).check();
+  await page.getByRole('radio', { name: 'Both', exact: true }).check();
+  await screenshot('embedded-bot-model-step');
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
+  await page.getByRole('heading', { name: 'Choose its computer', exact: true }).waitFor();
   await page.getByRole('combobox', { name: 'Bot execution computer', exact: true }).click();
   await page.getByRole('option', { name: 'Another SSH computer…', exact: true }).click();
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
+  await page.getByText('Enter the SSH host or alias.', { exact: true }).waitFor();
   await page.getByRole('textbox', { name: 'SSH host or alias', exact: true }).fill('my-server');
   await page.getByRole('textbox', { name: 'SSH user', exact: true }).fill('another-user');
   await page.getByRole('spinbutton', { name: 'SSH port', exact: true }).fill('2222');
@@ -151,9 +161,17 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
   await page.getByText('The private bot helper is ready on this SSH computer.', { exact: true }).waitFor();
   await page.getByRole('button', { name: 'Prepare CUA on this computer', exact: true }).click();
   await page.getByText('The private CUA runtime is ready.', { exact: true }).waitFor();
-  await page.getByRole('textbox', { name: 'Standing instructions', exact: true }).fill('Review this project and help with browser checks.');
   assert.equal(await page.getByRole('textbox', { name: 'Workspace inside the CUA computer', exact: true }).inputValue(), '/workspace');
   assert.equal(await page.getByRole('textbox', { name: 'Workspace inside the CUA computer', exact: true }).isDisabled(), true);
+  await screenshot('embedded-bot-computer-step');
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
+  await page.getByRole('heading', { name: 'Set its permissions', exact: true }).waitFor();
+  assert.equal(await page.getByRole('radio', { name: 'Ask', exact: true }).isChecked(), true);
+  await page.getByRole('radio', { name: 'Bypass', exact: true }).check();
+  await page.getByText('Bypass skips approval prompts for enabled tools. Capabilities, selected workspace and connection access still apply.', { exact: true }).waitFor();
+  await screenshot('embedded-bot-bypass-step');
+  await page.getByRole('radio', { name: 'Ask', exact: true }).check();
+  await page.getByRole('textbox', { name: 'Standing instructions', exact: true }).fill('Review this project and help with browser checks.');
   await screenshot('embedded-bot-configuration');
   await page.getByRole('button', { name: 'Create Remote developer', exact: true }).click();
   await page.waitForURL('**/#/bots/created');
@@ -172,12 +190,14 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
   await editor.getByRole('combobox', { name: 'Configured bot model', exact: true }).click();
   assert.equal(await page.getByRole('option', { name: 'Unsupported protocol · Other', exact: true }).getAttribute('aria-disabled'), 'true');
   await page.getByRole('option', { name: 'My Maya · Maya-S24', exact: true }).click();
+  await editor.getByRole('radio', { name: 'Bypass', exact: true }).check();
   await editor.getByRole('button', { name: 'Save settings', exact: true }).click();
   await editor.waitFor({ state: 'hidden' });
   await profile.getByText('My Maya · Maya-S24', { exact: true }).waitFor();
   const changed = calls.find(call => call.path === '/api/bots/created' && call.method === 'PATCH');
   assert.equal(changed.body.provider, 'configured'); assert.deepEqual(changed.body.modelSource, { connectionId: 'maya', model: 'Maya-S24' });
   assert.deepEqual(changed.body.avatarConfig, created.body.avatarConfig);
+  assert.equal(changed.body.policy, 'bypass', 'The profile has an explicit saved Bypass default.');
   await page.getByRole('button', { name: 'New shared conversation', exact: true }).click();
   const chooser = page.getByRole('dialog', { name: 'New shared conversation', exact: true });
   assert.equal(calls.some(call => call.path.endsWith('/conversations') && call.method === 'POST'), false, 'Opening the sheet does not create work.');
@@ -185,10 +205,12 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
   await page.getByRole('option', { name: 'Garage server · operator@garage:2222', exact: true }).click();
   await chooser.getByRole('combobox', { name: 'Conversation model', exact: true }).click();
   await page.getByRole('option', { name: 'Remote Strata · Coder', exact: true }).click();
+  assert.equal(await chooser.getByRole('radio', { name: 'Bypass', exact: true }).isChecked(), true);
+  await chooser.getByRole('radio', { name: 'Plan', exact: true }).check();
   await screenshot('embedded-bot-conversation-target');
   await chooser.getByRole('button', { name: 'Create conversation', exact: true }).click();
   await chooser.getByText('The remote computer is offline. No conversation was opened.', { exact: true }).waitFor();
-  assert.deepEqual(calls.find(call => call.path === '/api/bots/created/conversations').body, { computerId: 'ssh_garage', workspace: '/workspace', modelId: 'bm_strata' });
+  assert.deepEqual(calls.find(call => call.path === '/api/bots/created/conversations').body, { computerId: 'ssh_garage', workspace: '/workspace', policy: 'plan', modelId: 'bm_strata' });
   assert.equal(await page.evaluate(() => window.botFixtureCalls.some(call => call[0] === 'adopt' && call[1].preferences?.botId === 'created')), false);
   allowCreatedConversation = true;
   await chooser.getByRole('button', { name: 'Create conversation', exact: true }).click();
@@ -197,6 +219,15 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
   assert.deepEqual(frozenFox, created.body.avatarConfig, 'A new shared chat retains the selected character configuration.');
   await page.getByRole('complementary', { name: 'Remote developer profile' }).locator('svg[data-character="fox"]').waitFor();
   await screenshot('embedded-bot-fox-profile');
+  assert.equal(conversations.find(chat => chat.id === 'fox-shared-chat').preferences.mode, 'plan');
+  assert.equal(profiles.find(bot => bot.id === 'created').policy, 'bypass', 'A per-conversation choice never rewrites the profile.');
+  await profile.getByRole('button', { name: 'Bot settings', exact: true }).click();
+  const laterSettings = page.getByRole('dialog', { name: 'Remote developer’s settings', exact: true });
+  await laterSettings.getByRole('radio', { name: 'Ask', exact: true }).check();
+  await laterSettings.getByRole('button', { name: 'Save settings', exact: true }).click();
+  await laterSettings.waitFor({state:'hidden'});
+  await profile.getByText('Plan · inspect only', {exact:true}).waitFor();
+  assert.equal(conversations.find(chat => chat.id === 'fox-shared-chat').preferences.mode, 'plan', 'Editing a profile keeps old conversation permissions frozen.');
   await page.getByRole('navigation', { name: 'Bots workspace', exact: true }).getByRole('button', { name: 'Activity', exact: true }).click();
   await page.getByRole('button', { name: 'Outputs', exact: true }).click();
   await page.getByRole('button', { name: /report.md Project partner/ }).click();
@@ -217,10 +248,25 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
   await page.getByRole('option', { name: 'Existing work', exact: true }).click();
   assert.equal(await page.getByTestId('shared-chat').getAttribute('data-session'), 'existing-chat');
   await page.evaluate(() => { document.documentElement.dataset.theme = 'light'; }); await screenshot('embedded-bots-light');
+  await page.getByRole('searchbox', { name: 'Search bots', exact: true }).fill('no-mobile-match');
+  await page.getByRole('combobox', { name: 'Filter bots', exact: true }).click();
+  await page.getByRole('option', { name: 'Working', exact: true }).click();
   await page.setViewportSize({ width: 390, height: 844 });
   const compactProfile = page.getByRole('complementary', { name: 'Project partner profile', exact: true });
   await compactProfile.waitFor({ state: 'hidden' });
   assert.equal(await page.getByTestId('shared-chat').getAttribute('data-session'), 'existing-chat', 'Entering a compact window keeps the selected chat.');
+  await page.getByRole('button', { name: 'Search and filter bots', exact: true }).click();
+  const filters = page.getByRole('dialog', { name: 'Find a bot', exact: true });
+  assert.equal(await filters.getByRole('searchbox', { name: 'Search bots', exact: true }).inputValue(), 'no-mobile-match', 'A narrow window preserves the chosen search.');
+  assert.equal(await filters.getByRole('combobox', { name: 'Filter bots', exact: true }).textContent(), 'Working', 'A narrow window preserves the chosen activity filter.');
+  await screenshot('embedded-bots-mobile-filter');
+  await filters.getByRole('button', { name: 'Clear filters', exact: true }).click();
+  assert.equal(await filters.getByRole('searchbox', { name: 'Search bots', exact: true }).inputValue(), '');
+  assert.equal(await filters.getByRole('combobox', { name: 'Filter bots', exact: true }).textContent(), 'All bots');
+  await filters.getByRole('button', { name: 'Done', exact: true }).click();
+  await filters.waitFor({ state: 'hidden' });
+  await page.getByRole('complementary', { name: 'Bots navigation', exact: true }).getByRole('button', { name: 'Open Project partner', exact: true }).waitFor();
+  assert.equal(await page.getByTestId('shared-chat').getAttribute('data-session'), 'existing-chat', 'Recovering the filtered roster preserves the selected chat.');
   await screenshot('embedded-bots-mobile');
   await page.getByRole('button', { name: 'Show profile', exact: true }).click();
   await compactProfile.waitFor();

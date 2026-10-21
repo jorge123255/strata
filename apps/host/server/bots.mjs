@@ -181,11 +181,15 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     const at = now(), bot = { id: `bot_${randomUUID()}`, ...validate(input), createdAt: at, updatedAt: at };
     profiles.set(bot.id, bot); save(); notify('bots', { changed: bot.id }); return { bot: publicBot(bot) };
   }
+  function nextUpdatedAt(old) {
+    const value = now();
+    return Date.parse(value) <= Date.parse(old.updatedAt) ? new Date(Date.parse(old.updatedAt) + 1).toISOString() : value;
+  }
   function update(id, input) {
     const old = requireBot(id);
     if (team.botInActiveRun(id)) throw fault(409, 'Stop this bot’s team work before changing its profile.');
     if ([...active.values()].some(run => run.botId === id)) throw fault(409, 'Stop this bot’s active conversations before changing its profile.');
-    const bot = { id, ...validate(input, old), createdAt: old.createdAt, updatedAt: now() };
+    const bot = { id, ...validate(input, old), createdAt: old.createdAt, updatedAt: nextUpdatedAt(old) };
     if (executionKey(bot.execution) !== executionKey(old.execution) || bot.computerMode !== old.computerMode) {
       computer.checkRemove(old);
       if (hasOwnedComputer(id)) throw fault(409, 'Stop this bot’s isolated computer before changing its execution computer or isolation mode.');
@@ -205,7 +209,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     const old = requireBot(id);
     if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== 1 || typeof input.paused !== 'boolean') throw fault(400, 'Choose whether to pause this bot.');
     // Revoke new turns first, including sends to chats that retain an older profile.
-    profiles.set(id, { ...old, paused: input.paused, updatedAt: now() }); save(); notify('bots', { changed: id });
+    profiles.set(id, { ...old, paused: input.paused, updatedAt: nextUpdatedAt(old) }); save(); notify('bots', { changed: id });
     if (input.paused) {
       const results = await Promise.allSettled([...active.entries()].filter(([, run]) => run.botId === id).map(([chatId]) => stop(chatId)));
       const failure = results.find(result => result.status === 'rejected');
@@ -218,15 +222,54 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
       detail: provider.detail ?? [provider.transport, provider.version, provider.auth?.help].filter(Boolean).join(' · ') }));
     providers.push({ id: 'configured', name: 'Configured Models', available: modelRows().length > 0, detail: 'Choose a saved model API or a currently serving local model from Models.' });
     const computers = computerRows();
-    return { bots: [...profiles.values()].map(bot => {
+    return { lifecycleSupported: true, defaultWorkspace: defaultWorkspace(), bots: [...profiles.values()].map(bot => {
       const provider = providers.find(p => p.id === bot.provider), computer = computers.find(c => c.id === executionKey(bot.execution));
       const ownKey = bot.provider === 'ollama' && !!bot.providerSettings?.apiKey;
       const configured = bot.provider === 'configured' && modelRows().some(row => row.connectionId === bot.modelSource?.connectionId && row.model === bot.modelSource?.model);
       const remoteProvider = computer?.providers?.find(p => p.id === bot.provider);
       const available = bot.execution.kind === 'local' ? (bot.provider === 'configured' ? configured : !!provider?.available || ownKey) : bot.execution.kind === 'ssh' && computer?.available === true && (configured || !!(remoteProvider?.available ?? remoteProvider?.ready));
-      return { ...publicBot(bot), available,
+      return { ...publicBot(bot), computerId: executionKey(bot.execution), available,
         detail: bot.execution.kind !== 'local' ? computer?.detail ?? 'Prepare this execution computer first.' : configured ? bot.modelLabel : ownKey ? 'Ollama Cloud API key configured. Model access is checked when a turn runs.' : provider?.detail ?? 'Provider setup is required.' };
     }), providers, computers, models: modelRows() };
+  }
+  // Paired clients can edit public profiles using saved inventory identities only.
+  // This never prepares a worker, starts a computer, opens a chat or changes serving.
+  async function saveProfile(input, id) {
+    const keys = ['name', 'provider', 'model', 'modelId', 'computerId', 'workspace', 'instructions', 'capabilities', 'policy', 'computerMode', 'effort', 'avatar', 'avatarConfig', ...(id ? ['expectedUpdatedAt'] : [])];
+    if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !keys.includes(key))) throw fault(400, 'Choose only the displayed bot settings.');
+    for (const [key, value] of Object.entries(input)) if (value === null || value === undefined) throw fault(400, 'Choose supported bot settings.');
+    for (const key of ['name', 'model', 'workspace', 'instructions', 'effort']) if (Object.hasOwn(input, key) && typeof input[key] !== 'string') throw fault(400, 'Enter supported bot settings.');
+    if (input.workspace !== undefined && (!input.workspace.startsWith('/') || /[\u0000-\u001f]/.test(input.workspace))) throw fault(400, 'Enter the full workspace folder path on the selected computer.');
+    const old = id ? requireBot(id) : null;
+    const checkVersion = () => {
+      if (id && (typeof input.expectedUpdatedAt !== 'string' || input.expectedUpdatedAt !== requireBot(id).updatedAt)) throw fault(409, 'This bot changed. Refresh its settings before saving.');
+    };
+    checkVersion();
+    if (!id && (!Object.hasOwn(input, 'name') || !ids.has(input.provider) || typeof input.computerId !== 'string')) throw fault(400, 'Choose a name, provider and saved execution computer.');
+    if (input.computerId !== undefined && (typeof input.computerId !== 'string' || !/^[A-Za-z0-9_-]{1,120}$/.test(input.computerId))) throw fault(400, 'Choose a saved execution computer.');
+    if (input.modelId !== undefined && (typeof input.modelId !== 'string' || !/^[A-Za-z0-9_-]{1,120}$/.test(input.modelId))) throw fault(400, 'Choose a configured model.');
+    const provider = input.provider ?? old?.provider;
+    if (!ids.has(provider) || input.modelId !== undefined && provider !== 'configured') throw fault(400, 'Choose a configured model only with Configured Models.');
+    const inventory = await list();
+    checkVersion();
+    const computerId = input.computerId ?? executionKey(old.execution);
+    const computer = inventory.computers.find(row => row.id === computerId);
+    if (!computer) throw fault(409, 'This execution computer is no longer configured.');
+    const patch = Object.fromEntries(Object.entries(input).filter(([key]) => !['modelId', 'computerId', 'expectedUpdatedAt'].includes(key)));
+    patch.execution = computer.execution;
+    if (provider !== old?.provider && input.model === undefined) patch.model = '';
+    if (provider === 'configured') {
+      const model = input.modelId !== undefined ? inventory.models.find(row => row.id === input.modelId) : old?.provider === provider ? inventory.models.find(row => row.connectionId === old.modelSource?.connectionId && row.model === old.modelSource?.model) : null;
+      if (!model || !model.available) throw fault(409, 'Choose an available model from your configured Models.');
+      if (input.model !== undefined && input.model !== model.model) throw fault(400, 'Choose the saved model rather than a different model name.');
+      patch.modelSource = { connectionId: model.connectionId, model: model.model };
+      if (patch.effort) throw fault(400, 'Use Provider default effort for a configured model.');
+    }
+    // A saved profile may be prepared before its provider signs in or its saved
+    // computer comes online. Availability is shown and checked when work starts.
+    // update() checks active direct/team work again after all asynchronous reads.
+    const result = id ? update(id, patch) : create(patch);
+    return { ...await list(), bot: { ...result.bot, computerId } };
   }
   function validateSelection(selection) {
     if (!selection?.botId) return;
@@ -245,7 +288,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
   function createConversation(id, selection = {}, teamContext) {
     const current = requireBot(id);
     if (current.paused) throw fault(409, 'This bot is paused. Resume it before starting a new chat.');
-    if (!selection || typeof selection !== 'object' || Array.isArray(selection) || Object.keys(selection).some(key => !['computerId', 'modelId', 'execution', 'workspace', 'effort'].includes(key)) || selection.computerId && selection.execution) throw fault(400, 'Choose a computer, model and workspace for the new bot chat.');
+    if (!selection || typeof selection !== 'object' || Array.isArray(selection) || Object.keys(selection).some(key => !['computerId', 'modelId', 'execution', 'workspace', 'effort', 'policy'].includes(key)) || selection.computerId && selection.execution) throw fault(400, 'Choose a computer, model and workspace for the new bot chat.');
     const patch = {};
     if (selection.computerId !== undefined) {
       const computer = computerRows().find(c => c.id === selection.computerId);
@@ -254,6 +297,10 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     } else if (selection.execution !== undefined) patch.execution = selection.execution;
     if (selection.workspace !== undefined) patch.workspace = selection.workspace;
     if (selection.effort !== undefined) patch.effort = selection.effort;
+    if (selection.policy !== undefined) {
+      if (!['manual', 'plan', 'bypass'].includes(selection.policy)) throw fault(400, 'Choose Ask, Plan or Bypass approvals.');
+      patch.policy = selection.policy;
+    }
     if (selection.modelId !== undefined) {
       const model = modelRows().find(m => m.id === selection.modelId);
       if (!model) throw fault(404, 'This configured model is no longer available.');
@@ -395,7 +442,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
       ended();
     }
   }
-  return { list, create, update, remove, pause, createConversation, computer, work, team, hasBot: id => profiles.has(id), providerModels: id => runtime.models?.(id) ?? Promise.resolve({ provider: id, models: [], detail: 'This provider has no verified effort catalog. Use Provider default.' }), prepareCUA, checkComputer: (input, options) => computerAction(input, false, options), prepareComputer: (input, options) => computerAction(input, true, options), validateSelection, run, pending, approve, stop,
+  return { list, create, update, saveProfile, remove, pause, createConversation, computer, work, team, hasBot: id => profiles.has(id), providerModels: id => runtime.models?.(id) ?? Promise.resolve({ provider: id, models: [], detail: 'This provider has no verified effort catalog. Use Provider default.' }), prepareCUA, checkComputer: (input, options) => computerAction(input, false, options), prepareComputer: (input, options) => computerAction(input, true, options), validateSelection, run, pending, approve, stop,
     hasProfiles: () => profiles.size > 0, isBotConversation: id => !!owned(id), workspace: id => chatProfiles.get(id)?.execution?.kind === 'local' ? chatProfiles.get(id).workspace : null, isRemoteConversation: id => !!chatProfiles.get(id) && (chatProfiles.get(id).execution?.kind !== 'local' || chatProfiles.get(id).computerMode === 'cua'), activeCount: () => active.size + team.activeCount(),
     async close() { work.close(); await team.close(); await computer.close(); for (const run of active.values()) run.controller.abort(); await Promise.allSettled([...active.values()].map(run => run.ended)); await tools.close?.(); await runtime.close?.(); } };
 }
@@ -407,6 +454,9 @@ export function createBotRoutes({ bots, port }) {
     try {
       if (url.pathname === '/api/bots' && req.method === 'GET') return json(res, 200, await bots.list());
       if (url.pathname === '/api/bots' && req.method === 'POST') return json(res, 201, bots.create(await readBody(req)));
+      if (url.pathname === '/api/bots/profile' && req.method === 'POST') return json(res, 201, await bots.saveProfile(await readBody(req)));
+      const profile = /^\/api\/bots\/(bot_[a-f0-9-]+)\/profile$/.exec(url.pathname);
+      if (profile && req.method === 'PATCH') return json(res, 200, await bots.saveProfile(await readBody(req), profile[1]));
       if (url.pathname === '/api/bots/provider-models' && req.method === 'GET') return json(res, 200, await bots.providerModels(url.searchParams.get('provider')));
       if (url.pathname === '/api/bots/activity' && req.method === 'GET') return json(res, 200, bots.team.activity());
       if (url.pathname === '/api/bots/teams') {

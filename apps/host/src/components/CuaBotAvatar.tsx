@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Cua AI, Inc.
 // React/SVG adaptation of the actual CUA Bots KoalaRenderer and AvatarPicker.
 // Source pin, attribution and license: ./CuaBotAvatar.NOTICE.md
-import { useEffect, useId, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState, type PointerEvent } from 'react'
 import './CuaBotAvatar.css'
 
 export const CUA_BOT_COLORS = ['cloud', 'violet', 'orange', 'sky', 'graphite', 'slate'] as const
@@ -67,10 +67,10 @@ const restingEyes: Record<CuaBotAvatarConfig['eyes'], readonly [Glyph, Glyph]> =
   calm: ['dash', 'dash'], plus: ['plus', 'plus'], delight: ['greater', 'less'],
 }
 
-function eyesAt(mood: CuaBotMood, eyes: CuaBotAvatarConfig['eyes'], time: number): readonly [Glyph, Glyph] {
+function eyesForMood(mood: CuaBotMood, eyes: CuaBotAvatarConfig['eyes']): readonly [Glyph, Glyph] {
   switch (mood) {
-    case 'idle': return time % 4.2 > 4 ? ['dash', 'dash'] : restingEyes[eyes]
-    case 'thinking': return time % 1.6 < 0.8 ? ['slash', 'slash'] : ['backslash', 'backslash']
+    case 'idle': return restingEyes[eyes]
+    case 'thinking': return ['slash', 'slash']
     case 'working': return ['plus', 'plus']
     case 'needsApproval': return ['round', 'round']
     case 'done': return ['caret', 'caret']
@@ -98,27 +98,90 @@ function Eye({ glyph, side, spin }: { glyph: Glyph; side: 'left' | 'right'; spin
   const style = glyphs[glyph]
   const angle = style.rotate + (glyph === 'plus' ? spin : 0)
   return <g data-eye={side} data-glyph={glyph} transform={`translate(${eye.x} ${eye.y}) rotate(${angle}) scale(${style.scale * .94409} ${style.scale})`} strokeWidth={style.width}>
-    {glyph === 'round' ? <ellipse cx="0" cy="0" rx=".165" ry=".2" /> : <path d={style.path} />}
+    <g className="cua-avatar-eye-glyph">{glyph === 'round' ? <ellipse cx="0" cy="0" rx=".165" ry=".2" /> : <path d={style.path} />}</g>
   </g>
 }
 
-function useAvatarTime(mood: CuaBotMood, animated: boolean) {
-  const [time, setTime] = useState(0)
+// A single observer gates every face. Idle roster faces have no frame loop or
+// timer; only visible large faces schedule an occasional blink.
+const observedFaces = new Map<Element, (visible: boolean) => void>()
+let faceObserver: IntersectionObserver | undefined
+function observeFace(node: SVGSVGElement, update: (visible: boolean) => void) {
+  if (typeof IntersectionObserver === 'undefined') { update(true); return () => {} }
+  faceObserver ??= new IntersectionObserver(entries => {
+    for (const entry of entries) observedFaces.get(entry.target)?.(entry.isIntersecting)
+  })
+  observedFaces.set(node, update); faceObserver.observe(node)
+  return () => {
+    faceObserver?.unobserve(node); observedFaces.delete(node)
+    if (!observedFaces.size) { faceObserver?.disconnect(); faceObserver = undefined }
+  }
+}
+
+function useAvatarMotion(mood: CuaBotMood, animated: boolean, size: number, messageSignal?: string | number) {
+  const ref = useRef<SVGSVGElement>(null), flourishAnimation = useRef<Animation | undefined>(undefined), blinkAnimation = useRef<Animation | undefined>(undefined)
+  const [visible, setVisible] = useState(false), [hidden, setHidden] = useState(false), [reduced, setReduced] = useState(true)
+  const previousSignal = useRef(messageSignal), previousMood = useRef(mood)
+  const active = animated && visible && !hidden && !reduced
   useEffect(() => {
-    if (!animated || !['idle', 'thinking', 'working'].includes(mood)) { setTime(0); return }
+    const node = ref.current
+    if (!animated || !node) return
     const motion = window.matchMedia('(prefers-reduced-motion: reduce)')
-    let interval: ReturnType<typeof setInterval> | undefined
-    const update = () => setTime(Date.now() / 1000 - 978307200) // Swift's 2001 reference date.
-    const start = () => {
-      if (interval !== undefined) clearInterval(interval)
-      interval = undefined
-      if (motion.matches) setTime(0)
-      else { update(); interval = setInterval(update, 100) }
-    }
-    start(); motion.addEventListener('change', start)
-    return () => { if (interval !== undefined) clearInterval(interval); motion.removeEventListener('change', start) }
-  }, [animated, mood])
-  return time
+    const preference = () => setReduced(document.documentElement.dataset.motion === 'reduced' || document.documentElement.dataset.motion !== 'full' && motion.matches), visibility = () => setHidden(document.hidden)
+    preference(); visibility()
+    motion.addEventListener('change', preference); document.addEventListener('visibilitychange', visibility)
+    const preferenceObserver = new MutationObserver(preference)
+    preferenceObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-motion'] })
+    const stopObserving = observeFace(node, setVisible)
+    return () => { stopObserving(); preferenceObserver.disconnect(); motion.removeEventListener('change', preference); document.removeEventListener('visibilitychange', visibility) }
+  }, [animated])
+  const blink = useCallback(() => {
+    const eyes = ref.current?.querySelector<SVGGElement>('.cua-avatar-blink')
+    if (!active || !eyes?.animate || mood === 'paused') return
+    blinkAnimation.current?.cancel()
+    blinkAnimation.current = eyes.animate([{ transform: 'scaleY(1)' }, { transform: 'scaleY(.08)', offset: .45 }, { transform: 'scaleY(1)' }], { duration: 180, easing: 'ease-in-out' })
+  }, [active, mood])
+  const flourish = useCallback(() => {
+    const node = ref.current
+    if (!active || !node?.animate) return
+    flourishAnimation.current?.cancel()
+    flourishAnimation.current = node.animate([
+      { transform: 'scale(1) rotate(0)' }, { transform: 'translateY(-2px) scale(1.1,.92) rotate(-6deg)', offset: .3 },
+      { transform: 'scale(.97,1.04) rotate(3deg)', offset: .64 }, { transform: 'scale(1) rotate(0)' },
+    ], { duration: 540, easing: 'cubic-bezier(.2,.8,.25,1)' })
+    blink()
+  }, [active, blink])
+  useEffect(() => {
+    const arrived = messageSignal !== undefined && previousSignal.current !== messageSignal
+    const completed = mood === 'done' && previousMood.current !== mood
+    previousSignal.current = messageSignal; previousMood.current = mood
+    if (arrived || completed) flourish()
+  }, [messageSignal, mood, flourish])
+  useEffect(() => {
+    if (!active || size < 64 || mood !== 'idle') return
+    let timer: ReturnType<typeof setTimeout>
+    const next = () => { timer = setTimeout(() => { blink(); next() }, 4800 + Math.random() * 2200) }
+    next(); return () => clearTimeout(timer)
+  }, [active, size, mood, blink])
+  useEffect(() => {
+    if (active) return
+    flourishAnimation.current?.cancel(); blinkAnimation.current?.cancel()
+    ref.current?.style.removeProperty('--cua-gaze-x'); ref.current?.style.removeProperty('--cua-gaze-y')
+  }, [active])
+  useEffect(() => () => { flourishAnimation.current?.cancel(); blinkAnimation.current?.cancel() }, [])
+  const gaze = (event: PointerEvent<SVGSVGElement>) => {
+    if (!active || event.pointerType !== 'mouse') return
+    const bounds = event.currentTarget.getBoundingClientRect()
+    if (!bounds.width || !bounds.height) return
+    const x = Math.max(-1, Math.min(1, (event.clientX - bounds.left) / bounds.width * 2 - 1))
+    const y = Math.max(-1, Math.min(1, (event.clientY - bounds.top) / bounds.height * 2 - 1))
+    event.currentTarget.style.setProperty('--cua-gaze-x', `${x * .075}px`)
+    event.currentTarget.style.setProperty('--cua-gaze-y', `${y * .055}px`)
+  }
+  const resetGaze = () => {
+    ref.current?.style.removeProperty('--cua-gaze-x'); ref.current?.style.removeProperty('--cua-gaze-y')
+  }
+  return { ref, active, gaze, resetGaze, blink, flourish }
 }
 
 export interface CuaBotAvatarProps {
@@ -128,25 +191,28 @@ export interface CuaBotAvatarProps {
   className?: string
   mood?: CuaBotMood
   animated?: boolean
+  /** Changes once when a completed shared reply arrives; never on each token. */
+  messageSignal?: string | number
 }
 
-export function CuaBotAvatar({ config: supplied, name = '', size = 48, className = '', mood = 'idle', animated = true }: CuaBotAvatarProps) {
+export function CuaBotAvatar({ config: supplied, name = '', size = 48, className = '', mood = 'idle', animated = true, messageSignal }: CuaBotAvatarProps) {
   const config = normalizeCuaBotAvatarConfig(supplied, name)
   const colors = palette[config.color]
   const clipID = `cua-koala-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`
-  const time = useAvatarTime(mood, animated)
-  const left = eyesAt(mood, config.eyes, time)[0]
-  const right = eyesAt(mood, config.eyes, time - .05)[1]
-  const spin = mood === 'working' ? (time % 1.2 < .6 ? 15 : -15) : 0
   const dimension = Number.isFinite(size) && size > 0 ? size : 48
+  const motion = useAvatarMotion(mood, animated, dimension, messageSignal)
+  const left = eyesForMood(mood, config.eyes)[0], right = eyesForMood(mood, config.eyes)[1]
+  const spin = mood === 'working' ? 15 : 0
   const colorName = config.color[0].toUpperCase() + config.color.slice(1)
   const kind = config.kind ?? 'koala'
   const head = kind === 'koala' ? geometry.head : characterHeads[kind]
   const earSize = config.ears === 'small' ? .78 : config.ears === 'round' ? .92 : 1
-  return <svg className={`cua-bot-avatar ${className}`.trim()} width={dimension} height={dimension}
+  return <svg ref={motion.ref} className={`cua-bot-avatar ${className}`.trim()} width={dimension} height={dimension}
     viewBox="-1.425 -1.485 2.85 2.85" fill="none" role="img"
+    data-mood={mood} data-motion={motion.active ? 'active' : 'paused'} onPointerMove={motion.gaze} onPointerLeave={motion.resetGaze} onPointerEnter={motion.blink} onPointerDown={motion.flourish}
     data-character={kind} aria-label={`${name ? `${name}, ` : ''}${colorName} ${kind}, ${mood === 'needsApproval' ? 'needs approval' : mood}`}>
     <defs><clipPath id={clipID}><path d={head} /></clipPath></defs>
+    <g className="cua-avatar-body">
     <g fill={colors.face}>
       {kind === 'koala' ? ([-1, 1] as const).map(side => config.ears === 'round'
         ? <circle key={side} cx={side * .9023 * .97} cy={-.4916 * 1.02} r={Math.sqrt(.598 / Math.PI)} />
@@ -167,10 +233,11 @@ export function CuaBotAvatar({ config: supplied, name = '', size = 48, className
       {kind === 'koala' ? <path d={geometry.nose} fill={colors.nose} />
         : kind === 'robot' ? <rect x="-.28" y=".34" width=".56" height=".13" rx=".065" fill={colors.nose} />
           : <><path d="M-.15 .26Q0 .18.15 .26L0 .43Z" fill={colors.nose} /><path d="M0 .42V.52M-.14 .52Q0 .65.14 .52" stroke={colors.nose} strokeWidth=".04" strokeLinecap="round" /></>}
-      <g stroke={colors.eye} strokeLinecap="butt" strokeLinejoin="miter">
+      <g className="cua-avatar-gaze"><g className="cua-avatar-blink" stroke={colors.eye} strokeLinecap="butt" strokeLinejoin="miter">
         <Eye glyph={left} side="left" spin={spin} />
         <Eye glyph={right} side="right" spin={spin} />
-      </g>
+      </g></g>
+    </g>
     </g>
   </svg>
 }

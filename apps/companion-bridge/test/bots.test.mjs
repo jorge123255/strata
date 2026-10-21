@@ -58,18 +58,19 @@ test('host permits only public bot listing and bounded saved-bot conversation se
   const host = new HostClient({ upstream: 'http://127.0.0.1:47831', fetcher: async (url, options) => { calls.push({ url, ...options }); return new Response('{}'); } });
   await host.request('/api/bots');
   await host.request('/api/bots/bot_coder/conversations', { method: 'POST', body: {} });
+  await host.request('/api/bots/bot_coder/conversations', { method: 'POST', body: { policy: 'bypass' } });
   await host.request('/api/bots/bot_coder/conversations', { method: 'POST', body: { computerId: 'ssh_fixture', modelId: 'bm_fixture', workspace: '/srv/project' } });
   for (const [path, method, body] of [
     ['/api/bots', 'POST', {}], ['/api/bots/bot_coder', 'GET'], ['/api/bots/bot_coder', 'DELETE'],
     ['/api/bots/providers', 'PUT', { apiKey: 'secret' }], ['/api/bots/bot_coder/conversations', 'GET'],
-    ['/api/bots/bot_coder/conversations', 'POST', { policy: 'bypass' }],
+    ['/api/bots/bot_coder/conversations', 'POST', { policy: 'invalid' }],
     ['/api/bots/bot_coder/conversations', 'POST', { computerId: 'https://external.test' }],
     ['/api/bots/bot_coder/conversations', 'POST', { modelSource: { connectionId: 'private' } }],
     ['/api/bots/bot_coder/conversations', 'POST', { workspace: 'relative' }],
     ['/api/bots', 'GET', {}],
     ['/api/bots?apiKey=true', 'GET'], ['/api/bots/../settings/conversations', 'POST', {}],
   ]) await assert.rejects(host.request(path, { method, body }), { status: 403 });
-  assert.equal(calls.length, 3);
+  assert.equal(calls.length, 4);
   assert.throws(() => new HostClient({ upstream: 'https://remote.test:443' }));
 });
 
@@ -84,7 +85,7 @@ test('paired bot routes list without launching and create only a shared empty co
   assert.equal(created.json.conversation.messages[0].reasoning, 'Checked the files');
   assert.deepEqual(calls.at(-1), { path: '/api/bots/bot_coder/conversations', method: 'POST', body: {} });
   const count = calls.length;
-  for (const body of [{ provider: 'kimi' }, { message: 'Run this' }, { execution: {} }, { policy: 'bypass' }, { apiKey: 'secret' }]) {
+  for (const body of [{ provider: 'kimi' }, { message: 'Run this' }, { execution: {} }, { policy: 'invalid' }, { apiKey: 'secret' }]) {
     assert.equal((await request(bridge, '/v1/bots/bot_coder/conversations', { token, method: 'POST', body })).status, 400);
   }
   for (const path of ['/v1/bots/bot_coder', '/v1/bots/providers', '/v1/bots?include=credentials']) assert.equal((await request(bridge, path, { token })).status, 404);
@@ -188,4 +189,69 @@ test('revocation during selection catalog lookup prevents bot creation', async t
   await waiting; bridge.authority.revoke(session.id); resume();
   assert.equal((await pending).status, 401);
   assert.deepEqual(calls, [{ path: '/api/bots' }]);
+});
+
+function editableCatalog() {
+  const value = selectableCatalog();
+  value.lifecycleSupported = true; value.defaultWorkspace = '/Users/fixture';
+  value.bots[0] = { ...value.bots[0], instructions: 'Saved instructions', updatedAt: '2026-10-20T12:00:00.000Z', computerId: 'ssh_fixture', active: false };
+  return value;
+}
+test('lifecycle capability exposes reviewed profile fields only on supporting hosts', () => {
+  const clean = publicBots(editableCatalog());
+  assert.equal(clean.lifecycleSupported, true); assert.equal(clean.defaultWorkspace, '/Users/fixture');
+  assert.equal(clean.bots[0].instructions, 'Saved instructions'); assert.equal(clean.bots[0].updatedAt, '2026-10-20T12:00:00.000Z'); assert.equal(clean.bots[0].computerId, 'ssh_fixture');
+  assert.equal(publicBots(catalog).lifecycleSupported, false); assert.equal(publicBots(catalog).bots[0].instructions, undefined);
+  for (const secret of ['SSH-SECRET','PRIVATE-HOST','PRIVATE-USER','CONNECTION-PRIVATE','MODEL-KEY','PRIVATE-ENDPOINT']) assert.ok(!JSON.stringify(clean).includes(secret));
+});
+test('HostClient profile surface accepts bounded public drafts and rejects credentials or arbitrary SSH', async () => {
+  const calls = []; const host = new HostClient({ upstream:'http://127.0.0.1:47831', fetcher:async(url,options)=>{calls.push({url,...options});return new Response('{}');} });
+  await host.request('/api/bots/profile',{method:'POST',body:{name:'New',provider:'codex',computerId:'local'}});
+  await host.request('/api/bots/bot_coder/profile',{method:'PATCH',body:{policy:'bypass',expectedUpdatedAt:'2026-10-20T12:00:00.000Z'}});
+  for(const body of [{name:'Bad',provider:'codex',computerId:'local',execution:{host:'bad'}},{providerSettings:{apiKey:'bad'}},{expectedUpdatedAt:'2026-10-20T12:00:00.000Z',modelSource:{connectionId:'private'}},{expectedUpdatedAt:'2026-10-20T12:00:00.000Z',policy:null},{policy:'bypass'},{expectedUpdatedAt:'2026-10-20T12:00:00.000Z',avatarConfig:{kind:'web',url:'https://bad'}}]) await assert.rejects(host.request('/api/bots/bot_coder/profile',{method:'PATCH',body}),{status:403});
+  assert.equal(calls.length,2);
+});
+test('paired phone creates and edits idle public bot profiles without preparing, starting or exposing private settings', async t => {
+  const value = editableCatalog(); value.computers[1].available = false;
+  const {bridge,token,calls}=await fixture(t,(path,options)=>{
+    if(path==='/api/bots')return structuredClone(value);
+    if(path==='/api/bots/profile'){
+      const bot={...value.bots[0],id:'bot_new',name:options.body.name,policy:options.body.policy??'manual'};value.bots.push(bot);return {...structuredClone(value),bot};
+    }
+    if(path==='/api/bots/bot_new/profile'){
+      const bot=value.bots.find(bot=>bot.id==='bot_new');Object.assign(bot,{instructions:options.body.instructions,policy:options.body.policy,updatedAt:'2026-10-20T12:00:00.001Z'});return {...structuredClone(value),bot};
+    }
+    throw Error('Unexpected mutation');
+  });
+  const draft={name:'Phone bot',provider:'configured',computerId:'ssh_fixture',modelId:'bm_fixture',workspace:'/srv/project',instructions:'Idle draft',capabilities:'both',computerMode:'host'};
+  const created=await request(bridge,'/v1/bots',{token,method:'POST',body:draft});assert.equal(created.status,201);assert.equal(created.json.bot.policy,'manual');assert.equal(created.json.bots.length,2);
+  assert.equal(created.json.bot.instructions,'Saved instructions');assert.ok(!JSON.stringify(created.json).includes('PRIVATE-HOST'));
+  const edit={instructions:'Reviewed instructions',policy:'bypass',expectedUpdatedAt:created.json.bot.updatedAt};
+  const saved=await request(bridge,'/v1/bots/bot_new',{token,method:'PATCH',body:edit});assert.equal(saved.status,200);assert.equal(saved.json.bot.policy,'bypass');assert.equal(saved.json.bot.instructions,'Reviewed instructions');
+  assert.deepEqual(calls.map(c=>c.path),['/api/bots','/api/bots/profile','/api/bots','/api/bots/bot_new/profile']);
+  assert.deepEqual(calls[1].body,draft);assert.deepEqual(calls[3].body,edit);
+  assert.ok(!calls.some(c=>/prepare|serving|messages|computer\/start/.test(c.path)));
+});
+test('paired profile validation blocks stale or removed selections and old hosts before mutation', async t => {
+  let value=editableCatalog();const {bridge,token,calls}=await fixture(t,()=>value);
+  for(const body of [{name:'bad',provider:'codex',computerId:'removed'},{name:'bad',provider:'configured',computerId:'local',modelId:'removed'},{name:'bad',provider:'codex',computerId:'local',execution:{kind:'ssh'}},{name:'bad',provider:'codex',computerId:'local',providerSettings:{apiKey:'secret'}}]) assert.ok([400,409].includes((await request(bridge,'/v1/bots',{token,method:'POST',body})).status));
+  const stale=await request(bridge,'/v1/bots/bot_coder',{token,method:'PATCH',body:{name:'stale',expectedUpdatedAt:'2026-10-19T12:00:00.000Z'}});assert.equal(stale.status,409);
+  value=catalog;const old=await request(bridge,'/v1/bots',{token,method:'POST',body:{name:'new',provider:'codex',computerId:'local'}});assert.equal(old.status,409);assert.match(old.json.error,/Update Strata/);
+  assert.ok(calls.every(c=>c.path==='/api/bots'));
+});
+test('pairing revocation during profile inventory read prevents a later save', async t => {
+  let entered,resume;const ready=new Promise(r=>{entered=r;}),hold=new Promise(r=>{resume=r;});
+  const {bridge,token,session,calls}=await fixture(t,async()=>{entered();await hold;return editableCatalog();});
+  const pending=request(bridge,'/v1/bots',{token,method:'POST',body:{name:'new',provider:'codex',computerId:'local'}});
+  await ready;bridge.authority.revoke(session.id);resume();assert.equal((await pending).status,401);assert.deepEqual(calls,[{path:'/api/bots'}]);
+});
+test('new-chat approval override stays bounded and reaches only the new conversation snapshot', async t => {
+  const value=editableCatalog();const {bridge,token,calls}=await fixture(t,path=>path==='/api/bots'?value:detail);
+  const created=await request(bridge,'/v1/bots/bot_coder/conversations',{token,method:'POST',body:{policy:'bypass'}});assert.equal(created.status,201);assert.deepEqual(calls.at(-1),{path:'/api/bots/bot_coder/conversations',method:'POST',body:{policy:'bypass'}});
+  const before=calls.length;for(const policy of ['auto',null,true])assert.equal((await request(bridge,'/v1/bots/bot_coder/conversations',{token,method:'POST',body:{policy}})).status,400);assert.equal(calls.length,before);
+});
+test('older selection-capable hosts cannot silently ignore a new-chat approval override', async t => {
+  const {bridge,token,calls}=await fixture(t,()=>selectableCatalog());
+  for(const policy of ['manual','plan','bypass'])assert.equal((await request(bridge,'/v1/bots/bot_coder/conversations',{token,method:'POST',body:{policy}})).status,409);
+  assert.ok(calls.every(call=>call.path==='/api/bots'));
 });
