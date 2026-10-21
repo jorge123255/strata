@@ -1052,6 +1052,98 @@ final class CompanionSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testTeamPublicInstructionsRolesPersistenceAndConflict() async throws {
+        let control = try pairWorkspaceFixture(), initial = try await fixtureControl(control, action: "state")
+        let original = try XCTUnwrap(initial["roomTeam"] as? [String: Any]), id = try XCTUnwrap(original["id"] as? String)
+        let members = try XCTUnwrap(initial["roomMembers"] as? [[String: Any]])
+        let builder = try XCTUnwrap(members[1]["id"] as? String), helper = try XCTUnwrap((initial["roomExtraMember"] as? [String: Any])?["id"] as? String)
+        let initialChannel = try XCTUnwrap(initial["teamChannel"] as? [String: Any]), originalEntries = try XCTUnwrap(initialChannel["messages"] as? [[String: Any]])
+        let originalIds = Set(originalEntries.compactMap { $0["id"] as? String })
+        let initialSettings = try XCTUnwrap(initial["teamSettings"] as? [String: Any]), initialRuns = try XCTUnwrap(initialSettings["runs"] as? [[String: Any]])
+        XCTAssertEqual(initialRuns.count, 1); XCTAssertTrue(initialRuns.allSatisfy { $0["state"] as? String == "completed" })
+        XCTAssertFalse(originalEntries.contains { $0["state"] as? String == "error" })
+        try tapWorkspace(app.buttons["team-" + id])
+        func openEditor() throws {
+            try openTeamDetails()
+            if !app.buttons["editBotTeamButton"].exists { try tapWorkspace(app.buttons["botTeamSettingsDisclosure"]) }
+            try tapWorkspace(app.buttons["editBotTeamButton"]); try require(app.textFields["botTeamNameInput"])
+        }
+        func showFromTop(_ element: XCUIElement) throws {
+            for _ in 0..<7 {
+                let name = app.textFields["botTeamNameInput"], nav = app.navigationBars.firstMatch
+                if name.exists, name.isHittable, name.frame.midY > nav.frame.maxY { break }
+                let window = app.windows.firstMatch, frame = window.frame, origin = window.coordinate(withNormalizedOffset: .zero)
+                origin.withOffset(CGVector(dx: frame.width * 0.5, dy: frame.height * 0.30)).press(forDuration: 0.02, thenDragTo: origin.withOffset(CGVector(dx: frame.width * 0.5, dy: frame.height * 0.72)))
+            }
+            try tapWorkspace(element, performTap: false)
+        }
+        func setMember(_ botId: String, included: Bool) throws {
+            let element = app.switches["teamMember-" + botId], desired = included ? "1" : "0"
+            try showFromTop(element)
+            let evidence = XCTAttachment(string: app.debugDescription)
+            evidence.name = "Member switch AX tree before change"; evidence.lifetime = .keepAlways; add(evidence)
+            for _ in 0..<2 {
+                if element.value as? String == desired { return }
+                let target = element.switches.firstMatch.exists ? element.switches.firstMatch : element
+                target.coordinate(withNormalizedOffset: CGVector(dx: 0.80, dy: 0.5)).tap()
+                let changed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in element.value as? String == desired }, object: nil)
+                if XCTWaiter.wait(for: [changed], timeout: 3) == .completed { return }
+            }
+            guard element.value as? String == desired else { throw acceptanceError("The member switch did not reach its requested state. No settings were saved.") }
+        }
+        func dismissKeyboard() { if app.keyboards.firstMatch.exists { app.buttons["dismissBotTeamNameKeyboardButton"].tap() } }
+        let instructions = app.descendants(matching: .any).matching(identifier: "botTeamInstructionsInput").firstMatch
+        let role = app.textFields["teamMemberRole-" + builder]
+        let memberInstructions = app.descendants(matching: .any).matching(identifier: "teamMemberInstructions-" + builder).firstMatch
+        let sharedText = "Keep the team channel informed and review work together.", memberText = "Implement assigned work and report the result here."
+        try openEditor(); try tapWorkspace(instructions); instructions.typeText(sharedText); dismissKeyboard()
+        try setMember(helper, included: true)
+        try tapWorkspace(app.descendants(matching: .any).matching(identifier: "teamMemberBriefing-" + builder).firstMatch)
+        try tapWorkspace(role); role.typeText("Developer"); dismissKeyboard()
+        try tapWorkspace(memberInstructions); memberInstructions.typeText(memberText); dismissKeyboard()
+        attachScreenshot("Public team instructions — shared guidance and Developer role")
+        try showFromTop(app.switches["teamMember-" + helper])
+        XCTAssertEqual(app.switches["teamMember-" + helper].value as? String, "1", "Verify the requested membership before saving.")
+        try waitEnabled(app.buttons["confirmBotTeamButton"]); app.buttons["confirmBotTeamButton"].tap()
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.textFields["botTeamNameInput"])
+        XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 15), .completed)
+        app.buttons["closeTeamDetailsButton"].tap()
+        app.terminate(); app.launch(); tapTab("Bots"); try tapWorkspace(app.buttons["team-" + id]); try openEditor()
+        try showFromTop(instructions); XCTAssertEqual(instructions.value as? String, sharedText)
+        try showFromTop(app.switches["teamMember-" + helper]); XCTAssertEqual(app.switches["teamMember-" + helper].value as? String, "1")
+        try tapWorkspace(app.descendants(matching: .any).matching(identifier: "teamMemberBriefing-" + builder).firstMatch)
+        try tapWorkspace(role, performTap: false); XCTAssertEqual(role.value as? String, "Developer")
+        XCTAssertEqual(memberInstructions.value as? String, memberText)
+        attachScreenshot("Public team instructions — member and roles retained after relaunch")
+        app.buttons["Cancel"].tap(); app.buttons["closeTeamDetailsButton"].tap(); try openEditor()
+        try showFromTop(instructions); instructions.tap(); instructions.typeText(" Draft for review."); dismissKeyboard()
+        let heldDraft = instructions.value as? String
+        _ = try await fixtureControl(control, action: "team-settings-change")
+        try require(app.staticTexts["teamEditConflictMessage"])
+        XCTAssertEqual(instructions.value as? String, heldDraft); XCTAssertFalse(app.buttons["confirmBotTeamButton"].isEnabled)
+        attachScreenshot("Public team instructions — conflict keeps the unsaved draft")
+        app.buttons["reloadBotTeamButton"].tap()
+        try XCTUnwrap(app.buttons.matching(identifier: "Reload latest team").allElementsBoundByIndex.last(where: { $0.isHittable })).tap()
+        let reloaded = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.staticTexts["teamEditConflictMessage"])
+        XCTAssertEqual(XCTWaiter.wait(for: [reloaded], timeout: 8), .completed)
+        try showFromTop(instructions); XCTAssertEqual(instructions.value as? String, sharedText)
+        _ = try await fixtureControl(control, action: "appearance-dark")
+        attachScreenshot("Public team instructions — latest shared settings in Dark mode")
+        app.buttons["Cancel"].tap(); app.buttons["closeTeamDetailsButton"].tap()
+        let final = try await fixtureControl(control, action: "state"), settings = try XCTUnwrap(final["teamSettings"] as? [String: Any])
+        let teams = try XCTUnwrap(settings["teams"] as? [[String: Any]]), saved = try XCTUnwrap(teams.first { $0["id"] as? String == id })
+        XCTAssertEqual(Set(saved["memberIds"] as? [String] ?? []), Set(members.compactMap { $0["id"] as? String } + [helper]))
+        let briefing = try XCTUnwrap(saved["briefing"] as? [String: Any]); XCTAssertEqual(briefing["instructions"] as? String, sharedText)
+        XCTAssertEqual(briefing["members"] as? [[String: String]], [["botId": builder, "role": "Developer", "instructions": memberText]])
+        let finalChannel = try XCTUnwrap(final["teamChannel"] as? [String: Any]), entries = try XCTUnwrap(finalChannel["messages"] as? [[String: Any]])
+        XCTAssertTrue(originalIds.isSubset(of: Set(entries.compactMap { $0["id"] as? String })))
+        XCTAssertTrue((finalChannel["activeRuns"] as? [Any])?.isEmpty == true); XCTAssertFalse(entries.contains { $0["state"] as? String == "error" })
+        let calls = try XCTUnwrap(final["calls"] as? [[String: Any]])
+        XCTAssertEqual(calls.filter { $0["method"] as? String == "PATCH" }.count, 1)
+        XCTAssertTrue(calls.allSatisfy { $0["method"] as? String == "GET" || $0["method"] as? String == "PATCH" && $0["path"] as? String == "/api/bots/teams/" + id })
+    }
+
+    @MainActor
     func testTeamExplicitTaskSharedThinkingStopAndActivity() async throws {
         let controlURL = try pairWorkspaceFixture()
         try openCreateMenu()

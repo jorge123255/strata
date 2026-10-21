@@ -16,7 +16,7 @@ const root = mkdtempSync(join(tmpdir(), 'strata-ios-ui-'));
 chmodSync(root, 0o700);
 
 const calls = [];
-const photoSimulator = ['--test-direct-bots', '--test-team-settings', '--test-bot-photos', '--test-team-channel-layout', '--test-group-chat-layout'].includes(process.argv[2]) ? /(?:^|,)id=([A-Fa-f0-9-]{36})(?:,|$)/.exec(process.argv[3] ?? '')?.[1] : undefined;
+const photoSimulator = ['--test-direct-bots', '--test-team-settings', '--test-team-instructions', '--test-bot-photos', '--test-team-channel-layout', '--test-group-chat-layout'].includes(process.argv[2]) ? /(?:^|,)id=([A-Fa-f0-9-]{36})(?:,|$)/.exec(process.argv[3] ?? '')?.[1] : undefined;
 let originalSimulatorAppearance;
 if (photoSimulator) {
   const appearance = execFileSync('/usr/bin/xcrun', ['simctl', 'ui', photoSimulator, 'appearance'], { encoding: 'utf8' }).trim().toLowerCase();
@@ -47,7 +47,7 @@ let createdBotConversation;
 const directCreatedConversations = [];
 const lifecycleMode = ['--test-devin-provider', '--test-bot-lifecycle', '--test-bot-avatar-states', '--test-bot-photos'].includes(process.argv[2]);
 const directBotsMode = process.argv[2] === '--test-direct-bots';
-const workspaceFlags = ['--test-devin-provider', '--test-direct-bots', '--test-team-settings', '--test-notifications', '--test-group-chat-layout', '--test-team-channel-layout', '--test-team-channel', '--test-bot-photos', '--test-bot-lifecycle', '--test-bot-avatar-states', '--test-workspace-skills', '--test-workspace-connections', '--test-workspace-teams', '--test-facelift'];
+const workspaceFlags = ['--test-devin-provider', '--test-direct-bots', '--test-team-settings', '--test-team-instructions', '--test-notifications', '--test-group-chat-layout', '--test-team-channel-layout', '--test-team-channel', '--test-bot-photos', '--test-bot-lifecycle', '--test-bot-avatar-states', '--test-workspace-skills', '--test-workspace-connections', '--test-workspace-teams', '--test-facelift'];
 const workspaceMode = workspaceFlags.includes(process.argv[2]);
 let teamConversation, savedTeam, teamRun;
 const teamLimits = { maxParallel: 2, maxDepth: 2, maxHops: 8, maxTurns: 24, maxDurationMs: 600000 };
@@ -104,8 +104,8 @@ if (lifecycleMode) {
 }
 // The new room acceptance uses the real durable bot/team/conversation services.
 // Only model output is scripted. No provider, shell, SSH, browser or VM exists.
-const teamSettingsMode = process.argv[2] === '--test-team-settings';
-const teamChannelMode = ['--test-team-settings', '--test-team-channel', '--test-team-channel-layout', '--test-group-chat-layout'].includes(process.argv[2]);
+const teamSettingsMode = ['--test-team-settings', '--test-team-instructions'].includes(process.argv[2]);
+const teamChannelMode = ['--test-team-settings', '--test-team-instructions', '--test-team-channel', '--test-team-channel-layout', '--test-group-chat-layout'].includes(process.argv[2]);
 let roomBots, roomChats, roomTeam, roomEmptyTeam, roomExtraMember, roomMembers = [], roomTurns = [];
 let settingsHold;
 const teamSettingsActions = [];
@@ -131,6 +131,8 @@ if (teamChannelMode) {
       input.onFrame({ type: 'reasoning', text: 'Review the shared team channel and answer as the named teammate.' });
       const mode = input.bot.teamContext?.channelMode;
       if (mode === 'routing') {
+        // The team settings fixture has no work after its seeded greeting.
+        if (teamSettingsMode && input.message.startsWith('[The public conversation invitations have finished.')) return;
         if (input.message.includes('[Strata teammate result')) {
           input.onFrame({ type: 'delta', text: 'The team report is recorded. The fixture task is complete.' });
         } else if (input.message.includes('finished their public bids')) {
@@ -163,7 +165,7 @@ if (teamChannelMode) {
   roomMembers = ['Coordinator', 'Builder', 'Reviewer'].map((name, index) => roomBots.create({ name, provider: 'codex', model: 'Fixture model', workspace: teamSettingsMode ? '/workspace' : directory, ...(teamSettingsMode ? { computerMode: 'cua' } : {}), policy: 'bypass', avatarConfig: { color: ['sky', 'orange', 'violet'][index], eyes: 'round', ears: 'round', shape: ['orb', 'tile', 'spark'][index] } }).bot);
   roomTeam = roomBots.team.create({ name: 'Engineering', memberIds: roomMembers.map(bot => bot.id), coordinatorId: roomMembers[0].id, enabled: true }).team;
   if (teamSettingsMode) roomExtraMember = roomBots.create({ name: 'Remote helper', provider: 'codex', model: 'Fixture model', workspace: '/srv/fixture-project', execution: { kind: 'ssh', host: 'fixture.invalid', user: 'fixture', name: 'Fixture SSH computer' }, policy: 'manual' }).bot;
-  if (['--test-team-settings', '--test-team-channel-layout', '--test-group-chat-layout'].includes(process.argv[2])) {
+  if (['--test-team-settings', '--test-team-instructions', '--test-team-channel-layout', '--test-group-chat-layout'].includes(process.argv[2])) {
     // Layout-only UI reads an actual saved journal seeded by the inert fixture.
     // These setup turns have no provider or external tools and precede pairing.
     const until = async predicate => { const deadline = Date.now() + 5_000; while (!predicate()) { if (Date.now() > deadline) throw new Error('Inert layout seed did not settle'); await new Promise(resolve => setTimeout(resolve, 10)); } };
@@ -553,7 +555,7 @@ try {
         '-project', project, '-scheme', 'StrataMobile', '-destination', destination,
         '-derivedDataPath', derivedData,
         ...(process.env.STRATA_TEST_RESULT_BUNDLE ? ['-resultBundlePath', process.env.STRATA_TEST_RESULT_BUNDLE] : []),
-        '-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test-devin-provider': 'testPhoneCreatesDevinBotWithHostModelsAndNoImplicitRun', '--test-direct-bots': 'testDirectBotRosterChatProfileNewConversationAndRelaunch', '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation', '--test-computer': 'testActualSampleAvatarAndIsolatedComputerControl', '--test-bot-photos': 'testPhotoLedBotsCreationAppearanceAndWorkspaceNavigation', '--test-bot-lifecycle': 'testPhoneBotCreationEditingCASAndApprovalModes', '--test-bot-avatar-states': 'testBotAvatarStatesInteractionAndRosterFilters', '--test-facelift': 'testFaceliftPrincipalScreensAndSharedHistory', '--test-workspace-skills': 'testReviewedSkillAssignmentAndWorkspaceNavigation', '--test-workspace-connections': 'testSavedConnectionCheckAndReviewedAccess', '--test-workspace-teams': 'testTeamExplicitTaskSharedThinkingStopAndActivity', '--test-team-channel': 'testNaturalTeamChannelPeersAssignmentsThinkingAndStop', '--test-team-channel-layout': 'testTeamChannelNormalDarkAndLargeTypeLayout', '--test-group-chat-layout': 'testGroupRosterAndRoomPhotoLayoutWithRealMenus', '--test-team-settings': 'testTeamMembershipSharedComputerFoldersConflictAndPersistence', '--test-notifications': 'testNotificationPreferencesPrivateInboxRoutingMuteAndRelaunch' })[process.argv[2]],
+        '-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test-devin-provider': 'testPhoneCreatesDevinBotWithHostModelsAndNoImplicitRun', '--test-direct-bots': 'testDirectBotRosterChatProfileNewConversationAndRelaunch', '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation', '--test-computer': 'testActualSampleAvatarAndIsolatedComputerControl', '--test-bot-photos': 'testPhotoLedBotsCreationAppearanceAndWorkspaceNavigation', '--test-bot-lifecycle': 'testPhoneBotCreationEditingCASAndApprovalModes', '--test-bot-avatar-states': 'testBotAvatarStatesInteractionAndRosterFilters', '--test-facelift': 'testFaceliftPrincipalScreensAndSharedHistory', '--test-workspace-skills': 'testReviewedSkillAssignmentAndWorkspaceNavigation', '--test-workspace-connections': 'testSavedConnectionCheckAndReviewedAccess', '--test-workspace-teams': 'testTeamExplicitTaskSharedThinkingStopAndActivity', '--test-team-channel': 'testNaturalTeamChannelPeersAssignmentsThinkingAndStop', '--test-team-channel-layout': 'testTeamChannelNormalDarkAndLargeTypeLayout', '--test-group-chat-layout': 'testGroupRosterAndRoomPhotoLayoutWithRealMenus', '--test-team-settings': 'testTeamMembershipSharedComputerFoldersConflictAndPersistence', '--test-team-instructions': 'testTeamPublicInstructionsRolesPersistenceAndConflict', '--test-notifications': 'testNotificationPreferencesPrivateInboxRoutingMuteAndRelaunch' })[process.argv[2]],
         '-parallel-testing-enabled', 'NO', 'test',
       ], { stdio: 'inherit', env: { ...process.env,
         TEST_RUNNER_STRATA_TEST_INVITATION: connection.invitation,

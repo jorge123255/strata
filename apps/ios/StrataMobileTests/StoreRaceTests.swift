@@ -1434,11 +1434,50 @@ final class BotWorkspaceTests: XCTestCase {
     }
     func testTeamSettingsRemainOptionalForOlderHosts() throws {
         let old = try decode(["teams": [team()], "runs": []], as: BotTeamsSnapshot.self)
-        XCTAssertNil(old.teamSettingsSupported); XCTAssertNil(old.teamComputers)
+        XCTAssertNil(old.teamSettingsSupported); XCTAssertNil(old.teamInstructionsSupported); XCTAssertNil(old.teamComputers)
         XCTAssertNil(old.teams.first?.revision); XCTAssertNil(old.teams.first?.execution)
+        XCTAssertNil(old.teams.first?.briefing)
         let modern = try decode(settingsSnapshot(), as: BotTeamsSnapshot.self)
         XCTAssertEqual(modern.teamComputers?.last?.workspace, "/workspace")
         XCTAssertTrue(modern.teamComputers?.last?.isIsolated == true)
+    }
+    func testTeamBriefingsDecodeAndValidatePublicRosterAndUTF16Bounds() throws {
+        let briefing = BotTeamBriefing(instructions: "Keep work flowing in the shared channel.", members: [BotTeamMemberBriefing(botId: "bot_reviewer", role: "Reviewer", instructions: "Review the implementation and report the result.")])
+        var value = managedTeam(); value["briefing"] = ["instructions": briefing.instructions, "members": [["botId": "bot_reviewer", "role": "Reviewer", "instructions": "Review the implementation and report the result."]]]
+        let decoded = try decode(value, as: BotTeam.self); XCTAssertEqual(decoded.briefing, briefing)
+        var draft = sharedDraft(); draft.briefing = briefing
+        XCTAssertTrue(BotWorkspaceStore.validTeamDraft(draft))
+        draft.briefing?.members[0].botId = "outside"; XCTAssertFalse(BotWorkspaceStore.validTeamDraft(draft))
+        draft.briefing = briefing; draft.briefing?.members.append(briefing.members[0]); XCTAssertFalse(BotWorkspaceStore.validTeamDraft(draft))
+        draft.briefing = briefing; draft.briefing?.instructions = String(repeating: "😀", count: 4_001); XCTAssertFalse(BotWorkspaceStore.validTeamDraft(draft))
+        draft.briefing = briefing; draft.briefing?.members[0].role = String(repeating: "😀", count: 61); XCTAssertFalse(BotWorkspaceStore.validTeamDraft(draft))
+        draft.briefing = briefing; draft.briefing?.members[0].instructions = String(repeating: "x", count: 4_001); XCTAssertFalse(BotWorkspaceStore.validTeamDraft(draft))
+        draft.briefing = briefing; draft.briefing?.instructions = "bad\0text"; XCTAssertFalse(BotWorkspaceStore.validTeamDraft(draft))
+        draft.memberIds = (0..<5).map { "bot_\($0)" }; draft.coordinatorId = "bot_0"
+        draft.briefing = BotTeamBriefing(instructions: String(repeating: "界", count: 8_000), members: (0..<4).map { BotTeamMemberBriefing(botId: "bot_\($0)", instructions: String(repeating: "界", count: 4_000)) })
+        XCTAssertTrue(BotWorkspaceStore.validTeamDraft(draft))
+        draft.briefing?.members.append(BotTeamMemberBriefing(botId: "bot_4", role: "X")); XCTAssertFalse(BotWorkspaceStore.validTeamDraft(draft))
+    }
+    func testTeamBriefingUpdatesUseRevisionAndOlderHostsCannotReceiveNewFields() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }; var supported = false
+        fixture.respond { request in
+            if request.httpMethod == "PATCH" { return ["team": self.managedTeam(revision: 2)] }
+            var value = self.settingsSnapshot(); value["teamInstructionsSupported"] = supported; return value
+        }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(); await workspace.refreshTeams()
+        let original = try XCTUnwrap(workspace.teams?.teams.first)
+        var draft = sharedDraft(); draft.briefing = BotTeamBriefing(instructions: "Keep everyone informed.", members: [BotTeamMemberBriefing(botId: "bot_coder", role: "Developer", instructions: "Implement the coordinator’s assignment.")])
+        let rejected = await workspace.updateTeam(original, draft: draft); XCTAssertFalse(rejected)
+        let notCreated = await workspace.createTeam(draft); XCTAssertFalse(notCreated)
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+        supported = true; await workspace.refreshTeams()
+        let saved = await workspace.updateTeam(original, draft: draft); XCTAssertTrue(saved)
+        let patch = try XCTUnwrap(fixture.requests.first { $0.method == "PATCH" })
+        XCTAssertEqual(patch.jsonBody?["expectedRevision"] as? Int, 1)
+        let sent = try XCTUnwrap(patch.jsonBody?["briefing"] as? [String: Any])
+        XCTAssertEqual(sent["instructions"] as? String, "Keep everyone informed.")
+        XCTAssertEqual(sent["members"] as? [[String: String]], [["botId": "bot_coder", "role": "Developer", "instructions": "Implement the coordinator’s assignment."]])
+        XCTAssertFalse(fixture.requests.contains { $0.path.contains("/profiles") || $0.path.contains("/conversations") || $0.path.contains("/computer") || $0.path.contains("/runs") })
     }
     func testTeamUpdateUsesExactRevisionAnchorAndFolderWithoutRecreatingOrChangingHistory() async throws {
         let fixture = StoreTransport(); defer { fixture.close() }; var revision = 1

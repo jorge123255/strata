@@ -19,6 +19,20 @@ struct BotTeam: Decodable, Identifiable, Equatable {
     var channelPreview: BotTeamChannelPreview?
     var revision: Int?
     var execution: BotTeamExecution?
+    var briefing: BotTeamBriefing?
+}
+
+/// Public, team-scoped guidance. A bot's private profile is managed separately.
+struct BotTeamBriefing: Codable, Equatable {
+    var instructions = ""
+    var members: [BotTeamMemberBriefing] = []
+}
+
+struct BotTeamMemberBriefing: Codable, Equatable, Identifiable {
+    var botId: String
+    var role = ""
+    var instructions = ""
+    var id: String { botId }
 }
 
 /// The target is a configured Mac/SSH computer or a member's exact CUA guest.
@@ -73,6 +87,7 @@ struct BotTeamsSnapshot: Decodable, Equatable {
     var runs: [BotTeamRun]
     var reason: String?
     var teamSettingsSupported: Bool?
+    var teamInstructionsSupported: Bool?
     var teamComputers: [BotTeamComputer]?
 }
 
@@ -125,6 +140,7 @@ struct BotTeamDraft: Encodable {
     var enabled = false
     var limits = BotTeamLimits()
     var execution: BotTeamExecution?
+    var briefing: BotTeamBriefing?
 }
 
 struct BotTeamUpdate: Encodable {
@@ -134,6 +150,7 @@ struct BotTeamUpdate: Encodable {
     var coordinatorId: String
     var limits: BotTeamLimits
     var execution: BotTeamExecution
+    var briefing: BotTeamBriefing?
 }
 
 struct BotWorkspaceActivity: Decodable, Identifiable, Equatable {

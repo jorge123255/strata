@@ -64,9 +64,10 @@ struct BotTeamEditor: View {
     @State private var executionMode: String
     @State private var computerId: String
     @State private var folder: String
+    @State private var briefing: BotTeamBriefing
     @State private var confirmingReload = false
     @FocusState private var focused: Field?
-    private enum Field { case name, folder }
+    private enum Field: Hashable { case name, folder, instructions, memberRole(String), memberInstructions(String) }
 
     init(store: CompanionStore, workspace: BotWorkspaceStore, team: BotTeam? = nil) {
         self.store = store; self.workspace = workspace
@@ -78,8 +79,10 @@ struct BotTeamEditor: View {
         _executionMode = State(initialValue: team?.execution?.mode ?? "individual")
         _computerId = State(initialValue: team?.execution?.computerId ?? "")
         _folder = State(initialValue: team?.execution?.workspace ?? "")
+        _briefing = State(initialValue: team?.briefing ?? BotTeamBriefing())
     }
     private var supportsSettings: Bool { workspace.teams?.teamSettingsSupported == true }
+    private var supportsInstructions: Bool { workspace.teams?.teamInstructionsSupported == true }
     private var current: BotTeam? { baseline.flatMap { old in workspace.teams?.teams.first { $0.id == old.id } } }
     private var hasActiveWork: Bool { baseline.map { old in workspace.teams?.runs.contains { $0.teamId == old.id && $0.isActive } == true } ?? false }
     private var changed: Bool { baseline != nil && (current == nil || current?.revision != baseline?.revision) }
@@ -87,7 +90,8 @@ struct BotTeamEditor: View {
     private var chosenComputer: BotTeamComputer? { computers.first { $0.id == computerId } }
     private var draft: BotTeamDraft {
         BotTeamDraft(name: name.trimmingCharacters(in: .whitespacesAndNewlines), memberIds: selected.sorted(), coordinatorId: coordinator, limits: limits,
-                     execution: supportsSettings ? (executionMode == "shared" ? BotTeamExecution(mode: "shared", computerId: computerId, workspace: folder.trimmingCharacters(in: .whitespacesAndNewlines)) : .individual) : nil)
+                     execution: supportsSettings ? (executionMode == "shared" ? BotTeamExecution(mode: "shared", computerId: computerId, workspace: folder.trimmingCharacters(in: .whitespacesAndNewlines)) : .individual) : nil,
+                     briefing: supportsInstructions ? BotTeamBriefing(instructions: briefing.instructions.trimmingCharacters(in: .whitespacesAndNewlines), members: briefing.members.filter { selected.contains($0.botId) }.map { BotTeamMemberBriefing(botId: $0.botId, role: $0.role.trimmingCharacters(in: .whitespacesAndNewlines), instructions: $0.instructions.trimmingCharacters(in: .whitespacesAndNewlines)) }.filter { !$0.role.isEmpty || !$0.instructions.isEmpty }.sorted { $0.botId < $1.botId }) : nil)
     }
     private var canSave: Bool {
         BotWorkspaceStore.validTeamDraft(draft) && workspace.mutation == nil && !hasActiveWork && !changed &&
@@ -99,6 +103,14 @@ struct BotTeamEditor: View {
             Form {
                 Section("Team") {
                     TextField("Team name", text: $name).focused($focused, equals: .name).submitLabel(.done).onSubmit { focused = nil }.accessibilityIdentifier("botTeamNameInput")
+                }
+                if supportsInstructions {
+                    Section {
+                        TextField("What should this team work on?", text: $briefing.instructions, axis: .vertical)
+                            .lineLimit(4...8).focused($focused, equals: .instructions).accessibilityIdentifier("botTeamInstructionsInput")
+                    } header: { Text("Team instructions") } footer: {
+                        Text("Shared with every teammate. Your coordinator can update this team’s instructions and roles. Private bot profiles, tools and permissions are managed separately.")
+                    }
                 }
                 Section {
                     ForEach(store.botCatalog?.bots ?? []) { bot in
@@ -113,6 +125,30 @@ struct BotTeamEditor: View {
                     }.accessibilityIdentifier("teamCoordinatorPicker")
                     Text("The coordinator assigns work and brings results together. Choose 2–12 teammates.").font(.caption).foregroundStyle(.secondary)
                 } header: { Text("Team members") }
+                if supportsInstructions {
+                    Section {
+                        ForEach(selected.sorted(), id: \.self) { id in
+                            let bot = store.botCatalog?.bots.first { $0.id == id }
+                            let role = briefing.members.first { $0.botId == id }?.role ?? ""
+                            DisclosureGroup {
+                                TextField("Role in this team", text: memberBriefingBinding(id, keyPath: \.role))
+                                    .focused($focused, equals: .memberRole(id)).accessibilityIdentifier("teamMemberRole-\(id)")
+                                TextField("Instructions for this teammate", text: memberBriefingBinding(id, keyPath: \.instructions), axis: .vertical)
+                                    .lineLimit(3...6).focused($focused, equals: .memberInstructions(id)).accessibilityIdentifier("teamMemberInstructions-\(id)")
+                            } label: {
+                                HStack(spacing: 10) {
+                                    AvatarBadge(bot?.face ?? .default(for: "Bot"), size: 30)
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(bot?.name ?? "Unavailable bot")
+                                        Text(role.isEmpty ? (id == coordinator ? "Coordinator" : "Add a role & instructions") : role).font(.caption).foregroundStyle(.secondary)
+                                    }
+                                }.accessibilityIdentifier("teamMemberBriefing-\(id)")
+                            }
+                        }
+                    } header: { Text("Roles & instructions") } footer: {
+                        Text("Give each teammate a clear responsibility within this team. These details are visible to all team members.")
+                    }
+                }
                 if supportsSettings {
                     Section {
                         Picker("Execution", selection: $executionMode) {
@@ -207,6 +243,13 @@ struct BotTeamEditor: View {
     private func reload(_ team: BotTeam) {
         baseline = team; name = team.name; selected = Set(team.memberIds); coordinator = team.coordinatorId; limits = team.limits
         executionMode = team.execution?.mode ?? "individual"; computerId = team.execution?.computerId ?? ""; folder = team.execution?.workspace ?? ""
+        briefing = team.briefing ?? BotTeamBriefing()
+    }
+    private func memberBriefingBinding(_ botId: String, keyPath: WritableKeyPath<BotTeamMemberBriefing, String>) -> Binding<String> {
+        Binding(get: { briefing.members.first { $0.botId == botId }?[keyPath: keyPath] ?? "" }, set: { text in
+            if let index = briefing.members.firstIndex(where: { $0.botId == botId }) { briefing.members[index][keyPath: keyPath] = text }
+            else { var member = BotTeamMemberBriefing(botId: botId); member[keyPath: keyPath] = text; briefing.members.append(member) }
+        })
     }
     private func save() {
         guard canSave else { return }
@@ -419,7 +462,21 @@ struct BotTeamDetailView: View {
         if workspace.teams?.teamSettingsSupported != true { Text("Update Strata on your Mac to edit this team and choose a shared computer.").font(.caption).foregroundStyle(.secondary) }
         ForEach(team.memberIds, id: \.self) { id in
             let bot = store.botCatalog?.bots.first { $0.id == id }
-            HStack { AvatarBadge(bot?.face ?? .default(for: "Bot"), size: 30); Text(bot?.name ?? "Unavailable bot"); Spacer(); if id == team.coordinatorId { Text("Coordinator").font(.caption).foregroundStyle(.secondary) } }
+            let member = team.briefing?.members.first { $0.botId == id }
+            HStack(alignment: .top, spacing: 10) {
+                AvatarBadge(bot?.face ?? .default(for: "Bot"), size: 30)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(bot?.name ?? "Unavailable bot")
+                    if let role = member?.role, !role.isEmpty { Text(role).font(.caption).foregroundStyle(.secondary) }
+                    if let instructions = member?.instructions, !instructions.isEmpty { Text(instructions).font(.caption).foregroundStyle(.secondary).lineLimit(4) }
+                }
+                Spacer()
+                if id == team.coordinatorId { Text("Coordinator").font(.caption).foregroundStyle(.secondary) }
+            }
+        }
+        if let instructions = team.briefing?.instructions, !instructions.isEmpty {
+            VStack(alignment: .leading, spacing: 6) { Text("Team instructions").font(.subheadline.weight(.semibold)); Text(instructions).font(.subheadline).textSelection(.enabled) }
+                .accessibilityIdentifier("teamSavedInstructions")
         }
         if let execution = team.execution, execution.isShared {
             let computer = workspace.teams?.teamComputers?.first { $0.id == execution.computerId }
