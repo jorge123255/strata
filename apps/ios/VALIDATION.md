@@ -1,4 +1,12 @@
-# Team host-folder controls — October 21, 2026
+# iPhone companion validation
+
+## Build 26: all available teammates (October 21, 2026)
+
+Build 26 removes the team member and parallel-slot controls when paired to the updated Mac host. It retains legacy controls with older hosts. The native simulator selected and saved 14 teammates through the real disposable pinned-TLS bridge, with no model or computer work. Final workspace units passed 35/35; the earlier full unit suite executed 178 tests with one optional skip and zero failures.
+
+Product source is `bfb0bc72d932a81518e0fdc1fbf01738a767190c`. The manually signed generic-device build passed exact source, whole artifact, profile/certificate, full entitlement and default Keychain-group checks against accepted build 25. The same iPhone received **0.1.0 (26)** over 25, confirmed by CoreDevice. The app was not running and was left closed. No re-pair, Keychain reset, account/profile change or physical UI test occurred. See [team validation](../../BOTS-UNRESTRICTED-TEAMS-VALIDATION.md) for precise scope, Mac activation and preservation evidence.
+
+## Build 25: team host-folder controls (October 21, 2026)
 
 Build 25 was installed on the physical iPhone and the installed build was verified through `devicectl`. It uses the existing Strata bundle, development profile and Keychain identity. The app was not launched during this installation check; physical-phone UI and post-install pairing behavior are not claimed as tested.
 
