@@ -43,10 +43,12 @@ Original unit inputs and compiled app were retained separately from later test-o
 
 All 39 product inputs match the tested committed source, aggregate `2110c09e61d7f19f64f858a165c94e00df46197a43963cdf0a40dc2de6ea33be`. The signed artifact passed 19 author checks and 17 independent checks, with executable SHA256 `a98b4242d450e9e26d7a4a6d75b34a01a6a7d0f47c96a0eb23547c89da755107`. Build 19 retains build 18's signing identity, development profile, entitlements, application identifier and Keychain groups. The build 18 recovery artifact is retained. No APNs capability or provisioning/account change is included.
 
-Physical installation status is recorded after the owner chooses whether to replace the currently running build 18. The prepared update is install-only; it does not launch the phone app, uninstall it, reset Keychain, re-pair or send a model prompt. Physical UI acceptance is left to the owner.
+The owner approved replacing build 18, and build 19 (`0.1.0`) was installed on the same existing iPhone on 2026-10-21. Fresh checks reopened the accepted unit/native results, verified all 39 committed product inputs, reran the 19 author and 17 independent artifact checks, and confirmed the existing device, retained profile and installed baseline before installation. A fresh installed-app query confirmed build 19; the accepted executable, profile and resource seal remained unchanged afterward. Pairing and history were preserved through the in-place update, with build 18's recovery artifact retained.
+
+The installation did not launch the phone app, uninstall it, reset Keychain, re-pair, change provisioning/accounts or send a model prompt. Physical UI acceptance is left to the owner.
 
 ## Private evidence
 
 Mac/runtime receipts are under `bots-devin-20261021`: backend r3 manifest and log, actual catalog readiness, live adapter report/postchecks, independent source/policy reviews, complete App acceptance, packaging/activation/resource/signature gates and postlaunch preservation/API/UI observations.
 
-iPhone receipts are under `bots-devin-ios-20261021`: original unit and final native source manifests, raw result bundles and custody receipts, retained failed/incomplete attempts, captures, committed source pins and signing/artifact/install helpers. Raw owner data, credentials and physical device identifiers are not published.
+iPhone receipts are under `bots-devin-ios-20261021`: original unit and final native source manifests, raw result bundles and custody receipts, retained failed/incomplete attempts, captures, committed source pins and signing/artifact/install helpers. The successful physical installation receipt is `install-build19-20261021T141713Z-_62ga4fw/install-summary.json`. Raw owner data, credentials and physical device identifiers are not published.
