@@ -382,6 +382,50 @@ final class CompanionSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testFaceliftPrincipalScreensAndSharedHistory() async throws {
+        let controlURL = try pairWorkspaceFixture()
+        tapTab("Home")
+        try require(app.buttons["startChatButton"])
+        if app.scrollViews.firstMatch.exists { for _ in 0..<3 { app.scrollViews.firstMatch.swipeDown() } }
+        attachScreenshot("Facelift — Home dashboard")
+        let modelHeading = app.staticTexts["ACTIVE MODEL"]
+        for _ in 0..<4 { if modelHeading.isHittable { break }; app.scrollViews.firstMatch.swipeUp() }
+        attachScreenshot("Facelift — Home model status")
+        tapTab("Models")
+        try require(app.staticTexts["YOUR LIBRARY"])
+        attachScreenshot("Facelift — Models and downloads")
+        tapTab("Connection")
+        try require(app.buttons["refreshConnectionButton"])
+        attachScreenshot("Facelift — Paired connection")
+        tapTab("Bots")
+        try require(app.buttons["bot-fixture-bot"])
+        attachScreenshot("Facelift — Bots and teams")
+        for destination in ["Skills", "Connections", "Activity", "Team"] {
+            try selectWorkspace(destination)
+            if destination == "Skills" { try require(app.buttons["botSkill-library.review"]) }
+            if destination == "Connections" { try require(app.buttons["botConnection-mcpc_fixture"]) }
+            attachScreenshot("Facelift — " + destination)
+        }
+        let bot = app.buttons["bot-fixture-bot"]
+        try tapWorkspace(bot)
+        let conversation = app.buttons["botConversation-fixture-mac-research"]
+        try tapWorkspace(conversation)
+        let thinking = app.buttons["thinkingDisclosure-fixture-assistant"]
+        // This opens at Latest. At large text the earlier Thinking header is
+        // intentionally above the viewport; use actual older-history scrolling.
+        for _ in 0..<8 {
+            if thinking.exists, thinking.isHittable { break }
+            app.scrollViews.firstMatch.swipeDown()
+        }
+        try require(thinking); thinking.tap()
+        try require(app.staticTexts["thinkingContent-fixture-assistant"])
+        attachScreenshot("Facelift — Shared chat and Thinking")
+        let state = try await fixtureControl(controlURL, action: "state")
+        let calls = try XCTUnwrap(state["calls"] as? [[String: Any]])
+        XCTAssertFalse(calls.contains { ($0["method"] as? String ?? "GET") != "GET" }, "Appearance and navigation must not mutate the workspace or send a prompt.")
+    }
+
+    @MainActor
     func testReviewedSkillAssignmentAndWorkspaceNavigation() async throws {
         let controlURL = try pairWorkspaceFixture()
         try selectWorkspace("Skills")
@@ -503,7 +547,8 @@ final class CompanionSmokeTests: XCTestCase {
     private func tapWorkspace(_ element: XCUIElement, horizontal: CGFloat? = nil) throws {
         for _ in 0..<12 {
             let window = app.windows.firstMatch.frame
-            let top = max(window.minY + 60, app.navigationBars.firstMatch.frame.maxY + 8)
+            let navigation = app.navigationBars.firstMatch
+            let top = max(window.minY + 60, navigation.exists ? navigation.frame.maxY + 8 : window.minY + 60)
             var bottom = window.maxY - 24
             if app.tabBars.firstMatch.exists { bottom = min(bottom, app.tabBars.firstMatch.frame.minY - 18) }
             if app.keyboards.firstMatch.exists { bottom = min(bottom, app.keyboards.firstMatch.frame.minY - 12) }

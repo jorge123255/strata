@@ -35,7 +35,7 @@ const conversation = {
 };
 const pending = [];
 let createdBotConversation;
-const workspaceFlags = ['--test-workspace-skills', '--test-workspace-connections', '--test-workspace-teams'];
+const workspaceFlags = ['--test-workspace-skills', '--test-workspace-connections', '--test-workspace-teams', '--test-facelift'];
 const workspaceMode = workspaceFlags.includes(process.argv[2]);
 let teamConversation, savedTeam, teamRun;
 const teamLimits = { maxParallel: 2, maxDepth: 2, maxHops: 8, maxTurns: 24, maxDurationMs: 600000 };
@@ -307,7 +307,7 @@ try {
       testProcess = spawn('xcodebuild', [
         '-project', project, '-scheme', 'StrataMobile', '-destination', destination,
         '-derivedDataPath', derivedData,
-        '-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation', '--test-computer': 'testActualSampleAvatarAndIsolatedComputerControl', '--test-workspace-skills': 'testReviewedSkillAssignmentAndWorkspaceNavigation', '--test-workspace-connections': 'testSavedConnectionCheckAndReviewedAccess', '--test-workspace-teams': 'testTeamExplicitTaskSharedThinkingStopAndActivity' })[process.argv[2]],
+        '-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation', '--test-computer': 'testActualSampleAvatarAndIsolatedComputerControl', '--test-facelift': 'testFaceliftPrincipalScreensAndSharedHistory', '--test-workspace-skills': 'testReviewedSkillAssignmentAndWorkspaceNavigation', '--test-workspace-connections': 'testSavedConnectionCheckAndReviewedAccess', '--test-workspace-teams': 'testTeamExplicitTaskSharedThinkingStopAndActivity' })[process.argv[2]],
         '-parallel-testing-enabled', 'NO', 'test',
       ], { stdio: 'inherit', env: { ...process.env,
         TEST_RUNNER_STRATA_TEST_INVITATION: connection.invitation,
