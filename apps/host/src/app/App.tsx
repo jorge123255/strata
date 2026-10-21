@@ -16,6 +16,7 @@ import { Brand } from '../components/Brand';
 import { SetupScreen } from '../screens/Setup';
 import { ChatScreen } from '../screens/Chat';
 import { BotsScreen } from '../screens/Bots';
+import { ConnectorsScreen } from '../screens/Connectors';
 import { ModelRunScreen } from '../screens/ModelRun';
 import { ServingScreen } from '../screens/Serving';
 import { MonitorScreen } from '../screens/Monitor';
@@ -165,6 +166,8 @@ function RouteView({ route }: {
             return <ChatScreen />;
         case 'bots':
             return <BotsScreen />;
+        case 'connectors':
+            return <ConnectorsScreen />;
         case 'models':
         case 'tuning':
             return <ModelRunScreen />;

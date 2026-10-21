@@ -45,8 +45,10 @@ export function createBotExtensionRoutes({ skills, mcp, port }) {
     if (!isLocalCompanionRequest(req, typeof port === 'function' ? port() : port)) return error(res, 403, 'Open Bots in the Strata app on this Mac.');
     try {
       const body = ['POST', 'PATCH'].includes(req.method) ? await readBody(req, 256 * 1024).catch(() => { throw botExtensionFault(400, 'Enter valid JSON within the configuration size limit.'); }) : {};
-      const result = await (url.pathname.startsWith('/api/bots/skills') ? skills : mcp).handle(req.method, url, body);
-      return json(res, req.method === 'POST' && !/\/(assign|check|auth(?:\/complete)?)$/.test(url.pathname) ? 201 : 200, result);
+      const deviceId = req.headers['x-strata-companion-device'];
+      if (deviceId !== undefined && (typeof deviceId !== 'string' || !/^[a-f0-9]{32}$/.test(deviceId))) throw botExtensionFault(403, 'Invalid paired-device connector owner.');
+      const result = await (url.pathname.startsWith('/api/bots/skills') ? skills : mcp).handle(req.method, url, body, { deviceId });
+      return json(res, req.method === 'POST' && !/\/(assign|check|auth(?:\/(complete|cancel|open))?)$/.test(url.pathname) ? 201 : 200, result);
     } catch (failure) { return error(res, failure.status ?? 503, failure.status ? failure.message : 'This Bots connection is unavailable. Check its setup and try again.'); }
   };
 }

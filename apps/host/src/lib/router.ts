@@ -5,6 +5,7 @@ export const ROUTES = [
   'setup',
   'chat',
   'bots',
+  'connectors',
   'models',
   'tuning',
   'serving',

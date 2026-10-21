@@ -3,9 +3,17 @@ import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
 import { auth as sdkAuth, discoverOAuthProtectedResourceMetadata } from '@modelcontextprotocol/sdk/client/auth.js';
 import { botExtensionFault as fault, extensionHash as hash, privateExtensionStore } from './bots-extension-store.mjs';
+import { startOpener } from './app-ui.mjs';
 
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]']);
 const TTL = 10 * 60 * 1000;
+export const companionConnectorCallback = 'strata://connector-oauth/callback';
+export const registeredConnectorCallback = 'http://127.0.0.1:47841/callback';
+export async function openConnectorBrowser(url, { platform = process.platform, start = startOpener } = {}) {
+  const target = safeURL(url, true);
+  const [command, ...args] = platform === 'darwin' ? ['/usr/bin/open'] : platform === 'win32' ? ['rundll32.exe', 'url.dll,FileProtocolHandler'] : ['xdg-open'];
+  return start(command, [...args, target.href]);
+}
 const copy = value => value === undefined ? undefined : structuredClone(value);
 const setup = c => hash([c.id, c.url, c.authType, c.oauthClientId || '', c.oauthClientSecret || '']);
 const equal = (a, b) => { if (typeof a !== 'string' || typeof b !== 'string') return false; const left = Buffer.from(a), right = Buffer.from(b); return left.length === right.length && timingSafeEqual(left, right); };
@@ -26,7 +34,7 @@ export async function botConnectorFetch(url, init = {}, { signal, fetchImpl = fe
   return new Response(new ReadableStream({ async pull(controller) { const part = await reader.read(); if (part.done) { controller.close(); return; } size += part.value.length; if (size > 2 * 1024 * 1024) { await reader.cancel(); controller.error(fault(503, 'The connector response is too large.')); return; } controller.enqueue(part.value); }, cancel: reason => reader.cancel(reason) }), { status: result.status, statusText: result.statusText, headers: result.headers });
 }
 
-export function createBotConnectorAuth({ directory, connectionFor, notify = () => {}, now = () => Date.now(), fetchImpl = fetch, authorize = sdkAuth, discoverResource = discoverOAuthProtectedResourceMetadata }) {
+export function createBotConnectorAuth({ directory, connectionFor, notify = () => {}, now = () => Date.now(), fetchImpl = fetch, authorize = sdkAuth, discoverResource = discoverOAuthProtectedResourceMetadata, openBrowser = openConnectorBrowser, registeredCallbackPort = 47841 }) {
   const store = privateExtensionStore(directory, 'bots-connector-auth.json', { version: 1, accounts: {} }), state = store.value;
   if (!state.accounts || typeof state.accounts !== 'object' || Array.isArray(state.accounts) || Object.keys(state.accounts).length > 50 || Object.entries(state.accounts).some(([key, value]) => !/^mcpc_[a-f0-9-]+$/.test(key) || !value || typeof value !== 'object' || typeof value.setupDigest !== 'string' || typeof value.epoch !== 'string')) throw fault(503, 'Saved connector sign-in data is invalid. It was left unchanged.');
   const pending = new Map(), statuses = new Map();
@@ -40,7 +48,7 @@ export function createBotConnectorAuth({ directory, connectionFor, notify = () =
     const flow = pending.get(c.id);
     if (flow && now() >= flow.expiresAt) { stop(c.id); statuses.set(c.id, { status: 'expired', detail: 'Sign-in expired. Start again on your Mac.' }); }
     const active = pending.get(c.id);
-    if (active) return { status: active.authorizationURL ? 'waiting' : 'connecting', detail: active.authorizationURL ? 'Finish sign-in in a browser on this Mac. iPhone sign-in is completed on your Mac.' : 'Preparing connector sign-in…', ...(active.authorizationURL ? { authorizationURL: active.authorizationURL } : {}), redirectURL: active.redirectURL, expiresAt: new Date(active.expiresAt).toISOString() };
+    if (active) return { status: active.authorizationURL ? 'waiting' : 'connecting', detail: active.authorizationURL ? active.owner ? 'Finish sign-in in Strata on the iPhone that started it.' : 'Finish sign-in in a browser on this Mac.' : 'Preparing connector sign-in…', callbackTarget: active.owner ? 'iphone' : 'mac', ...(active.authorizationURL ? { authorizationURL: active.authorizationURL } : {}), redirectURL: active.redirectURL, expiresAt: new Date(active.expiresAt).toISOString() };
     const status = statuses.get(c.id); if (status && status.status !== 'connected') return copy(status);
     const saved = record(c);
     if (saved?.tokens?.access_token) {
@@ -62,7 +70,7 @@ export function createBotConnectorAuth({ directory, connectionFor, notify = () =
       clientInformation: () => copy(requireRecord().clientInformation),
       tokens: () => copy(requireRecord().tokens),
       saveTokens(tokens) { const value = requireRecord(); onSecrets(secrets(c)); if (!tokens || typeof tokens.access_token !== 'string' || !tokens.access_token || tokens.access_token.length > 32768 || JSON.stringify(tokens).length > 100000 || typeof tokens.issuer !== 'string') throw fault(503, 'The connector returned invalid sign-in data.'); value.tokens = copy(tokens); onSecrets(secrets(c)); value.expiresAt = Number.isFinite(tokens.expires_in) && tokens.expires_in >= 0 ? now() + tokens.expires_in * 1000 : undefined; statuses.delete(c.id); changed(); },
-      redirectToAuthorization(url) { if (!flow) throw fault(401, 'Reconnect this connector on your Mac.'); requireRecord(); const target = safeURL(String(url), LOOPBACK.has(new URL(c.url).hostname)); if (target.searchParams.getAll('state').length !== 1 || !equal(target.searchParams.get('state'), flow.state) || target.searchParams.get('redirect_uri') !== flow.redirectURL || target.searchParams.get('code_challenge_method') !== 'S256' || !target.searchParams.get('code_challenge')) throw fault(503, 'The connector did not provide a protected sign-in link.'); flow.authorizationURL = target.href; notify('bots', { connections: true }); },
+      redirectToAuthorization(url) { if (!flow) throw fault(401, 'Reconnect this connector on your Mac.'); requireRecord(); const target = safeURL(String(url), LOOPBACK.has(new URL(c.url).hostname)); if (target.searchParams.getAll('state').length !== 1 || !equal(target.searchParams.get('state'), flow.state) || target.searchParams.get('redirect_uri') !== flow.redirectURL || target.searchParams.get('code_challenge_method') !== 'S256' || !target.searchParams.get('code_challenge')) throw fault(503, 'The connector did not provide a protected sign-in link.'); if (['gmailmcp.googleapis.com', 'calendarmcp.googleapis.com', 'drivemcp.googleapis.com', 'docsmcp.googleapis.com', 'sheetsmcp.googleapis.com', 'slidesmcp.googleapis.com'].includes(new URL(c.url).hostname)) { target.searchParams.set('access_type', 'offline'); target.searchParams.set('prompt', 'consent'); } flow.authorizationURL = target.href; notify('bots', { connections: true }); },
       saveCodeVerifier(verifier) { if (!flow) throw fault(401, 'Reconnect this connector on your Mac.'); requireRecord(); if (typeof verifier !== 'string' || verifier.length < 32 || verifier.length > 256) throw fault(503, 'The connector returned an invalid sign-in verifier.'); flow.verifier = verifier; },
       codeVerifier() { requireRecord(); if (!flow?.verifier) throw fault(409, 'Start connector sign-in again on your Mac.'); return flow.verifier; },
       saveDiscoveryState(discovery) { const value = requireRecord(); if (!discovery.resourceMetadata || !Array.isArray(discovery.resourceMetadata.authorization_servers) || !discovery.resourceMetadata.authorization_servers.length || !discovery.authorizationServerMetadata || !sameIssuer(discovery.authorizationServerMetadata.issuer, discovery.authorizationServerUrl)) throw fault(503, 'The connector did not provide valid authorization metadata.'); const local = LOOPBACK.has(new URL(c.url).hostname); safeURL(discovery.authorizationServerUrl, local); safeURL(discovery.authorizationServerMetadata.authorization_endpoint, local); safeURL(discovery.authorizationServerMetadata.token_endpoint, local); if (discovery.authorizationServerMetadata.registration_endpoint) safeURL(discovery.authorizationServerMetadata.registration_endpoint, local); value.discovery = copy(discovery); changed(); },
@@ -73,13 +81,14 @@ export function createBotConnectorAuth({ directory, connectionFor, notify = () =
     if (flow) result.saveClientInformation = information => { const value = requireRecord(); if (!information || typeof information.client_id !== 'string' || !information.client_id || JSON.stringify(information).length > 100000 || typeof information.issuer !== 'string') throw fault(503, 'The connector returned invalid client information.'); value.clientInformation = copy(information); onSecrets(secrets(c)); changed(); };
     return result;
   }
-  async function complete(c, callbackURL) {
+  async function complete(c, callbackURL, { owner } = {}) {
     const flow = pending.get(c.id);
     if (!flow || now() >= flow.expiresAt) { if (flow) stop(c.id); throw fault(409, 'Connector sign-in expired or was already completed. Start again.'); }
+    if (flow.owner && flow.owner !== owner) throw fault(403, 'Finish this sign-in from the iPhone that started it.');
     current(c);
     let callback; try { callback = new URL(callbackURL); } catch { throw fault(400, 'Paste the complete connector callback URL.'); }
     const expected = new URL(flow.redirectURL);
-    if (typeof callbackURL !== 'string' || callbackURL.length > 16384 || callback.origin !== expected.origin || callback.pathname !== expected.pathname || callback.hash || callback.username || callback.password || callback.searchParams.getAll('state').length !== 1 || !equal(callback.searchParams.get('state'), flow.state)) throw fault(400, 'This sign-in callback does not match the pending connector request.');
+    if (typeof callbackURL !== 'string' || callbackURL.length > 16384 || callback.protocol !== expected.protocol || callback.host !== expected.host || callback.origin !== expected.origin || callback.pathname !== expected.pathname || callback.hash || callback.username || callback.password || callback.searchParams.getAll('state').length !== 1 || !equal(callback.searchParams.get('state'), flow.state)) throw fault(400, 'This sign-in callback does not match the pending connector request.');
     if (flow.finishing) throw fault(409, 'This connector callback is already being processed.');
     if (callback.searchParams.has('error')) { stop(c.id); statuses.set(c.id, { status: 'error', detail: 'Sign-in was declined or could not be completed. Try again on your Mac.' }); notify('bots', { connections: true }); throw fault(400, 'Connector sign-in was not completed.'); }
     const code = callback.searchParams.get('code');
@@ -92,15 +101,19 @@ export function createBotConnectorAuth({ directory, connectionFor, notify = () =
       current(c); if (pending.get(c.id) !== flow || record(c)?.epoch !== flow.epoch) throw new Error('Sign-in superseded'); statuses.delete(c.id); stop(c.id, flow); notify('bots', { connections: true }); return { auth: publicStatus(c) };
     } catch { if (pending.get(c.id) === flow) { stop(c.id, flow); const value = record(c); if (value?.epoch === flow.epoch) { delete value.tokens; changed(); } statuses.set(c.id, { status: 'error', detail: 'Connector sign-in failed. Check its account setup and try again on your Mac.' }); } throw fault(503, 'Connector sign-in failed. Check its account setup and try again on your Mac.'); }
   }
-  async function start(c) {
+  async function start(c, { callbackTarget, owner } = {}) {
     if (c.authType !== 'oauth' || c.transport !== 'http' || c.enabled === false) throw fault(400, 'Enable a browser sign-in connector before connecting its account.');
+    if (callbackTarget !== undefined && callbackTarget !== 'iphone') throw fault(400, 'Choose a supported connector sign-in destination.');
+    if (callbackTarget === 'iphone' && (typeof owner !== 'string' || !/^phone:[a-f0-9]{32}$/.test(owner))) throw fault(403, 'Start iPhone sign-in from your paired Strata app.');
     current(c); publicStatus(c);
     if (pending.has(c.id)) throw fault(409, 'Finish or cancel this connector’s current sign-in before starting again.');
     statuses.delete(c.id);
     if (pending.size >= 8) throw fault(409, 'Finish another connector sign-in before starting more.');
-    const flow = { state: randomBytes(32).toString('hex'), expiresAt: now() + TTL, controller: new AbortController() };
+    const flow = { state: randomBytes(32).toString('hex'), expiresAt: now() + TTL, controller: new AbortController(), ...(callbackTarget === 'iphone' ? { owner } : {}) };
     pending.set(c.id, flow);
     try {
+      if (flow.owner) flow.redirectURL = companionConnectorCallback;
+      else {
       const server = createServer(async (req, res) => {
         res.setHeader('cache-control', 'no-store'); res.setHeader('referrer-policy', 'no-referrer'); res.setHeader('x-content-type-options', 'nosniff'); res.setHeader('content-security-policy', "default-src 'none'; frame-ancestors 'none'"); res.setHeader('content-type', 'text/plain; charset=utf-8'); res.setHeader('connection', 'close');
         if (req.method !== 'GET' || req.headers.host !== new URL(flow.redirectURL).host || !['127.0.0.1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress) || !req.url || req.url.length > 16384) { res.writeHead(400); res.end('Invalid Strata sign-in callback.'); return; }
@@ -109,9 +122,11 @@ export function createBotConnectorAuth({ directory, connectionFor, notify = () =
       });
       flow.server = server;
       server.requestTimeout = 10000; server.headersTimeout = 10000; server.timeout = 5000; server.maxConnections = 8; server.on('connection', socket => socket.unref());
-      await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+      await new Promise((resolve, reject) => { server.once('error', reject); server.listen(c.oauthClientId ? registeredCallbackPort : 0, '127.0.0.1', resolve); });
       flow.redirectURL = `http://127.0.0.1:${server.address().port}/callback`;
-      flow.timer = setTimeout(() => { if (pending.get(c.id) === flow) { stop(c.id); statuses.set(c.id, { status: 'expired', detail: 'Sign-in expired. Start again on your Mac.' }); notify('bots', { connections: true }); } }, TTL); flow.timer.unref?.(); server.unref();
+      server.unref();
+      }
+      flow.timer = setTimeout(() => { if (pending.get(c.id) === flow) { stop(c.id); statuses.set(c.id, { status: 'expired', detail: 'Sign-in expired. Start again in Strata.' }); notify('bots', { connections: true }); } }, TTL); flow.timer.unref?.();
       const old = record(c);
       flow.epoch = randomUUID();
       state.accounts[c.id] = { setupDigest: setup(c), epoch: flow.epoch, redirectURL: flow.redirectURL, ...(c.oauthClientId ? { clientInformation: { client_id: c.oauthClientId, ...(c.oauthClientSecret ? { client_secret: c.oauthClientSecret } : {}) } } : {}), ...(old?.discovery ? { discovery: old.discovery } : {}) }; changed();
@@ -125,8 +140,30 @@ export function createBotConnectorAuth({ directory, connectionFor, notify = () =
       return { auth: publicStatus(c) };
     } catch { if (pending.get(c.id) === flow) { stop(c.id, flow); statuses.set(c.id, { status: 'error', detail: 'Could not start connector sign-in. Check the MCP URL and whether this service requires a registered client.' }); notify('bots', { connections: true }); } throw fault(503, 'Could not start connector sign-in. Check the MCP URL and whether this service requires a registered client.'); }
   }
+  function cancel(c, { owner, expectedState } = {}) {
+    if (typeof expectedState !== 'string' || !/^[a-f0-9]{64}$/.test(expectedState)) throw fault(400, 'Choose the pending sign-in you want to cancel.');
+    current(c); publicStatus(c);
+    const flow = pending.get(c.id);
+    if (!flow) return { auth: publicStatus(c) };
+    // The Mac manages its accounts. A paired phone can cancel only its own pending flow.
+    if (owner && flow.owner !== owner) throw fault(403, 'Cancel this sign-in from the device that started it.');
+    if (!equal(expectedState, flow.state)) throw fault(409, 'This sign-in changed. Review the current sign-in before cancelling.');
+    stop(c.id, flow); statuses.delete(c.id); notify('bots', { connections: true });
+    return { auth: publicStatus(c) };
+  }
+  async function open(c) {
+    current(c); publicStatus(c);
+    const flow = pending.get(c.id);
+    if (!flow?.authorizationURL) throw fault(409, 'Start connector sign-in before opening its browser page.');
+    if (flow.owner) throw fault(409, 'Continue this sign-in in Strata on your iPhone.');
+    const target = safeURL(flow.authorizationURL, LOOPBACK.has(new URL(c.url).hostname));
+    let opened = false;
+    try { opened = await openBrowser(target.href); } catch { /* Do not expose system opener errors or its private arguments. */ }
+    if (!opened) throw fault(503, 'Could not open the browser. Use the sign-in link shown in this account.');
+    return { auth: publicStatus(c) };
+  }
   function disconnect(id) { stop(id); statuses.delete(id); if (Object.hasOwn(state.accounts, id)) { delete state.accounts[id]; changed(); } }
-  return { start, complete, disconnect, publicStatus, secrets, epoch: c => record(c)?.tokens?.access_token ? record(c).epoch : null,
+  return { start, complete, cancel, open, disconnect, publicStatus, secrets, epoch: c => record(c)?.tokens?.access_token ? record(c).epoch : null,
     providerFor(c, onSecrets) { if (!record(c)?.tokens?.access_token) throw fault(401, 'Sign in to this connector on your Mac before using its tools.'); return provider(c, undefined, onSecrets); },
     pendingCount: () => pending.size,
     close() { for (const id of pending.keys()) stop(id); },

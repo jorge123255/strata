@@ -40,6 +40,7 @@ export const DESTINATIONS: { route: Route; label: string; icon: IconName; keywor
   { route: 'bots', label: 'Bots', icon: 'experts', keywords: 'coding computer agents claude codex devin grok kimi ollama', key: '9', slash: 'bots' },
 ];
 export const APP_COMMANDS: AppCommand[] = [
+  { id: 'go:connectors', label: 'Connectors', hint: 'Connect apps and manage accounts for bots and teams', keywords: 'accounts services oauth sign in integrations mcp', group: 'Navigation', icon: 'link', slash: ['connectors'], run: () => go('connectors') },
   { id: 'new', label: 'New chat', hint: 'Start a new conversation; keep this one', group: 'Session', key: 'n', icon: 'new-chat', slash: ['new'], run: () => { const s = newSession(); go('chat', s.id); } },
   { id: 'palette', label: 'Command palette', group: 'Session', key: 'k', icon: 'search', palette: false, run: () => setPalette(!getState().paletteOpen) },
   { id: 'sidebar', label: 'Show or hide sidebar', group: 'Session', key: 'b', icon: 'panel', run: () => window.innerWidth < 1280 ? setNavOpen(!getState().navOpen) : toggleRail() },

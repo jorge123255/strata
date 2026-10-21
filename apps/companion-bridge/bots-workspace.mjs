@@ -76,7 +76,7 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
     const channel = /^\/api\/bots\/teams\/([A-Za-z0-9_-]{1,120})\/(channel|messages)$/.exec(p);
     const team = /^\/api\/bots\/teams\/([A-Za-z0-9_-]{1,120})(?:\/runs(?:\/([A-Za-z0-9_-]{1,120})(?:\/(stop))?)?)?$/.exec(p);
     const skill = /^\/api\/bots\/skills\/([A-Za-z0-9_-]{1,120})$/.exec(p);
-    const connection = /^\/api\/bots\/connections\/([A-Za-z0-9_-]{1,120})(?:\/(check|auth|auth\/complete))?$/.exec(p);
+    const connection = /^\/api\/bots\/connections\/([A-Za-z0-9_-]{1,120})(?:\/(check|auth|auth\/complete|auth\/cancel))?$/.exec(p);
     if (channel) route = { kind: channel[2] === 'channel' ? 'channel' : 'channelMessage', teamId: channel[1] };
     else if (team) route = { kind: p.includes('/runs') ? 'run' : 'team', teamId: team[1], runId: team[2], action: team[3] };
     else if (skill) route = { kind: 'skill', skillId: skill[1] };
@@ -91,7 +91,7 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
     else if (route.kind === 'channel' && ['after', 'before'].includes(key) && /^(0|[1-9][0-9]{0,15})$/.test(value) && Number.isSafeInteger(Number(value))) route[key] = Number(value);
     else throw error(status, 'Choose a saved bot or provider.');
   } else if (route.kind === 'providerModels') throw error(status, 'Choose a provider.');
-  const allowed = { teams: ['GET', 'POST'], team: ['PATCH'], channel: ['GET'], channelMessage: ['POST'], run: route.action === 'stop' ? ['POST'] : route.runId ? ['GET'] : ['POST'], activity: ['GET'], skills: ['GET', 'POST'], skill: ['PATCH', 'DELETE'], assignment: ['POST'], connections: ['GET', 'POST'], connection: route.action ? ['POST'] : ['PATCH', 'DELETE'], connectionAuth: route.action === 'auth/complete' ? ['POST'] : ['GET', 'POST', 'DELETE'], connectorCatalog: ['GET'], providerModels: ['GET'] };
+  const allowed = { teams: ['GET', 'POST'], team: ['PATCH'], channel: ['GET'], channelMessage: ['POST'], run: route.action === 'stop' ? ['POST'] : route.runId ? ['GET'] : ['POST'], activity: ['GET'], skills: ['GET', 'POST'], skill: ['PATCH', 'DELETE'], assignment: ['POST'], connections: ['GET', 'POST'], connection: route.action ? ['POST'] : ['PATCH', 'DELETE'], connectionAuth: ['auth/complete', 'auth/cancel'].includes(route.action) ? ['POST'] : ['GET', 'POST', 'DELETE'], connectorCatalog: ['GET'], providerModels: ['GET'] };
   if (!allowed[route.kind].includes(method)) throw error(status, 'This workspace action is unavailable from iPhone.');
   if (!validateBody) return route;
   if (method === 'GET' || method === 'DELETE') {
@@ -138,11 +138,15 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
   } else if (route.kind === 'connections' || route.kind === 'connection') {
     if (route.action) object(body, [], status); else connectorSettings(body, method, status);
   } else if (route.kind === 'connectionAuth') {
-    object(body, route.action === 'auth/complete' ? ['callbackURL'] : [], status);
+    object(body, route.action === 'auth/complete' ? ['callbackURL'] : route.action === 'auth/cancel' ? ['expectedState'] : ['callbackTarget'], status);
+    if (route.action === 'auth/cancel' && (typeof body.expectedState !== 'string' || !/^[a-f0-9]{64}$/.test(body.expectedState))) throw error(status, 'Choose the pending sign-in you want to cancel.');
+    if (body.callbackTarget !== undefined && body.callbackTarget !== 'iphone') throw error(status, 'Choose a supported connector sign-in destination.');
     if (route.action === 'auth/complete') {
       string(body.callbackURL, 16000, status);
       let callback; try { callback = new URL(body.callbackURL); } catch { throw error(status, 'Paste the full connector sign-in callback.'); }
-      if (callback.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(callback.hostname) || callback.username || callback.password || callback.hash) throw error(status, 'Use the Mac callback shown by this connector sign-in.');
+      const iphone = callback.protocol === 'strata:' && callback.host === 'connector-oauth' && callback.pathname === '/callback' && !callback.port;
+      const mac = callback.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(callback.hostname);
+      if ((!iphone && !mac) || callback.username || callback.password || callback.hash) throw error(status, 'Use this connector’s exact sign-in callback.');
     }
   }
   return route;
@@ -208,11 +212,17 @@ function connectorLink(value, loopback = false) {
 }
 function connectorAuth(value) {
   if (!isObject(value)) return undefined;
-  const authorizationURL = connectorLink(value.authorizationURL), redirectURL = connectorLink(value.redirectURL, true);
-  return { status: ['not_connected', 'connected', 'connecting', 'waiting', 'expired', 'error'].includes(value.status) ? value.status : 'not_connected', detail: text(value.detail, 2000), ...(authorizationURL ? { authorizationURL } : {}), ...(redirectURL ? { redirectURL } : {}), ...(date(value.expiresAt) !== undefined ? { expiresAt: date(value.expiresAt) } : {}) };
+  const authorizationURL = connectorLink(value.authorizationURL), redirectURL = value.callbackTarget === 'iphone' && value.redirectURL === 'strata://connector-oauth/callback' ? value.redirectURL : connectorLink(value.redirectURL, true);
+  return { status: ['not_connected', 'connected', 'connecting', 'waiting', 'expired', 'error'].includes(value.status) ? value.status : 'not_connected', detail: text(value.detail, 2000), ...(['mac', 'iphone'].includes(value.callbackTarget) ? { callbackTarget: value.callbackTarget } : {}), ...(authorizationURL ? { authorizationURL } : {}), ...(redirectURL ? { redirectURL } : {}), ...(date(value.expiresAt) !== undefined ? { expiresAt: date(value.expiresAt) } : {}) };
+}
+function connectorSource(value) {
+  const safe = connectorLink(value);
+  if (!safe) return undefined;
+  const url = new URL(safe);
+  return url.protocol === 'https:' && !url.search ? safe : undefined;
 }
 function connectorFeatures(value) {
-  return isObject(value) ? { connectorFeatures: Object.fromEntries(['catalog', 'httpCreation', 'teamAccess', 'oauth'].map(key => [key, value[key] === true])) } : {};
+  return isObject(value) ? { connectorFeatures: Object.fromEntries(['catalog', 'httpCreation', 'teamAccess', 'oauth', 'iphoneOAuth'].map(key => [key, value[key] === true])) } : {};
 }
 function connection(value) {
   let url; try { if (value.transport === 'http' && value.url) url = connectorURL(value.url, 502); } catch { /* Do not project malformed or credential-bearing URLs. */ }
@@ -233,7 +243,7 @@ export function publicBotWorkspace(body, route) {
   if (route.kind === 'skills' && Array.isArray(body.skills)) return { skills: rows('skills', skill, toolId), assignments: (Array.isArray(body.assignments) ? body.assignments : []).filter(v => id(v?.botId)).slice(0, 500).map(v => ({ botId: v.botId, skillIds: safeTools(v.skillIds) })) };
   if (body.skill && id(body.skill.id)) return { skill: skill(body.skill) };
   if (route.kind === 'assignment') return { saved: true };
-  if (route.kind === 'connectorCatalog') return { connectors: rows('connectors', value => ({ id: value.id, name: text(value.name, 120), description: text(value.description, 2000), category: text(value.category, 120), transport: 'http', ...(connectorLink(value.url) ? { url: connectorLink(value.url) } : {}), authTypes: (Array.isArray(value.authTypes) ? value.authTypes : []).filter(kind => ['none', 'bearer', 'oauth'].includes(kind)), ...(connectorLink(value.documentationURL) ? { documentationURL: connectorLink(value.documentationURL) } : {}), setupNote: text(value.setupNote, 2000) })), ...connectorFeatures(body.connectorFeatures) };
+  if (route.kind === 'connectorCatalog') return { connectors: rows('connectors', value => ({ id: value.id, name: text(value.name, 120), description: text(value.description, 2000), category: text(value.category, 120), ...(Array.isArray(value.aliases) ? { aliases: value.aliases.filter(label => typeof label === 'string').slice(0, 32).map(label => text(label, 120)) } : {}), transport: 'http', ...(connectorLink(value.url) ? { url: connectorLink(value.url) } : {}), authTypes: (Array.isArray(value.authTypes) ? value.authTypes : []).filter(kind => ['none', 'bearer', 'oauth'].includes(kind)), ...(connectorLink(value.documentationURL) ? { documentationURL: connectorLink(value.documentationURL) } : {}), ...(connectorSource(value.sourceURL) ? { sourceURL: connectorSource(value.sourceURL) } : {}), ...(value.setupState !== undefined ? { setupState: ['ready', 'configuration', 'managed', 'unavailable'].includes(value.setupState) ? value.setupState : 'unavailable' } : {}), ...(typeof value.phoneSignIn === 'boolean' ? { phoneSignIn: value.phoneSignIn } : {}), setupNote: text(value.setupNote, 2000) })), ...connectorFeatures(body.connectorFeatures) };
   if (route.kind === 'connections' && Array.isArray(body.connections)) return { connections: rows('connections', connection), ...connectorFeatures(body.connectorFeatures) };
   if (body.connection && id(body.connection.id)) return { connection: connection(body.connection), ...(route.kind === 'connectionAuth' && connectorAuth(body.auth) ? { auth: connectorAuth(body.auth) } : {}) };
   if (route.kind === 'providerModels') return { provider: route.provider, models: (Array.isArray(body.models) ? body.models : []).filter(v => typeof v?.id === 'string').slice(0, 500).map(v => ({ id: text(v.id, 300), name: text(v.name, 300), efforts: (Array.isArray(v.efforts) ? v.efforts : []).filter(e => typeof e === 'string' && /^[A-Za-z0-9_-]{1,40}$/.test(e)).slice(0, 20), ...(typeof v.defaultEffort === 'string' ? { defaultEffort: text(v.defaultEffort, 40) } : {}) })), detail: text(body.detail, 1_000) };
@@ -287,6 +297,8 @@ export async function handleBotWorkspace({ path, method, req, res, session, host
       if (route.connectionId && !selected) throw error(404, 'This connection is no longer available.');
       if (route.kind === 'connections' && catalog.connectorFeatures?.httpCreation !== true) throw error(409, 'Update Strata on your Mac before adding connectors from iPhone.');
       if (route.kind === 'connectionAuth' && (catalog.connectorFeatures?.oauth !== true || selected?.transport !== 'http')) throw error(409, 'Set up browser sign-in for this connector on your Mac.');
+      if (route.kind === 'connectionAuth' && body?.callbackTarget === 'iphone' && catalog.connectorFeatures?.iphoneOAuth !== true) throw error(409, 'Update Strata on your Mac before signing in on iPhone.');
+      if (route.kind === 'connectionAuth' && route.action === 'auth/cancel' && catalog.connectorFeatures?.iphoneOAuth !== true) throw error(409, 'Update Strata on your Mac before cancelling sign-in from iPhone.');
       if (body?.teamIds !== undefined && catalog.connectorFeatures?.teamAccess !== true) throw error(409, 'Update Strata on your Mac before changing team connector access.');
       const setupKeys = ['transport', 'url', 'catalogId', 'authType', 'apiKey', 'clearKey'];
       if (route.kind === 'connection' && setupKeys.some(key => Object.hasOwn(body ?? {}, key)) && (catalog.connectorFeatures?.httpCreation !== true || selected?.transport !== 'http')) throw error(409, 'Edit this connector’s program or credentials on your Mac.');
@@ -297,7 +309,7 @@ export async function handleBotWorkspace({ path, method, req, res, session, host
       }
       if (route.kind === 'connectionAuth' && route.action === 'auth/complete') {
         let callback, expected; try { callback = new URL(body.callbackURL); expected = new URL(selected.auth?.redirectURL); } catch { throw error(409, 'Start a fresh connector sign-in on your Mac.'); }
-        if (callback.origin !== expected.origin || callback.pathname !== expected.pathname) throw error(409, 'Use this connector’s current sign-in callback.');
+        if (callback.protocol !== expected.protocol || callback.host !== expected.host || callback.origin !== expected.origin || callback.pathname !== expected.pathname || callback.protocol === 'strata:' && (catalog.connectorFeatures?.iphoneOAuth !== true || selected.auth?.callbackTarget !== 'iphone' || selected.auth?.redirectURL !== 'strata://connector-oauth/callback')) throw error(409, 'Use this connector’s current sign-in callback.');
       }
       if (!selected) {
         if (body?.enabledToolIds?.length || body?.readOnlyToolIds?.length) throw error(409, 'Save and check the connector before enabling tools.');

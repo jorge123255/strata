@@ -85,10 +85,10 @@ export interface BotSkill { id: string; name: string; description: string; body:
 export interface BotSkillAssignment { botId: string; skillIds: string[] }
 export interface BotSkillsSnapshot { skills: BotSkill[]; assignments: BotSkillAssignment[] }
 export interface BotConnectionTool { id: string; name: string; description: string; inputSchema: unknown; readOnly: boolean }
-export interface BotConnectorFeatures { catalog?: boolean; httpCreation?: boolean; teamAccess?: boolean; oauth?: boolean }
-export interface BotConnectorCatalogEntry { id: string; name: string; description: string; category: string; transport: 'http'; url?: string; authTypes: Array<'none'|'bearer'|'oauth'>; documentationURL?: string; setupNote?: string }
+export interface BotConnectorFeatures { catalog?: boolean; httpCreation?: boolean; teamAccess?: boolean; oauth?: boolean; iphoneOAuth?: boolean }
+export interface BotConnectorCatalogEntry { id: string; name: string; description: string; category: string; transport: 'http'; url?: string; authTypes: Array<'none'|'bearer'|'oauth'>; documentationURL?: string; setupNote?: string; setupState?: 'ready'|'configuration'|'managed'|'unavailable'; sourceURL?: string; phoneSignIn?: boolean; aliases?: string[] }
 export interface BotConnectorCatalog { connectors: BotConnectorCatalogEntry[]; connectorFeatures?: BotConnectorFeatures }
-export interface BotConnectorAuth { status: 'not_connected'|'connecting'|'connected'|'waiting'|'expired'|'error'; detail: string; authorizationURL?: string; expiresAt?: string }
+export interface BotConnectorAuth { status: 'not_connected'|'connecting'|'connected'|'waiting'|'expired'|'error'; detail: string; authorizationURL?: string; expiresAt?: string; callbackTarget?: 'mac'|'iphone' }
 export interface BotConnection { id: string; name: string; transport: 'stdio'|'http'; url?: string; command?: string; args?: string[]; envKeys: string[]; apiKeySet: boolean; botIds: string[]; enabledToolIds: string[]; readOnlyToolIds: string[]; inventoryDigest:string; status: 'unchecked'|'starting'|'connected'|'unavailable'; detail: string; checkedAt?: string; tools: BotConnectionTool[]; catalogId?: string; accountLabel?: string; authType?: 'none'|'bearer'|'oauth'; teamIds?: string[]; customInstructions?: string; enabled?: boolean; auth?: BotConnectorAuth; oauthClientIdSet?: boolean; oauthClientSecretSet?: boolean }
 export interface BotConnectionsSnapshot { connections: BotConnection[]; connectorFeatures?: BotConnectorFeatures }
 export interface BotProviderModel { id: string; name: string; efforts: string[]; defaultEffort?: string }

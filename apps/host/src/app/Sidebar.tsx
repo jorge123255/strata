@@ -81,6 +81,7 @@ export function Sidebar({ containerRef }: {
         </div>
         <nav className="nav__destinations" aria-label={tr("Workspace navigation")}>
           <NavLink route="bots" label={tr("Bots")} icon="experts" current={location.route}/>
+          <NavLink route="connectors" label={tr("Connectors")} icon="link" current={location.route}/>
           <NavLink route="models" label={tr("Models")} icon="models" current={location.route === 'tuning' ? 'models' : location.route}/>
           <NavLink route="skills" label={tr("Skills")} icon="skills" current={location.route}/>
           <NavLink route="monitor" label={tr("Monitor")} icon="activity" current={location.route}/>

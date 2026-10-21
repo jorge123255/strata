@@ -51,6 +51,7 @@ export function createBotMcp({ directory, hasBot = () => false, hasTeam = () => 
     extensionKeys(input, inputFields);
     const catalogId = text(input.catalogId ?? old.catalogId ?? '', 120, 'connector catalog entry'), preset = catalogId ? botConnectorPreset(catalogId) : undefined;
     if (catalogId && !preset) throw fault(400, 'Choose a connector from the current catalog.');
+    if ((!old.id || catalogId !== old.catalogId) && preset?.setupState && preset.setupState !== 'ready' && !(preset.setupState === 'configuration' && preset.url)) throw fault(409, 'This service needs its displayed provider setup before it can become a connector.');
     const name = text(input.name ?? old.name ?? preset?.name ?? '', 120, 'connection name', true), transport = input.transport ?? old.transport ?? preset?.transport;
     if (!['stdio', 'http'].includes(transport)) throw fault(400, 'Choose a server URL or a local program.');
     const config = { name, transport, ...(catalogId ? { catalogId } : {}) };
@@ -165,17 +166,20 @@ export function createBotMcp({ directory, hasBot = () => false, hasTeam = () => 
       const output = await withClient(connection, AbortSignal.any([context.signal, AbortSignal.timeout(120000)]), (client, signal) => client.callTool({ name: remoteName, arguments: args.arguments }, { signal, timeout: 120000 }), context.chatId);
       context.assertLive(); if (JSON.stringify(output).length > 256000) throw fault(503, 'The MCP result exceeded this conversation’s size limit.'); return output;
     },
-    handle(method, url, body) {
+    handle(method, url, body, { deviceId } = {}) {
       if (url.pathname === '/api/bots/connectors/catalog' && method === 'GET') return botConnectorCatalog();
       if (url.pathname === '/api/bots/connections') { if (method === 'GET') return list(); if (method === 'POST') return create(body); }
-      const authMatch = /^\/api\/bots\/connections\/(mcpc_[a-f0-9-]+)\/auth(?:\/(complete))?$/.exec(url.pathname);
+      const authMatch = /^\/api\/bots\/connections\/(mcpc_[a-f0-9-]+)\/auth(?:\/(complete|cancel|open))?$/.exec(url.pathname);
       if (authMatch) {
         const c = requireConnection(authMatch[1]);
         if (c.authType !== 'oauth') throw fault(400, 'This connector does not use browser sign-in.');
         const result = () => ({ connection: publicConnection(requireConnection(c.id)), auth: auth.publicStatus(requireConnection(c.id)) });
         if (!authMatch[2] && method === 'GET') return result();
-        if (!authMatch[2] && method === 'POST') { extensionKeys(body, []); return auth.start(c).then(result); }
-        if (authMatch[2] && method === 'POST') { extensionKeys(body, ['callbackURL']); return auth.complete(c, body.callbackURL).then(result); }
+        const owner = typeof deviceId === 'string' && /^[a-f0-9]{32}$/.test(deviceId) ? `phone:${deviceId}` : undefined;
+        if (!authMatch[2] && method === 'POST') { extensionKeys(body, ['callbackTarget']); const preset = botConnectorPreset(c.catalogId); if (body.callbackTarget === 'iphone' && preset?.phoneSignIn === false) throw fault(409, 'This service signs in on your Mac. Use Finish sign-in on Mac.'); if (preset?.setupState === 'configuration' && !c.oauthClientId) throw fault(409, 'Complete this service’s OAuth app registration in Advanced setup on your Mac before signing in.'); return auth.start(c, { callbackTarget: body.callbackTarget, owner }).then(result); }
+        if (authMatch[2] === 'complete' && method === 'POST') { extensionKeys(body, ['callbackURL']); return auth.complete(c, body.callbackURL, { owner }).then(result); }
+        if (authMatch[2] === 'cancel' && method === 'POST') { extensionKeys(body, ['expectedState']); return Promise.resolve(auth.cancel(c, { owner, expectedState: body.expectedState })).then(result); }
+        if (authMatch[2] === 'open' && method === 'POST') { extensionKeys(body, []); if (deviceId) throw fault(403, 'Open this sign-in on your Mac.'); return auth.open(c).then(result); }
         if (!authMatch[2] && method === 'DELETE') { auth.disconnect(c.id); return result(); }
         throw fault(404, 'Unknown connector sign-in action.');
       }

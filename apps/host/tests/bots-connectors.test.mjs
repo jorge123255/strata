@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, w
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createBotMcp } from '../server/bots-mcp.mjs';
-import { botConnectorFetch } from '../server/bots-connector-auth.mjs';
+import { botConnectorFetch, createBotConnectorAuth, openConnectorBrowser, registeredConnectorCallback } from '../server/bots-connector-auth.mjs';
 
 const botId = 'bot_fixture', teamId = 'team_fixture', runId = 'run_fixture';
 const url = path => new URL(`http://127.0.0.1${path}`);
@@ -32,10 +32,11 @@ async function oauthFixture(t, behavior = {}) {
       if (behavior.noResourceMetadata) { res.writeHead(404); res.end(); return; }
       send({ resource: behavior.resource || `${origin}/mcp`, authorization_servers: [origin] }); return;
     }
-    if (target.pathname === '/.well-known/oauth-authorization-server') { send({ issuer: behavior.issuer || origin, authorization_endpoint: `${origin}/authorize`, token_endpoint: behavior.tokenEndpoint || `${origin}/token`, registration_endpoint: `${origin}/register`, response_types_supported: ['code'], grant_types_supported: ['authorization_code', 'refresh_token'], token_endpoint_auth_methods_supported: ['none'], code_challenge_methods_supported: ['S256'] }); return; }
+    if (target.pathname === '/.well-known/oauth-authorization-server') { send({ issuer: behavior.issuer || origin, authorization_endpoint: `${origin}/authorize`, token_endpoint: behavior.tokenEndpoint || `${origin}/token`, ...(!behavior.staticClient ? { registration_endpoint: `${origin}/register` } : {}), response_types_supported: ['code'], grant_types_supported: ['authorization_code', 'refresh_token'], token_endpoint_auth_methods_supported: behavior.staticClient ? ['client_secret_post'] : ['none'], code_challenge_methods_supported: ['S256'] }); return; }
     if (target.pathname === '/register') { const metadata = JSON.parse(raw); expected.redirect = metadata.redirect_uris[0]; send({ ...metadata, client_id: 'fixture-client' }, 201); return; }
     if (target.pathname === '/token') {
       const params = new URLSearchParams(raw); tokenRequests.push(Object.fromEntries(params));
+      if (behavior.staticClient) { assert.equal(params.get('client_id'), 'fixture-static-client'); assert.equal(params.get('client_secret'), 'PRIVATE_STATIC_CLIENT_SECRET'); }
       if (behavior.tokenError) { send({ error: 'invalid_grant', error_description: 'PRIVATE_TOKEN_ERROR_SENTINEL' }, 400); return; }
       assert.equal(params.get('resource'), `${origin}/mcp`);
       if (params.get('grant_type') === 'authorization_code') { assert.equal(params.get('code'), 'fixture-code'); assert.equal(params.get('redirect_uri'), expected.redirect); assert.equal(createHash('sha256').update(params.get('code_verifier')).digest('base64url'), expected.challenge); }
@@ -62,11 +63,48 @@ async function oauthFixture(t, behavior = {}) {
 async function begin(mcp, fixture, id) { const started = await mcp.handle('POST', url(`/api/bots/connections/${id}/auth`), {}); const authorization = new URL(started.auth.authorizationURL); fixture.expected.challenge = authorization.searchParams.get('code_challenge'); fixture.expected.redirect ||= started.auth.redirectURL; return { started, authorization, callback: `${started.auth.redirectURL}?state=${authorization.searchParams.get('state')}&code=fixture-code` }; }
 const finish = (mcp, id, callbackURL) => mcp.handle('POST', url(`/api/bots/connections/${id}/auth/complete`), { callbackURL });
 
+test('registered OAuth clients use their supplied credentials without registration and retain SDK PKCE, audience and refresh', async t => {
+  assert.equal(registeredConnectorCallback, 'http://127.0.0.1:47841/callback');
+  const fixture = await oauthFixture(t, { staticClient: true });
+  const mcp = service(t, { authOptions: { registeredCallbackPort: 0 } });
+  const c = mcp.create({ name: 'Registered account', transport: 'http', url: fixture.url, authType: 'oauth', oauthClientId: 'fixture-static-client', oauthClientSecret: 'PRIVATE_STATIC_CLIENT_SECRET' }).connection;
+  const flow = await begin(mcp, fixture, c.id);
+  assert.equal(flow.authorization.searchParams.get('client_id'), 'fixture-static-client');
+  assert.equal(flow.authorization.searchParams.get('code_challenge_method'), 'S256');
+  assert.equal(flow.authorization.searchParams.get('resource'), fixture.url);
+  assert.equal(fixture.seen.some(request => request.path === '/register'), false);
+  assert.equal((await finish(mcp, c.id, flow.callback)).auth.status, 'connected');
+  await mcp.check(c.id); fixture.rejectOld(); await mcp.check(c.id);
+  assert.equal(fixture.tokenRequests.at(-1).grant_type, 'refresh_token');
+  assert.equal(JSON.stringify(mcp.list()).includes('PRIVATE_STATIC_CLIENT_SECRET'), false);
+});
+
+test('Google Workspace authorization requests consent and offline access only for its exact supported service hosts', async t => {
+  // Network-free provider contract test; the real SDK static-client exchange is covered above.
+  for (const [host, offline] of [['gmailmcp.googleapis.com', true], ['calendarmcp.googleapis.com', true], ['drivemcp.googleapis.com', true], ['gmailmcp.googleapis.com.attacker.invalid', false], ['other.invalid', false]]) {
+    const c = { id: 'mcpc_fixture', enabled: true, transport: 'http', url: `https://${host}/mcp/v1`, authType: 'oauth', oauthClientId: 'fixture-static-client' };
+    const auth = createBotConnectorAuth({ directory: directory(t), connectionFor: () => c, registeredCallbackPort: 0,
+      fetchImpl: () => assert.fail('No network request is allowed in this contract test'),
+      discoverResource: async () => ({ authorization_servers: ['https://accounts.invalid'] }),
+      authorize: async provider => {
+        provider.saveCodeVerifier('v'.repeat(64));
+        const target = new URL('https://accounts.invalid/authorize');
+        for (const [key, value] of Object.entries({ state: provider.state(), redirect_uri: provider.redirectUrl, code_challenge_method: 'S256', code_challenge: 'fixture-protected-challenge' })) target.searchParams.set(key, value);
+        provider.redirectToAuthorization(target); return 'REDIRECT';
+      } });
+    t.after(() => auth.close());
+    const started = await auth.start(c), target = new URL(started.auth.authorizationURL);
+    assert.equal(target.searchParams.get('access_type'), offline ? 'offline' : null);
+    assert.equal(target.searchParams.get('prompt'), offline ? 'consent' : null);
+    auth.close();
+  }
+});
+
 test('catalog presets are inert, official, feature-gated and never enable or connect tools', t => {
   let clients = 0;
   const mcp = service(t, { clientFactory: async () => { clients++; return inert(); } });
   const catalog = mcp.handle('GET', url('/api/bots/connectors/catalog'), {});
-  assert.deepEqual(catalog.connectorFeatures, { catalog: true, httpCreation: true, teamAccess: true, oauth: true });
+  assert.deepEqual(catalog.connectorFeatures, { catalog: true, httpCreation: true, teamAccess: true, oauth: true, iphoneOAuth: true });
   assert.ok(catalog.connectors.some(c => c.id === 'github' && c.url === 'https://api.githubcopilot.com/mcp/'));
   assert.ok(catalog.connectors.some(c => c.id === 'linear' && c.authTypes.includes('oauth')));
   const created = mcp.create({ catalogId: 'github', apiKey: 'PRIVATE_BEARER_SENTINEL', accountLabel: 'Work', botIds: [botId], teamIds: [teamId] }).connection;
@@ -77,6 +115,110 @@ test('catalog presets are inert, official, feature-gated and never enable or con
   assert.throws(() => mcp.create({ catalogId: 'nonexistent' }), /current catalog/);
   assert.throws(() => mcp.create({ catalogId: 'linear', teamIds: ['team_absent'] }), /still exist/);
   assert.equal(JSON.stringify(mcp.list()).includes('PRIVATE_BEARER_SENTINEL'), false);
+});
+
+test('setup-only directory services cannot create runnable accounts and registered services require explicit Mac setup', async t => {
+  const mcp = service(t), catalog = mcp.handle('GET', url('/api/bots/connectors/catalog'), {}).connectors;
+  for (const preset of catalog.filter(entry => entry.setupState === 'managed' || entry.setupState === 'unavailable' || entry.setupState === 'configuration' && !entry.url)) {
+    assert.throws(() => mcp.create({ catalogId: preset.id, url: 'https://invented.invalid/mcp', authType: 'none' }), { status: 409 }, preset.name);
+  }
+  const gmail = catalog.find(entry => entry.name === 'Gmail');
+  assert.equal(gmail.setupState, 'configuration'); assert.equal(gmail.phoneSignIn, false);
+  const c = mcp.create({ catalogId: gmail.id }).connection;
+  assert.deepEqual(c.botIds, []); assert.deepEqual(c.teamIds, []); assert.deepEqual(c.enabledToolIds, []);
+  assert.throws(() => mcp.handle('POST', url(`/api/bots/connections/${c.id}/auth`), {}), { status: 409 });
+  assert.throws(() => mcp.handle('POST', url(`/api/bots/connections/${c.id}/auth`), { callbackTarget: 'iphone' }, { deviceId: 'a'.repeat(32) }), { status: 409 });
+  const revised = update(mcp, c.id, { enabled: false }); assert.equal(revised.enabled, false);
+});
+
+test('iPhone browser sign-in binds the fixed native callback, PKCE and completion to its initiating paired device', async t => {
+  const fixture = await oauthFixture(t), mcp = service(t);
+  const c = mcp.create({ name: 'Phone account', transport: 'http', url: fixture.url, authType: 'oauth' }).connection;
+  const path = url(`/api/bots/connections/${c.id}/auth`), deviceId = 'a'.repeat(32);
+  await assert.rejects(mcp.handle('POST', path, { callbackTarget: 'iphone' }), { status: 403 });
+  await assert.rejects(mcp.handle('POST', path, { callbackTarget: 'https://other.invalid/callback' }, { deviceId }), { status: 400 });
+  assert.equal(fixture.seen.length, 0);
+  const started = await mcp.handle('POST', path, { callbackTarget: 'iphone' }, { deviceId });
+  assert.equal(started.auth.callbackTarget, 'iphone'); assert.equal(started.auth.redirectURL, 'strata://connector-oauth/callback');
+  const authorization = new URL(started.auth.authorizationURL);
+  fixture.expected.challenge = authorization.searchParams.get('code_challenge');
+  const callbackURL = `${started.auth.redirectURL}?state=${authorization.searchParams.get('state')}&code=fixture-code`;
+  for (const options of [{}, { deviceId: 'b'.repeat(32) }]) await assert.rejects(mcp.handle('POST', url(path.pathname + '/complete'), { callbackURL }, options), { status: 403 });
+  for (const bad of [callbackURL.replace('strata:', 'other:'), callbackURL.replace('connector-oauth', 'other'), callbackURL.replace('/callback?', '/other?'), callbackURL.replace('/callback?', ':42/callback?'), callbackURL + '#fragment', callbackURL + '&state=extra']) await assert.rejects(mcp.handle('POST', url(path.pathname + '/complete'), { callbackURL: bad }, { deviceId }), { status: 400 });
+  assert.equal(fixture.tokenRequests.length, 0);
+  const finished = await mcp.handle('POST', url(path.pathname + '/complete'), { callbackURL }, { deviceId });
+  assert.equal(finished.auth.status, 'connected'); assert.equal(fixture.tokenRequests.length, 1);
+  assert.deepEqual(finished.connection.botIds, []); assert.deepEqual(finished.connection.teamIds, []); assert.deepEqual(finished.connection.enabledToolIds, []);
+  assert.ok(!JSON.stringify(finished).includes('PRIVATE_')); assert.ok(!JSON.stringify(finished).includes(deviceId));
+  await assert.rejects(mcp.handle('POST', url(path.pathname + '/complete'), { callbackURL }, { deviceId }), { status: 409 });
+  const checked = await mcp.check(c.id); assert.equal(checked.connection.status, 'connected');
+  fixture.rejectOld(); await mcp.check(c.id); assert.equal(fixture.tokenRequests.at(-1).grant_type, 'refresh_token');
+});
+
+test('cancelled or expired native sign-ins cannot later exchange a code; Mac sign-in stays a loopback flow', async t => {
+  let now = Date.now(); const fixture = await oauthFixture(t), mcp = service(t, { authOptions: { now: () => now } });
+  const c = mcp.create({ name: 'Native lifetime', transport: 'http', url: fixture.url, authType: 'oauth' }).connection;
+  const path = url(`/api/bots/connections/${c.id}/auth`), options = { deviceId: 'a'.repeat(32) };
+  let started = await mcp.handle('POST', path, { callbackTarget: 'iphone' }, options);
+  let callbackURL = `${started.auth.redirectURL}?state=${new URL(started.auth.authorizationURL).searchParams.get('state')}&code=fixture-code`;
+  mcp.handle('DELETE', path, {}); await assert.rejects(mcp.handle('POST', url(path.pathname + '/complete'), { callbackURL }, options), { status: 409 });
+  started = await mcp.handle('POST', path, { callbackTarget: 'iphone' }, options);
+  callbackURL = `${started.auth.redirectURL}?state=${new URL(started.auth.authorizationURL).searchParams.get('state')}&code=fixture-code`;
+  now += 11 * 60 * 1000;
+  await assert.rejects(mcp.handle('POST', url(path.pathname + '/complete'), { callbackURL }, options), { status: 409 });
+  assert.equal(fixture.tokenRequests.length, 0);
+  started = await mcp.handle('POST', path, {});
+  assert.equal(started.auth.callbackTarget, 'mac'); assert.match(started.auth.redirectURL, /^http:\/\/127\.0\.0\.1:\d+\/callback$/);
+});
+
+test('pending sign-in cancellation is device- and state-bound and never deletes a connected account', async t => {
+  const fixture = await oauthFixture(t), dir = directory(t), mcp = service(t, { directory: dir }), options = { deviceId: 'a'.repeat(32) };
+  const c = mcp.create({ name: 'Cancel', transport: 'http', url: fixture.url, authType: 'oauth' }).connection;
+  const path = url(`/api/bots/connections/${c.id}/auth`), cancel = url(path.pathname + '/cancel');
+  const native = await mcp.handle('POST', path, { callbackTarget: 'iphone' }, options);
+  const body = { expectedState: new URL(native.auth.authorizationURL).searchParams.get('state') };
+  assert.throws(() => mcp.handle('POST', cancel, {}, options), { status: 400 });
+  assert.throws(() => mcp.handle('POST', cancel, body, { deviceId: 'b'.repeat(32) }), { status: 403 });
+  assert.throws(() => mcp.handle('POST', cancel, { expectedState: 'f'.repeat(64) }, options), { status: 409 });
+  assert.equal((await mcp.handle('POST', cancel, body, options)).auth.status, 'not_connected');
+  const newer = await mcp.handle('POST', path, { callbackTarget: 'iphone' }, options);
+  assert.throws(() => mcp.handle('POST', cancel, body, options), { status: 409 }, 'A delayed cancel cannot stop the newer same-device flow.');
+  assert.equal(latest(mcp, c.id).auth.authorizationURL, newer.auth.authorizationURL);
+  const newerBody = { expectedState: new URL(newer.auth.authorizationURL).searchParams.get('state') };
+  assert.equal((await mcp.handle('POST', cancel, newerBody)).auth.status, 'not_connected', 'The local Mac can cancel this exact pending phone flow.');
+  const flow = await begin(mcp, fixture, c.id);
+  const macBody = { expectedState: flow.authorization.searchParams.get('state') };
+  assert.throws(() => mcp.handle('POST', cancel, macBody, options), { status: 403 });
+  await finish(mcp, c.id, flow.callback);
+  const before = readFileSync(join(dir, 'bots-connector-auth.json'), 'utf8');
+  assert.equal((await mcp.handle('POST', cancel, macBody, options)).auth.status, 'connected');
+  assert.equal(readFileSync(join(dir, 'bots-connector-auth.json'), 'utf8'), before);
+  await mcp.check(c.id); assert.equal(fixture.tokenRequests.length, 1);
+});
+
+test('the Mac browser action opens only its stored pending authorization URL and accepts no caller URL', async t => {
+  const fixture = await oauthFixture(t), opened = [], mcp = service(t, { authOptions: { openBrowser: async target => { opened.push(target); return true; } } });
+  const c = mcp.create({ name: 'Open browser', transport: 'http', url: fixture.url, authType: 'oauth' }).connection;
+  const path = url(`/api/bots/connections/${c.id}/auth`), open = url(path.pathname + '/open');
+  await assert.rejects(mcp.handle('POST', open, {}), { status: 409 });
+  const flow = await begin(mcp, fixture, c.id);
+  assert.throws(() => mcp.handle('POST', open, { url: 'https://other.invalid/' }), { status: 400 });
+  assert.throws(() => mcp.handle('POST', open, {}, { deviceId: 'a'.repeat(32) }), { status: 403 });
+  const openedResult = await mcp.handle('POST', open, {});
+  assert.equal(openedResult.auth.status, 'waiting'); assert.deepEqual(opened, [flow.started.auth.authorizationURL]);
+  assert.equal(fixture.tokenRequests.length, 0);
+  await mcp.handle('POST', url(path.pathname + '/cancel'), { expectedState: flow.authorization.searchParams.get('state') });
+  await mcp.handle('POST', path, { callbackTarget: 'iphone' }, { deviceId: 'a'.repeat(32) });
+  await assert.rejects(mcp.handle('POST', open, {}), { status: 409 }); assert.equal(opened.length, 1);
+});
+
+test('system browser launch uses a fixed platform command and one safe URL argument without a shell', async () => {
+  const target = 'https://accounts.invalid/authorize?state=fixture&literal=%24%28touch%20never%29';
+  for (const [platform, command, prefix] of [['darwin', '/usr/bin/open', []], ['linux', 'xdg-open', []], ['win32', 'rundll32.exe', ['url.dll,FileProtocolHandler']]]) {
+    const calls = []; assert.equal(await openConnectorBrowser(target, { platform, start: async (...args) => { calls.push(args); return true; } }), true);
+    assert.deepEqual(calls, [[command, [...prefix, target]]]);
+  }
+  for (const target of ['file:///private/data', 'javascript:alert(1)', 'https://user:secret@service.invalid/', 'https://service.invalid/#fragment', 'http://outside.invalid/']) await assert.rejects(openConnectorBrowser(target, { start: async () => assert.fail('Unsafe URL was launched') }));
 });
 
 test('account labels stay independent; secrets and environment values never enter public projections or frozen instructions', async t => {

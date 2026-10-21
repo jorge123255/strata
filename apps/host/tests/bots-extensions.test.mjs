@@ -170,6 +170,21 @@ test('extension routes enforce exact local origin and size/field limits', async 
   assert.equal((await fetch(url, { method: 'POST', body: 'bad JSON' })).status, 400);
 });
 
+test('connector routes pass only validated paired-device identity after the exact local-origin boundary', async t => {
+  const calls = []; let port;
+  const route = createBotExtensionRoutes({ port: () => port, mcp: { handle(...args) { calls.push(args); return {}; } } });
+  const server = http.createServer((req, res) => route(req, res, new URL(req.url, `http://${req.headers.host}`)));
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); port = server.address().port;
+  t.after(() => { server.close(); server.closeAllConnections(); });
+  const target = `http://127.0.0.1:${port}/api/bots/connections/mcpc_fixture/auth`;
+  const headers = { 'content-type': 'application/json', 'x-strata-companion-device': 'a'.repeat(32) };
+  assert.equal((await fetch(target, { method: 'POST', headers, body: '{"callbackTarget":"iphone"}' })).status, 200);
+  assert.deepEqual(calls[0][3], { deviceId: 'a'.repeat(32) });
+  assert.equal((await fetch(target, { method: 'POST', headers: { ...headers, origin: 'https://untrusted.invalid' }, body: '{}' })).status, 403);
+  assert.equal((await fetch(target, { method: 'POST', headers: { ...headers, 'x-strata-companion-device': 'arbitrary-owner' }, body: '{}' })).status, 403);
+  assert.equal(calls.length, 1);
+});
+
 test('real MCP SDK stdio handshake, inventory and approved call use a credential-free owned program', async t => {
   const f = fixture(t), service = createBotMcp(f), script = fileURLToPath(new URL('./fixtures/bots-external-mcp.mjs', import.meta.url));
   const prior = process.env.STRATA_MCP_PARENT_SECRET; process.env.STRATA_MCP_PARENT_SECRET = 'must-never-inherit';

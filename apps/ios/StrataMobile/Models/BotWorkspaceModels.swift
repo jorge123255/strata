@@ -247,6 +247,7 @@ struct BotConnectorFeatures: Decodable, Equatable {
     var httpCreation: Bool?
     var teamAccess: Bool?
     var oauth: Bool?
+    var iphoneOAuth: Bool?
 }
 
 struct BotConnectorCatalogEntry: Decodable, Identifiable, Equatable {
@@ -259,6 +260,29 @@ struct BotConnectorCatalogEntry: Decodable, Identifiable, Equatable {
     var authTypes: [String]
     var documentationURL: String?
     var setupNote: String?
+    var setupState: String?
+    var sourceURL: String?
+    var phoneSignIn: Bool?
+    var aliases: [String]?
+    var isReady: Bool { setupState == nil || setupState == "ready" }
+    var setupSummary: String {
+        switch setupState {
+        case "configuration": "Set up on Mac"
+        case "managed": "Managed connection"
+        case "unavailable": "Setup unavailable"
+        case nil, "ready": supportsSignIn ? "Sign in with your account" : authTypes.contains("bearer") ? "API key required" : "Service connection"
+        default: "Review service setup"
+        }
+    }
+    var supportsSignIn: Bool { id != "custom-http" && authTypes.contains("oauth") }
+    var accountAction: String { !isReady ? "View setup" : supportsSignIn ? "Connect" : "Add account" }
+    func nextAccountLabel(in connections: [BotMCPConnection]) -> String {
+        let used = Set(connections.filter { $0.catalogId == id }.map { ($0.accountLabel ?? "Personal").lowercased() })
+        if !used.contains("personal") { return "Personal" }
+        var number = 2
+        while used.contains("personal \(number)") { number += 1 }
+        return "Personal \(number)"
+    }
 }
 
 struct BotConnectorCatalog: Decodable, Equatable {
@@ -272,6 +296,65 @@ struct BotConnectorAuth: Decodable, Equatable {
     var detail: String
     var authorizationURL: String?
     var expiresAt: String?
+    var callbackTarget: String?
+    var redirectURL: String?
+}
+
+/// Public authorization metadata only. PKCE and tokens remain on the paired Mac.
+struct BotConnectorOAuthRequest: Equatable {
+    static let redirect = "strata://connector-oauth/callback"
+    let authorizationURL: URL
+    private let state: String
+    var expectedState: String { state }
+    init?(auth: BotConnectorAuth?) {
+        guard let auth, auth.callbackTarget == "iphone", auth.redirectURL == Self.redirect,
+              let url = BotConnectorDraft.authorizationURL(auth.authorizationURL),
+              let parts = URLComponents(url: url, resolvingAgainstBaseURL: false), parts.fragment == nil,
+              parts.queryItems?.filter({ $0.name == "redirect_uri" }).map(\.value) == [Self.redirect],
+              let states = parts.queryItems?.filter({ $0.name == "state" }), states.count == 1,
+              let state = states[0].value, state.count == 64, state.allSatisfy({ "0123456789abcdef".contains($0) }) else { return nil }
+        authorizationURL = url; self.state = state
+    }
+    func validatedCallback(_ url: URL) -> URL? {
+        guard Self.isCallbackTarget(url), let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let states = parts.queryItems?.filter({ $0.name == "state" }), states.count == 1,
+              states[0].value == state else { return nil }
+        return url
+    }
+    static func isCallbackTarget(_ url: URL) -> Bool {
+        guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return false }
+        return parts.scheme == "strata" && parts.host == "connector-oauth" && parts.path == "/callback" &&
+            parts.port == nil && parts.user == nil && parts.password == nil && parts.fragment == nil
+    }
+}
+
+/// Own the entire sign-in attempt, including host completion and refresh after
+/// the system browser closes. A stale continuation cannot clear its successor.
+struct BotConnectorSignInProgress: Equatable {
+    private(set) var attemptId: UUID?
+    private(set) var nativeState: String?
+    var isActive: Bool { attemptId != nil }
+    mutating func begin() -> UUID? {
+        guard !isActive else { return nil }
+        let id = UUID(); attemptId = id; nativeState = nil; return id
+    }
+    func isCurrent(_ id: UUID) -> Bool { attemptId == id }
+    func owns(_ id: UUID, state: String) -> Bool { isCurrent(id) && nativeState == state }
+    @discardableResult mutating func bind(_ state: String, to id: UUID) -> Bool {
+        guard isCurrent(id) else { return false }
+        nativeState = state; return true
+    }
+    @discardableResult mutating func releaseFlow(_ state: String, from id: UUID) -> Bool {
+        guard owns(id, state: state) else { return false }
+        nativeState = nil; return true
+    }
+    @discardableResult mutating func finish(_ id: UUID) -> Bool {
+        guard isCurrent(id) else { return false }
+        attemptId = nil; nativeState = nil; return true
+    }
+    @discardableResult mutating func invalidate() -> String? {
+        let captured = nativeState; attemptId = nil; nativeState = nil; return captured
+    }
 }
 
 struct BotMCPConnection: Decodable, Identifiable, Equatable {

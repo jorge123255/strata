@@ -29,6 +29,13 @@ export function connectorAuthorizationURL(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   try { const url = new URL(value); return url.protocol === 'https:' && !url.username && !url.password ? url.href : null; } catch { return null; }
 }
+/** Cancel only the exact pending browser flow this device actually reviewed. */
+export function connectorAuthorizationState(value: unknown): string | null {
+  const safe = connectorAuthorizationURL(value);
+  if (!safe) return null;
+  const states = new URL(safe).searchParams.getAll('state');
+  return states.length === 1 && /^[a-f0-9]{64}$/.test(states[0]) ? states[0] : null;
+}
 /** Team access grants apply only to team work, not members' private conversations. */
 export function connectorInScope(connection: {botIds:string[];teamIds?:string[]}, scope: string): boolean {
   if (scope.startsWith('bot:')) return connection.botIds.includes(scope.slice(4));

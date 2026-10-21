@@ -1,5 +1,7 @@
 import Foundation
 import Combine
+import AuthenticationServices
+import UIKit
 
 /// A pairing-scoped view model. A revoked or replaced pairing cannot publish a
 /// late catalog, mutation result, or conversation navigation into its successor.
@@ -277,16 +279,34 @@ final class BotWorkspaceStore: ObservableObject {
         return value != nil && isCurrent()
     }
     func saveConnectorSetup(_ draft: BotConnectorDraft, editing connection: BotMCPConnection? = nil) async -> Bool {
+        await saveConnectorAccountSetup(draft, editing: connection) != nil
+    }
+    /// Return the exact saved account so Discover can continue to its sign-in
+    /// and access screen without guessing which row a refresh inserted.
+    func saveConnectorAccountSetup(_ draft: BotConnectorDraft, editing connection: BotMCPConnection? = nil) async -> BotMCPConnection? {
         guard connections?.connectorFeatures?.httpCreation == true, draft.isValid,
+              connection != nil || connectorCatalog?.connectors.first(where: { $0.id == draft.catalogId })?.isReady != false,
               draft.authType != "oauth" || connections?.connectorFeatures?.oauth == true,
-              connection == nil || connection?.transport == "http", connection == nil || CompanionClient.isSafeIdentifier(connection!.id) else { return false }
+              connection == nil || connection?.transport == "http", connection == nil || CompanionClient.isSafeIdentifier(connection!.id) else { return nil }
         struct Result: Decodable { var connection: BotMCPConnection }
         let path = connection.map { "/v1/bots/connections/\($0.id)" } ?? "/v1/bots/connections"
         var reviewedDraft = draft
         reviewedDraft.expectedInventoryDigest = connection?.inventoryDigest
         let value: Result? = await change("connections", path: path, method: connection == nil ? "POST" : "PATCH", body: reviewedDraft)
-        if value != nil { await refreshConnections() }
-        return value != nil && isCurrent()
+        if let value {
+            if let index = connections?.connections.firstIndex(where: { $0.id == value.connection.id }) { connections?.connections[index] = value.connection }
+            else { connections?.connections.append(value.connection) }
+            await refreshConnections()
+        }
+        guard isCurrent() else { return nil }
+        return value?.connection
+    }
+    func createConnectorAccount(_ entry: BotConnectorCatalogEntry) async -> BotMCPConnection? {
+        // Only the current, advertised catalog may supply a one-tap preset.
+        guard entry.isReady, entry.id != "custom-http", connectorCatalog?.connectors.contains(entry) == true else { return nil }
+        var draft = BotConnectorDraft(entry: entry)
+        draft.accountLabel = entry.nextAccountLabel(in: connections?.connections ?? [])
+        return await saveConnectorAccountSetup(draft)
     }
     func setConnectorEnabled(_ connection: BotMCPConnection, enabled: Bool) async -> Bool {
         guard connections?.connectorFeatures?.teamAccess == true, CompanionClient.isSafeIdentifier(connection.id) else { return false }
@@ -303,21 +323,86 @@ final class BotWorkspaceStore: ObservableObject {
         if value != nil { await refreshConnections() }
         return value?.deleted == true && isCurrent()
     }
-    @discardableResult func connectorAuthentication(_ connection: BotMCPConnection, action: String, callbackURL: String? = nil) async -> Bool {
+    func canUsePhoneSignIn(_ connection: BotMCPConnection) -> Bool {
+        guard connections?.connectorFeatures?.iphoneOAuth == true else { return false }
+        guard let catalogId = connection.catalogId else { return true }
+        // Unknown or unrefreshed preset policy falls back to Mac sign-in.
+        guard let preset = connectorCatalog?.connectors.first(where: { $0.id == catalogId }) else { return false }
+        return preset.isReady && preset.phoneSignIn != false
+    }
+    @discardableResult func connectorAuthentication(_ connection: BotMCPConnection, action: String, callbackURL: String? = nil, callbackTarget: String? = nil, expectedState: String? = nil) async -> Bool {
         guard connections?.connectorFeatures?.oauth == true, connection.authType == "oauth",
-              CompanionClient.isSafeIdentifier(connection.id), ["start", "poll", "disconnect", "complete"].contains(action) else { return false }
+              CompanionClient.isSafeIdentifier(connection.id), ["start", "poll", "disconnect", "complete", "cancel"].contains(action),
+              action != "cancel" || connections?.connectorFeatures?.iphoneOAuth == true && expectedState?.count == 64 && expectedState?.allSatisfy({ "0123456789abcdef".contains($0) }) == true,
+              expectedState == nil || action == "cancel",
+              callbackTarget == nil || callbackTarget == "iphone" && action == "start" && canUsePhoneSignIn(connection) else { return false }
         struct Result: Decodable { var connection: BotMCPConnection }
-        let path = "/v1/bots/connections/\(connection.id)/auth" + (action == "complete" ? "/complete" : "")
+        let path = "/v1/bots/connections/\(connection.id)/auth" + (action == "complete" ? "/complete" : action == "cancel" ? "/cancel" : "")
         if action == "poll" {
             await load("connections", path: path) { (value: Result) in
                 if let index = self.connections?.connections.firstIndex(where: { $0.id == value.connection.id }) { self.connections?.connections[index] = value.connection }
             }
             return messages["connections"] == nil && isCurrent()
         }
-        let body = callbackURL.map { ["callbackURL": $0] } ?? [:]
+        var body = callbackURL.map { ["callbackURL": $0] } ?? [:]
+        if let callbackTarget { body["callbackTarget"] = callbackTarget }
+        if let expectedState { body["expectedState"] = expectedState }
         let value: Result? = await change("connections", path: path, method: action == "disconnect" ? "DELETE" : "POST", body: body)
         if value != nil { await refreshConnections() }
         return value != nil && isCurrent()
     }
 
+}
+
+/// A single owner-initiated system browser session. Never writes callback URLs
+/// or authorization codes to logs, preferences, or shared chat history.
+@MainActor
+final class BotConnectorAuthenticationSession: NSObject, ObservableObject, ASWebAuthenticationPresentationContextProviding {
+    @Published private(set) var isActive = false
+    private var session: ASWebAuthenticationSession?
+    private var continuation: CheckedContinuation<URL, Error>?
+    private var sessionId: UUID?
+    enum Failure: LocalizedError {
+        case unavailable, invalidCallback
+        var errorDescription: String? { switch self {
+        case .unavailable: "Couldn’t open sign-in. Try again, or finish sign-in on your Mac."
+        case .invalidCallback: "The service returned an unexpected sign-in address. Try again or finish on your Mac."
+        } }
+    }
+    func authenticate(_ request: BotConnectorOAuthRequest) async throws -> URL {
+        guard session == nil else { throw Failure.unavailable }
+        try Task.checkCancellation()
+        let id = UUID()
+        let url: URL = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                self.sessionId = id
+                self.continuation = continuation
+                let session = ASWebAuthenticationSession(url: request.authorizationURL, callbackURLScheme: "strata") { [weak self] url, error in
+                    Task { @MainActor in self?.finish(id: id, url: url, error: error) }
+                }
+                self.session = session; isActive = true
+                session.presentationContextProvider = self
+                if !session.start() { finish(id: id, url: nil, error: Failure.unavailable) }
+            }
+        } onCancel: { Task { @MainActor in self.cancel(id: id) } }
+        guard let callback = request.validatedCallback(url) else { throw Failure.invalidCallback }
+        return callback
+    }
+    func cancel() {
+        if let sessionId { cancel(id: sessionId) }
+    }
+    private func cancel(id: UUID) {
+        guard sessionId == id else { return }
+        session?.cancel(); finish(id: id, url: nil, error: CancellationError())
+    }
+    private func finish(id: UUID, url: URL?, error: Error?) {
+        guard sessionId == id, let continuation else { return }
+        self.continuation = nil; sessionId = nil; session = nil; isActive = false
+        if let url { continuation.resume(returning: url) }
+        else { continuation.resume(throwing: error ?? Failure.unavailable) }
+    }
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows).first(where: \.isKeyWindow) ?? ASPresentationAnchor()
+    }
 }

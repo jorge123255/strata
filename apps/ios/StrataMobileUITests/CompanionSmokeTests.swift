@@ -767,7 +767,8 @@ final class CompanionSmokeTests: XCTestCase {
     @MainActor
     func testConnectorsHTTPSetupTeamAccessToolsAndPersistence() async throws {
         let control = try pairWorkspaceFixture()
-        try selectWorkspace("Connectors")
+        tapTab("Connectors")
+        try tapWorkspace(app.buttons["connectorAdvancedOptions"])
         try tapWorkspace(app.buttons["createBotConnectorButton"])
         let name = app.textFields["connectorNameInput"], url = app.textFields["connectorURLInput"]
         try require(name); name.tap(); name.typeText("Project service")
@@ -791,14 +792,8 @@ final class CompanionSmokeTests: XCTestCase {
         XCTAssertEqual(rows.count, 1); XCTAssertEqual(row["botIds"] as? [String], []); XCTAssertEqual(row["teamIds"] as? [String], []); XCTAssertEqual(row["enabledToolIds"] as? [String], [])
         XCTAssertTrue(row["apiKeySet"] as? Bool == true); XCTAssertFalse(String(describing: data).contains("SYNTHETIC_CONNECTOR_KEY"))
         attachScreenshot("Connectors — HTTP account added without implicit access")
-        let creationAX = XCTAttachment(string: app.debugDescription); creationAX.name = "Connector list after creation"; creationAX.lifetime = .keepAlways; add(creationAX)
-        // The creation action lives below the catalog. Return the real list to
-        // the top before finding its newly inserted account row.
-        for _ in 0..<5 {
-            let window = app.windows.firstMatch, origin = window.coordinate(withNormalizedOffset: .zero)
-            origin.withOffset(CGVector(dx: 200, dy: 200)).press(forDuration: 0.02, thenDragTo: origin.withOffset(CGVector(dx: 200, dy: 660)))
-        }
-        try tapWorkspace(app.buttons["botConnection-" + id])
+        // Successful setup continues directly into the exact created account.
+        try require(app.navigationBars["Project service"])
         let check = app.buttons["checkBotConnectionButton"]; try require(check); check.tap()
         try require(app.buttons["Check saved connector"]); app.buttons["Check saved connector"].tap()
         try require(app.staticTexts["Status, Connected"])
@@ -856,6 +851,77 @@ final class CompanionSmokeTests: XCTestCase {
         try require(app.navigationBars["Connectors"])
         try tapWorkspace(app.buttons["botConnection-" + id])
         attachScreenshot("Connectors — bot profile shortcut opens its assigned account")
+    }
+
+    @MainActor
+    func testConnectorAccountsDiscoverBearerSetupAndMacSignInFallback() async throws {
+        let control = try pairWorkspaceFixture()
+        tapTab("Connectors")
+        try require(app.navigationBars["Connectors"])
+        try tapWorkspace(app.buttons["Discover"])
+        let github = app.buttons["addConnector-github"]
+        try tapWorkspace(github)
+        try require(app.navigationBars["Add GitHub account"])
+        XCTAssertEqual(app.textFields["connectorNameInput"].value as? String, "GitHub", "The first sheet presentation must initialize from the selected service.")
+        try require(app.secureTextFields["connectorKeyInput"])
+        XCTAssertFalse(app.textFields["connectorURLInput"].exists, "Routine service setup hides transport and server details.")
+        XCTAssertFalse(app.buttons["startConnectorSignInButton"].exists, "A bearer-only service must not promise browser login.")
+        let account = app.textFields["connectorAccountInput"]
+        try tapWorkspace(account); account.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 20)); account.typeText("Work")
+        if app.keyboards.firstMatch.exists { app.buttons["dismissConnectorKeyboardButton"].tap() }
+        let key = app.secureTextFields["connectorKeyInput"]; try tapWorkspace(key); key.typeText("SYNTHETIC_WORK_KEY")
+        if app.keyboards.firstMatch.exists { app.buttons["dismissConnectorKeyboardButton"].tap() }
+        try waitEnabled(app.buttons["saveBotConnectorSetupButton"]); app.buttons["saveBotConnectorSetupButton"].tap()
+        try require(app.navigationBars["GitHub"])
+        try require(app.staticTexts["Account, Work"])
+        attachScreenshot("Connectors — named service account without technical setup")
+        app.navigationBars.buttons.firstMatch.tap()
+        try tapWorkspace(app.buttons["Discover"]); try tapWorkspace(app.buttons["addConnector-github"])
+        let secondKey = app.secureTextFields["connectorKeyInput"]; try tapWorkspace(secondKey); secondKey.typeText("SYNTHETIC_PERSONAL_KEY")
+        if app.keyboards.firstMatch.exists { app.buttons["dismissConnectorKeyboardButton"].tap() }
+        app.buttons["saveBotConnectorSetupButton"].tap(); try require(app.navigationBars["GitHub"])
+        try require(app.staticTexts["Account, Personal"])
+        app.navigationBars.buttons.firstMatch.tap()
+        try tapWorkspace(app.buttons["Discover"]); try tapWorkspace(app.buttons["addConnector-linear"])
+        try require(app.navigationBars["Linear"])
+        XCTAssertFalse(app.textFields["connectorNameInput"].exists, "Preset browser sign-in skips the server setup form.")
+        try require(app.staticTexts["Status, Sign-in waiting"])
+        try require(app.buttons["startConnectorSignInButton"])
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "finish sign-in there")).firstMatch.exists)
+        attachScreenshot("Connectors — OAuth account continues directly to honest Mac fallback")
+        let snapshot = try await fixtureControl(control, action: "state")
+        let data = try XCTUnwrap(snapshot["connectors"] as? [String: Any]), rows = try XCTUnwrap(data["connections"] as? [[String: Any]])
+        XCTAssertEqual(rows.count, 3)
+        XCTAssertEqual(Set(rows.filter { $0["catalogId"] as? String == "github" }.compactMap { $0["accountLabel"] as? String }), ["Work", "Personal"])
+        XCTAssertTrue(rows.allSatisfy { ($0["botIds"] as? [String]) == [] && ($0["teamIds"] as? [String]) == [] && ($0["enabledToolIds"] as? [String]) == [] })
+        XCTAssertFalse(String(describing: data).contains("SYNTHETIC_WORK_KEY")); XCTAssertFalse(String(describing: data).contains("SYNTHETIC_PERSONAL_KEY"))
+        let calls = try XCTUnwrap(snapshot["calls"] as? [[String: Any]])
+        let starts = calls.filter { ($0["path"] as? String)?.hasSuffix("/auth") == true && $0["method"] as? String == "POST" }
+        XCTAssertEqual(starts.count, 1); XCTAssertEqual((starts.first?["body"] as? [String: Any])?.count, 0)
+        XCTAssertEqual(calls.filter { $0["path"] as? String == "/api/bots/connections" && $0["method"] as? String == "POST" }.count, 3)
+        XCTAssertEqual(snapshot["connectorChecks"] as? Int, 0); XCTAssertEqual(snapshot["connectorToolCalls"] as? Int, 0)
+        XCTAssertFalse(calls.contains { ($0["path"] as? String)?.hasSuffix("/messages") == true })
+        app.navigationBars.buttons.firstMatch.tap()
+        try tapWorkspace(app.buttons["Discover"])
+        let serviceSearch = app.searchFields.firstMatch
+        // Search belongs to the navigation bar, outside the content viewport
+        // enforced by tapWorkspace for list rows and form controls.
+        try require(serviceSearch); serviceSearch.tap(); serviceSearch.typeText("Fixture managed connector")
+        if app.keyboards.firstMatch.exists { app.keyboards.buttons["Search"].tap() }
+        try tapWorkspace(app.buttons["addConnector-fixture-managed-service"])
+        try require(app.navigationBars["Service setup"])
+        XCTAssertFalse(app.textFields["connectorNameInput"].exists); XCTAssertFalse(app.buttons["startConnectorSignInButton"].exists)
+        try require(app.buttons["connectorSetupSourceLink"])
+        attachScreenshot("Connectors — managed catalog entry explains setup without creating an account")
+        let setupState = try await fixtureControl(control, action: "state"), setupCalls = try XCTUnwrap(setupState["calls"] as? [[String: Any]])
+        XCTAssertEqual(setupCalls.filter { $0["method"] as? String != "GET" }.count, calls.filter { $0["method"] as? String != "GET" }.count)
+        XCTAssertEqual(((setupState["connectors"] as? [String: Any])?["connections"] as? [[String: Any]])?.count, 3)
+        app.buttons["dismissConnectorServiceSetupButton"].tap()
+        app.terminate(); app.launch(); tapTab("Connectors")
+        let linear = try XCTUnwrap(rows.first { $0["catalogId"] as? String == "linear" }?["id"] as? String)
+        try tapWorkspace(app.buttons["botConnection-" + linear]); try require(app.navigationBars["Linear"])
+        try require(app.staticTexts["Status, Sign-in waiting"])
+        attachScreenshot("Connectors — accounts remain discoverable after relaunch")
     }
 
     @MainActor
@@ -1776,6 +1842,15 @@ final class CompanionSmokeTests: XCTestCase {
     }
 
     private func tapTab(_ name: String) {
+        let settingsDone = app.buttons["dismissMacSettingsButton"]
+        if settingsDone.exists { settingsDone.tap() }
+        if name == "Connection" {
+            let connectors = app.tabBars.buttons["Connectors"]
+            XCTAssertTrue(connectors.waitForExistence(timeout: 5)); connectors.tap()
+            let settings = app.buttons["connectorMacSettingsButton"]
+            XCTAssertTrue(settings.waitForExistence(timeout: 5)); settings.tap()
+            return
+        }
         let button = app.tabBars.buttons[name]
         XCTAssertTrue(button.waitForExistence(timeout: 5))
         button.tap()

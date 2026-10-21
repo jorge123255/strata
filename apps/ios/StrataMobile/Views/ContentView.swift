@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum CompanionTab: Hashable {
-    case overview, chat, bots, models, connection
+    case overview, chat, bots, models, connectors, connection
 }
 
 struct ContentView: View {
@@ -11,13 +11,14 @@ struct ContentView: View {
     @State private var navigationGeneration = UUID()
     @State private var selection: CompanionTab = .overview
     @State private var showingPairing = false
+    @State private var showingConnection = false
 
     init(store: CompanionStore) { self.store = store; _notifications = ObservedObject(wrappedValue: store.notifications) }
 
     var body: some View {
         TabView(selection: $selection) {
             NavigationStack {
-                OverviewView(store: store, pair: { showingPairing = true }, open: { selection = $0 })
+                OverviewView(store: store, pair: { showingPairing = true }, open: open)
             }
             .tabItem { Label("Home", systemImage: "house") }
             .tag(CompanionTab.overview)
@@ -49,15 +50,18 @@ struct ContentView: View {
             .accessibilityIdentifier("modelsTab")
 
             NavigationStack {
-                ConnectionView(store: store, pair: { showingPairing = true })
+                ConnectorsHomeView(store: store, pair: { showingPairing = true }, settings: { showingConnection = true })
             }
-            .tabItem { Label("Connection", systemImage: "link") }
-            .tag(CompanionTab.connection)
-            .accessibilityIdentifier("connectionTab")
+            .tabItem { Label("Connectors", systemImage: "puzzlepiece.extension") }
+            .tag(CompanionTab.connectors)
+            .accessibilityIdentifier("connectorsTab")
         }
         .tint(StrataTheme.accentText)
         .sheet(isPresented: $showingPairing) {
             PairMacView(store: store)
+        }
+        .sheet(isPresented: $showingConnection) {
+            MacConnectionSettingsView(store: store)
         }
         .onChange(of: store.pendingInvitation, initial: true) { _, invitation in
             if invitation != nil { showingPairing = true }
@@ -76,7 +80,7 @@ struct ContentView: View {
             else { notifications.focus(nil) }
             store.setChatVisible(tab == .chat)
             store.setModelsVisible(tab == .models)
-            store.setBotsVisible(tab == .bots)
+            store.setBotsVisible(tab == .bots || tab == .connectors)
         }
         .onChange(of: store.currentConversation?.id) { _, id in
             if selection == .chat { notifications.focus(id.map { CompanionNotificationDestination(type: "chat", id: $0) }) }
@@ -96,5 +100,23 @@ struct ContentView: View {
             }
         }
         .task { if store.isPaired { await store.refresh() } }
+    }
+    private func open(_ tab: CompanionTab) {
+        if tab == .connection { showingConnection = true }
+        else { selection = tab }
+    }
+}
+
+private struct MacConnectionSettingsView: View {
+    @ObservedObject var store: CompanionStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var pairing = false
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                HStack { Text("Mac settings").font(.headline); Spacer(); Button("Done") { dismiss() }.accessibilityIdentifier("dismissMacSettingsButton") }.padding()
+                ConnectionView(store: store, pair: { pairing = true })
+            }
+        }.sheet(isPresented: $pairing) { PairMacView(store: store) }
     }
 }

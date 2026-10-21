@@ -44,6 +44,12 @@ struct OverviewView: View {
             if typeSize.isAccessibilitySize {
                 VStack(spacing: 12) { chatShortcut; botsShortcut }
             } else { HStack(alignment: .top, spacing: 12) { chatShortcut; botsShortcut } }
+            HStack(spacing: 12) {
+                Button { open(.connectors) } label: { Label("Connectors", systemImage: "puzzlepiece.extension").frame(maxWidth: .infinity, minHeight: 44) }
+                    .accessibilityIdentifier("homeConnectorsButton")
+                Button { open(.connection) } label: { Label("Mac settings", systemImage: "desktopcomputer").frame(maxWidth: .infinity, minHeight: 44) }
+                    .accessibilityIdentifier("homeMacSettingsButton")
+            }.font(.subheadline.weight(.semibold)).buttonStyle(.bordered)
             if !store.conversations.isEmpty {
                 VStack(alignment: .leading, spacing: 13) {
                     HStack {

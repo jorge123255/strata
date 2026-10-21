@@ -47,8 +47,9 @@ let createdBotConversation;
 const directCreatedConversations = [];
 const lifecycleMode = ['--test-devin-provider', '--test-bot-lifecycle', '--test-bot-avatar-states', '--test-bot-photos'].includes(process.argv[2]);
 const directBotsMode = process.argv[2] === '--test-direct-bots';
-const connectorMode = process.argv[2] === '--test-connectors';
-const workspaceFlags = ['--test-connectors', '--test-devin-provider', '--test-direct-bots', '--test-team-settings', '--test-team-instructions', '--test-notifications', '--test-group-chat-layout', '--test-team-channel-layout', '--test-team-channel', '--test-bot-photos', '--test-bot-lifecycle', '--test-bot-avatar-states', '--test-workspace-skills', '--test-workspace-connections', '--test-workspace-teams', '--test-facelift'];
+const connectorAccountsMode = process.argv[2] === '--test-connector-accounts';
+const connectorMode = connectorAccountsMode || process.argv[2] === '--test-connectors';
+const workspaceFlags = ['--test-connector-accounts', '--test-connectors', '--test-devin-provider', '--test-direct-bots', '--test-team-settings', '--test-team-instructions', '--test-notifications', '--test-group-chat-layout', '--test-team-channel-layout', '--test-team-channel', '--test-bot-photos', '--test-bot-lifecycle', '--test-bot-avatar-states', '--test-workspace-skills', '--test-workspace-connections', '--test-workspace-teams', '--test-facelift'];
 const workspaceMode = workspaceFlags.includes(process.argv[2]);
 let teamConversation, savedTeam, teamRun;
 const teamLimits = { maxParallel: 2, maxDepth: 2, maxHops: 8, maxTurns: 24, maxDurationMs: 600000 };
@@ -64,6 +65,20 @@ if (connectorMode) {
   connectorService = createBotMcp({ directory: join(root, 'connector-store'),
     hasBot: id => ['fixture-bot', 'fixture-reviewer'].includes(id), hasTeam: id => id === savedTeam.id,
     teamAccess: () => false,
+    ...(connectorAccountsMode ? { authOptions: {
+      // This workflow deliberately exercises the old-host Mac-browser fallback.
+      // All discovery/authorization producers are inert and make no requests.
+      fetchImpl: async () => { throw new Error('Account UX fixture must never fetch an external service.'); },
+      discoverResource: async () => ({ authorization_servers: ['https://auth.fixture.invalid'] }),
+      authorize: async (provider, options) => {
+        if (options.authorizationCode) throw new Error('Account UX fixture never exchanges an authorization code.');
+        provider.saveCodeVerifier('synthetic-fixture-verifier-'.repeat(3));
+        const address = new URL('https://auth.fixture.invalid/authorize');
+        address.searchParams.set('state', await provider.state()); address.searchParams.set('redirect_uri', String(provider.redirectUrl));
+        address.searchParams.set('code_challenge', 'synthetic-fixture-challenge'); address.searchParams.set('code_challenge_method', 'S256');
+        provider.redirectToAuthorization(address); return 'REDIRECT';
+      },
+    } } : {}),
     clientFactory: async () => ({
       async listTools() { connectorChecks++; return { tools: [{ name: 'Read project', description: 'Read synthetic project data.', inputSchema: { type: 'object' } }, { name: 'Write project', description: 'Change synthetic project data. Uses normal bot approvals.', inputSchema: { type: 'object' } }] }; },
       async callTool() { connectorToolCalls++; throw new Error('This connector UI fixture must never call a tool.'); },
@@ -311,7 +326,11 @@ const host = {
     if (workspaceMode && path === '/api/bots/skills/skill_created' && options.method === 'PATCH') { const skill = skillDrafts[0]; Object.assign(skill, options.body); skill.revision++; return { skill: { ...skill, botIds: skillCatalog().skills.find(s => s.id === skill.id).botIds } }; }
     if (workspaceMode && path === '/api/bots/skills/assign') { skillAssignments[options.body.botId] = [...options.body.skillIds]; return skillCatalog(); }
     if (connectorMode && (path.startsWith('/api/bots/connections') || path.startsWith('/api/bots/connectors/'))) {
-      return connectorService.handle(options.method ?? 'GET', new URL(path, 'http://fixture.invalid'), options.body);
+      const value = await connectorService.handle(options.method ?? 'GET', new URL(path, 'http://fixture.invalid'), options.body);
+      return connectorAccountsMode && value?.connectorFeatures ? {
+        ...value, connectorFeatures: { ...value.connectorFeatures, iphoneOAuth: false },
+        ...(Array.isArray(value.connectors) ? { connectors: [...value.connectors, { id: 'fixture-managed-service', name: 'Fixture managed connector', description: 'Synthetic managed service: review configuration without connecting.', category: 'Services', transport: 'http', authTypes: ['oauth'], setupState: 'managed', phoneSignIn: false, sourceURL: 'https://github.com/example/fixture-config', setupNote: 'Requires a managed account on Mac.' }] } : {}),
+      } : value;
     }
     if (workspaceMode && path === '/api/bots/connections') return { connections: [mcpConnection] };
     if (workspaceMode && path === '/api/bots/connections/mcpc_fixture/check') { mcpConnection.status = 'connected'; mcpConnection.detail = 'Two synthetic tools available. No program was executed.'; mcpConnection.checkedAt = new Date().toISOString(); return { connection: mcpConnection }; }
@@ -575,7 +594,7 @@ try {
         '-project', project, '-scheme', 'StrataMobile', '-destination', destination,
         '-derivedDataPath', derivedData,
         ...(process.env.STRATA_TEST_RESULT_BUNDLE ? ['-resultBundlePath', process.env.STRATA_TEST_RESULT_BUNDLE] : []),
-        '-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test-connectors': 'testConnectorsHTTPSetupTeamAccessToolsAndPersistence', '--test-devin-provider': 'testPhoneCreatesDevinBotWithHostModelsAndNoImplicitRun', '--test-direct-bots': 'testDirectBotRosterChatProfileNewConversationAndRelaunch', '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation', '--test-computer': 'testActualSampleAvatarAndIsolatedComputerControl', '--test-bot-photos': 'testPhotoLedBotsCreationAppearanceAndWorkspaceNavigation', '--test-bot-lifecycle': 'testPhoneBotCreationEditingCASAndApprovalModes', '--test-bot-avatar-states': 'testBotAvatarStatesInteractionAndRosterFilters', '--test-facelift': 'testFaceliftPrincipalScreensAndSharedHistory', '--test-workspace-skills': 'testReviewedSkillAssignmentAndWorkspaceNavigation', '--test-workspace-connections': 'testSavedConnectionCheckAndReviewedAccess', '--test-workspace-teams': 'testTeamExplicitTaskSharedThinkingStopAndActivity', '--test-team-channel': 'testNaturalTeamChannelPeersAssignmentsThinkingAndStop', '--test-team-channel-layout': 'testTeamChannelNormalDarkAndLargeTypeLayout', '--test-group-chat-layout': 'testGroupRosterAndRoomPhotoLayoutWithRealMenus', '--test-team-settings': 'testTeamMembershipSharedComputerFoldersConflictAndPersistence', '--test-team-instructions': 'testTeamPublicInstructionsRolesPersistenceAndConflict', '--test-notifications': 'testNotificationPreferencesPrivateInboxRoutingMuteAndRelaunch' })[process.argv[2]],
+        '-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test-connector-accounts': 'testConnectorAccountsDiscoverBearerSetupAndMacSignInFallback', '--test-connectors': 'testConnectorsHTTPSetupTeamAccessToolsAndPersistence', '--test-devin-provider': 'testPhoneCreatesDevinBotWithHostModelsAndNoImplicitRun', '--test-direct-bots': 'testDirectBotRosterChatProfileNewConversationAndRelaunch', '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation', '--test-computer': 'testActualSampleAvatarAndIsolatedComputerControl', '--test-bot-photos': 'testPhotoLedBotsCreationAppearanceAndWorkspaceNavigation', '--test-bot-lifecycle': 'testPhoneBotCreationEditingCASAndApprovalModes', '--test-bot-avatar-states': 'testBotAvatarStatesInteractionAndRosterFilters', '--test-facelift': 'testFaceliftPrincipalScreensAndSharedHistory', '--test-workspace-skills': 'testReviewedSkillAssignmentAndWorkspaceNavigation', '--test-workspace-connections': 'testSavedConnectionCheckAndReviewedAccess', '--test-workspace-teams': 'testTeamExplicitTaskSharedThinkingStopAndActivity', '--test-team-channel': 'testNaturalTeamChannelPeersAssignmentsThinkingAndStop', '--test-team-channel-layout': 'testTeamChannelNormalDarkAndLargeTypeLayout', '--test-group-chat-layout': 'testGroupRosterAndRoomPhotoLayoutWithRealMenus', '--test-team-settings': 'testTeamMembershipSharedComputerFoldersConflictAndPersistence', '--test-team-instructions': 'testTeamPublicInstructionsRolesPersistenceAndConflict', '--test-notifications': 'testNotificationPreferencesPrivateInboxRoutingMuteAndRelaunch' })[process.argv[2]],
         '-parallel-testing-enabled', 'NO', 'test',
       ], { stdio: 'inherit', env: { ...process.env,
         TEST_RUNNER_STRATA_TEST_INVITATION: connection.invitation,

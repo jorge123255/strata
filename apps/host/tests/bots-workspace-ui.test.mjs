@@ -20,3 +20,10 @@ test('MCP imports retain separate arguments and environment but never import bot
 test('MCP imports reject malformed fields and unsupported authentication rather than silently losing credentials',()=>{
   for(const value of ['[]','null','{"broken":{}}','{"x":{"command":"p","args":"a b"}}','{"x":{"command":"p","env":{"N":1}}}','{"x":{"url":"https://example.invalid","headers":{"X-Key":"synthetic"}}}','{"x":{"url":"https://example.invalid","oauth":{}}}'])assert.throws(()=>connections.parseBotConnectionImport(value));
 });
+
+
+test('connector cancellation binds the single reviewed HTTPS state and rejects ambiguous or unsafe links', () => {
+  const state='a'.repeat(64);
+  assert.equal(connections.connectorAuthorizationState('https://auth.fixture.invalid/authorize?state='+state),state);
+  for(const value of [undefined,'javascript:alert(1)','http://auth.fixture.invalid/?state='+state,'https://user:secret@auth.fixture.invalid/?state='+state,'https://auth.fixture.invalid/?state=short','https://auth.fixture.invalid/?state='+state+'&state='+state]) assert.equal(connections.connectorAuthorizationState(value),null);
+});

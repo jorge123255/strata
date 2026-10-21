@@ -1,6 +1,8 @@
 /** Curated official MCP endpoints; installing a preset never connects or enables tools. */
-export const botConnectorFeatures = Object.freeze({ catalog: true, httpCreation: true, teamAccess: true, oauth: true });
-const entries = [
+import { readFileSync } from 'node:fs';
+import { mergeMarketplaceCatalog } from './bots-connector-marketplace.mjs';
+export const botConnectorFeatures = Object.freeze({ catalog: true, httpCreation: true, teamAccess: true, oauth: true, iphoneOAuth: true });
+const curated = [
   { id: 'github', name: 'GitHub', description: 'Work with repositories, issues and pull requests.', category: 'Development', transport: 'http', url: 'https://api.githubcopilot.com/mcp/', authTypes: ['bearer'], documentationURL: 'https://github.com/github/github-mcp-server/blob/main/docs/remote-server.md', setupNote: 'Use a GitHub personal access token with access limited to the repositories you want to share.' },
   { id: 'linear', name: 'Linear', description: 'Find and update issues, projects and milestones.', category: 'Projects', transport: 'http', url: 'https://mcp.linear.app/mcp', authTypes: ['oauth', 'bearer'], documentationURL: 'https://linear.app/docs/mcp', setupNote: 'Sign in on the Mac, or use a Linear API key. Choose the tools and bots or teams after checking the connection.' },
   { id: 'linear-readonly', name: 'Linear · read only', description: 'Search and read Linear projects and issues.', category: 'Projects', transport: 'http', url: 'https://mcp.linear.app/mcp/readonly', authTypes: ['oauth', 'bearer'], documentationURL: 'https://linear.app/docs/mcp', setupNote: 'The service endpoint exposes read tools only. You still choose which tools to share in Strata.' },
@@ -9,5 +11,7 @@ const entries = [
   { id: 'slack', name: 'Slack', description: 'Search conversations and use tools provided by your Slack app.', category: 'Communication', transport: 'http', url: 'https://mcp.slack.com/mcp', authTypes: ['bearer'], documentationURL: 'https://docs.slack.dev/ai/slack-mcp-server/', setupNote: 'Requires a user token from a Slack Marketplace or internal app with MCP access enabled. Strata does not supply a registered Slack app.' },
   { id: 'custom-http', name: 'Custom connector', description: 'Connect another service through its MCP server URL.', category: 'Custom', transport: 'http', authTypes: ['none', 'bearer', 'oauth'], setupNote: 'Use the service’s official HTTPS MCP endpoint. Browser sign-in requires a compatible OAuth MCP server; some services require a registered client.' },
 ];
+const marketplace = JSON.parse(readFileSync(new URL('./bots-connector-marketplace.json', import.meta.url), 'utf8'));
+const entries = mergeMarketplaceCatalog(curated, marketplace);
 export const botConnectorCatalog = () => ({ connectors: structuredClone(entries), connectorFeatures: { ...botConnectorFeatures } });
 export const botConnectorPreset = id => entries.find(entry => entry.id === id);

@@ -29,6 +29,9 @@ struct StrataMobileApp: App {
                     }
                 }
                 .onOpenURL { url in
+                    // System authentication owns these callbacks. An external
+                    // open must never complete OAuth or become a pairing draft.
+                    if BotConnectorOAuthRequest.isCallbackTarget(url) { return }
                     do { store.pendingInvitation = try PairingInvitation.parse(url.absoluteString) }
                     catch { store.error = error.localizedDescription }
                 }

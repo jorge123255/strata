@@ -2296,4 +2296,207 @@ final class BotConnectorTests: XCTestCase {
         let refused = await workspace.saveConnectorSetup(draft, editing: program); XCTAssertFalse(refused)
         XCTAssertFalse(fixture.requests.contains { $0.method == "PATCH" })
     }
+
+    func testDiscoverPresetActionsNameAccountsAndKeepBearerServicesHonest() throws {
+        let oauth = try decode(["id": "linear", "name": "Linear", "description": "Projects", "category": "Projects", "transport": "http", "url": "https://mcp.linear.app/mcp", "authTypes": ["oauth", "bearer"]], as: BotConnectorCatalogEntry.self)
+        var bearer = oauth; bearer.id = "github"; bearer.name = "GitHub"; bearer.authTypes = ["bearer"]
+        XCTAssertTrue(oauth.supportsSignIn); XCTAssertEqual(oauth.accountAction, "Connect")
+        XCTAssertFalse(bearer.supportsSignIn); XCTAssertEqual(bearer.accountAction, "Add account")
+        var first = try decode(connector(), as: BotMCPConnection.self); first.catalogId = "linear"; first.accountLabel = "PERSONAL"
+        var second = first; second.id = "mcpc_second"; second.accountLabel = "Personal 2"
+        XCTAssertEqual(oauth.nextAccountLabel(in: [first, second]), "Personal 3")
+        XCTAssertEqual(bearer.nextAccountLabel(in: [first, second]), "Personal")
+        var custom = oauth; custom.id = "custom-http"; XCTAssertFalse(custom.supportsSignIn)
+    }
+
+    func testDiscoverCreationReturnsExactAccountAndDoesNotStartAuthOrGrantAccess() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let flags = features
+        let preset: [String: Any] = ["id": "linear", "name": "Linear", "description": "Projects", "category": "Projects", "transport": "http", "url": "https://mcp.linear.app/mcp", "authTypes": ["oauth", "bearer"]]
+        var old = connector(); old["catalogId"] = "linear"; old["accountLabel"] = "Personal"
+        var inserted = connector(); inserted["id"] = "mcpc_new_account"; inserted["catalogId"] = "linear"; inserted["accountLabel"] = "Personal 2"; inserted["authType"] = "oauth"
+        let oldRow = old, newRow = inserted
+        fixture.respond { request in
+            if request.httpMethod == "POST" { return ["connection": newRow] }
+            if request.url!.path.hasSuffix("/catalog") { return ["connectors": [preset], "connectorFeatures": flags] }
+            return ["connections": [oldRow], "connectorFeatures": flags]
+        }
+        let owner = fixture.makeStore(), current = owner.botWorkspaceStore()
+        await current.refreshConnections(); await current.refreshConnectorCatalog()
+        let entry = try XCTUnwrap(current.connectorCatalog?.connectors.first)
+        let result = await current.createConnectorAccount(entry)
+        XCTAssertEqual(result?.id, "mcpc_new_account")
+        let posts = fixture.requests.filter { $0.method == "POST" }
+        XCTAssertEqual(posts.count, 1); XCTAssertEqual(posts.first?.path, "/v1/bots/connections")
+        let body = try XCTUnwrap(posts.first?.jsonBody)
+        XCTAssertEqual(body["accountLabel"] as? String, "Personal 2"); XCTAssertEqual(body["authType"] as? String, "oauth")
+        for absent in ["botIds", "teamIds", "enabledToolIds", "apiKey", "oauthClientId", "oauthClientSecret", "callbackTarget"] { XCTAssertNil(body[absent]) }
+        var stale = entry; stale.url = "https://untrusted.fixture.invalid/mcp"
+        let refused = await current.createConnectorAccount(stale); XCTAssertNil(refused)
+        XCTAssertEqual(fixture.requests.filter { $0.method == "POST" }.count, 1)
+    }
+
+    func testNativeAuthorizationRequiresExactTargetSingleStateAndHTTPS() throws {
+        let state = String(repeating: "a", count: 64)
+        var auth = BotConnectorAuth(status: "waiting", detail: "Sign in", authorizationURL: "https://auth.fixture.invalid/authorize?state=\(state)&redirect_uri=strata%3A%2F%2Fconnector-oauth%2Fcallback", callbackTarget: "iphone", redirectURL: BotConnectorOAuthRequest.redirect)
+        let request = try XCTUnwrap(BotConnectorOAuthRequest(auth: auth))
+        XCTAssertNotNil(request.validatedCallback(try XCTUnwrap(URL(string: "strata://connector-oauth/callback?state=\(state)&code=synthetic"))))
+        for callback in ["strata://connector-oauth/callback?state=wrong&code=x", "strata://connector-oauth/callback?state=\(state)&state=\(state)&code=x", "strata://connector-oauth/other?state=\(state)", "strata://connector-oauth:443/callback?state=\(state)", "strata://user@connector-oauth/callback?state=\(state)", "strata://connector-oauth/callback?state=\(state)#fragment", "https://connector-oauth/callback?state=\(state)"] {
+            XCTAssertNil(request.validatedCallback(try XCTUnwrap(URL(string: callback))), callback)
+        }
+        auth.redirectURL = "strata://connector-oauth/other"; XCTAssertNil(BotConnectorOAuthRequest(auth: auth))
+        auth.redirectURL = BotConnectorOAuthRequest.redirect; auth.callbackTarget = "mac"; XCTAssertNil(BotConnectorOAuthRequest(auth: auth))
+        auth.callbackTarget = "iphone"
+        for invalidState in ["", String(repeating: "a", count: 63), String(repeating: "a", count: 65), String(repeating: "A", count: 64), String(repeating: "g", count: 64)] {
+            var address = URLComponents(string: "https://auth.fixture.invalid/authorize")!
+            address.queryItems = [URLQueryItem(name: "state", value: invalidState), URLQueryItem(name: "redirect_uri", value: BotConnectorOAuthRequest.redirect)]
+            auth.authorizationURL = address.string
+            XCTAssertNil(BotConnectorOAuthRequest(auth: auth))
+        }
+        for address in ["http://auth.fixture.invalid/authorize?state=x", "https://user:secret@auth.fixture.invalid/authorize?state=x", "https://auth.fixture.invalid/authorize?state=x&state=x", "https://auth.fixture.invalid/authorize?state=", "https://auth.fixture.invalid/authorize?state=x&redirect_uri=strata%3A%2F%2Fwrong%2Fcallback"] {
+            auth.authorizationURL = address; XCTAssertNil(BotConnectorOAuthRequest(auth: auth))
+        }
+    }
+
+    func testNativeStartIsCapabilityGatedCancelIsScopedAndMacFallbackUsesNoNativeTarget() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        var row = connector(); row["authType"] = "oauth"
+        let account = row, flags = features
+        var native = false
+        fixture.respond { request in
+            if request.httpMethod == "POST" { return ["connection": account] }
+            return ["connections": [account], "connectorFeatures": flags.merging(["iphoneOAuth": native]) { _, new in new }]
+        }
+        let owner = fixture.makeStore(), workspace = owner.botWorkspaceStore()
+        await workspace.refreshConnections()
+        let connection = try decode(account, as: BotMCPConnection.self)
+        let refused = await workspace.connectorAuthentication(connection, action: "start", callbackTarget: "iphone"); XCTAssertFalse(refused)
+        XCTAssertFalse(fixture.requests.contains { $0.method == "POST" })
+        native = true; await workspace.refreshConnections()
+        let started = await workspace.connectorAuthentication(connection, action: "start", callbackTarget: "iphone"); XCTAssertTrue(started)
+        let missingState = await workspace.connectorAuthentication(connection, action: "cancel"); XCTAssertFalse(missingState)
+        let cancelled = await workspace.connectorAuthentication(connection, action: "cancel", expectedState: String(repeating: "a", count: 64)); XCTAssertTrue(cancelled)
+        let mac = await workspace.connectorAuthentication(connection, action: "start"); XCTAssertTrue(mac)
+        let posts = fixture.requests.filter { $0.method == "POST" }
+        XCTAssertEqual(posts.map(\.path), ["/v1/bots/connections/mcpc_fixture/auth", "/v1/bots/connections/mcpc_fixture/auth/cancel", "/v1/bots/connections/mcpc_fixture/auth"])
+        XCTAssertEqual(posts.first?.jsonBody?["callbackTarget"] as? String, "iphone")
+        XCTAssertEqual(posts[1].jsonBody?["expectedState"] as? String, String(repeating: "a", count: 64)); XCTAssertEqual(posts[2].jsonBody?.count, 0)
+        XCTAssertFalse(fixture.requests.contains { $0.method == "DELETE" })
+    }
+
+    func testReplacedPairingCannotReturnLateCreatedAccountOrCompleteAuthorization() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let row = connector(), flags = features
+        fixture.respond { _ in ["connections": [row], "connectorFeatures": flags] }
+        let owner = fixture.makeStore(), workspace = owner.botWorkspaceStore()
+        await workspace.refreshConnections()
+        var draft = BotConnectorDraft(); draft.name = "Late account"; draft.url = "https://example.invalid/mcp"
+        let held = fixture.hold("/v1/bots/connections")
+        let creation = Task { await workspace.saveConnectorAccountSetup(draft) }
+        await fulfillment(of: [held.requested], timeout: 2)
+        owner.forgetMac(); XCTAssertFalse(owner.isPaired)
+        held.finish(["connection": row])
+        let result = await creation.value; XCTAssertNil(result)
+        var oauth = try decode(row, as: BotMCPConnection.self); oauth.authType = "oauth"
+        let completed = await workspace.connectorAuthentication(oauth, action: "complete", callbackURL: "strata://connector-oauth/callback?state=synthetic&code=synthetic")
+        XCTAssertFalse(completed)
+        XCTAssertFalse(fixture.requests.contains { $0.path.hasSuffix("/auth/complete") })
+    }
+
+
+    func testSignInAttemptRemainsLockedAfterBrowserClosesUntilHostCompletionFinishes() throws {
+        var progress = BotConnectorSignInProgress()
+        let attempt = try XCTUnwrap(progress.begin()), state = String(repeating: "a", count: 64)
+        XCTAssertTrue(progress.bind(state, to: attempt))
+        // The system browser can now be gone while the host's completion POST
+        // or refresh is still held. A second tap must not start another flow.
+        XCTAssertNil(progress.begin()); XCTAssertTrue(progress.isActive)
+        XCTAssertTrue(progress.owns(attempt, state: state))
+        XCTAssertFalse(progress.releaseFlow(String(repeating: "b", count: 64), from: attempt))
+        XCTAssertTrue(progress.releaseFlow(state, from: attempt))
+        XCTAssertNil(progress.begin(), "Releasing cleanup custody does not unlock the outer attempt early.")
+        XCTAssertTrue(progress.finish(attempt)); XCTAssertFalse(progress.isActive)
+        XCTAssertNotNil(progress.begin())
+    }
+
+    func testDisappearedSignInCannotClearCancelOrUnlockASuccessorAttempt() throws {
+        var progress = BotConnectorSignInProgress()
+        let first = try XCTUnwrap(progress.begin()), firstState = String(repeating: "a", count: 64)
+        XCTAssertTrue(progress.bind(firstState, to: first))
+        let capturedCleanup = progress.invalidate()
+        XCTAssertEqual(capturedCleanup, firstState, "Disappearance captures this exact flow for server state-bound cleanup.")
+        let second = try XCTUnwrap(progress.begin()), secondState = String(repeating: "b", count: 64)
+        XCTAssertNotEqual(first, second); XCTAssertTrue(progress.bind(secondState, to: second))
+        // A's late start, browser catch, completion and defer must all fail
+        // their ownership check while B retains its cleanup state and lock.
+        XCTAssertFalse(progress.isCurrent(first)); XCTAssertFalse(progress.owns(first, state: firstState))
+        XCTAssertFalse(progress.bind(firstState, to: first))
+        XCTAssertFalse(progress.releaseFlow(firstState, from: first))
+        XCTAssertFalse(progress.finish(first))
+        XCTAssertTrue(progress.owns(second, state: secondState)); XCTAssertEqual(progress.nativeState, secondState)
+        XCTAssertNil(progress.begin())
+        XCTAssertEqual(progress.invalidate(), secondState)
+        XCTAssertFalse(progress.isCurrent(second))
+    }
+
+
+    func testCatalogSetupMetadataPreservesLegacyDefaultsAndExplainsManagedServices() throws {
+        let legacy: [String: Any] = ["id": "linear", "name": "Linear", "description": "Projects", "category": "Projects", "transport": "http", "url": "https://mcp.linear.app/mcp", "authTypes": ["oauth"]]
+        let entry = try decode(legacy, as: BotConnectorCatalogEntry.self)
+        XCTAssertTrue(entry.isReady); XCTAssertNil(entry.phoneSignIn); XCTAssertEqual(entry.accountAction, "Connect")
+        for state in ["configuration", "managed", "unavailable", "future-state"] {
+            var raw = legacy; raw["setupState"] = state; raw["sourceURL"] = "https://github.com/example/config"; raw["phoneSignIn"] = false
+            let service = try decode(raw, as: BotConnectorCatalogEntry.self)
+            XCTAssertFalse(service.isReady); XCTAssertEqual(service.accountAction, "View setup")
+            XCTAssertFalse(service.setupSummary.isEmpty); XCTAssertEqual(service.sourceURL, "https://github.com/example/config"); XCTAssertEqual(service.phoneSignIn, false)
+        }
+    }
+
+    func testConfigurationManagedAndUnavailablePresetsCannotCreateAccountsOrStartSignIn() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let flags = features
+        let catalog: [[String: Any]] = ["configuration", "managed", "unavailable"].map { state in
+            ["id": "fixture-" + state, "name": "Service " + state, "description": "Review setup on Mac", "category": "Services", "transport": "http", "url": "https://service.fixture.invalid/mcp", "authTypes": ["oauth"], "setupState": state, "sourceURL": "https://github.com/example/config"]
+        }
+        fixture.respond { request in request.url!.path.hasSuffix("/catalog") ? ["connectors": catalog, "connectorFeatures": flags] : ["connections": [], "connectorFeatures": flags] }
+        let owner = fixture.makeStore(), workspace = owner.botWorkspaceStore()
+        await workspace.refreshConnections(); await workspace.refreshConnectorCatalog()
+        for entry in try XCTUnwrap(workspace.connectorCatalog?.connectors) {
+            let direct = await workspace.createConnectorAccount(entry); XCTAssertNil(direct)
+            let setup = await workspace.saveConnectorAccountSetup(BotConnectorDraft(entry: entry)); XCTAssertNil(setup)
+        }
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.path == "/v1/bots/connections" || $0.path == "/v1/bots/connectors/catalog" })
+    }
+
+    func testPresetPhoneSignInPolicyForcesMacAndUnknownPresetCannotRequestNativeCallback() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let flags = features.merging(["iphoneOAuth": true]) { _, new in new }
+        var value = connector(); value["catalogId"] = "google"; value["authType"] = "oauth"
+        let row = value
+        let entries: [[String: Any]] = [
+            ["id": "google", "name": "Google", "description": "Configured app", "category": "Services", "transport": "http", "url": "https://google.fixture.invalid/mcp", "authTypes": ["oauth"], "setupState": "ready", "phoneSignIn": false],
+            ["id": "linear", "name": "Linear", "description": "Legacy preset", "category": "Projects", "transport": "http", "url": "https://mcp.linear.app/mcp", "authTypes": ["oauth"]],
+        ]
+        fixture.respond { request in
+            if request.httpMethod == "POST" { return ["connection": row] }
+            if request.url!.path.hasSuffix("/catalog") { return ["connectors": entries, "connectorFeatures": flags] }
+            return ["connections": [row], "connectorFeatures": flags]
+        }
+        let owner = fixture.makeStore(), workspace = owner.botWorkspaceStore()
+        await workspace.refreshConnections(); await workspace.refreshConnectorCatalog()
+        let google = try decode(row, as: BotMCPConnection.self)
+        XCTAssertFalse(workspace.canUsePhoneSignIn(google))
+        let refused = await workspace.connectorAuthentication(google, action: "start", callbackTarget: "iphone"); XCTAssertFalse(refused)
+        var unknown = google; unknown.catalogId = "not-advertised"
+        let unknownRefused = await workspace.connectorAuthentication(unknown, action: "start", callbackTarget: "iphone"); XCTAssertFalse(unknownRefused)
+        let mac = await workspace.connectorAuthentication(google, action: "start"); XCTAssertTrue(mac)
+        var legacy = google; legacy.catalogId = "linear"
+        XCTAssertTrue(workspace.canUsePhoneSignIn(legacy))
+        let native = await workspace.connectorAuthentication(legacy, action: "start", callbackTarget: "iphone"); XCTAssertTrue(native)
+        let starts = fixture.requests.filter { $0.method == "POST" }
+        XCTAssertEqual(starts.count, 2); XCTAssertEqual(starts[0].jsonBody?.count, 0)
+        XCTAssertEqual(starts[1].jsonBody?["callbackTarget"] as? String, "iphone")
+    }
+
 }
