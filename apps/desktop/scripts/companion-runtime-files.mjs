@@ -38,10 +38,15 @@ export function stageCompanionRuntime(source, staged) {
     const root = lstatSync(staged);
     if (!root.isDirectory() || root.isSymbolicLink()) throw new Error('The companion staging destination must be a regular directory.');
   } else mkdirSync(staged, { recursive: true });
-  // A stage is an exact runtime projection, so retired modules cannot survive
+  // Preserve the tracked staging marker; it is repository metadata, not runtime.
+  // A stage otherwise projects the runtime exactly, so retired modules cannot survive
   // from an earlier build. Remove the generated QR helper too, so swiftc
   // cannot follow a stale link or hard link when rebuilding it on Mac.
   for (const entry of readdirSync(staged, { withFileTypes: true })) {
+    if (entry.name === '.gitignore') {
+      if (!entry.isFile() || entry.isSymbolicLink()) throw new Error('The companion staging marker must be a regular file.');
+      continue;
+    }
     if (files.includes(entry.name)) continue;
     rmSync(join(staged, entry.name), { recursive: true, force: true });
   }

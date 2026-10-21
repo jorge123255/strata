@@ -68,3 +68,16 @@ test('stale module and QR helper hard links cannot mutate external files during 
   assert.equal(readFileSync(moduleOutside, 'utf8'), 'external module'); assert.equal(readFileSync(helperOutside, 'utf8'), 'external helper');
   assert.equal(readFileSync(join(staged, 'bridge.mjs'), 'utf8'), 'fixture bridge.mjs');
 });
+
+test('restaging preserves exact tracked Git marker bytes while pruning retired runtime and QR helper', () => {
+  const { source, staged } = fixture(); mkdirSync(staged);
+  const marker = Buffer.from('*\n!.gitignore\n# fixture staging metadata\r\n');
+  writeFileSync(join(staged, '.gitignore'), marker);
+  writeFileSync(join(staged, 'retired.mjs'), 'old runtime'); writeFileSync(join(staged, 'qr-helper'), 'old generated helper');
+  const files = stageCompanionRuntime(source, staged);
+  assert.deepEqual(readFileSync(join(staged, '.gitignore')), marker);
+  assert.deepEqual(readdirSync(staged).sort(), [...files, '.gitignore'].sort());
+  assert.equal(existsSync(join(staged, 'retired.mjs')), false); assert.equal(existsSync(join(staged, 'qr-helper')), false);
+  stageCompanionRuntime(source, staged);
+  assert.deepEqual(readFileSync(join(staged, '.gitignore')), marker);
+});
