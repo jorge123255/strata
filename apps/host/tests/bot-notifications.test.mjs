@@ -7,6 +7,7 @@ import http from 'node:http';
 import { createBotNotifications, createBotNotificationRoutes, notificationSettings } from '../server/bot-notifications.mjs';
 import { createConversations } from '../server/conversations.mjs';
 import { createTeamChannels } from '../server/bots-team-channel.mjs';
+import { createNativeNotifications } from '../server/bot-notifications-native.mjs';
 
 const at = '2026-10-21T10:00:00.000Z', device = 'a'.repeat(32), other = 'b'.repeat(32);
 const immediate = () => new Promise(resolve => setImmediate(resolve));
@@ -24,6 +25,58 @@ function fixture(t, options = {}) {
 }
 const enable = service => service.settings('desktop', { enabled: true });
 const events = async (service, baseline) => (await service.feed('desktop', { after: baseline.nextCursor, journalId: baseline.journalId })).events;
+
+test('native companion opens fixed Activity and a current conversation without notification opt-in or an event', async t => {
+  let destination = { type: 'bots', id: 'activity' };
+  const f = fixture(t, { native: { ...genericNative(), open: async () => ({ destination }) } });
+  const before = readFileSync(join(f.directory, 'bot-notifications.json'));
+  assert.deepEqual(await f.service.open(), { destination });
+  destination = { type: 'chat', id: 's_old' };
+  assert.deepEqual(await f.service.open(), { destination });
+  assert.deepEqual(readFileSync(join(f.directory, 'bot-notifications.json')), before, 'Navigation neither enables notifications nor creates or changes history.');
+});
+
+test('native open rejects missing or removed chats, source failures, extra actions and arbitrary pages', async t => {
+  let destination = { type: 'chat', id: 's_missing' }, unavailable = false;
+  const f = fixture(t, { native: { ...genericNative(), open: async () => ({ destination }) } });
+  const guarded = f.open({ sources: () => { if (unavailable) throw Error('Fixture sources unavailable'); return structuredClone(f.snapshot); }, native: { ...genericNative(), open: async () => ({ destination }) } });
+  assert.deepEqual(await guarded.open(), { destination: null });
+  destination = { type: 'chat', id: 's_old', approve: true }; assert.deepEqual(await guarded.open(), { destination: null });
+  destination = { type: 'bots', id: 'settings' }; assert.deepEqual(await guarded.open(), { destination: null });
+  destination = { type: 'bots', id: 'activity', command: 'run' }; assert.deepEqual(await guarded.open(), { destination: null });
+  destination = { type: 'chat', id: 's_old' }; unavailable = true; assert.deepEqual(await guarded.open(), { destination: null }); unavailable = false;
+  await enable(guarded); f.reply('m_before_removal'); guarded.reconcile();
+  f.snapshot.conversations = [];
+  assert.deepEqual(await guarded.open(), { destination: null }, 'A historical notification cannot resurrect a removed conversation.');
+});
+
+test('actual host open route preserves a once-only native companion destination through its private adapter', async t => {
+  const queue = [{ type: 'bots', id: 'activity' }, { type: 'chat', id: 's_old' }], privateCalls = [];
+  const native = createNativeNotifications({ env: { STRATA_SHELL_BRIDGE: 'http://127.0.0.1:19999', STRATA_SHELL_TOKEN: 'fixture-private-shell-token' }, fetcher: async (url, options) => {
+    privateCalls.push({ url, method: options.method });
+    assert.equal(options.headers.authorization, 'Bearer fixture-private-shell-token');
+    return new Response(JSON.stringify({ destination: queue.shift() ?? null }), { headers: { 'content-type': 'application/json' } });
+  } });
+  const f = fixture(t, { native }); let port;
+  const route = createBotNotificationRoutes({ notifications: f.service, port: () => port });
+  const server = http.createServer((req, res) => route(req, res, new URL(req.url, `http://${req.headers.host}`)));
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); port = server.address().port;
+  t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+  const open = () => fetch(`http://127.0.0.1:${port}/api/bots/notifications/open`, { method: 'POST', body: '{}' }).then(response => response.json());
+  assert.deepEqual(await open(), { destination: { type: 'bots', id: 'activity' } });
+  assert.deepEqual(await open(), { destination: { type: 'chat', id: 's_old' } });
+  assert.deepEqual(await open(), { destination: null });
+  assert.equal(privateCalls.length, 3); assert.ok(privateCalls.every(call => call.url === 'http://127.0.0.1:19999/notifications/open' && call.method === 'POST'));
+});
+
+test('native team opens remain bound to an actual journal event', async t => {
+  let destination = { type: 'team', id: 'team_test' };
+  const f = fixture(t, { native: { ...genericNative(), open: async () => ({ destination }) } });
+  assert.deepEqual(await f.service.open(), { destination: null });
+  await enable(f.service); f.team('tm_visible'); f.service.reconcile();
+  assert.deepEqual(await f.service.open(), { destination });
+  destination = { type: 'team', id: 'team_forged' }; assert.deepEqual(await f.service.open(), { destination: null });
+});
 
 test('first read and first enable prime old history, while new terminal reply has stable safe identity', async t => {
   const f = fixture(t); f.reply('m_before_enable'); const base = await enable(f.service);

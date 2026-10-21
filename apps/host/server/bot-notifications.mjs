@@ -209,8 +209,17 @@ export function createBotNotifications({ directory, sources = () => ({ conversat
   if (start) { timer = setInterval(reconcile, intervalMs); timer.unref?.(); }
   async function open() {
     const result = await native.open(), destination = result.destination;
-    if (destination?.type === 'notifications' && destination?.id === 'settings' && Object.keys(destination).length === 2) return { destination: { type: 'notifications', id: 'settings' } };
-    return { destination: destination && ['chat', 'team'].includes(destination.type) && validId(destination.id) && state.events.some(event => event.destination.type === destination.type && event.destination.id === destination.id) ? { type: destination.type, id: destination.id } : null };
+    if (!record(destination) || Object.keys(destination).length !== 2) return { destination: null };
+    if (destination.type === 'notifications' && destination.id === 'settings' || destination.type === 'bots' && destination.id === 'activity') return { destination: { type: destination.type, id: destination.id } };
+    if (!validId(destination.id)) return { destination: null };
+    // The private native queue also carries deliberate companion clicks. A
+    // current conversation needs no notification opt-in or historical event.
+    // Read only the canonical source projection, never create a chat or turn.
+    if (destination.type === 'chat') {
+      try { if (sources(copy(state?.teamHeads ?? {}))?.conversations?.some(chat => chat.id === destination.id)) return { destination: { type: 'chat', id: destination.id } }; } catch { /* Unavailable/deleted sources cannot authorize navigation. */ }
+      return { destination: null };
+    }
+    return { destination: destination.type === 'team' && state?.events?.some(event => event.destination.type === 'team' && event.destination.id === destination.id) ? { type: 'team', id: destination.id } : null };
   }
   async function test() {
     requireReady(); const options = client('desktop');
