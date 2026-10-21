@@ -2,6 +2,12 @@
 
 Open **Bots** in Strata on Mac or in the paired iPhone app. The workspace has four views: **Team**, **Activity**, **Skills** and **Connections**. Individual bot conversations and their computers remain available in Team.
 
+## Talk to a bot
+
+Tap or click a bot to open its latest personal conversation. If it has none, Strata creates one empty conversation using the bot's saved settings. Opening a chat starts no model or computer work; send a message when ready. Team assignments remain in team history and are excluded from this personal shortcut.
+
+Use the profile or info control to review settings and earlier conversations. **New conversation** inside a bot chat keeps that bot selected and opens its conversation setup. Existing conversations retain their saved model, computer, working folder and permissions. A paused bot's existing history remains readable; resume the bot before starting new work.
+
 ## Create a team
 
 Choose **New team**, give it a name, select 2–12 members and choose a coordinator. By default, **Each bot’s computer** keeps every member’s saved computer and working folder. You can instead choose a shared computer and folder. Each member keeps its own model, permission mode and assigned tools. Creating or saving a team starts no model work. Review and enable the team before sending its first request.
