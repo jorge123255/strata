@@ -116,6 +116,24 @@ final class CompanionClient {
         return try JSONDecoder().decode(BotProviderModels.self, from: data)
     }
 
+    /// The Team room is the only source of these bounded integer cursors. Keep
+    /// arbitrary query strings forbidden by the general request builder.
+    func teamChannel(teamId: String, after: Int? = nil, before: Int? = nil) async throws -> BotTeamChannel {
+        guard Self.isSafeIdentifier(teamId), after == nil || before == nil,
+              [after, before].compactMap({ $0 }).allSatisfy({ $0 >= 0 && $0 < Int.max }) else {
+            throw CompanionError.server("Choose a saved team and valid history position.")
+        }
+        var req = try request("/v1/bots/teams/\(teamId)/channel")
+        var url = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)!
+        var query: [URLQueryItem] = []
+        if let after { query.append(URLQueryItem(name: "after", value: String(after))) }
+        if let before { query.append(URLQueryItem(name: "before", value: String(before))) }
+        url.queryItems = query; req.url = url.url
+        let (data, response) = try await session.data(for: req)
+        try Self.check(response, data: data)
+        return try JSONDecoder().decode(BotTeamChannel.self, from: data)
+    }
+
     static func isSafeIdentifier(_ value: String) -> Bool {
         !value.isEmpty && value.utf8.count <= 120 && value.utf8.allSatisfy { (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) || $0 == 95 || $0 == 45 }
     }

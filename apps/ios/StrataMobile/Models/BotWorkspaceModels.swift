@@ -35,6 +35,48 @@ struct BotTeamsSnapshot: Decodable, Equatable {
     var reason: String?
 }
 
+/// Immutable, attributed entries in the shared room. Detailed Thinking and tool
+/// activity stay in the linked bot conversation instead of being duplicated here.
+struct BotTeamChannelAuthor: Decodable, Equatable {
+    var type: String
+    var botId: String?
+    var name: String
+    var avatarConfig: AvatarConfig?
+}
+
+struct BotTeamChannelMessage: Decodable, Identifiable, Equatable {
+    var id: String
+    var sequence: Int
+    var teamId: String
+    var kind: String
+    var author: BotTeamChannelAuthor
+    var content: String
+    var createdAt: BotWorkspaceTimestamp
+    var replyToId: String?
+    var recipientIds: [String]?
+    var runId: String?
+    var chatId: String?
+    var state: String?
+}
+
+struct BotTeamChannel: Decodable, Equatable {
+    var teamId: String
+    var supported: Bool
+    var messages: [BotTeamChannelMessage]
+    var activeRuns: [BotTeamRun]
+    var nextSequence: Int
+    var hasMore: Bool?
+    var hasMoreBefore: Bool?
+    var reason: String?
+}
+
+struct BotTeamChannelPost: Encodable, Equatable {
+    var message: String
+    var requestId: String
+    var recipientIds: [String]?
+    var replyToId: String?
+}
+
 struct BotTeamDraft: Encodable {
     var name: String
     var memberIds: [String]
