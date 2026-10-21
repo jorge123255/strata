@@ -1,9 +1,10 @@
 import http from 'node:http';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { BOT_AVATAR_SHAPES, normalizeBotAvatar } from '../../host/server/bots.mjs';
 
 // An explicit test host is always supplied. This fixture cannot discover or call
 // a person's running Strata app, even when one is open on the same Mac.
@@ -15,6 +16,14 @@ const root = mkdtempSync(join(tmpdir(), 'strata-ios-ui-'));
 chmodSync(root, 0o700);
 
 const calls = [];
+const photoSimulator = process.argv[2] === '--test-bot-photos' ? /(?:^|,)id=([A-Fa-f0-9-]{36})(?:,|$)/.exec(process.argv[3] ?? '')?.[1] : undefined;
+let originalSimulatorAppearance;
+if (photoSimulator) {
+  const appearance = execFileSync('/usr/bin/xcrun', ['simctl', 'ui', photoSimulator, 'appearance'], { encoding: 'utf8' }).trim().toLowerCase();
+  if (!['light', 'dark'].includes(appearance)) throw new Error('Unknown scratch simulator appearance.');
+  originalSimulatorAppearance = appearance;
+}
+
 const intro = 'Earlier Mac history is available on the phone.';
 const follow = '\n\nNow I am checking the workspace.';
 const reasoning = 'Inspect the existing conversation.\nI am reviewing the Mac workspace.';
@@ -35,8 +44,8 @@ const conversation = {
 };
 const pending = [];
 let createdBotConversation;
-const lifecycleMode = ['--test-bot-lifecycle', '--test-bot-avatar-states'].includes(process.argv[2]);
-const workspaceFlags = ['--test-bot-lifecycle', '--test-bot-avatar-states', '--test-workspace-skills', '--test-workspace-connections', '--test-workspace-teams', '--test-facelift'];
+const lifecycleMode = ['--test-bot-lifecycle', '--test-bot-avatar-states', '--test-bot-photos'].includes(process.argv[2]);
+const workspaceFlags = ['--test-bot-photos', '--test-bot-lifecycle', '--test-bot-avatar-states', '--test-workspace-skills', '--test-workspace-connections', '--test-workspace-teams', '--test-facelift'];
 const workspaceMode = workspaceFlags.includes(process.argv[2]);
 let teamConversation, savedTeam, teamRun;
 const teamLimits = { maxParallel: 2, maxDepth: 2, maxHops: 8, maxTurns: 24, maxDurationMs: 600000 };
@@ -45,6 +54,7 @@ const skillAssignments = { 'fixture-bot': ['library.review'] };
 const skillCatalog = () => ({ skills: [{ id: 'library.review', name: 'Library review', description: 'Existing shared library instructions', body: 'Review changes carefully.', triggers: [], source: 'library', status: 'enabled', revision: 'library-digest', digest: 'library-digest' }, ...skillDrafts].map(skill => ({ ...skill, botIds: Object.entries(skillAssignments).filter(([, ids]) => ids.includes(skill.id)).map(([id]) => id) })), assignments: Object.entries(skillAssignments).map(([botId, skillIds]) => ({ botId, skillIds })) });
 const mcpConnection = { id: 'mcpc_fixture', name: 'Fixture tools', transport: 'stdio', inventoryDigest: 'a'.repeat(64), command: '/fixture/never-executed', args: [], env: { TEST_SECRET: 'PRIVATE-FIXTURE-SECRET' }, apiKey: 'PRIVATE-FIXTURE-KEY', apiKeySet: true, status: 'unchecked', detail: 'Synthetic connection; no program runs.', botIds: ['fixture-bot'], enabledToolIds: ['tool_read'], readOnlyToolIds: ['tool_read'], tools: [{ id: 'tool_read', name: 'Read workspace', description: 'Synthetic read-only inventory', readOnly: true }, { id: 'tool_write', name: 'Write workspace', description: 'Synthetic write inventory; approval policy applies', readOnly: false }] };
 const fixtureComputerMode = process.argv[2] === '--test-computer' ? 'cua' : 'host';
+const configuredFixtureName = process.argv[2] === '--test-bot-photos' ? 'Configured fixture / Qwen extended long model name for a separate remote Strata computer' : 'Configured fixture';
 let botFace = { color: 'sky', eyes: 'star', ears: 'scalloped' };
 if (process.argv[2] === '--test-bot-avatar-states') {
   conversation.preferences = { botId: 'fixture-bot', botName: 'Workspace companion', botAvatarConfig: structuredClone(botFace),
@@ -58,13 +68,14 @@ const computerState = () => ({ available: true, running: computerRunning, comput
   ...(computerRunning ? { width: 640, height: 400, image: { mimeType: 'image/png', data: computerImage } } : {}),
   control: { active: !!computerControl, owned: !!computerControl, ...(computerControl ? { expiresAt: computerControl.expiresAt } : {}) } });
 const botsCatalog = () => ({
+  avatarShapes: [...BOT_AVATAR_SHAPES],
   bots: [{ id: 'fixture-bot', name: 'Workspace companion', avatar: '🦊', avatarConfig: botFace, computerMode: fixtureComputerMode, provider: 'codex', model: 'Fixture model', workspace: fixtureComputerMode === 'cua' ? '/workspace' : '/fixture/default', capabilities: 'both', policy: 'manual', execution: { kind: 'local' },
     conversations: [conversation.id, ...(createdBotConversation?.preferences?.botId === 'fixture-bot' ? [createdBotConversation.id] : []), ...(teamConversation ? [teamConversation.id] : [])] },
     ...(workspaceMode ? [{ id: 'fixture-reviewer', name: 'Review companion', avatarConfig: { color: 'violet', eyes: 'happy', ears: 'round', kind: 'cat' }, computerMode: 'host', provider: 'claude', model: 'Fixture reviewer', workspace: '/fixture/default', capabilities: 'code', policy: 'manual', execution: { kind: 'local' }, conversations: [] }] : [])],
   providers: ['claude', 'codex', 'grok', 'kimi', 'ollama', 'configured'].map(id => ({ id, name: ({ claude: 'Claude Code', codex: 'Codex', grok: 'Grok', kimi: 'Kimi', ollama: 'Ollama Cloud', configured: 'Configured models' })[id], available: true, detail: 'Synthetic provider. No account or model is used.' })),
   computers: [{ id: 'local', name: 'Fixture Mac', kind: 'local', available: true, detail: 'Synthetic computer. No tools are executed.' },
     { id: 'ssh_fixture', name: 'Remote fixture computer', kind: 'ssh', available: true, detail: 'Prepared synthetic target. No SSH connection is made.' }],
-  models: [{ id: 'bm_fixture', connectionId: 'fixture-provider', connectionName: 'Fixture connection', model: 'configured-model', name: 'Configured fixture', available: true, detail: 'Synthetic configured model. Existing serving choices are unchanged.' }],
+  models: [{ id: 'bm_fixture', connectionId: 'fixture-provider', connectionName: 'Fixture connection', model: 'configured-model', name: configuredFixtureName, available: true, detail: 'Synthetic configured model. Existing serving choices are unchanged.' }],
 });
 // The lifecycle UI fixture uses the actual host profile service in a private
 // directory, with injected inert providers. No provider/SSH/VM runtime is created.
@@ -79,10 +90,10 @@ if (lifecycleMode) {
       run: async () => { throw new Error('A profile fixture must never run inference'); } },
     tools: {}, defaultWorkspace: () => lifecycleWorkspace,
     modelProviders: {
-      list: () => ({ connections: [{ id: 'fixture-provider', name: 'Fixture connection', models: [{ id: 'configured-model', name: 'Configured fixture' }] }] }),
+      list: () => ({ connections: [{ id: 'fixture-provider', name: 'Fixture connection', models: [{ id: 'configured-model', name: configuredFixtureName }] }] }),
       resolve({ connectionId, modelId }) {
         if (connectionId !== 'fixture-provider' || modelId !== 'configured-model') throw new Error('Unknown fixture model');
-        return { connection: { id: connectionId, name: 'Fixture connection', baseUrl: 'https://fixture.invalid/v1' }, model: { id: modelId, name: 'Configured fixture' } };
+        return { connection: { id: connectionId, name: 'Fixture connection', baseUrl: 'https://fixture.invalid/v1' }, model: { id: modelId, name: configuredFixtureName } };
       },
     },
   });
@@ -164,7 +175,7 @@ const host = {
     if (workspaceMode && path === '/api/bots/connections/mcpc_fixture/check') { mcpConnection.status = 'connected'; mcpConnection.detail = 'Two synthetic tools available. No program was executed.'; mcpConnection.checkedAt = new Date().toISOString(); return { connection: mcpConnection }; }
     if (workspaceMode && path === '/api/bots/connections/mcpc_fixture' && options.method === 'PATCH') { Object.assign(mcpConnection, options.body); return { connection: mcpConnection }; }
     if (teamConversation && path.startsWith(`/api/companion/conversations/${teamConversation.id}`)) return { conversation: teamConversation, pending: [] };
-    if (path === '/api/bots/fixture-bot' && options.method === 'PATCH') { botFace = structuredClone(options.body.avatarConfig); return {}; }
+    if (path === '/api/bots/fixture-bot' && options.method === 'PATCH') { botFace = normalizeBotAvatar(options.body.avatarConfig, botFace); return {}; }
     const computer = /^\/api\/bots\/fixture-bot\/computer(?:\/(start|stop|takeover|control|release))?(?:\?chatId=([A-Za-z0-9_-]+))?$/.exec(path);
     if (computer) {
       const action = computer[1];
@@ -257,6 +268,10 @@ let control;
 let testProcess;
 let closing;
 async function close() {
+  if (photoSimulator && originalSimulatorAppearance) {
+    execFileSync('/usr/bin/xcrun', ['simctl', 'ui', photoSimulator, 'appearance', originalSimulatorAppearance]);
+    originalSimulatorAppearance = undefined;
+  }
   closing ??= (async () => {
     try {
       if (testProcess && testProcess.exitCode === null) testProcess.kill('SIGTERM');
@@ -338,6 +353,11 @@ try {
         case '/reply-error':
           conversation.active = false; assistant.streaming = false; assistant.error = 'Synthetic failed reply';
           break;
+        case '/appearance-dark':
+        case '/appearance-light':
+          if (!photoSimulator || !originalSimulatorAppearance) throw new Error('Appearance controls require the explicit photo QA simulator.');
+          execFileSync('/usr/bin/xcrun', ['simctl', 'ui', photoSimulator, 'appearance', action === '/appearance-dark' ? 'dark' : 'light']);
+          break;
         case '/complete':
           conversation.active = false; conversation.status = 'Ready';
           if (assistant.tools[0]) assistant.tools[0].state = 'done';
@@ -371,7 +391,7 @@ try {
       testProcess = spawn('xcodebuild', [
         '-project', project, '-scheme', 'StrataMobile', '-destination', destination,
         '-derivedDataPath', derivedData,
-        '-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation', '--test-computer': 'testActualSampleAvatarAndIsolatedComputerControl', '--test-bot-lifecycle': 'testPhoneBotCreationEditingCASAndApprovalModes', '--test-bot-avatar-states': 'testBotAvatarStatesInteractionAndRosterFilters', '--test-facelift': 'testFaceliftPrincipalScreensAndSharedHistory', '--test-workspace-skills': 'testReviewedSkillAssignmentAndWorkspaceNavigation', '--test-workspace-connections': 'testSavedConnectionCheckAndReviewedAccess', '--test-workspace-teams': 'testTeamExplicitTaskSharedThinkingStopAndActivity' })[process.argv[2]],
+        '-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation', '--test-computer': 'testActualSampleAvatarAndIsolatedComputerControl', '--test-bot-photos': 'testPhotoLedBotsCreationAppearanceAndWorkspaceNavigation', '--test-bot-lifecycle': 'testPhoneBotCreationEditingCASAndApprovalModes', '--test-bot-avatar-states': 'testBotAvatarStatesInteractionAndRosterFilters', '--test-facelift': 'testFaceliftPrincipalScreensAndSharedHistory', '--test-workspace-skills': 'testReviewedSkillAssignmentAndWorkspaceNavigation', '--test-workspace-connections': 'testSavedConnectionCheckAndReviewedAccess', '--test-workspace-teams': 'testTeamExplicitTaskSharedThinkingStopAndActivity' })[process.argv[2]],
         '-parallel-testing-enabled', 'NO', 'test',
       ], { stdio: 'inherit', env: { ...process.env,
         TEST_RUNNER_STRATA_TEST_INVITATION: connection.invitation,

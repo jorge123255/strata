@@ -367,8 +367,12 @@ final class CompanionSmokeTests: XCTestCase {
     func testPhoneBotCreationEditingCASAndApprovalModes() async throws {
         let control = try pairWorkspaceFixture()
         try require(app.buttons["createBotButton"]); app.buttons["createBotButton"].tap()
+        attachScreenshot("Bots — photo-led character-first creation")
         let name = app.textFields["profileBotNameInput"]; try require(name); name.tap(); name.typeText("Phone Builder")
         if app.keyboards.firstMatch.exists { app.buttons["Done"].firstMatch.tap() }
+        try tapWorkspace(app.buttons["avatar-shape-orb"])
+        try tapWorkspace(app.buttons["avatar-color-violet"])
+        attachScreenshot("Bots — original geometric character and shared color")
         try tapWorkspace(app.buttons["profileBotProviderPicker"])
         let configured = app.buttons.matching(NSPredicate(format: "label ==[c] %@", "Configured models")).firstMatch; try require(configured); configured.tap()
         try tapWorkspace(app.buttons["profileBotConfiguredModelPicker"])
@@ -381,10 +385,16 @@ final class CompanionSmokeTests: XCTestCase {
         let first = try XCTUnwrap((state["lifecycle"] as? [String: Any])?["bots"] as? [[String: Any]]).first
         let id = try XCTUnwrap(first?["id"] as? String)
         XCTAssertEqual(first?["policy"] as? String, "manual"); XCTAssertEqual(first?["model"] as? String, "configured-model")
+        XCTAssertEqual((first?["avatarConfig"] as? [String: String])?["shape"], "orb")
         XCTAssertNil(state["createdBotConversation"] as? [String: Any], "Saving a bot creates no conversation.")
         let calls = try XCTUnwrap(state["calls"] as? [[String: Any]])
         XCTAssertFalse(calls.contains { ($0["path"] as? String)?.hasSuffix("/messages") == true || ($0["path"] as? String)?.contains("/computer/") == true })
+        app.terminate(); app.launch(); tapTab("Bots")
         try tapWorkspace(app.buttons["bot-" + id]); try require(app.buttons["editBotProfileButton"]); app.buttons["editBotProfileButton"].tap()
+        try require(app.buttons["avatar-shape-orb"]); XCTAssertTrue(app.buttons["avatar-shape-orb"].isSelected)
+        attachScreenshot("Bots — saved geometric character retained after relaunch")
+        try tapWorkspace(app.buttons["avatar-character-fox"])
+        try expandProfile("profileBotBehaviorDisclosure", revealing: app.buttons["profileBotPolicyPicker"])
         try tapWorkspace(app.buttons["profileBotPolicyPicker"]); app.buttons["Bypass approvals"].tap()
         try waitEnabled(app.buttons["saveBotProfileButton"]); app.buttons["saveBotProfileButton"].tap()
         try require(app.buttons["Use Bypass approvals"]); app.buttons["Use Bypass approvals"].tap()
@@ -392,9 +402,12 @@ final class CompanionSmokeTests: XCTestCase {
         await fulfillment(of: [saved], timeout: 15)
         state = try await fixtureControl(control, action: "state")
         XCTAssertEqual(((state["lifecycle"] as? [String: Any])?["bots"] as? [[String: Any]])?.first?["policy"] as? String, "bypass")
+        let editedFace = ((state["lifecycle"] as? [String: Any])?["bots"] as? [[String: Any]])?.first?["avatarConfig"] as? [String: String]
+        XCTAssertEqual(editedFace?["kind"], "fox"); XCTAssertNil(editedFace?["shape"], "Choosing an animal explicitly clears geometry.")
         XCTAssertEqual((state["conversation"] as? [String: Any])?["mode"] as? String, "manual")
         try require(app.buttons["editBotProfileButton"]); app.buttons["editBotProfileButton"].tap()
         _ = try await fixtureControl(control, action: "profile-change")
+        try expandProfile("profileBotBehaviorDisclosure", revealing: app.buttons["profileBotPolicyPicker"])
         try tapWorkspace(app.buttons["profileBotPolicyPicker"]); app.buttons["Plan mode"].tap()
         try waitEnabled(app.buttons["saveBotProfileButton"]); app.buttons["saveBotProfileButton"].tap()
         try require(app.staticTexts["profileBotSaveError"])
@@ -402,11 +415,12 @@ final class CompanionSmokeTests: XCTestCase {
         try require(app.buttons["reloadBotProfileButton"]); app.buttons["reloadBotProfileButton"].tap()
         try XCTUnwrap(app.buttons.matching(identifier: "Reload latest bot").allElementsBoundByIndex.last(where: { $0.isHittable })).tap()
         let model = app.textFields["profileBotModelInput"]
+        try expandProfile("profileBotAdvancedModelDisclosure", revealing: model)
         try tapWorkspace(model)
         XCTAssertEqual(model.value as? String, "Fixture model", "Reload must preserve the Mac's model, not clear it through a picker callback.")
         if app.keyboards.firstMatch.exists { app.buttons["Done"].firstMatch.tap() }
         try require(app.buttons["profileBotEffortPicker"])
-        XCTAssertTrue(app.buttons["profileBotEffortPicker"].label.localizedCaseInsensitiveContains("high"))
+        XCTAssertTrue((app.buttons["profileBotEffortPicker"].label + " " + (app.buttons["profileBotEffortPicker"].value as? String ?? "")).localizedCaseInsensitiveContains("high"))
         attachScreenshot("Bot editing — reloaded model and effort retained")
         try waitEnabled(app.buttons["saveBotProfileButton"]); app.buttons["saveBotProfileButton"].tap()
         let reloaded = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: name)
@@ -429,8 +443,46 @@ final class CompanionSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testPhotoLedBotsCreationAppearanceAndWorkspaceNavigation() async throws {
+        let control = try pairWorkspaceFixture()
+        for (style, large) in [("Dark", false), ("Light", false), ("Dark", true)] {
+            app.terminate()
+            _ = try await fixtureControl(control, action: style == "Dark" ? "appearance-dark" : "appearance-light")
+            app.launchArguments = large ? ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"] : []
+            app.launch(); tapTab("Bots")
+            try require(app.buttons["bot-fixture-bot"])
+            let search = app.textFields["botRosterSearchInput"]
+            try require(search); XCTAssertTrue(search.isHittable)
+            attachScreenshot("Photo-led roster — " + style + (large ? " accessibility" : ""))
+            if !large { for title in ["Activity", "Skills", "Connections", "Team"] { try selectWorkspace(title) } }
+            try require(app.buttons["createBotButton"]); app.buttons["createBotButton"].tap()
+            try require(app.textFields["profileBotNameInput"])
+            attachScreenshot("Photo-led creation — " + style + (large ? " accessibility" : ""))
+            try tapWorkspace(app.buttons["avatar-shape-hexagon"])
+            try tapWorkspace(app.buttons["avatarAppearanceDisclosure"])
+            try tapWorkspace(app.buttons["avatar-eyes-round"])
+            try tapWorkspace(app.buttons["profileBotProviderPicker"])
+            let configured = app.buttons.matching(NSPredicate(format: "label ==[c] %@", "Configured models")).firstMatch
+            try require(configured); configured.tap()
+            try tapWorkspace(app.buttons["profileBotConfiguredModelPicker"])
+            let model = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Configured fixture / Qwen")).firstMatch
+            try require(model); model.tap()
+            let selectedValue = app.buttons["profileBotConfiguredModelPicker"].value as? String ?? ""
+            guard selectedValue.contains("Configured fixture / Qwen"), selectedValue.contains("separate remote Strata computer") else { throw acceptanceError("The selected model must retain its full display name.") }
+            attachScreenshot("Photo-led model card — " + style + (large ? " accessibility long name" : " long name"))
+            let save = app.buttons["saveBotProfileButton"]
+            try require(save); XCTAssertTrue(save.isHittable, "The primary action stays above the keyboard and safe area.")
+            app.buttons["Cancel"].tap()
+        }
+        app.launchArguments = []
+        let state = try await fixtureControl(control, action: "state")
+        XCTAssertTrue(try XCTUnwrap(state["calls"] as? [[String: Any]]).allSatisfy { ($0["method"] as? String) == "GET" }, "Appearance, customization drafts and workspace navigation start no work.")
+    }
+
+    @MainActor
     func testBotAvatarStatesInteractionAndRosterFilters() async throws {
         let control = try pairWorkspaceFixture()
+        attachScreenshot("Bots — photo-led spacious roster and persistent search")
         let search = app.textFields["botRosterSearchInput"]; try tapWorkspace(search); search.typeText("no matching bot")
         try require(app.staticTexts["botRosterFilteredEmpty"])
         search.tap(); search.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: "no matching bot".count))
@@ -654,6 +706,13 @@ final class CompanionSmokeTests: XCTestCase {
         guard XCTWaiter.wait(for: [ready], timeout: 15) == .completed else { throw acceptanceError("A required workspace control did not become enabled.") }
     }
 
+    private func expandProfile(_ identifier: String, revealing target: XCUIElement) throws {
+        if target.exists { return }
+        let control = app.descendants(matching: .any).matching(identifier: identifier).firstMatch
+        try tapWorkspace(control)
+        try require(target)
+    }
+
     private func tapSwitch(_ element: XCUIElement) throws { try tapWorkspace(element, horizontal: 0.93) }
 
     private func tapWorkspace(_ element: XCUIElement, horizontal: CGFloat? = nil) throws {
@@ -702,12 +761,12 @@ final class CompanionSmokeTests: XCTestCase {
         XCTAssertTrue(bot.waitForExistence(timeout: 10)); bot.tap()
         let customize = app.buttons["customizeBotAvatarButton"]
         XCTAssertTrue(customize.waitForExistence(timeout: 5)); customize.tap()
-        app.buttons["Robot"].tap()
+        try tapWorkspace(app.buttons["avatar-character-robot"])
         XCTAssertTrue(app.buttons["Robot"].isSelected)
         attachScreenshot("Bots — robot character with shared palette and expressions")
-        app.buttons["Cat"].tap()
+        try tapWorkspace(app.buttons["avatar-character-cat"])
         XCTAssertTrue(app.buttons["Cat"].isSelected)
-        app.buttons["Fox"].tap(); app.buttons["Orange"].tap(); app.buttons["avatar-eyes-round"].tap(); app.buttons["Small"].tap()
+        try tapWorkspace(app.buttons["avatar-character-fox"]); try tapWorkspace(app.buttons["avatar-color-orange"]); try tapWorkspace(app.buttons["avatar-eyes-round"]); try tapWorkspace(app.buttons["avatar-ears-small"])
         XCTAssertTrue(app.buttons["Fox"].isSelected)
         attachScreenshot("Bots — fox character and native customization")
         app.buttons["saveBotAvatarButton"].tap()
@@ -717,8 +776,8 @@ final class CompanionSmokeTests: XCTestCase {
         XCTAssertEqual(foxState["botFace"] as? [String: String], ["kind": "fox", "color": "orange", "eyes": "round", "ears": "small"])
         XCTAssertTrue(customize.waitForExistence(timeout: 5)); customize.tap()
         XCTAssertTrue(app.buttons["Fox"].isSelected)
-        app.buttons["Koala"].tap()
-        app.buttons["Violet"].tap(); app.buttons["Happy"].tap(); app.buttons["Small"].tap()
+        try tapWorkspace(app.buttons["avatar-character-koala"])
+        try tapWorkspace(app.buttons["avatar-color-violet"]); try tapWorkspace(app.buttons["avatar-eyes-happy"]); try tapWorkspace(app.buttons["avatar-ears-small"])
         attachScreenshot("Bots — actual sample koala color eyes and ears picker")
         app.buttons["saveBotAvatarButton"].tap()
         let saved = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.buttons["saveBotAvatarButton"])
