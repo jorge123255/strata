@@ -73,6 +73,7 @@ fi
 "$task_control/python/bin/python3" -I -B - "$task_repo" "$task_resources/control" "$task_source/Contents/Resources/control" <<'PY'
 from pathlib import Path
 import hashlib
+import importlib.util
 import json
 import re
 import shutil
@@ -81,20 +82,22 @@ import sys
 repo, control, carrier_control = map(Path, sys.argv[1:])
 sys.path.insert(0, str(repo / 'packaging'))
 import package_terminal as packaging
+bundle_spec = importlib.util.spec_from_file_location('control_bundle_metadata', repo / 'apps/desktop/scripts/control-bundle-metadata.py')
+bundle_metadata = importlib.util.module_from_spec(bundle_spec)
+bundle_spec.loader.exec_module(bundle_metadata)
 
 def digest(path):
+    value = hashlib.sha256()
     with path.open('rb') as stream:
-        return hashlib.file_digest(stream, 'sha256').hexdigest()
-
-def read_record(folder):
-    try:
-        return json.loads((folder / 'BUNDLE.json').read_text())
-    except FileNotFoundError:
-        return None
+        for chunk in iter(lambda: stream.read(1 << 20), b''):
+            value.update(chunk)
+    return value.hexdigest()
 
 donor_version = (control / 'VERSION').read_text().strip()
-donor_record = read_record(control)
-carrier_record = read_record(carrier_control)
+# Older overlays recursively copied both parent BUNDLE trees. Bind those
+# potentially multi-GB files with streamed hashes, never load their ancestry.
+donor_record = bundle_metadata.capture_bundle(control)
+carrier_record = bundle_metadata.capture_bundle(carrier_control)
 source_version = packaging._source_version()
 # The standalone Python and locked packages must match the build contract. Never install anything here.
 if sys.version_info[:3] != tuple(map(int, packaging.PYTHON_VERSION.split('.'))):
@@ -145,11 +148,12 @@ for item in sorted(source_paths):
             files[file.relative_to(control).as_posix()] = digest(file)
 record = {
     'schema_version': 1, 'component': 'strata-control', 'version': source_version, 'target': 'darwin-arm64',
-    'python': (donor_record or carrier_record or {}).get('python', {'version': packaging.PYTHON_VERSION}),
+    'python': bundle_metadata.python_metadata(donor_record, carrier_record, packaging.PYTHON_VERSION),
     'lock': {'file': lock.relative_to(repo).as_posix(), 'sha256': digest(lock)},
     'installed': installed, 'acquires_at_runtime': False, 'installer': installer,
     'source_overlay': {'commit': commit, 'files_sha256': files, 'donor_control_version': donor_version,
-                       'donor_bundle': donor_record, 'carrier_bundle': carrier_record},
+                       'donor_bundle': donor_record['reference'] if donor_record else None,
+                       'carrier_bundle': carrier_record['reference'] if carrier_record else None},
 }
 (control / 'BUNDLE.json').write_text(json.dumps(record, indent=1) + '\n')
 print(f'Staged Control {source_version}: {len(files)} source files; verified Python and locked packages retained.')

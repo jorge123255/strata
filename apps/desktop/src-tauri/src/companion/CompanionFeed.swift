@@ -8,12 +8,26 @@ final class CompanionFeedRequest: NSObject, URLSessionDataDelegate, URLSessionTa
     private var task: URLSessionDataTask?
     private var data = Data()
     private var finished = false
+    private var started = false
+    // Every callback and terminal transition uses this immutable serial queue.
+    // URLSession is thread safe; an unsynchronized Swift strong session property
+    // read from the main thread while a delegate clears it would not be.
+    private let delegateQueue: OperationQueue = {
+        let queue = OperationQueue(); queue.maxConcurrentOperationCount = 1
+        return queue
+    }()
     private let completion: (Result<Data, Error>) -> Void
 
     init(url: URL, token: String, completion: @escaping (Result<Data, Error>) -> Void) {
         self.url = url; self.token = token; self.completion = completion
     }
     func start() {
+        delegateQueue.addOperation { [weak self] in self?.begin() }
+    }
+    private func begin() {
+        // Start, cancellation and every delegate callback share one owner.
+        // A cancelled request cannot begin later, and repeated start is inert.
+        guard !started, !finished else { return }; started = true
         let configuration = URLSessionConfiguration.ephemeral
         configuration.urlCache = nil
         configuration.httpCookieStorage = nil
@@ -23,8 +37,7 @@ final class CompanionFeedRequest: NSObject, URLSessionDataDelegate, URLSessionTa
         configuration.timeoutIntervalForRequest = 4
         configuration.timeoutIntervalForResource = 6
         configuration.waitsForConnectivity = false
-        let queue = OperationQueue(); queue.maxConcurrentOperationCount = 1
-        let session = URLSession(configuration: configuration, delegate: self, delegateQueue: queue)
+        let session = URLSession(configuration: configuration, delegate: self, delegateQueue: delegateQueue)
         self.session = session
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 4)
         request.setValue(token, forHTTPHeaderField: "x-strata-companion")
@@ -32,7 +45,13 @@ final class CompanionFeedRequest: NSObject, URLSessionDataDelegate, URLSessionTa
         request.httpShouldHandleCookies = false
         let task = session.dataTask(with: request); self.task = task; task.resume()
     }
-    func cancel() { session?.invalidateAndCancel() }
+    func cancel() {
+        // Do not read mutable session/task state here. Cancellation can arrive
+        // while a completion callback is releasing those references.
+        delegateQueue.addOperation { [weak self] in
+            self?.finish(.failure(URLError(.cancelled)))
+        }
+    }
     private func finish(_ result: Result<Data, Error>) {
         guard !finished else { return }; finished = true
         session?.invalidateAndCancel(); session = nil; task = nil

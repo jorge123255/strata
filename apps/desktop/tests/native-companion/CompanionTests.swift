@@ -135,6 +135,42 @@ import SwiftUI
             if case .failure = fetch(path) { check(true, "unsafe/failed feed rejected: \(path)") } else { check(false, "feed rejected: \(path)") }
         }
         if case .success = fetch("/after-cookie") { check(true, "ephemeral follow-up feed accepted without cookies") } else { check(false, "ephemeral follow-up") }
+        var allOnce = true, allFinished = true
+        for index in 0..<100 {
+            var callbacks = 0
+            let request = CompanionFeedRequest(url: URL(string: "http://127.0.0.1:\(port)/ok")!, token: "fixture-token-private") { _ in callbacks += 1 }
+            request.start()
+            // Interleave immediate/near-completion cancellation from another
+            // thread with the real URLSession delegate queue, not a mock.
+            DispatchQueue.global().asyncAfter(deadline: .now() + Double(index % 4) * 0.00025) {
+                request.cancel(); request.cancel(); request.cancel()
+            }
+            let deadline = Date().addingTimeInterval(2)
+            while callbacks == 0 && Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.005)) }
+            allFinished = allFinished && callbacks > 0
+            request.cancel()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.005))
+            allOnce = allOnce && callbacks == 1
+        }
+        check(allFinished, "100 real cancellation/completion races finish within bounds")
+        check(allOnce, "repeated concurrent cancellation delivers exactly one terminal callback")
+        var beforeStartOnce = true, beforeStartCancelled = true
+        for _ in 0..<10 {
+            var callbacks = 0, cancelled = false
+            let request = CompanionFeedRequest(url: URL(string: "http://127.0.0.1:\(port)/ok")!, token: "fixture-token-private") { result in
+                callbacks += 1
+                if case .failure(let error) = result { cancelled = (error as? URLError)?.code == .cancelled }
+            }
+            request.cancel(); request.start(); request.start(); request.cancel()
+            let deadline = Date().addingTimeInterval(2)
+            while callbacks == 0 && Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.005)) }
+            request.start(); request.cancel()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+            beforeStartOnce = beforeStartOnce && callbacks == 1
+            beforeStartCancelled = beforeStartCancelled && cancelled
+        }
+        check(beforeStartOnce, "cancel-before-start and repeated start/cancel finish exactly once")
+        check(beforeStartCancelled, "cancel-before-start cannot start or resurrect the request")
     }
     static func main() {
         model(); geometry(); lifecycle(); motion()
