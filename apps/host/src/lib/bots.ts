@@ -154,7 +154,7 @@ export function botReplySignal(botId: string, sessions: Session[]): string | und
 
 /** A roster preview uses the bot's own shared messages, never another model's chat. */
 export function botRosterPreview(botId: string, sessions: Session[]): { text: string; updatedAt: string } | undefined {
-  const chat = botConversations(sessions.filter(session => !session.preferences?.teamId), botId)[0];
+  const chat = botPersonalConversations(sessions, botId)[0];
   if (!chat) return undefined;
   const message = [...chat.messages].reverse().find(row => row.content?.trim());
   const text = message?.content?.replace(/\s+/g, ' ').trim() || chat.title?.trim();
@@ -215,6 +215,11 @@ export function botComputerSelection(execution: BotExecution, computers: BotComp
 /** All selection stays keyed by bot identity, never by the currently loaded model. */
 export function botConversations<T extends { preferences?: { botId?: string }; updatedAt: string }>(sessions: T[], botId: string): T[] {
   return sessions.filter(session => session.preferences?.botId === botId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+/** Opening a bot is a personal conversation; team workers remain in full history. */
+export function botPersonalConversations<T extends { preferences?: { botId?: string; teamId?: string; teamRunId?: string; parentChatId?: string }; updatedAt: string }>(sessions: T[], botId: string): T[] {
+  return botConversations(sessions, botId).filter(session => !session.preferences?.teamId && !session.preferences?.teamRunId && !session.preferences?.parentChatId);
 }
 
 /** Frozen public labels describe a chat; they are never parsed into credentials or execution settings. */

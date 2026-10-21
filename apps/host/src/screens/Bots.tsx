@@ -6,7 +6,7 @@ import { useMedia } from '../lib/responsive';
 import { adoptSharedConversation, selectSession, useStore } from '../lib/store';
 import { sessionTitle } from '../lib/session-title';
 import { relTime } from '../lib/format';
-import { blankBot, botComputerSelection, botConversationContext, botConversations, botDraftError, botPolicyLabel, botAvatarActivity, botReplySignal, botConversationRoster, botProviderName, botSetupStepError, type BotPolicy, type Bot, type BotDraft, type BotExecution, type BotsSnapshot, type BotTeamsSnapshot } from '../lib/bots';
+import { blankBot, botComputerSelection, botConversationContext, botConversations, botPersonalConversations, botDraftError, botPolicyLabel, botAvatarActivity, botReplySignal, botConversationRoster, botProviderName, botSetupStepError, type BotPolicy, type Bot, type BotDraft, type BotExecution, type BotsSnapshot, type BotTeamsSnapshot } from '../lib/bots';
 import { botReadiness, type BotComputerReadiness } from '../lib/bot-readiness';
 import type { Session } from '../lib/types';
 import { CuaBotAvatar, CuaBotAvatarPicker, defaultCuaBotAvatar } from '../components/CuaBotAvatar';
@@ -32,7 +32,7 @@ export function BotsScreen() {
   const [selectedChats, setSelectedChats] = useState<Record<string, string>>({}), [showProfile, setShowProfile] = useState(() => !compact), [showComputer, setShowComputer] = useState(false);
   const [step, setStep] = useState(0), [newDraft, setNewDraft] = useState<BotDraft>(() => newBotDraft(workspace)), [customLook, setCustomLook] = useState(false);
   const [editing, setEditing] = useState<{ bot: Bot; draft: BotDraft } | null>(null), [editorError, setEditorError] = useState(''), [configBusy, setConfigBusy] = useState(false);
-  const [opening, setOpening] = useState<{ bot: Bot; execution: BotExecution; workspace: string; modelId: string; policy: BotPolicy } | null>(null), [chatError, setChatError] = useState(''), [computerBusy, setComputerBusy] = useState(false);
+  const [opening, setOpening] = useState<{ bot: Bot; execution: BotExecution; workspace: string; modelId: string; policy: BotPolicy } | null>(null), [chatError, setChatError] = useState(''), [computerBusy, setComputerBusy] = useState(false), [personalChatError, setPersonalChatError] = useState('');
   const [removing, setRemoving] = useState<Bot | null>(null), [memoryFor, setMemoryFor] = useState<Bot | null>(null), [rulesFor, setRulesFor] = useState<Bot | null>(null);
   const [routineFor, setRoutineFor] = useState<{ bot?: Bot; routine?: BotRoutine } | null>(null), [outputFor, setOutputFor] = useState<{ bot: Bot; output: BotWorkOutput } | null>(null);
   const [readinessRevision, setReadinessRevision] = useState(0);
@@ -41,14 +41,14 @@ export function BotsScreen() {
   const [showRosterFilters, setShowRosterFilters] = useState(false), [showChatHistory, setShowChatHistory] = useState(false);
   const teams = useBotsResource<BotTeamsSnapshot>('/api/bots/teams');
   const [computerReadiness, setComputerReadiness] = useState<{ key: string; computer?: BotComputerReadiness; error?: string; checking?: boolean } | null>(null);
-  const generation = useRef(0), navigationRevision = useRef(0), alive = useRef(true);
+  const generation = useRef(0), navigationRevision = useRef(0), alive = useRef(true), personalChatRequest = useRef<symbol | null>(null);
   const bots = snapshot?.bots ?? [], { work, error: workError, refresh: refreshWork } = useBotsWork(bots);
   const selected = bots.find(bot => bot.id === location.param) ?? (!location.param ? bots[0] : undefined);
   const workTab = WORK_TABS.find(tab => tab.id === location.param)?.id;
   const workspaceRoute = ['teams', 'activity', 'skills', 'connections'].includes(location.param ?? '') ? location.param : null;
   const destination = workTab || workspaceRoute === 'activity' ? 'activity' : workspaceRoute === 'skills' ? 'skills' : workspaceRoute === 'connections' ? 'connections' : 'team';
   const route = workTab ?? workspaceRoute ?? (location.param === 'new' || !selected ? 'new' : 'bot');
-  const chats = selected ? botConversations(sessions, selected.id) : [], chatId = selected ? selectedChats[selected.id] ?? chats[0]?.id : undefined;
+  const chats = selected ? botConversations(sessions, selected.id) : [], chatId = selected ? selectedChats[selected.id] ?? botPersonalConversations(chats, selected.id)[0]?.id : undefined;
   const chat = chats.find(item => item.id === chatId);
   const context = selected ? botConversationContext(selected, chat ?? (chatId ? { id: chatId, preferences: { botId: selected.id } } : undefined), snapshot?.models) : null;
   const hasComputer = context?.computerMode === 'cua', selectedWork = selected ? work[selected.id] ?? EMPTY_BOT_WORK : EMPTY_BOT_WORK;
@@ -103,6 +103,29 @@ export function BotsScreen() {
   function startNew() { navigationRevision.current++; setStep(0); setNewDraft(newBotDraft(workspace)); setCustomLook(false); setEditorError(''); navigate('bots', 'new'); }
   function edit(bot: Bot) { setEditorError(''); setEditing({ bot, draft: draftFor(bot) }); }
   function openChat(bot: Bot, conversation: Session) { navigationRevision.current++; adoptSharedConversation(conversation); setSelectedChats(previous => ({ ...previous, [bot.id]: conversation.id })); selectSession(conversation.id); navigate('bots', bot.id); }
+  async function openPersonalChat(bot: Bot) {
+    if (personalChatRequest.current || pending || loading) return;
+    const request = Symbol(bot.id), revision = navigationRevision.current, hash = window.location.hash;
+    personalChatRequest.current = request; setPending(`open:${bot.id}`); setPersonalChatError('');
+    const current = () => alive.current && personalChatRequest.current === request && navigationRevision.current === revision && window.location.hash === hash;
+    try {
+      // Another device may have created this bot's personal chat since the roster
+      // loaded. Read the shared history before making a new empty conversation.
+      const catalog = await api.get<{ conversations: Session[] }>('/api/companion/conversations');
+      if (!current()) return;
+      let conversation = botPersonalConversations(catalog.conversations, bot.id)[0];
+      if (!conversation) {
+        if (bot.paused) throw new Error('This bot is paused. Resume it before starting a new chat.');
+        // Defaults are frozen by the host. Creating an empty chat sends no prompt
+        // and does not start or prepare a computer, provider, or model service.
+        const created = await api.post<{ conversation: Session }>(`/api/bots/${encodeURIComponent(bot.id)}/conversations`, {});
+        conversation = created.conversation;
+        if (!conversation || typeof conversation.id !== 'string' || !/^[A-Za-z0-9_-]{1,120}$/.test(conversation.id) || !botPersonalConversations([conversation], bot.id).length) throw new Error('Strata returned a different conversation. Refresh Bots and try again.');
+      }
+      if (current()) openChat(bot, conversation);
+    } catch (cause) { if (current()) setPersonalChatError(message(cause)); }
+    finally { if (personalChatRequest.current === request) { personalChatRequest.current = null; if (alive.current) setPending(''); } }
+  }
   function chooseChat(bot: Bot) { setChatError(''); setOpening({ bot, execution: { ...bot.execution }, workspace: bot.workspace, modelId: '', policy: bot.policy }); }
   async function openSharedConversation(id: string, conversation?: Session) {
     const revision = navigationRevision.current, hash = window.location.hash;
@@ -185,11 +208,12 @@ export function BotsScreen() {
             </button>;
           }
           const bot = bots.find(item => item.id === row.id); if (!bot) return null;
-          return <button key={`bot:${bot.id}`} className="cua-sidebar-item cua-roster-bot" aria-label={`Open ${bot.name}`} title={bot.name} data-selected={selected?.id === bot.id && route === 'bot' || undefined} data-state={mood(bot)} onClick={() => navigate('bots', bot.id)}><CuaBotAvatar config={bot.avatarConfig} name={bot.name} size={40} mood={mood(bot)} messageSignal={botReplySignal(bot.id, sessions)}/><span className="cua-roster-copy"><span className="cua-roster-title"><strong>{bot.name}</strong>{Number.isFinite(Date.parse(row.updatedAt)) ? <time dateTime={row.updatedAt}>{relTime(row.updatedAt)}</time> : null}</span><small>{rosterDetail(bot, row.preview ? { text: row.preview } : undefined)}</small></span>{bot.paused ? <Icon name="pause" size={12}/> : mood(bot) === 'needsApproval' ? <i className="cua-sidebar-dot"/> : ['thinking', 'working'].includes(mood(bot)) ? <i className="cua-sidebar-dot" data-live/> : null}</button>;
+          return <button key={`bot:${bot.id}`} className="cua-sidebar-item cua-roster-bot" aria-label={`Open ${bot.name}`} title={bot.name} data-selected={selected?.id === bot.id && route === 'bot' || undefined} data-state={mood(bot)} disabled={loading || !!pending} onClick={() => void openPersonalChat(bot)}><CuaBotAvatar config={bot.avatarConfig} name={bot.name} size={40} mood={mood(bot)} messageSignal={botReplySignal(bot.id, sessions)}/><span className="cua-roster-copy"><span className="cua-roster-title"><strong>{bot.name}</strong>{Number.isFinite(Date.parse(row.updatedAt)) ? <time dateTime={row.updatedAt}>{relTime(row.updatedAt)}</time> : null}</span><small>{pending === `open:${bot.id}` ? 'Opening conversation…' : rosterDetail(bot, row.preview ? { text: row.preview } : undefined)}</small></span>{bot.paused ? <Icon name="pause" size={12}/> : mood(bot) === 'needsApproval' ? <i className="cua-sidebar-dot"/> : ['thinking', 'working'].includes(mood(bot)) ? <i className="cua-sidebar-dot" data-live/> : null}</button>;
         })}{!listedRoster.length ? <p className="cua-roster-empty">{rosterQuery ? 'No conversations match this search.' : rosterFilter === 'working' ? 'No conversations are active.' : rosterFilter === 'attention' ? 'No conversations need attention.' : 'Create your first bot.'}</p> : null}</div>
         <div className="cua-roster-team-actions"><button className="cua-sidebar-item" data-selected={route==='teams'&&!location.query.get('team')||undefined} onClick={()=>navigate('bots','teams')} aria-label="All teams"><Icon name="experts" size={17}/><span>All teams</span></button><button className="cua-sidebar-item cua-sidebar-new" disabled={bots.length<2} title={bots.length<2?'Add a second bot to create a team':undefined} onClick={()=>setNewTeam(true)} aria-label="New team"><Icon name="plus" size={16}/><span>New team</span></button></div>
       </nav></aside>:null}
       <section className="cua-bots-main">
+        {personalChatError ? <div className="cua-inline-error"><ErrorNotice message={personalChatError} action="Dismiss" onRetry={() => setPersonalChatError('')}/></div> : null}
         {error ? <div className="cua-inline-error"><ErrorNotice message={error} action="Refresh" onRetry={() => void refresh(true)}/></div> : null}
         {workError ? <div className="cua-inline-error"><ErrorNotice message={workError} action="Refresh work" onRetry={() => void refreshWork()}/></div> : null}
         {destination==='activity'?<nav className="bots-activity-tabs" aria-label="Activity sections"><button aria-current={!workTab?'page':undefined} onClick={()=>navigate('bots','activity')}>Team work</button>{WORK_TABS.map(tab=><button key={tab.id} aria-current={workTab===tab.id?'page':undefined} onClick={()=>navigate('bots',tab.id)}>{tab.label}{tab.id==='approvals'&&approvals?` (${approvals})`:''}</button>)}</nav>:null}
@@ -204,7 +228,7 @@ export function BotsScreen() {
         {route === 'bot' && selected && context ? <>
           <header className="cua-bot-toolbar"><div className="cua-conversation-control">{chats.length || chatId ? <><span className="cua-toolbar-label">Conversation</span><Select value={chatId ?? ''} ariaLabel="Bot conversation" options={[...(chatId && !chat ? [{ value: chatId, label: 'Conversation unavailable', disabled: true }] : []), ...chats.map(session => ({ value: session.id, label: sessionTitle(session) }))]} onChange={id => { const conversation = chats.find(item => item.id === id); if (conversation) openChat(selected, conversation); }}/></> : <span className="cua-toolbar-status" data-tone={readiness?.tone}>{readiness?.label}</span>}<IconBtn name="new-chat" title="New shared conversation" disabled={!!pending} onClick={() => chooseChat(selected)}/></div><span className="spacer"/>{chat && frozenPolicy ? <span className="cua-frozen-policy" title="Permission mode saved for this conversation"><Icon name="shield" size={13}/>{botPolicyLabel(frozenPolicy)}</span> : null}<div className="cua-toolbar-controls" role="group" aria-label="Bot controls"><IconBtn name="computer" title={showComputer ? 'Hide computer' : 'Open computer'} disabled={!hasComputer} onClick={toggleComputer}/><IconBtn name={selected.paused ? 'play' : 'pause'} title={selected.paused ? 'Resume bot' : 'Pause bot'} disabled={!!pending} onClick={() => pause(selected)}/><IconBtn name="panel" title={showProfile ? 'Hide profile' : 'Show profile'} onClick={() => setShowProfile(value => !value)}/></div></header>
           <div className="cua-bot-detail" data-computer={showComputer && hasComputer || undefined}>
-            <div className="cua-bot-chat">{chat ? <ChatScreen key={chat.id} embedded sessionId={chat.id} onComputer={hasComputer ? toggleComputer : undefined}/> : <div className="cua-chat-welcome"><div className="cua-welcome-avatar"><CuaBotAvatar config={selected.avatarConfig} name={selected.name} size={112} mood={mood(selected)} messageSignal={botReplySignal(selected.id, sessions)}/></div><h2>{selected.name}</h2><span className="cua-readiness" data-tone={readiness?.tone}>{readiness?.label}</span><p className="small muted">{readiness?.detail}</p><div className="cua-welcome-actions">{readiness?.action === 'settings' ? <Btn variant="primary" icon="settings" disabled={!!pending} onClick={() => edit(selected)}>Review setup</Btn> : readiness?.action === 'computer' && hasComputer ? <Btn variant="primary" icon="computer" onClick={toggleComputer}>Open computer</Btn> : null}<Btn variant={readiness?.action ? 'secondary' : 'primary'} icon="chat" disabled={!!pending || selected.paused} onClick={() => chooseChat(selected)}>New conversation</Btn></div><p className="cua-welcome-note">Conversations, thinking and approvals stay shared with your iPhone.</p></div>}</div>
+            <div className="cua-bot-chat">{chat ? <ChatScreen key={chat.id} embedded sessionId={chat.id} onComputer={hasComputer ? toggleComputer : undefined}/> : <div className="cua-chat-welcome"><div className="cua-welcome-avatar"><CuaBotAvatar config={selected.avatarConfig} name={selected.name} size={112} mood={mood(selected)} messageSignal={botReplySignal(selected.id, sessions)}/></div><h2>{selected.name}</h2><span className="cua-readiness" data-tone={readiness?.tone}>{readiness?.label}</span><p className="small muted">{readiness?.detail}</p><div className="cua-welcome-actions">{readiness?.action === 'settings' ? <Btn variant="primary" icon="settings" disabled={!!pending} onClick={() => edit(selected)}>Review setup</Btn> : readiness?.action === 'computer' && hasComputer ? <Btn variant="primary" icon="computer" onClick={toggleComputer}>Open computer</Btn> : null}<Btn variant={readiness?.action ? 'secondary' : 'primary'} icon="chat" disabled={loading || !!pending || selected.paused} onClick={() => void openPersonalChat(selected)}>{pending === `open:${selected.id}` ? 'Opening…' : 'New conversation'}</Btn></div><p className="cua-welcome-note">Conversations, thinking and approvals stay shared with your iPhone.</p></div>}</div>
             {showComputer && hasComputer ? <aside className="cua-bot-computer" aria-label="Bot computer"><BotComputer key={selected.id + ':' + (chat?.id ?? 'profile')} embedded bot={selected} chatId={chat?.id} onClose={() => setShowComputer(false)}/></aside> : null}
             {showProfile ? <aside className="cua-bot-profile" aria-label={`${selected.name} profile`}>
               <div className="cua-profile-menu"><span>Bot details</span><details><summary aria-label="Bot actions"><Icon name="ellipsis" size={19}/></summary><div><button disabled={!!pending || chats.some(item => item.active)} onClick={() => setRemoving(selected)}>Remove bot profile…</button></div></details></div>
