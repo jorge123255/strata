@@ -6,8 +6,9 @@ import { transform } from 'esbuild';
 const { code } = await transform(await readFile(new URL('../src/lib/bots.ts', import.meta.url), 'utf8'), { loader: 'ts', format: 'esm' });
 const bots = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
 
-test('all five providers are independent from the model server registry', () => {
-  assert.deepEqual(bots.BOT_PROVIDERS.map(provider => provider.id), ['claude', 'codex', 'grok', 'kimi', 'ollama']);
+test('all bot providers are independent from the model server registry', () => {
+  assert.deepEqual(bots.BOT_PROVIDERS.map(provider => provider.id), ['claude', 'codex', 'devin', 'grok', 'kimi', 'ollama']);
+  assert.equal(bots.botProviderName('devin'), 'Devin CLI');
   const profile = bots.blankBot('/work/project');
   assert.equal(profile.policy, 'manual');
   assert.equal(profile.capabilities, 'both');

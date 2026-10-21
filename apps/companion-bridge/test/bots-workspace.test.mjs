@@ -40,6 +40,7 @@ async function fixture(t, handler) {
 test('workspace host admission rejects arbitrary methods, programs, secrets, policy and queries', async () => {
   const calls = []; const host = new HostClient({ upstream: 'http://127.0.0.1:47831', fetcher: async (url, options) => { calls.push({ url, ...options }); return new Response('{}'); } });
   await host.request('/api/bots/teams'); await host.request('/api/bots/skills?botId=bot_coder'); await host.request('/api/bots/provider-models?provider=codex');
+  await host.request('/api/bots/provider-models?provider=devin');
   await host.request('/api/bots/teams', { method: 'POST', body: { name: team.name, memberIds: team.memberIds, coordinatorId: team.coordinatorId, enabled: false, limits } });
   for (const [path, method, body] of [
     ['/api/bots/connections', 'POST', { command: '/bin/sh' }], ['/api/bots/connections/mcpc_fixture', 'PATCH', { apiKey: 'SECRET' }],
@@ -48,7 +49,7 @@ test('workspace host admission rejects arbitrary methods, programs, secrets, pol
     ['/api/bots/activity?include=secrets', 'GET'], ['/api/bots/skills?botId=bot_coder&botId=bot_reviewer', 'GET'], ['/api/bots/provider-models?provider=evil', 'GET'],
     ['/api/bots/connections/mcpc_fixture/call', 'POST', {}], ['/api/bots/teams/../skills', 'GET'],
   ]) await assert.rejects(host.request(path, { method, body }), { status: 403 });
-  assert.equal(calls.length, 4);
+  assert.equal(calls.length, 5);
 });
 
 test('strict public projections retain library revisions and checking status without programs or secrets', () => {

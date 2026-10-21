@@ -3,6 +3,7 @@ import type { Session } from './types';
 export const BOT_PROVIDERS = [
   { id: 'claude', name: 'Claude Code' },
   { id: 'codex', name: 'Codex' },
+  { id: 'devin', name: 'Devin CLI' },
   { id: 'grok', name: 'Grok' },
   { id: 'kimi', name: 'Kimi' },
   { id: 'ollama', name: 'Ollama Cloud' },

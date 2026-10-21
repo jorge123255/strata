@@ -16,10 +16,10 @@ const baseInput = provider => ({ bot: bot(provider), sessionId: 's_test', messag
 const framesFor = () => { const frames = []; return { frames, onFrame: f => frames.push(f) }; };
 const sse = events => new Response(events.map(e => `data: ${JSON.stringify(e)}\n\n`).join('') + 'data: [DONE]\n\n', { headers: { 'Content-Type': 'text/event-stream' } });
 
-test('provider list exposes all five without credentials or login claims', async () => {
-  const runtime = createBotRuntime({ env: { PATH: '', OLLAMA_API_KEY: 'private-fixture-key' }, commands: { claude: '/not-installed', codex: '/not-installed', grok: '/not-installed', kimi: '/not-installed', ollama: '/not-installed' } });
+test('provider list exposes all six without credentials or login claims', async () => {
+  const runtime = createBotRuntime({ stateDir: join(root, 'provider-list'), env: { PATH: '', OLLAMA_API_KEY: 'private-fixture-key' }, commands: { claude: '/not-installed', codex: '/not-installed', grok: '/not-installed', kimi: '/not-installed', ollama: '/not-installed', devin: '/not-installed' } });
   const providers = await runtime.providers();
-  assert.deepEqual(providers.map(p => p.id), ['claude', 'codex', 'grok', 'kimi', 'ollama']);
+  assert.deepEqual(providers.map(p => p.id), ['claude', 'codex', 'grok', 'kimi', 'ollama', 'devin']);
   assert.equal(JSON.stringify(providers).includes('private-fixture-key'), false);
   assert.equal(providers[0].auth.state, 'unverified'); assert.equal(providers[4].auth.state, 'configured'); runtime.close();
 });

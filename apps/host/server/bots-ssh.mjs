@@ -18,7 +18,7 @@ export function botSSHArguments(execution) {
   const { host, user, port } = normalizeBotSSH(execution);
   return ['-T', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=12', '-o', 'ConnectionAttempts=1', '-o', 'ClearAllForwardings=yes', '-o', 'ForwardAgent=no', '-o', 'PermitLocalCommand=no', '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=2', ...(port ? ['-p', String(port)] : []), ...(user ? ['-l', user] : []), '--', host, SSH_BOTS_COMMAND];
 }
-const assetNames = ['bots-runtime/index.mjs', 'bots-runtime/process.mjs', 'bots-runtime/tool-bridge.mjs', 'bots-runtime/mcp-stdio.mjs', 'bots-runtime/ssh-worker.mjs', 'bots-runtime/cua-qemu-prepare.py', 'bots-tools.mjs', 'bots-models.mjs', 'bots-cua.mjs', 'bots-cua.py', 'bots-computer.swift', 'agent/browser-probe.mjs', 'agent/harness-runtime.mjs', 'external-env.mjs', 'powershell-utf8.mjs'];
+const assetNames = ['bots-runtime/index.mjs', 'bots-runtime/devin.mjs', 'bots-runtime/process.mjs', 'bots-runtime/tool-bridge.mjs', 'bots-runtime/mcp-stdio.mjs', 'bots-runtime/ssh-worker.mjs', 'bots-runtime/cua-qemu-prepare.py', 'bots-tools.mjs', 'bots-models.mjs', 'bots-cua.mjs', 'bots-cua.py', 'bots-computer.swift', 'agent/browser-probe.mjs', 'agent/harness-runtime.mjs', 'external-env.mjs', 'powershell-utf8.mjs'];
 export async function botSSHBundle({ readAsset = name => readFile(new URL(name, import.meta.url)) } = {}) {
   const assets = {};
   for (const name of assetNames) assets[`server/${name}`] = Buffer.from(await readAsset(name));

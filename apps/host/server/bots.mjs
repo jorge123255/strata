@@ -11,7 +11,7 @@ import { createBotWork } from './bots-work.mjs';
 import { createBotTeams } from './bots-team.mjs';
 
 const fault = (status, message) => Object.assign(new Error(message), { status });
-const ids = new Set(['claude', 'codex', 'grok', 'kimi', 'ollama', 'configured']);
+const ids = new Set(['claude', 'codex', 'grok', 'kimi', 'ollama', 'devin', 'configured']);
 export const BOT_AVATARS = ['🤖', '🧑‍💻', '🦊', '🧠', '🚀', '🛠️', '🌿', '✨'];
 export const BOT_AVATAR_SHAPES = Object.freeze(['orb', 'pebble', 'tile', 'diamond', 'spark', 'hexagon']);
 export function normalizeBotAvatar(value, previous) {

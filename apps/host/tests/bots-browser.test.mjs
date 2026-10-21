@@ -26,7 +26,7 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
   const css = ['styles/kit/tokens.css', 'styles/kit/components.css', 'styles/app.css', 'styles/annotation-fixes.css'].map(path => readFileSync(join(source, path), 'utf8')).join('\n') + '\n' + (outputFiles.find(file => file.path.endsWith('.css'))?.text ?? '') + '\n' + readFileSync(join(source, 'styles/workspace.css'), 'utf8');
   const at = '2026-10-20T12:00:00Z';
   let profiles = [{ id: 'existing', name: 'Project partner', instructions: 'Review code and use the browser when needed.', provider: 'codex', model: '', capabilities: 'both', policy: 'manual', workspace: '/fixture/project', execution: { kind: 'local' }, computerMode: 'host', avatarConfig: { color: 'violet', eyes: 'plus', ears: 'round' }, paused: false, createdAt: at, updatedAt: at, available: true }];
-  const providers = [['claude', 'Claude Code'], ['codex', 'Codex'], ['grok', 'Grok'], ['kimi', 'Kimi'], ['ollama', 'Ollama Cloud']].map(([id, name]) => ({ id, name, available: id === 'codex', detail: id === 'codex' ? 'Installed CLI is available.' : 'Sign in to the provider on this computer.' }));
+  const providers = [['claude', 'Claude Code'], ['codex', 'Codex'], ['devin', 'Devin CLI'], ['grok', 'Grok'], ['kimi', 'Kimi'], ['ollama', 'Ollama Cloud']].map(([id, name]) => ({ id, name, available: id === 'codex', detail: id === 'codex' ? 'Installed CLI is available.' : 'Sign in to the provider on this computer.' }));
   const computers = [{ id: 'local', kind: 'local', name: 'This Mac', available: true, detail: 'Local execution computer.' }, { id: 'ssh_garage', kind: 'ssh', name: 'Garage server', available: true, detail: 'Saved SSH computer.', execution: { kind: 'ssh', host: 'garage', user: 'operator', port: 2222 } }];
   const models = [{ id: 'bm_maya', connectionId: 'maya', connectionName: 'My Maya', model: 'Maya-S24', name: 'Maya-S24', available: true }, { id: 'bm_strata', connectionId: 'strata', connectionName: 'Remote Strata', model: 'coder', name: 'Coder', available: true }, { id: 'bm_unsupported', connectionId: 'unsupported', connectionName: 'Unsupported protocol', model: 'other', name: 'Other', available: false }];
   const conversations = [{ id: 'existing-chat', title: 'Existing work', updatedAt: at, createdAt: at, workspace: '/workspace', preferences: { botId: 'existing', botName: 'Project partner', botComputerMode: 'cua', botComputer: 'Frozen SSH computer', botModel: 'Frozen model', mode: 'manual' }, messages: [], active: false }];
@@ -47,7 +47,7 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
     let input = ''; for await (const chunk of req) input += chunk;
     const body = input ? JSON.parse(input) : undefined; calls.push({ path, query: url.search, method: req.method, body });
     if (path === '/api/bots/teams') return respond(res, {teams:[],runs:[]});
-    if (path === '/api/bots/provider-models') return respond(res, {provider:url.searchParams.get('provider'),models:[]});
+    if (path === '/api/bots/provider-models') return respond(res, {provider:url.searchParams.get('provider'),models:url.searchParams.get('provider') === 'devin' ? [{id:'fixture-devin-model',name:'Fixture Devin model',efforts:['low','high']}] : []});
     if (path === '/api/bots/activity') return respond(res, {activity:[]});
     if (path === '/api/companion/conversations') return respond(res, { available: true, conversations });
     if (/^\/api\/bots\/(existing|created)\/work$/.test(path)) {
@@ -149,7 +149,13 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
   await page.getByRole('button', { name: 'Continue', exact: true }).click();
   await page.getByRole('combobox', { name: 'Bot provider', exact: true }).click();
   for (const provider of providers) await page.getByRole('option', { name: provider.name, exact: true }).waitFor();
-  await page.getByRole('option', { name: 'Grok', exact: true }).click();
+  await page.getByRole('option', { name: 'Devin CLI', exact: true }).click();
+  await page.getByLabel('Provider model', { exact: true }).fill('fixture-devin-model');
+  await page.getByRole('combobox', { name: 'Bot reasoning effort', exact: true }).click();
+  await page.getByRole('option', { name: 'High', exact: true }).click();
+  assert.equal(await page.getByRole('combobox', { name: 'Bot reasoning effort', exact: true }).textContent(), 'High');
+  await page.getByRole('combobox', { name: 'Bot reasoning effort', exact: true }).click();
+  await page.getByRole('option', { name: 'Provider default', exact: true }).click();
   assert.equal(calls.filter(call => call.method !== 'GET').length, beforeCreate, 'Wizard/name/look/provider choices start no work or connection.');
   await page.getByRole('radio', { name: 'Coding', exact: true }).check();
   await page.getByRole('radio', { name: 'Both', exact: true }).check();
@@ -188,7 +194,8 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
   await page.getByRole('complementary', { name: 'Remote developer profile' }).getByText('Setup needed', { exact: true }).waitFor();
   const created = calls.find(call => call.path === '/api/bots' && call.method === 'POST');
   assert.deepEqual(created.body.execution, { kind: 'ssh', host: 'my-server', user: 'another-user', port: 2222 });
-  assert.equal(created.body.provider, 'grok'); assert.equal(created.body.capabilities, 'both'); assert.equal(created.body.policy, 'manual');
+  assert.equal(created.body.provider, 'devin'); assert.equal(created.body.model, 'fixture-devin-model'); assert.equal(created.body.effort, '');
+  assert.equal(created.body.capabilities, 'both'); assert.equal(created.body.policy, 'manual');
   assert.equal(created.body.computerMode, 'cua'); assert.equal(created.body.workspace, '/workspace');
   assert.deepEqual(created.body.avatarConfig, { color: 'orange', eyes: 'plus', ears: 'small', kind: 'koala', shape:'orb' });
   assert.equal(calls.some(call => call.path.endsWith('/conversations') && call.method === 'POST'), false, 'Saving a profile starts no conversation.');

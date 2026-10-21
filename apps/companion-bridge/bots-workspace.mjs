@@ -46,7 +46,7 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
     if (query.length !== 1 || method !== 'GET') throw error(status, 'Unsupported workspace query.');
     const [key, value] = query[0];
     if (route.kind === 'skills' && key === 'botId' && id(value)) route.botId = value;
-    else if (route.kind === 'providerModels' && key === 'provider' && ['claude', 'codex', 'grok', 'kimi', 'ollama', 'configured'].includes(value)) route.provider = value;
+    else if (route.kind === 'providerModels' && key === 'provider' && ['claude', 'codex', 'devin', 'grok', 'kimi', 'ollama', 'configured'].includes(value)) route.provider = value;
     else if (route.kind === 'channel' && ['after', 'before'].includes(key) && /^(0|[1-9][0-9]{0,15})$/.test(value) && Number.isSafeInteger(Number(value))) route[key] = Number(value);
     else throw error(status, 'Choose a saved bot or provider.');
   } else if (route.kind === 'providerModels') throw error(status, 'Choose a provider.');

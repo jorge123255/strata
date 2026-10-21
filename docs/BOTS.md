@@ -2,7 +2,9 @@
 
 Open **Bots** on the Mac to make a coding bot, a computer-control bot, or a bot with both abilities. Give it a name, avatar, instructions, provider, workspace and permission mode. Saving a profile starts no work. **New chat** creates an empty shared conversation; sending a message starts the bot.
 
-Native providers are Claude Code, Codex, Grok, Kimi and Ollama Cloud. Native providers use the installed CLI and signed-in account on the selected execution computer. You can also choose **Configured Models** to use a saved model API or a currently serving local model from Models. Ollama Cloud uses a private API key or the signed-in local Ollama app. The provider list distinguishes an installed program from a verified account. It reports sign-in or model errors when they occur; it does not silently switch providers.
+Native providers are Claude Code, Codex, Devin CLI, Grok, Kimi and Ollama Cloud. Native providers use the installed CLI and signed-in account on the selected execution computer. You can also choose **Configured Models** to use a saved model API or a currently serving local model from Models. Ollama Cloud uses a private API key or the signed-in local Ollama app. The provider list distinguishes an installed program from a verified account. It reports sign-in or model errors when they occur; it does not silently switch providers.
+
+For **Devin CLI**, install the [official CLI](https://docs.devin.ai/work-with-devin/devin-cli) and sign in with `devin auth login` on the execution computer. Select **Devin CLI** when creating or editing a bot on Mac or iPhone. Model choices come from that CLI's account; effort choices appear only when verified for the selected model. The CLI runs on the selected computer and the paired phone controls the same shared conversation.
 
 Provider accounts, model-serving APIs and execution computers have separate roles. Adding a Strata or Maya model API does not grant shell or desktop access to that computer. Bots do not replace, restart or reconfigure those model services.
 
@@ -10,7 +12,7 @@ Provider accounts, model-serving APIs and execution computers have separate role
 
 1. Choose **This Mac** or an SSH computer, the full path to a workspace on that computer, and a provider or configured model. A blank native model uses that provider's default. Ollama requires a cloud model name. Downloaded or imported local models must already be serving before they appear as bot choices.
 2. Start with **Ask before changes**. The bot can read its workspace, but a change or computer action waits for an Allow or Deny decision. **Plan first** exposes read-only tools. **Automatic** permits the selected bot's enabled tools without questions.
-3. Choose **New chat**, review the computer, model and workspace, then send the task. The same conversation appears in the Mac's chat history and in the paired iPhone's **Bots** tab.
+3. Tap the bot to open its latest personal chat, or an empty one using its saved settings. To choose different settings, use **New conversation** and review the computer, model and workspace before sending the task. The same conversation appears in the Mac's chat history and in the paired iPhone's **Bots** tab.
 
 The phone can read the history and provider-exposed Thinking, continue the conversation, answer an approval and stop that exact conversation. It can select a computer prepared on the Mac, a configured model and its workspace for a new chat. It cannot retrieve credentials or change SSH connection settings. Leaving the conversation does not stop it. Closing the host interrupts the run and retains partial output.
 

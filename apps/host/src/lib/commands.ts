@@ -37,7 +37,7 @@ export const DESTINATIONS: { route: Route; label: string; icon: IconName; keywor
   { route: 'tasks', label: 'Tasks', icon: 'clock', keywords: 'schedule recurring loop automation', key: '6', slash: 'tasks' },
   { route: 'skills', label: 'Skills', icon: 'skills', keywords: 'instructions prompts abilities', key: '7', slash: 'skills' },
   { route: 'settings', label: 'Settings', icon: 'settings', keywords: 'preferences theme appearance text size', key: '8' },
-  { route: 'bots', label: 'Bots', icon: 'experts', keywords: 'coding computer agents claude codex grok kimi ollama', key: '9', slash: 'bots' },
+  { route: 'bots', label: 'Bots', icon: 'experts', keywords: 'coding computer agents claude codex devin grok kimi ollama', key: '9', slash: 'bots' },
 ];
 export const APP_COMMANDS: AppCommand[] = [
   { id: 'new', label: 'New chat', hint: 'Start a new conversation; keep this one', group: 'Session', key: 'n', icon: 'new-chat', slash: ['new'], run: () => { const s = newSession(); go('chat', s.id); } },

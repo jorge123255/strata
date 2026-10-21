@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createBridge, HostClient, publicBots, publicConversation } from '../bridge.mjs';
+import { botProfileDraft } from '../bots-lifecycle.mjs';
 
 const catalog = {
   bots: [{ id: 'bot_coder', name: 'Coder', provider: 'codex', model: 'default', capabilities: 'both', policy: 'manual',
@@ -72,6 +73,20 @@ test('host permits only public bot listing and bounded saved-bot conversation se
   ]) await assert.rejects(host.request(path, { method, body }), { status: 403 });
   assert.equal(calls.length, 4);
   assert.throws(() => new HostClient({ upstream: 'https://remote.test:443' }));
+});
+
+test('Devin phone profiles and catalog retain provider identity without account or SSH credentials', () => {
+  const draft = { name: 'Devin partner', provider: 'devin', computerId: 'local', model: 'fixture-model', effort: '', workspace: '/workspace', policy: 'manual', capabilities: 'both' };
+  assert.deepEqual(botProfileDraft(draft), draft);
+  assert.throws(() => botProfileDraft({ ...draft, providerSettings: { apiKey: 'PRIVATE-DEVIN-KEY' } }), { status: 400 });
+  const raw = structuredClone(catalog);
+  raw.bots[0].provider = 'devin'; raw.providers[0].id = 'devin'; raw.providers[0].name = 'Devin CLI';
+  raw.computers[0].providers = [{ id: 'devin', ready: true, credential: 'PRIVATE-DEVIN-KEY' }];
+  const clean = publicBots(raw);
+  assert.equal(clean.bots[0].provider, 'devin');
+  assert.deepEqual(clean.providers[0], { id: 'devin', name: 'Devin CLI', available: true, detail: 'Ready on Mac', models: ['default'] });
+  assert.deepEqual(clean.computers[0].providers, [{ id: 'devin', available: true }]);
+  for (const secret of ['SSH-SECRET', 'SSH-USER', 'KEY-PATH', 'PROVIDER-SECRET', 'TOKEN-SECRET', 'PRIVATE-DEVIN-KEY']) assert.ok(!JSON.stringify(clean).includes(secret));
 });
 
 test('paired bot routes list without launching and create only a shared empty conversation', async t => {

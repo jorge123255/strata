@@ -38,7 +38,7 @@ test('SSH settings preserve aliases and optional ports, reject shell injection a
 test('worker bundle pins SDK, browser library and all transitive lockfile bytes', async () => {
   const first = await botSSHBundle(), second = await botSSHBundle();
   assert.equal(first.hash, second.hash); assert.equal(first.dependencies['@anthropic-ai/claude-agent-sdk'], '0.3.304');
-  assert.ok(first.assets['package-lock.json']); assert.ok(first.assets['server/bots-tools.mjs']); assert.ok(first.assets['server/bots-models.mjs']); assert.ok(first.assets['server/bots-cua.mjs']); assert.ok(first.assets['server/bots-cua.py']);
+  assert.ok(first.assets['package-lock.json']); assert.ok(first.assets['server/bots-runtime/devin.mjs']); assert.ok(first.assets['server/bots-tools.mjs']); assert.ok(first.assets['server/bots-models.mjs']); assert.ok(first.assets['server/bots-cua.mjs']); assert.ok(first.assets['server/bots-cua.py']);
   const lock = JSON.parse(Buffer.from(first.assets['package-lock.json'], 'base64')); assert.equal(lock.packages['node_modules/playwright-core'].version, '1.63.0');
   for (const [name, expected] of first.files) assert.equal(createHash('sha256').update(Buffer.from(first.assets[name], 'base64')).digest('hex'), expected);
 });
@@ -191,7 +191,7 @@ test('SSH client preserves acknowledged CUA uncertainty without broad transport 
   assert.equal(frames.some(f => f.type === 'done'), false); await ssh.close();
 });
 test('remote worker retains per-chat policy: Bypass writes without a permission RPC while Ask denies and Plan excludes mutation', async () => {
-  for (const provider of ['claude','codex','grok','kimi','ollama','configured']) for (const policy of ['manual','plan','bypass']) {
+  for (const provider of ['claude','codex','grok','kimi','ollama','devin','configured']) for (const policy of ['manual','plan','bypass']) {
     const reader = new Reader(), sent = [], marker = `policy-${provider}-${policy}.txt`;
     await startWorker({ bot: { ...bot, provider, policy }, sessionId: `s_policy_${provider}_${policy}`, message: 'fixture' }, {
       reader, directory: join(scratch, `policy-${provider}-${policy}`), leaseMs: 2000,

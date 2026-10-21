@@ -2,7 +2,7 @@
 // owning host, never expanded into credentials or SSH settings on the phone.
 const fail = (status, message) => Object.assign(new Error(message), { status });
 const id = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,120}$/.test(value);
-const providers = ['claude', 'codex', 'grok', 'kimi', 'ollama', 'configured'];
+const providers = ['claude', 'codex', 'devin', 'grok', 'kimi', 'ollama', 'configured'];
 const avatars = ['🤖', '🧑‍💻', '🦊', '🧠', '🚀', '🛠️', '🌿', '✨'];
 export const BOT_AVATAR_SHAPES = Object.freeze(['orb', 'pebble', 'tile', 'diamond', 'spark', 'hexagon']);
 // Optional shapes leave the original kind/color vocabulary readable by older

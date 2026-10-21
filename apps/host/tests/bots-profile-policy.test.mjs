@@ -13,7 +13,7 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 2));
 async function until(predicate) { for (let n = 0; n < 500; n++) { if (predicate()) return; await wait(); } assert.fail('Fixture did not settle'); }
 function fixture(t, script) {
   const directory = mkdtempSync(join(tmpdir(), 'strata-profile-'));
-  const providers = ['claude','codex','grok','kimi','ollama'].map(id => ({ id, name:id, available:true }));
+  const providers = ['claude','codex','grok','kimi','ollama','devin'].map(id => ({ id, name:id, available:true }));
   const connections = [
     { id:'maya', name:'Maya separate', baseUrl:'https://maya.invalid/v1', protocol:'openai-chat', apiKey:'private-maya-key', models:[{ id:'same',name:'Maya' }] },
     { id:'strata', name:'Other Strata', baseUrl:'https://strata.invalid/v1', protocol:'openai-chat', apiKey:'private-strata-key', models:[{ id:'same',name:'Strata' }], modelManagement:{ transport:'ssh',host:'ssh-alias',user:'saved-user',port:2222 } },
@@ -79,15 +79,15 @@ test('Ask pending approvals cannot be changed by profile editing; Bypass is expl
   assert.equal((await f.bots.list()).bots[0].policy,'bypass');
   for(const policy of ['auto',null,true])assert.throws(()=>f.bots.createConversation(bot.id,{policy}),{status:400});
 });
-test('all five providers and configured models receive frozen Ask/Plan/Bypass for local and saved SSH execution',async t=>{
+test('all six providers and configured models receive frozen Ask/Plan/Bypass for local and saved SSH execution',async t=>{
   const observed=[];
   const f=fixture(t,async c=>{observed.push({provider:c.bot.provider,kind:c.bot.execution.kind,policy:c.bot.policy,allowed:await c.requestPermission({id:'probe',name:'fixture action'})});});
   const catalog=await f.bots.list(),remote=catalog.computers.find(c=>c.kind==='ssh'),model=catalog.models.find(m=>m.connectionId==='strata');await f.bots.checkComputer({computerId:remote.id});
-  for(const provider of ['claude','codex','grok','kimi','ollama','configured'])for(const computerId of ['local',remote.id]){
+  for(const provider of ['claude','codex','grok','kimi','ollama','devin','configured'])for(const computerId of ['local',remote.id]){
     const bot=(await f.bots.saveProfile(f.draft({provider,computerId,workspace:computerId==='local'?f.directory:'/srv/project',...(provider==='configured'?{modelId:model.id}:{})}))).bot;
     for(const policy of ['plan','bypass']){const chat=f.bots.createConversation(bot.id,{policy}).conversation;f.chats.send(chat.id,'fixture');await until(()=>!f.chats.detail(chat.id).conversation.active);}
   }
-  assert.equal(observed.length,24);for(const row of observed)assert.equal(row.allowed,row.policy==='bypass');
+  assert.equal(observed.length,28);for(const row of observed)assert.equal(row.allowed,row.policy==='bypass');
   assert.equal(f.connections[0].name,'Maya separate');assert.equal(f.calls.prepare,0);assert.equal(f.calls.cua,0);
 });
 test('local host profile routes create and CAS-edit the same profile and reject foreign origins',async t=>{

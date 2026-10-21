@@ -11,7 +11,7 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 function fixture(t, run = async ({ onFrame }) => { onFrame({ type: 'reasoning', text: 'Provider progress' }); onFrame({ type: 'delta', text: 'Shared answer' }); }) {
   const directory = mkdtempSync(join(tmpdir(), 'strata-bots-'));
   let chats;
-  const runtime = { providers: async () => ['claude','codex','grok','kimi','ollama'].map(id => ({ id, name: id, available: true, detail: 'fixture' })), run, close() {} };
+  const runtime = { providers: async () => ['claude','codex','grok','kimi','ollama','devin'].map(id => ({ id, name: id, available: true, detail: 'fixture' })), run, close() {} };
   const tools = { definitions: () => [], execute: () => {}, close() {} };
   const bots = createBots({ directory, runtime, tools, defaultWorkspace: () => directory, conversations: () => chats });
   chats = createConversations({ directory, enabled: () => bots.hasProfiles(), pending: id => bots.pending(id), stop: id => bots.stop(id), approve: options => bots.approve(options),
@@ -21,14 +21,33 @@ function fixture(t, run = async ({ onFrame }) => { onFrame({ type: 'reasoning', 
   return { directory, runtime, tools, bots, chats, create };
 }
 
-test('five provider profiles are opt-in; creation does not start a turn or modify model services', async t => {
+test('six provider profiles are opt-in; creation does not start a turn or modify model services', async t => {
   let runs = 0;
   const { bots, chats, create, directory } = fixture(t, async () => { runs++; });
   assert.equal(chats.available(), false);
   const serviceFile = join(directory, 'model-providers.json'); writeFileSync(serviceFile, '{"name":"Maya"}');
-  for (const provider of ['claude','codex','grok','kimi','ollama']) create({ provider });
-  assert.equal((await bots.list()).bots.length, 5); assert.equal(chats.available(), true); assert.equal(runs, 0);
+  for (const provider of ['claude','codex','grok','kimi','ollama','devin']) create({ provider });
+  assert.equal((await bots.list()).bots.length, 6); assert.equal(chats.available(), true); assert.equal(runs, 0);
   assert.equal(readFileSync(serviceFile, 'utf8'), '{"name":"Maya"}');
+});
+
+test('Devin personal chats keep saved defaults and shared history without activating a provider', async t => {
+  let runs = 0;
+  const f = fixture(t, async () => { runs++; });
+  const bot = f.create({ name: 'Devin teammate', provider: 'devin', model: 'verified-fixture-model', effort: '', policy: 'plan', capabilities: 'both' });
+  const chat = f.bots.createConversation(bot.id).conversation;
+  assert.equal(chat.preferences.botId, bot.id);
+  assert.equal(chat.preferences.mode, 'plan');
+  const saved = JSON.parse(readFileSync(join(f.directory, 'bots.json'), 'utf8'));
+  const frozen = saved.chatProfiles.find(([id]) => id === chat.id)[1];
+  assert.equal(frozen.provider, 'devin'); assert.equal(frozen.model, 'verified-fixture-model');
+  assert.equal(frozen.workspace, f.directory); assert.equal(frozen.policy, 'plan');
+  assert.deepEqual(f.chats.detail(chat.id).conversation.messages, []);
+  assert.equal(runs, 0, 'Opening a Devin chat must not send a prompt or start its computer.');
+  f.bots.update(bot.id, { model: 'next-fixture-model', policy: 'bypass' });
+  const old = JSON.parse(readFileSync(join(f.directory, 'bots.json'), 'utf8')).chatProfiles.find(([id]) => id === chat.id)[1];
+  assert.equal(old.model, 'verified-fixture-model'); assert.equal(old.policy, 'plan');
+  assert.equal((await f.bots.list()).bots.find(row => row.id === bot.id).provider, 'devin');
 });
 
 test('catalog projects no API secrets and stores private configuration atomically', async t => {

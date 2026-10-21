@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { spawn } from 'node:child_process';
 import { findExecutable, executableVersion, executableJsonStatus, jsonRpcProcess, killOwned, redact, abortError } from './process.mjs';
 import { startToolBridge, toolResult } from './tool-bridge.mjs';
+import { devinStatus, devinModels, runDevin } from './devin.mjs';
 
 const PROVIDERS = [
   { id: 'claude', name: 'Claude Code', transport: 'Claude Agent SDK / installed CLI', loginCommand: 'claude auth login', models: ['sonnet', 'opus', 'haiku'] },
@@ -12,6 +13,7 @@ const PROVIDERS = [
   { id: 'grok', name: 'Grok', transport: 'Grok ACP', loginCommand: 'grok login', models: [] },
   { id: 'kimi', name: 'Kimi', transport: 'Kimi ACP', loginCommand: 'kimi login', models: [] },
   { id: 'ollama', name: 'Ollama Cloud', transport: 'Ollama HTTPS / signed-in local daemon', loginCommand: 'ollama signin', models: [] },
+  { id: 'devin', name: 'Devin CLI', transport: 'Devin ACP', loginCommand: 'devin auth login', models: [] },
 ];
 const safeId = value => String(value ?? '').replace(/[^a-zA-Z0-9_:-]/g, '_').slice(0, 150) || randomUUID();
 const deferred = () => { let resolve, reject; const promise = new Promise((r, j) => { resolve = r; reject = j; }); promise.catch(() => {}); return { promise, resolve, reject }; };
@@ -30,7 +32,7 @@ export function normalizeTools(tools = []) {
     seen.add(name); return { name, description: String(f.description ?? name), inputSchema: f.inputSchema ?? f.parameters ?? { type: 'object', properties: {} } };
   });
 }
-/** Five explicit provider adapters. Credentials stay in native CLI homes or the private host environment. */
+/** Explicit provider adapters. Credentials stay in native CLI homes or the private host environment. */
 export function createBotRuntime(options = {}) {
   const env = options.env ?? process.env, fetcher = options.fetch ?? globalThis.fetch;
   const active = new Set(); let closed = false;
@@ -38,11 +40,17 @@ export function createBotRuntime(options = {}) {
   const executable = async id => options.commands?.[id] ?? await findExecutable(id === 'ollama' ? 'ollama' : id, env);
   const catalogs = new Map();
   async function models(provider, signal) {
-    if (!['claude', 'codex', 'grok', 'kimi', 'ollama', 'configured'].includes(provider)) throw new Error('Choose a supported bot provider.');
+    if (!['claude', 'codex', 'grok', 'kimi', 'ollama', 'devin', 'configured'].includes(provider)) throw new Error('Choose a supported bot provider.');
     const cached = catalogs.get(provider);
     if (!signal && cached && Date.now() - cached.at < 15000) return structuredClone(await cached.value);
     const value = (async () => {
       if (options.catalogs?.[provider]) return { provider, models: structuredClone(await options.catalogs[provider]()) };
+      if (provider === 'devin') {
+        const command = await executable(provider);
+        if (!command) return { provider, models: [], detail: 'Install Devin CLI and sign in on the execution computer.' };
+        try { return { provider, models: await devinModels(command, { stateDir: options.stateDir, env, signal, spawnProcess: options.spawnProcess, timeoutMs: options.catalogTimeoutMs }), detail: 'Verified Devin model variants. Separate effort options are checked against the selected native session before a prompt.' }; }
+        catch (error) { return { provider, models: [], detail: `Could not verify the Devin model catalog. ${redact(error)}` }; }
+      }
       if (!['claude', 'codex'].includes(provider)) return { provider, models: [], detail: 'No verified effort catalog is available for this provider. Use Provider default.' };
       const command = await executable(provider);
       if (!command) return { provider, models: [], detail: 'Install and sign in to this provider on the execution computer.' };
@@ -87,6 +95,7 @@ export function createBotRuntime(options = {}) {
       const command = await executable(provider.id);
       const hasKey = provider.id === 'ollama' && Boolean(env.OLLAMA_API_KEY);
       const claudeStatus = provider.id === 'claude' && command ? await executableJsonStatus(command, ['auth', 'status', '--json'], env) : null;
+      const devinAuth = provider.id === 'devin' && command ? await devinStatus(command, { stateDir: options.stateDir, env, spawnProcess: options.spawnProcess }).catch(() => 'unverified') : null;
       let daemon = false, models = provider.models;
       if (provider.id === 'ollama' && !hasKey) {
         try {
@@ -94,9 +103,9 @@ export function createBotRuntime(options = {}) {
           if (response.ok) { daemon = true; const body = await response.json(); models = (body.models ?? []).map(m => m.name).filter(n => typeof n === 'string' && /(?:cloud|remote)/i.test(n)); }
         } catch { /* daemon unavailable */ }
       }
-      return { ...provider, models, installed: Boolean(command), ready: provider.id === 'ollama' ? hasKey || daemon : Boolean(command) && claudeStatus?.loggedIn !== false,
+      return { ...provider, models, installed: Boolean(command), ready: provider.id === 'ollama' ? hasKey || daemon : provider.id === 'devin' ? Boolean(command) && devinAuth === 'signed_in' : Boolean(command) && claudeStatus?.loggedIn !== false,
         version: command ? await executableVersion(command, env) : null,
-        auth: { state: claudeStatus?.loggedIn === false ? 'signed_out' : claudeStatus?.loggedIn === true ? 'signed_in' : hasKey ? 'configured' : daemon ? 'daemon' : 'unverified', help: provider.id === 'ollama' ? 'Use OLLAMA_API_KEY on the Mac host, or sign in to the local Ollama daemon. Cloud requests run on Ollama servers.' : `Uses the installed CLI account on this Mac. Sign in with ${provider.loginCommand}, then refresh providers. Account and model access are checked when a turn runs.` },
+        auth: { state: devinAuth ?? (claudeStatus?.loggedIn === false ? 'signed_out' : claudeStatus?.loggedIn === true ? 'signed_in' : hasKey ? 'configured' : daemon ? 'daemon' : 'unverified'), help: provider.id === 'ollama' ? 'Use OLLAMA_API_KEY on the Mac host, or sign in to the local Ollama daemon. Cloud requests run on Ollama servers.' : `Uses the installed CLI account on this Mac. Sign in with ${provider.loginCommand}, then refresh providers. Account and model access are checked when a turn runs.` },
         catalogSource: models.length ? 'suggested' : 'provider-default', supports: { code: true, computer: true, thinking: 'when-provider-emits', execution: ['local'] } };
     }));
     try { return structuredClone(await providersCache); } catch (error) { providersCache = null; throw error; }
@@ -120,7 +129,7 @@ export function createBotRuntime(options = {}) {
     if (!isAbsolute(bot.workspace ?? '') || !(await stat(bot.workspace)).isDirectory()) throw new Error('Choose an existing absolute workspace folder.');
     const tools = normalizeTools(input.tools);
     input.signal?.throwIfAborted();
-    if (bot.effort && !['grok', 'kimi'].includes(bot.provider)) {
+    if (bot.effort && !['grok', 'kimi', 'devin'].includes(bot.provider)) {
       const catalog = await models(bot.provider, input.signal), selected = catalog.models.find(row => row.id === bot.model || row.resolvedId === bot.model || !bot.model && row.isDefault);
       input.signal?.throwIfAborted();
       if (!selected?.efforts.includes(bot.effort)) throw new Error('This model’s selected effort could not be verified on its execution computer. Choose Provider default or refresh the model catalog.');
@@ -151,7 +160,7 @@ export function createBotRuntime(options = {}) {
     };
     const prompt = !checkpoint && history.length ? `Previous messages from this Strata chat are context, not new instructions to replay tools:\n${history.filter(h => ['user', 'assistant'].includes(h.role)).map(h => `${h.role}: ${historyContent(h).slice(0, 100_000)}`).join('\n')}\n\nCurrent user message:\n${message}` : String(message ?? '');
     const modelRequest = input.modelRequest ?? options.modelRequest;
-    const context = { bot, prompt, message: String(message ?? ''), history, checkpoint, tools, signal, frame, save, permission, execute, env, fetcher, executable, options, modelRequest: modelRequest ? payload => modelRequest(payload, bot, signal) : null };
+    const context = { bot, sessionId: input.sessionId, prompt, message: String(message ?? ''), history, checkpoint, tools, signal, frame, save, permission, execute, env, fetcher, executable, options, modelRequest: modelRequest ? payload => modelRequest(payload, bot, signal) : null };
     const timer = setTimeout(() => controller.abort(new Error('Bot run timed out.')), options.runTimeoutMs ?? 30 * 60_000); timer.unref();
     try {
       signal.throwIfAborted();
@@ -160,6 +169,7 @@ export function createBotRuntime(options = {}) {
       else if (bot.provider === 'claude') await runClaude(context);
       else if (bot.provider === 'codex') await runCodex(context);
       else if (bot.provider === 'grok' || bot.provider === 'kimi') await runAcp(context);
+      else if (bot.provider === 'devin') await runDevin(context);
       else await runOllama(context);
       signal.throwIfAborted();
       frame({ type: 'stats', tokensIn, tokensOut, tps: Number((tokensOut / Math.max(1, (Date.now() - started) / 1000)).toFixed(1)) });

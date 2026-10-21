@@ -495,7 +495,7 @@ function publicConversationDetail(body) {
 // remain on the Mac. Explicit projection also protects older or future hosts.
 export function publicBots(body) {
   if (!body || !Array.isArray(body.bots) || !Array.isArray(body.providers) || !Array.isArray(body.computers)) throw fail(502, 'Strata returned unreadable bot information.');
-  const providers = new Set(['claude', 'codex', 'grok', 'kimi', 'ollama', 'configured']);
+  const providers = new Set(['claude', 'codex', 'devin', 'grok', 'kimi', 'ollama', 'configured']);
   return {
     selectionSupported: Array.isArray(body.models),
     lifecycleSupported: body.lifecycleSupported === true,
