@@ -8,9 +8,13 @@
 
 /* Begin PBXBuildFile section */
 		02291579233E472787508311 /* StrataMobileApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E747A736E510FDB4A2EF361 /* StrataMobileApp.swift */; };
+		034E62DF8A72D07FC1D6B431 /* CompanionNotificationModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88B74E056D6F890DBF382D22 /* CompanionNotificationModels.swift */; };
+		0E894A44E4D02215392B0035 /* NotificationsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10F4E8EDB8D3AD75879D3EC4 /* NotificationsTests.swift */; };
+		1265A88785D558864FD13C63 /* NotificationsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D9D7534206888DCDB926693 /* NotificationsView.swift */; };
 		1444351F3208C9E1DC99F2C8 /* BotComputerSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 418206B836C06B84AAE0F261 /* BotComputerSession.swift */; };
 		196B170CECE3E14AED2E7EF3 /* BotAvatar.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF1A15E09FF20F72B4B22CBF /* BotAvatar.swift */; };
 		19B67E6E7EBD1D780BA5F817 /* CompanionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B15E5C8FBCE10522DE165334 /* CompanionStore.swift */; };
+		1B6D8DCE0C23712CBBEA92D2 /* CompanionNotifications.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12F4DD8117E833F36FA12DC3 /* CompanionNotifications.swift */; };
 		2D18BE444A89C7FFA545C3CB /* CompanionModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3A7DE4AF50BD0C3004EE31D /* CompanionModels.swift */; };
 		2D6AC49DAF586845379D5BC0 /* ThinkingTimelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E59F3652EB28C1B5CBA23EE8 /* ThinkingTimelineTests.swift */; };
 		3708264D60BA706BA23AC809 /* CompanionSmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19BD26A6FC2E7504FE691831 /* CompanionSmokeTests.swift */; };
@@ -61,6 +65,8 @@
 
 /* Begin PBXFileReference section */
 		0A9A3DA672A19FD07FECD0A1 /* AvatarCharacterGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvatarCharacterGeometry.swift; sourceTree = "<group>"; };
+		10F4E8EDB8D3AD75879D3EC4 /* NotificationsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationsTests.swift; sourceTree = "<group>"; };
+		12F4DD8117E833F36FA12DC3 /* CompanionNotifications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionNotifications.swift; sourceTree = "<group>"; };
 		141A40B82BA2D85EDA8360C1 /* CompanionClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionClient.swift; sourceTree = "<group>"; };
 		17D974F087CFE32B66755D9F /* BotWorkspaceModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotWorkspaceModels.swift; sourceTree = "<group>"; };
 		19BD26A6FC2E7504FE691831 /* CompanionSmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionSmokeTests.swift; sourceTree = "<group>"; };
@@ -79,8 +85,10 @@
 		753EC19E8E6F2E274E15738E /* ConnectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionView.swift; sourceTree = "<group>"; };
 		7CE64DDD0C439FA09FD1F543 /* BotsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotsView.swift; sourceTree = "<group>"; };
 		81DA49FE4380C675E397AF6D /* ModelsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelsView.swift; sourceTree = "<group>"; };
+		88B74E056D6F890DBF382D22 /* CompanionNotificationModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionNotificationModels.swift; sourceTree = "<group>"; };
 		8C800B2DB69A76089F424CBE /* LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = LICENSE.txt; sourceTree = "<group>"; };
 		8CB6F478F559C2014D628588 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		8D9D7534206888DCDB926693 /* NotificationsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationsView.swift; sourceTree = "<group>"; };
 		9B73A4354E8999227ECE6E60 /* StrataMobileUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = StrataMobileUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		AF1A15E09FF20F72B4B22CBF /* BotAvatar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotAvatar.swift; sourceTree = "<group>"; };
 		B15E5C8FBCE10522DE165334 /* CompanionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionStore.swift; sourceTree = "<group>"; };
@@ -95,6 +103,7 @@
 		CF2E3BCB286B0C22E232AFCE /* MacActivityCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacActivityCard.swift; sourceTree = "<group>"; };
 		E59F3652EB28C1B5CBA23EE8 /* ThinkingTimelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThinkingTimelineTests.swift; sourceTree = "<group>"; };
 		ED048175CF9BFFCB79F9E40A /* StrataMobileTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = StrataMobileTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		F34C8BC2F38D4247F6D1DDA0 /* StrataMobilePush.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = StrataMobilePush.entitlements; sourceTree = "<group>"; };
 		F55063865E46FC587B166FA3 /* AvatarPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvatarPicker.swift; sourceTree = "<group>"; };
 		FC942FAFA9455C1A4CD11A03 /* KoalaGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KoalaGeometry.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -136,6 +145,7 @@
 				B70947875E2884785A789C47 /* Assets.xcassets */,
 				5851392661A0FA86A4C30E57 /* Info.plist */,
 				2E747A736E510FDB4A2EF361 /* StrataMobileApp.swift */,
+				F34C8BC2F38D4247F6D1DDA0 /* StrataMobilePush.entitlements */,
 				C7F8B0FC6C733BA38DC82F66 /* Theme.swift */,
 				3A6AD504DE68E9CAC4CC82F3 /* CuaBots */,
 				A4A289F10E4E9F5FB07C51DD /* Models */,
@@ -160,6 +170,7 @@
 			children = (
 				17D974F087CFE32B66755D9F /* BotWorkspaceModels.swift */,
 				C3A7DE4AF50BD0C3004EE31D /* CompanionModels.swift */,
+				88B74E056D6F890DBF382D22 /* CompanionNotificationModels.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -167,6 +178,7 @@
 		BE53F23E6DA0628EC28D028A /* StrataMobileTests */ = {
 			isa = PBXGroup;
 			children = (
+				10F4E8EDB8D3AD75879D3EC4 /* NotificationsTests.swift */,
 				B873E16871EAA80E94A49E3F /* PairingTests.swift */,
 				49C61200D469B81D7402D0E1 /* StoreRaceTests.swift */,
 				E59F3652EB28C1B5CBA23EE8 /* ThinkingTimelineTests.swift */,
@@ -188,6 +200,7 @@
 				CF2E3BCB286B0C22E232AFCE /* MacActivityCard.swift */,
 				37F1F34CF3BDA01A86F47075 /* MacThinkingView.swift */,
 				81DA49FE4380C675E397AF6D /* ModelsView.swift */,
+				8D9D7534206888DCDB926693 /* NotificationsView.swift */,
 				64D770867340AE9EBFA13A4A /* OverviewView.swift */,
 			);
 			path = Views;
@@ -209,6 +222,7 @@
 				418206B836C06B84AAE0F261 /* BotComputerSession.swift */,
 				2A35E56FE5DF4C12304AE1EA /* BotWorkspaceStore.swift */,
 				141A40B82BA2D85EDA8360C1 /* CompanionClient.swift */,
+				12F4DD8117E833F36FA12DC3 /* CompanionNotifications.swift */,
 				B15E5C8FBCE10522DE165334 /* CompanionStore.swift */,
 				C2039E6C0B84C032D88C64AE /* QRScannerView.swift */,
 			);
@@ -335,6 +349,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				0E894A44E4D02215392B0035 /* NotificationsTests.swift in Sources */,
 				4D9C963E28DB3BD3F639EA37 /* PairingTests.swift in Sources */,
 				FC866819762C78C3310B882E /* StoreRaceTests.swift in Sources */,
 				2D6AC49DAF586845379D5BC0 /* ThinkingTimelineTests.swift in Sources */,
@@ -358,6 +373,8 @@
 				A0AD8CB7E42C1FBD86F429B1 /* ChatView.swift in Sources */,
 				79B2F9C1699CE48D32D09946 /* CompanionClient.swift in Sources */,
 				2D18BE444A89C7FFA545C3CB /* CompanionModels.swift in Sources */,
+				034E62DF8A72D07FC1D6B431 /* CompanionNotificationModels.swift in Sources */,
+				1B6D8DCE0C23712CBBEA92D2 /* CompanionNotifications.swift in Sources */,
 				19B67E6E7EBD1D780BA5F817 /* CompanionStore.swift in Sources */,
 				829F6E6C8120B173E097882E /* Components.swift in Sources */,
 				8316ABA47A36267F8DA68E4C /* ConnectionView.swift in Sources */,
@@ -366,6 +383,7 @@
 				8AF7EAC858EC466D76A60E4C /* MacActivityCard.swift in Sources */,
 				A9E534606DECBE48695179D4 /* MacThinkingView.swift in Sources */,
 				3BC9A744F1A9FB886EAC7AA1 /* ModelsView.swift in Sources */,
+				1265A88785D558864FD13C63 /* NotificationsView.swift in Sources */,
 				A97D21E9F25E3DBD69E896C4 /* OverviewView.swift in Sources */,
 				64A1A952A5B6D2FA1FB32286 /* QRScannerView.swift in Sources */,
 				75A11F12DB0AF6461478C1C5 /* SVGPath.swift in Sources */,
@@ -415,12 +433,111 @@
 			};
 			name = Debug;
 		};
+		0C20E28CCD12736BBE9AD5EE /* PushDebug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = 345TZ8AAP7;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = PushDebug;
+		};
+		407BD421EE35750CB508B3B7 /* PushRelease */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.strata.companion.StrataMobileUITests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = StrataMobile;
+			};
+			name = PushRelease;
+		};
+		4BF73E6BA4334A79842BCF58 /* PushDebug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.strata.companion.StrataMobileTests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/StrataMobile.app/StrataMobile";
+			};
+			name = PushDebug;
+		};
 		5E9B29C940C9C8ABA9C0236B /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 15;
+				CURRENT_PROJECT_VERSION = 16;
 				INFOPLIST_FILE = StrataMobile/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -433,12 +550,34 @@
 			};
 			name = Release;
 		};
+		69068B296A82653816679E2D /* PushDebug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = StrataMobile/StrataMobilePush.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 16;
+				INFOPLIST_FILE = StrataMobile/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.strata.companion.ios;
+				SDKROOT = iphoneos;
+				STRATA_APS_ENVIRONMENT = development;
+				STRATA_PUSH_ENVIRONMENT = sandbox;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG STRATA_PUSH";
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = PushDebug;
+		};
 		6C0F1E89E5A6CF4404DA3CAB /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 15;
+				CURRENT_PROJECT_VERSION = 16;
 				INFOPLIST_FILE = StrataMobile/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -450,6 +589,23 @@
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
+		};
+		6D0D64A3AD6FFDE552421D5F /* PushRelease */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.strata.companion.StrataMobileTests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/StrataMobile.app/StrataMobile";
+			};
+			name = PushRelease;
 		};
 		76B64C16C6F38DCF25FD9BDA /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -574,6 +730,64 @@
 			};
 			name = Release;
 		};
+		C4D91EBFF96750FDC9D68F2F /* PushRelease */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = 345TZ8AAP7;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = PushRelease;
+		};
 		CAC0CE2C9CC4C846976E9261 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -608,6 +822,45 @@
 			};
 			name = Release;
 		};
+		E52AD2EC29188AEDBB2AA327 /* PushRelease */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = StrataMobile/StrataMobilePush.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 16;
+				INFOPLIST_FILE = StrataMobile/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.strata.companion.ios;
+				SDKROOT = iphoneos;
+				STRATA_APS_ENVIRONMENT = production;
+				STRATA_PUSH_ENVIRONMENT = production;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) STRATA_PUSH";
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = PushRelease;
+		};
+		E61CEB718C295358B3C66FF9 /* PushDebug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.strata.companion.StrataMobileUITests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = StrataMobile;
+			};
+			name = PushDebug;
+		};
 		EF040062096072F3AE76997C /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -632,6 +885,8 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				76B64C16C6F38DCF25FD9BDA /* Debug */,
+				0C20E28CCD12736BBE9AD5EE /* PushDebug */,
+				C4D91EBFF96750FDC9D68F2F /* PushRelease */,
 				BDEFE5B06ACAD8604B8AB239 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
@@ -641,6 +896,8 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				0B24FEFCD75DFE4637CA6F8F /* Debug */,
+				4BF73E6BA4334A79842BCF58 /* PushDebug */,
+				6D0D64A3AD6FFDE552421D5F /* PushRelease */,
 				EF040062096072F3AE76997C /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
@@ -650,6 +907,8 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				CAC0CE2C9CC4C846976E9261 /* Debug */,
+				E61CEB718C295358B3C66FF9 /* PushDebug */,
+				407BD421EE35750CB508B3B7 /* PushRelease */,
 				D53C762E5D47EA34CC351C12 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
@@ -659,6 +918,8 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				6C0F1E89E5A6CF4404DA3CAB /* Debug */,
+				69068B296A82653816679E2D /* PushDebug */,
+				E52AD2EC29188AEDBB2AA327 /* PushRelease */,
 				5E9B29C940C9C8ABA9C0236B /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;

@@ -45,7 +45,7 @@ const conversation = {
 const pending = [];
 let createdBotConversation;
 const lifecycleMode = ['--test-bot-lifecycle', '--test-bot-avatar-states', '--test-bot-photos'].includes(process.argv[2]);
-const workspaceFlags = ['--test-group-chat-layout', '--test-team-channel-layout', '--test-team-channel', '--test-bot-photos', '--test-bot-lifecycle', '--test-bot-avatar-states', '--test-workspace-skills', '--test-workspace-connections', '--test-workspace-teams', '--test-facelift'];
+const workspaceFlags = ['--test-notifications', '--test-group-chat-layout', '--test-team-channel-layout', '--test-team-channel', '--test-bot-photos', '--test-bot-lifecycle', '--test-bot-avatar-states', '--test-workspace-skills', '--test-workspace-connections', '--test-workspace-teams', '--test-facelift'];
 const workspaceMode = workspaceFlags.includes(process.argv[2]);
 let teamConversation, savedTeam, teamRun;
 const teamLimits = { maxParallel: 2, maxDepth: 2, maxHops: 8, maxTurns: 24, maxDurationMs: 600000 };
@@ -186,9 +186,29 @@ const tool = (id, state) => ({
   result: 'Page title: Example research. Synthetic browser activity for UI verification.', live: true,
   ask: { why: 'Read this page in the Mac browser', detail: 'Synthetic approval request for a test fixture.' },
 });
+const notificationMode = process.argv[2] === '--test-notifications';
+let notificationService;
+const notificationMessages = [];
+if (notificationMode) {
+  const { createBotNotifications } = await import('../../host/server/bot-notifications.mjs');
+  savedTeam = { id: 'team_notification', name: 'Notification team', memberIds: ['fixture-bot', 'fixture-reviewer'], coordinatorId: 'fixture-bot', enabled: true, limits: teamLimits, createdAt: new Date().toISOString() };
+  notificationService = createBotNotifications({ directory: join(root, 'notification-service'), start: false,
+    apns: { status: () => ({ configured: false, detail: 'Synthetic fixture: Apple push is not configured.' }) },
+    native: { status: async () => ({ available: false }), setBridge() {} },
+    sources: () => ({ conversations: [conversation], teams: [{ ...savedTeam, messages: notificationMessages }], approvals: pending.map(value => ({ ...value, chatId: conversation.id, botId: 'fixture-bot' })) }),
+  });
+  notificationService.reconcile();
+}
 const host = {
   async json(path, options = {}) {
     calls.push({ path, method: options.method ?? 'GET', body: options.body ?? null });
+    if (notificationService) {
+      const route = new URL(path, 'http://fixture.invalid');
+      if (route.pathname === '/api/bots/notifications') return notificationService.feed(options.deviceId, { after: route.searchParams.has('after') ? Number(route.searchParams.get('after')) : undefined, journalId: route.searchParams.get('journalId') ?? undefined });
+      if (route.pathname === '/api/bots/notifications/settings') return notificationService.settings(options.deviceId, options.body);
+      if (route.pathname === '/api/bots/notifications/registration') return options.method === 'DELETE' ? notificationService.revoke(options.deviceId) : notificationService.registration(options.deviceId, options.body);
+      if (route.pathname === '/api/bots/teams/team_notification/channel') return { supported: true, teamId: savedTeam.id, messages: notificationMessages, activeRuns: [], nextSequence: notificationMessages.length, hasMore: false, hasMoreBefore: false };
+    }
     if (roomBots) {
       const route = new URL(path, 'http://fixture.invalid');
       if (route.pathname === '/api/bots/teams') return roomBots.team.list();
@@ -353,6 +373,7 @@ async function close() {
     try {
       if (testProcess && testProcess.exitCode === null) testProcess.kill('SIGTERM');
       if (control?.listening) await new Promise(resolve => control.close(resolve));
+      notificationService?.close();
       await bridge?.close();
       await lifecycleProfiles?.close();
       await roomBots?.close(); roomChats?.close();
@@ -373,6 +394,21 @@ try {
       const action = request.url;
       if (request.method === 'POST') {
         switch (action) {
+        case '/notification-reply':
+          if (!notificationService) throw new Error('Notification fixture required');
+          conversation.messages.push({ id: 'notification-reply-' + conversation.messages.length, role: 'assistant', content: 'PRIVATE_NOTIFICATION_PREVIEW must remain inside the chat.', reasoning: 'PRIVATE_THINKING', streaming: false, at: new Date().toISOString() });
+          notificationService.reconcile();
+          break;
+        case '/notification-team':
+          if (!notificationService) throw new Error('Notification fixture required');
+          notificationMessages.push({ id: 'team-message-' + notificationMessages.length, sequence: notificationMessages.length + 1, teamId: savedTeam.id, kind: 'message', author: { type: 'bot', botId: 'fixture-reviewer', name: 'Review companion', avatarConfig: { color: 'violet', eyes: 'happy', ears: 'round' } }, content: 'Hello from the notification team.', createdAt: new Date().toISOString() });
+          notificationService.reconcile();
+          break;
+        case '/notification-approval':
+          if (!notificationService) throw new Error('Notification fixture required');
+          pending.push(tool('notification-approval-' + pending.length, 'proposed'));
+          notificationService.reconcile();
+          break;
         case '/state':
           break;
         case '/profile-change': {
@@ -471,7 +507,7 @@ try {
       testProcess = spawn('xcodebuild', [
         '-project', project, '-scheme', 'StrataMobile', '-destination', destination,
         '-derivedDataPath', derivedData,
-        '-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation', '--test-computer': 'testActualSampleAvatarAndIsolatedComputerControl', '--test-bot-photos': 'testPhotoLedBotsCreationAppearanceAndWorkspaceNavigation', '--test-bot-lifecycle': 'testPhoneBotCreationEditingCASAndApprovalModes', '--test-bot-avatar-states': 'testBotAvatarStatesInteractionAndRosterFilters', '--test-facelift': 'testFaceliftPrincipalScreensAndSharedHistory', '--test-workspace-skills': 'testReviewedSkillAssignmentAndWorkspaceNavigation', '--test-workspace-connections': 'testSavedConnectionCheckAndReviewedAccess', '--test-workspace-teams': 'testTeamExplicitTaskSharedThinkingStopAndActivity', '--test-team-channel': 'testNaturalTeamChannelPeersAssignmentsThinkingAndStop', '--test-team-channel-layout': 'testTeamChannelNormalDarkAndLargeTypeLayout', '--test-group-chat-layout': 'testGroupRosterAndRoomPhotoLayoutWithRealMenus' })[process.argv[2]],
+        '-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation', '--test-computer': 'testActualSampleAvatarAndIsolatedComputerControl', '--test-bot-photos': 'testPhotoLedBotsCreationAppearanceAndWorkspaceNavigation', '--test-bot-lifecycle': 'testPhoneBotCreationEditingCASAndApprovalModes', '--test-bot-avatar-states': 'testBotAvatarStatesInteractionAndRosterFilters', '--test-facelift': 'testFaceliftPrincipalScreensAndSharedHistory', '--test-workspace-skills': 'testReviewedSkillAssignmentAndWorkspaceNavigation', '--test-workspace-connections': 'testSavedConnectionCheckAndReviewedAccess', '--test-workspace-teams': 'testTeamExplicitTaskSharedThinkingStopAndActivity', '--test-team-channel': 'testNaturalTeamChannelPeersAssignmentsThinkingAndStop', '--test-team-channel-layout': 'testTeamChannelNormalDarkAndLargeTypeLayout', '--test-group-chat-layout': 'testGroupRosterAndRoomPhotoLayoutWithRealMenus', '--test-notifications': 'testNotificationPreferencesPrivateInboxRoutingMuteAndRelaunch' })[process.argv[2]],
         '-parallel-testing-enabled', 'NO', 'test',
       ], { stdio: 'inherit', env: { ...process.env,
         TEST_RUNNER_STRATA_TEST_INVITATION: connection.invitation,

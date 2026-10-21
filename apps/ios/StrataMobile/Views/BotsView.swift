@@ -67,6 +67,7 @@ struct BotsView: View {
         .sheet(isPresented: $creatingBot) { BotProfileEditor(store: store) }
         .toolbar {
             if store.isPaired {
+                ToolbarItem(placement: .topBarTrailing) { NotificationInboxButton(notifications: store.notifications) }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button { creatingBot = true } label: { Label("Create bot", systemImage: "sparkles") }

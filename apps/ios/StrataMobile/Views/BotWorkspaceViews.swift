@@ -208,6 +208,7 @@ struct BotTeamDetailView: View {
                         .accessibilityIdentifier("showTeamDetailsButton")
                     Button("Previous tasks", systemImage: "clock") { taskFocused = false; tasksExpanded = true; showingDetails = true }
                         .accessibilityIdentifier("showTeamPreviousTasksButton")
+                    NotificationMuteButton(notifications: store.notifications, destination: CompanionNotificationDestination(type: "team", id: teamId))
                     Button("Refresh", systemImage: "arrow.clockwise") { Task { await workspace.refreshTeams(); await workspace.refreshChannel(teamId, reset: true) } }
                 } label: { Image(systemName: "ellipsis").font(.system(size: 20, weight: .medium)).frame(width: 38, height: 38) }
                     .accessibilityLabel("Team options").accessibilityIdentifier("teamOptionsButton")
@@ -229,8 +230,8 @@ struct BotTeamDetailView: View {
         }
         .sheet(isPresented: $showingDetails) { details }
         .refreshable { await workspace.refreshTeams(); await workspace.refreshChannel(teamId, reset: true) }
-        .onAppear { visible = true }
-        .onDisappear { visible = false; navigation = UUID() }
+        .onAppear { visible = true; store.notifications.focus(CompanionNotificationDestination(type: "team", id: teamId)) }
+        .onDisappear { visible = false; navigation = UUID(); if store.notifications.focusedDestination == CompanionNotificationDestination(type: "team", id: teamId) { store.notifications.focus(nil) } }
         .task(id: visible && scenePhase == .active) {
             guard visible, scenePhase == .active else { return }
             let generation = navigation

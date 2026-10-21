@@ -28,6 +28,8 @@ struct ChatView: View {
         .background(StrataTheme.background)
         .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $showingHistory) { history }
+        .onAppear { if let id = store.currentConversation?.id { store.notifications.focus(CompanionNotificationDestination(type: "chat", id: id)) } }
+        .onDisappear { if store.notifications.focusedDestination?.type == "chat" { store.notifications.focus(nil) } }
     }
 
     private var header: some View {
@@ -38,6 +40,11 @@ struct ChatView: View {
             }
             Spacer(minLength: 12)
             if store.isPaired {
+                if let id = store.currentConversation?.id {
+                    Menu { NotificationMuteButton(notifications: store.notifications, destination: CompanionNotificationDestination(type: "chat", id: id)) } label: {
+                        Image(systemName: "ellipsis").frame(width: 38, height: 44)
+                    }.accessibilityLabel("Conversation options").accessibilityIdentifier("chatNotificationOptionsButton")
+                }
                 Button { showingHistory = true; Task { await store.refresh(silently: true) } } label: {
                     Image(systemName: "sidebar.left").font(.system(size: 18, weight: .medium)).frame(width: 44, height: 44).strataChrome()
                 }

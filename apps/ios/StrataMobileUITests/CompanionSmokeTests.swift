@@ -1195,6 +1195,90 @@ final class CompanionSmokeTests: XCTestCase {
         attachScreenshot("Live Mac — saved read-only pairing")
     }
 
+    /// Real pinned TLS bridge and durable notification policy; all model and
+    /// message producers are inert fixture state. Uses only a scratch simulator.
+    @MainActor
+    func testNotificationPreferencesPrivateInboxRoutingMuteAndRelaunch() async throws {
+        guard let raw = ProcessInfo.processInfo.environment["STRATA_TEST_INVITATION"], let invitation = URLComponents(string: raw),
+              let control = ProcessInfo.processInfo.environment["STRATA_SHARED_FIXTURE_CONTROL"], let controlURL = URL(string: control), controlURL.host == "127.0.0.1" else { throw XCTSkip("Provide an isolated notification fixture.") }
+        func selectTab(_ name: String) async throws {
+            let tab = app.tabBars.buttons[name]
+            let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                guard tab.exists, tab.isHittable else { return false }
+                let frame = tab.frame, window = self.app.windows.firstMatch.frame
+                return frame.width > 1 && frame.height > 1 && window.contains(CGPoint(x: frame.midX, y: frame.midY))
+            }, object: nil)
+            await fulfillment(of: [ready], timeout: 10)
+            guard tab.exists, tab.isHittable, tab.frame.width > 1 else { throw acceptanceError("The notification destination tab must be visible and hittable.") }
+            tab.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        }
+        func item(_ name: String) -> String { invitation.queryItems!.first { $0.name == name }!.value! }
+        openManualPairing(); sensitivePairingVisible = true
+        fillPairing(address: item("url"), code: item("code"), fingerprint: item("fingerprint")); submitPairing()
+        let paired = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.buttons["dismissPairingButton"])
+        await fulfillment(of: [paired], timeout: 20); sensitivePairingVisible = false
+        try await selectTab("Connection")
+        reveal(app.buttons["connectionNotificationsButton"]); app.buttons["connectionNotificationsButton"].tap()
+        app.buttons["notificationSettingsButton"].tap()
+        let enabled = app.switches["notificationsEnabledToggle"]
+        XCTAssertTrue(enabled.waitForExistence(timeout: 5)); XCTAssertEqual(enabled.value as? String, "0")
+        try tapSwitch(enabled)
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let allow = springboard.alerts.buttons["Allow"]
+        if allow.waitForExistence(timeout: 4) { allow.tap() }
+        let enabledSaved = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == '1'"), object: enabled)
+        await fulfillment(of: [enabledSaved], timeout: 10)
+        XCTAssertTrue(app.staticTexts["notificationDeliveryStatus"].label.contains("while Strata is open"))
+        try tapSwitch(app.switches["notificationSoundToggle"])
+        let soundSaved = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == '0'"), object: app.switches["notificationSoundToggle"])
+        await fulfillment(of: [soundSaved], timeout: 10)
+        attachScreenshot("Notifications — private opt-in settings and honest delivery status")
+        app.navigationBars.buttons["Notifications"].tap()
+        XCTAssertTrue(app.otherElements["notificationInboxEmpty"].exists || app.staticTexts["You’re all caught up"].exists)
+        _ = try await fixtureControl(controlURL, action: "notification-reply")
+        let reply = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'notification-' AND label CONTAINS 'New reply'")).firstMatch
+        XCTAssertTrue(reply.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'PRIVATE_NOTIFICATION_PREVIEW'")).firstMatch.exists)
+        XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'PRIVATE_THINKING'")).firstMatch.exists)
+        attachScreenshot("Notifications — private inbox update")
+        reply.tap()
+        XCTAssertTrue(app.staticTexts["macConversationTitle"].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.staticTexts["macConversationTitle"].label, "Mac browser research")
+        app.buttons["chatNotificationOptionsButton"].tap()
+        app.buttons["muteNotification-chat:fixture-mac-research"].tap()
+        _ = try await fixtureControl(controlURL, action: "notification-team")
+        try await selectTab("Bots")
+        try require(app.buttons["notificationInboxButton"]); app.buttons["notificationInboxButton"].tap()
+        let team = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'notification-' AND label CONTAINS 'Team update'")).firstMatch
+        XCTAssertTrue(team.waitForExistence(timeout: 10))
+        team.tap()
+        XCTAssertTrue(app.buttons["teamChannelHeaderButton"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Hello from the notification team."].waitForExistence(timeout: 10))
+        attachScreenshot("Notifications — tap opens the exact team")
+        app.buttons["teamOptionsButton"].tap(); app.buttons["muteNotification-team:team_notification"].tap()
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        try await selectTab("Connection")
+        reveal(app.buttons["connectionNotificationsButton"]); app.buttons["connectionNotificationsButton"].tap()
+        app.buttons["notificationSettingsButton"].tap()
+        XCTAssertTrue(app.buttons["unmuteNotification-chat:fixture-mac-research"].waitForExistence(timeout: 5))
+        reveal(app.buttons["unmuteNotification-team:team_notification"]); XCTAssertTrue(app.buttons["unmuteNotification-team:team_notification"].exists)
+        app.terminate(); app.launch()
+        try await selectTab("Connection")
+        reveal(app.buttons["connectionNotificationsButton"]); app.buttons["connectionNotificationsButton"].tap()
+        app.buttons["notificationSettingsButton"].tap()
+        XCTAssertTrue(app.buttons["unmuteNotification-chat:fixture-mac-research"].waitForExistence(timeout: 10))
+        reveal(app.buttons["unmuteNotification-team:team_notification"]); XCTAssertTrue(app.buttons["unmuteNotification-team:team_notification"].exists)
+        XCTAssertEqual(app.switches["notificationSoundToggle"].value as? String, "0")
+        attachScreenshot("Notifications — preferences and mutes survive relaunch")
+        try tapSwitch(app.switches["notificationsEnabledToggle"])
+        let disabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == '0'"), object: app.switches["notificationsEnabledToggle"])
+        await fulfillment(of: [disabled], timeout: 10)
+        let snapshot = try await fixtureControl(controlURL, action: "state")
+        let calls = try XCTUnwrap(snapshot["calls"] as? [[String: Any]])
+        XCTAssertFalse(calls.contains { ($0["path"] as? String)?.contains("/approval") == true }, "Notifications only navigate; they cannot approve tools.")
+        XCTAssertFalse(calls.contains { ($0["path"] as? String)?.hasSuffix("/messages") == true }, "Opening a notification never prompts a bot.")
+    }
+
     private func fixtureControl(_ baseURL: URL, action: String) async throws -> [String: Any] {
         var request = URLRequest(url: baseURL.appendingPathComponent(action))
         request.httpMethod = "POST"

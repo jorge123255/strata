@@ -5,6 +5,7 @@ struct ConnectionView: View {
     let pair: () -> Void
     @State private var showingDisconnect = false
     @State private var showingForget = false
+    @State private var showingNotifications = false
     @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
@@ -13,6 +14,10 @@ struct ConnectionView: View {
                 PageHeading(eyebrow: "Better together", title: "Connection", subtitle: "A direct link to your Strata workspace.")
                 if store.isPaired {
                     connectedCard
+                    Button { showingNotifications = true } label: {
+                        HStack { Label("Notifications", systemImage: "bell.badge"); Spacer(); Image(systemName: "chevron.right") }
+                            .foregroundStyle(StrataTheme.ink).frame(minHeight: 44).strataCard()
+                    }.accessibilityIdentifier("connectionNotificationsButton")
                 } else {
                     VStack(spacing: 14) {
                         PairingIllustration(compact: true)
@@ -59,6 +64,7 @@ struct ConnectionView: View {
             .padding(.bottom, 30)
         }
         .background(StrataTheme.background)
+        .sheet(isPresented: $showingNotifications) { NotificationsView(notifications: store.notifications) }
         .toolbar(.hidden, for: .navigationBar)
         .confirmationDialog("Disconnect this Mac?", isPresented: $showingDisconnect, titleVisibility: .visible) {
             Button("Disconnect Mac", role: .destructive) { Task { await store.disconnect() } }

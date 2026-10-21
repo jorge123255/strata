@@ -3,6 +3,7 @@ import SwiftUI
 
 @MainActor
 final class CompanionStore: ObservableObject {
+    let notifications = CompanionNotifications()
     @Published private(set) var connection: PairedConnection?
     @Published private(set) var status: CompanionStatus?
     @Published private(set) var models: [CompanionModel] = []
@@ -76,6 +77,7 @@ final class CompanionStore: ObservableObject {
             self.connection = saved
             self.client = client ?? CompanionClient(baseURL: saved.baseURL, fingerprint: saved.fingerprint, token: saved.token)
         }
+        notifications.bind(client: self.client, connection: self.connection, pairingGeneration: connectionGeneration)
     }
 
     func computerSession(botId: String, chatId: String? = nil) -> BotComputerSession {
@@ -186,6 +188,7 @@ final class CompanionStore: ObservableObject {
             clearBots()
             connection = saved
             client = CompanionClient(baseURL: address, fingerprint: pin, token: saved.token)
+            notifications.bind(client: client, connection: saved, pairingGeneration: connectionGeneration)
             status = nil; models = []; chats = []; messages = []; currentChatId = nil
             conversations = []; currentConversation = nil; pendingApprovals = []; hasChosenConversation = false
             pendingInvitation = nil
@@ -638,6 +641,18 @@ final class CompanionStore: ObservableObject {
         catch { if connectionGeneration == generation, conversationGeneration == selection { self.error = friendly(error) } }
     }
 
+    func openNotificationConversation(_ id: String, expectedPairingGeneration: UUID) async -> Bool {
+        guard expectedPairingGeneration == connectionGeneration, CompanionClient.isSafeIdentifier(id), let client,
+              !isSending, !isSubmittingMessage else { return false }
+        let selection = UUID(); conversationGeneration = selection; hasChosenConversation = true; isSelectingConversation = true
+        defer { if conversationGeneration == selection { isSelectingConversation = false } }
+        do {
+            let detail: MacConversationDetail = try await client.perform(conversationPath(id))
+            guard expectedPairingGeneration == connectionGeneration, conversationGeneration == selection, !Task.isCancelled, detail.conversation.id == id else { return false }
+            currentChatId = nil; messages = []; apply(detail); error = nil; return true
+        } catch { if expectedPairingGeneration == connectionGeneration, !Task.isCancelled { self.error = "This notification’s conversation is unavailable. Refresh your Mac connection." }; return false }
+    }
+
     func refreshCurrentConversation() async {
         guard let client, let selected = currentConversation, !isSubmittingMessage, !isSelectingConversation, decidingToolId == nil else { return }
         let generation = connectionGeneration
@@ -771,7 +786,9 @@ final class CompanionStore: ObservableObject {
         clearModelManagement()
         clearBots()
         loadingOperation = nil; isLoading = false
-        client = nil; connection = nil; status = nil; models = []; chats = []; messages = []; currentChatId = nil; error = nil
+        client = nil; connection = nil
+        notifications.bind(client: nil, connection: nil, pairingGeneration: connectionGeneration)
+        status = nil; models = []; chats = []; messages = []; currentChatId = nil; error = nil
         conversations = []; currentConversation = nil; pendingApprovals = []; hasChosenConversation = false
         isSubmittingMessage = false; isSelectingConversation = false; decidingToolId = nil
     }

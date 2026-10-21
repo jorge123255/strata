@@ -63,6 +63,20 @@ final class CompanionClient {
         return req
     }
 
+    /// Only this typed endpoint may add a query; arbitrary paths and redirects
+    /// remain forbidden by the ordinary pinned companion transport.
+    func notificationFeed(after: Int?, journalId: String?) async throws -> CompanionNotificationFeed {
+        var request = try request("/v1/notifications")
+        if let after, let journalId, after >= 0, !journalId.isEmpty {
+            var components = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!
+            components.queryItems = [URLQueryItem(name: "after", value: String(after)), URLQueryItem(name: "journalId", value: journalId)]
+            request.url = components.url
+        }
+        let (data, response) = try await session.data(for: request)
+        try Self.check(response, data: data)
+        return try JSONDecoder().decode(CompanionNotificationFeed.self, from: data)
+    }
+
     func perform<T: Decodable>(_ path: String, method: String = "GET", body: [String: String]? = nil) async throws -> T {
         let (data, response) = try await session.data(for: request(path, method: method, body: body))
         try Self.check(response, data: data)
