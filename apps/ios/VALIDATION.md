@@ -1,3 +1,15 @@
+# Team host-folder controls — October 21, 2026
+
+Build 25 was installed on the physical iPhone and the installed build was verified through `devicectl`. It uses the existing Strata bundle, development profile and Keychain identity. The app was not launched during this installation check; physical-phone UI and post-install pairing behavior are not claimed as tested.
+
+The iOS suite executed 171 tests with one existing skip and zero failures. The actual simulator UI flow saved a read-only host-folder grant and revoked it using explicit null; opening settings issued reads only. The workflow used synthetic providers and disposable paths, and the single task-owned QA simulator has been shut down.
+
+The Mac update was activated separately at `dab336f5db34aae45318338eb107feea20148527` on October 21 at 20:43 UTC. Mac preservation checks passed for 89 conversations, 432 messages, two paired devices and seven model connections, with Maya and existing CUA state retained. The Mac-only native companion navigation correction `c69e8f68` was then activated at 21:04 UTC with exact preservation of the newly saved 92 conversations/436 messages and eight connections. It requires no additional iPhone build; its whole-app native click QA was held while the owner used New bot setup. See `STRATA-NATIVE-COMPANION-VALIDATION.md`.
+
+Private test, installation and preservation receipts are under `/Users/gszulc/Projects/Strata-iphone-evidence/strata-team-concurrency-49eoj00o`. The simulator flow and installation result are separate from live SSH, live VM and physical-device UI acceptance.
+
+---
+
 # Notifications — October 20, 2026
 
 Build **16** adds an opt-in notification inbox and native alerts for bot replies, public Team messages, completed or failed work, and approvals. Per-device categories, sound and exact chat/Team mutes are available from the Bots bell and connection settings. Notification bodies remain generic: prompt text, Thinking, tool arguments, results and credentials are excluded. Selecting a notification opens its exact conversation or Team; it does not approve or execute an action. Pairing generation and the current host journal fence restored inbox items and notification navigation.
