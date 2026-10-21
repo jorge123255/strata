@@ -1190,6 +1190,71 @@ final class CompanionSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testCompactTeamAssignmentsAndReportsExpandWithoutChangingHistory() async throws {
+        let control = try pairWorkspaceFixture(), initial = try await fixtureControl(control, action: "state")
+        _ = try await fixtureControl(control, action: "appearance-dark")
+        let channel = try XCTUnwrap(initial["teamChannel"] as? [String: Any])
+        let entries = try XCTUnwrap(channel["messages"] as? [[String: Any]])
+        let assignment = try XCTUnwrap(entries.first { $0["kind"] as? String == "assignment" })
+        let report = try XCTUnwrap(entries.first { $0["kind"] as? String == "report" && ($0["content"] as? String)?.contains("REPORT END MARKER") == true })
+        let assignmentId = try XCTUnwrap(assignment["id"] as? String), reportId = try XCTUnwrap(report["id"] as? String)
+        let teamId = try XCTUnwrap(channel["teamId"] as? String)
+        try tapWorkspace(app.buttons["team-" + teamId])
+        let assignmentButton = app.buttons["teamMessageDisclosure-" + assignmentId]
+        let assignmentBody = app.staticTexts["teamMessageContent-" + assignmentId]
+        try tapWorkspace(assignmentButton, performTap: false)
+        XCTAssertFalse(assignmentBody.exists, "Assignments start compact, preserving the full prompt behind their disclosure.")
+        assignmentButton.tap(); try require(assignmentBody)
+        XCTAssertTrue(assignmentBody.label.contains("ASSIGNMENT END MARKER"))
+        try tapWorkspace(assignmentButton); XCTAssertFalse(assignmentBody.exists)
+        let reportButton = app.buttons["teamMessageDisclosure-" + reportId]
+        let reportBody = app.staticTexts["teamMessageContent-" + reportId]
+        try tapWorkspace(reportButton, performTap: false); XCTAssertFalse(reportBody.exists)
+        attachScreenshot("Team room — compact assignments and report previews")
+        reportButton.tap(); try require(reportBody)
+        XCTAssertTrue(reportBody.label.contains("REPORT END MARKER"))
+        let final = try await fixtureControl(control, action: "state")
+        let finalEntries = try XCTUnwrap((final["teamChannel"] as? [String: Any])?["messages"] as? [[String: Any]])
+        XCTAssertEqual(finalEntries.map { $0["content"] as? String }, entries.map { $0["content"] as? String })
+        let calls = try XCTUnwrap(final["calls"] as? [[String: Any]])
+        XCTAssertTrue(calls.allSatisfy { $0["method"] as? String == "GET" }, "Expanding saved room history does not send messages or start new work.")
+    }
+
+    @MainActor
+    func testContinuousTeamWorkHasNoNumericStopLimits() async throws {
+        let control = try pairWorkspaceFixture(), initial = try await fixtureControl(control, action: "state")
+        let members = try XCTUnwrap(initial["roomMembers"] as? [[String: Any]])
+        let ids = try members.map { try XCTUnwrap($0["id"] as? String) }
+        XCTAssertGreaterThanOrEqual(ids.count, 2)
+        try openCreateMenu(); try tapWorkspace(app.buttons["createBotTeamButton"])
+        let name = app.textFields["botTeamNameInput"]; try require(name); name.tap(); name.typeText("Continuous studio")
+        if app.keyboards.firstMatch.exists { app.buttons["dismissBotTeamNameKeyboardButton"].tap() }
+        for id in ids { try tapSwitch(app.switches["teamMember-" + id]) }
+        let continuous = app.descendants(matching: .any).matching(identifier: "teamContinuousWorkLabel").firstMatch
+        try tapWorkspace(continuous, performTap: false)
+        XCTAssertFalse(app.buttons["Work limits"].exists)
+        XCTAssertEqual(app.steppers.count, 0)
+        attachScreenshot("Continuous team work — until finished or stopped")
+        let save = app.buttons["confirmBotTeamButton"]; try waitEnabled(save); save.tap()
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: name)
+        XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 15), .completed)
+        let state = try await fixtureControl(control, action: "state")
+        let calls = try XCTUnwrap(state["calls"] as? [[String: Any]])
+        let posts = calls.filter { $0["path"] as? String == "/api/bots/teams" && $0["method"] as? String == "POST" }
+        XCTAssertEqual(posts.count, 1)
+        let body = try XCTUnwrap(posts.first?["body"] as? [String: Any])
+        XCTAssertEqual(Set(body["memberIds"] as? [String] ?? []), Set(ids))
+        let zeros = ["maxParallel": 0, "maxDepth": 0, "maxHops": 0, "maxTurns": 0, "maxDurationMs": 0]
+        XCTAssertEqual(body["limits"] as? [String: Int], zeros)
+        let teams = try XCTUnwrap((state["teamSettings"] as? [String: Any])?["teams"] as? [[String: Any]])
+        let created = try XCTUnwrap(teams.first { $0["name"] as? String == "Continuous studio" })
+        XCTAssertEqual(created["limits"] as? [String: Int], zeros)
+        XCTAssertEqual(created["enabled"] as? Bool, false)
+        XCTAssertTrue((state["roomTurns"] as? [Any])?.isEmpty == true)
+        XCTAssertFalse(calls.contains { ($0["path"] as? String)?.hasSuffix("/runs") == true || ($0["path"] as? String)?.hasSuffix("/messages") == true || ($0["path"] as? String)?.contains("/computer/") == true })
+    }
+
+    @MainActor
     func testLargeTeamCreationUsesAllAvailableTeammates() async throws {
         let control = try pairWorkspaceFixture(), initial = try await fixtureControl(control, action: "state")
         let members = try XCTUnwrap(initial["roomMembers"] as? [[String: Any]])

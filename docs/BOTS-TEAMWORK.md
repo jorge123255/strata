@@ -12,11 +12,15 @@ Use the profile or info control to review settings and earlier conversations. **
 
 Choose **New team**, give it a name, select at least two members and choose a coordinator. There is no fixed member limit on an updated Strata host. By default, **Each bot’s computer** keeps every member’s saved computer and working folder. You can instead choose a shared computer and folder. Each member keeps its own model, permission mode and assigned tools. Creating or saving a team starts no model work. Review and enable the team before sending its first request.
 
-Write a request and choose **Send to team**. The coordinator receives it in a shared conversation. It can ask a teammate for help or delegate a child task using Strata’s tools. These assignments run asynchronously in separate shared conversations. A completion report returns to the assigning conversation, within the team’s limits.
+Write a request and choose **Send to team**. The coordinator receives it in a shared conversation. It can ask a teammate for help or delegate a child task using Strata’s tools. These assignments run asynchronously in separate shared conversations. Results appear in the team channel as they finish. The coordinator resumes after its current assignments and their delegated work have replied, so it can bring that round together in one response.
 
 **All available teammates** can work concurrently. There is no fixed parallel-task limit within a team or fixed limit on simultaneously active teams. An occupied bot waits until its current work and cleanup finish; bots sharing a physical desktop or isolated guest still take turns controlling it. Independent work can continue on other computers. Provider capacity and machine resources still affect throughput.
 
-The default work budget is two child levels, eight message hops, 24 work turns and ten minutes per request. In a large team using the default work budget, the coordinator can invite each teammate once to greet or offer help without using up that work budget. Further conversation and task work use it normally; actual turn totals remain in history. A conversation turn can include multiple provider requests and tool calls; the time limit applies to the whole team request. Team settings expose these budgets. Older hosts retain their existing member and parallel controls until updated. A bot does not inherit another member’s private conversation history, memory or credentials. Temporary child work uses a selected existing member’s profile.
+On an updated Strata host, team work continues **until finished or stopped**. There is no automatic team turn, time, message-hop or delegation-depth cutoff. The displayed turn count records usage. Individual tools still have their own execution timeouts, and model providers can return context, access or usage limits. Older hosts keep their existing work controls until updated. A bot does not inherit another member’s private conversation history, memory or credentials. Temporary child work uses a selected existing member’s profile.
+
+A clear whole-team greeting, such as “hi everyone,” invites each available member once. Explicitly addressed members and volunteer requests also receive a useful opening round. Paused members and accounts that failed verification are not retried automatically. An existing real assignment counts as that member’s participation. Ordinary tasks go to suitable owners and collaborators.
+
+Assignments appear as compact cards. Open one to read its full instructions. Long reports have **Read full report**; their full text remains available. Public failure messages identify model settings, provider limits or missing access without exposing private provider diagnostics. The coordinator can read public reports; private chat links are for the owner.
 
 **Activity** shows queued, running, completed, failed, interrupted and stopped work. Open a task to follow its actual chat, thinking, tool cards and approvals. **Stop team** cancels queued assignments and requests cancellation of its running work and descendants. Strata shows unconfirmed cleanup instead of reporting success. Restarted work remains in history and is marked interrupted; Strata does not replay it automatically.
 
@@ -38,7 +42,7 @@ Team details shows the saved computer and working folder. For a shared CUA guest
 
 ## Choose effort
 
-Effort controls how much reasoning a supported model uses. It is separate from team task and time limits. Strata shows only effort options verified for the selected provider and model. Otherwise use **Provider default**. New conversations retain the chosen effort; an existing conversation keeps its saved settings.
+Effort controls how much reasoning a supported model uses. It is separate from the team’s usage count. Strata shows only effort options verified for the selected provider and model. Otherwise use **Provider default**. New conversations retain the chosen effort; an existing conversation keeps its saved settings.
 
 ## Let bots propose skills
 

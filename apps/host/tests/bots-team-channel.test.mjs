@@ -242,7 +242,7 @@ test('one coordinator follow-up sees every public invitation branch, then can as
   assert.equal(summaries, 1);
 });
 
-test('conversation follow-ups respect turn and hop budgets without replaying invitations or inventing a summary', async t => {
+test('legacy turn and hop settings cannot cut off the single useful conversation follow-up or cause invitation replay', async t => {
   for (const limits of [{ maxTurns: 3 }, { maxHops: 1 }]) {
     let f, summaries = 0;
     f = fixture(t, async input => {
@@ -252,7 +252,7 @@ test('conversation follow-ups respect turn and hop budgets without replaying inv
     });
     f.bots.team.update(f.team.id, { limits });
     const started = f.send('Collect strengths'); await f.done(started.run);
-    assert.equal(summaries, 0); assert.equal(f.seen.length, 3);
+    assert.equal(summaries, 1); assert.equal(f.seen.length, 4);
     assert.equal(f.bots.team.channel(f.team.id).activeRuns.length, 0);
   }
 });

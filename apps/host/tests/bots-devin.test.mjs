@@ -21,7 +21,7 @@ record({mcpFile,args,env:{HOME:process.env.HOME,XDG_CONFIG_HOME:process.env.XDG_
 if(args.includes('auth')){console.log(mode==='signedout'?'Not logged in.':'Logged in (via Devin).');process.exit(0);}
 if(args.includes('models')){if(args.slice(-4).join(' ')!=='models list --format json')process.exit(8);console.log(JSON.stringify({families:[{family_label:'Verified family',variants:[{model_uid:'fixture-model',label:'Verified Medium'},{model_uid:'fixture-high',label:'Verified High'},{model_uid:'fusion-hidden',label:'Fusion'}]}]}));process.exit(0);}
 const send=o=>process.stdout.write(JSON.stringify({jsonrpc:'2.0',...o})+'\\n'),ok=(id,result)=>send({id,result});
-let options=[{id:'mode',category:'mode',currentValue:'accept-edits',options:[{value:'accept-edits'},{value:'ask'},{value:'bypass'}]},{id:'model',category:'model',currentValue:args.includes('--model')?args.at(-1):'fixture-model',options:[{value:'fixture-model'}]},{id:'thought_level',category:'thought_level',currentValue:'medium',options:[{value:'medium'},{value:'high'}]}],promptId,bridge=null;
+let options=[{id:'mode',category:'mode',currentValue:'accept-edits',options:[{value:'accept-edits'},{value:'ask'},{value:'bypass'}]},{id:'model',category:'model',currentValue:mode==='model-fallback'?'fixture-fallback':args.includes('--model')?args.at(-1):'fixture-model',options:[{value:'fixture-model'}]},{id:'thought_level',category:'thought_level',currentValue:'medium',options:[{value:'medium'},{value:'high'}]}],promptId,bridge=null;
 const update=(type,text,sessionId='devin-fixture')=>send({method:'session/update',params:{sessionId,update:{sessionUpdate:type,content:{type:'text',text}}}});
 readline.createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line);record(m);
  if(!m.method){if(m.id===100){if(m.result?.outcome?.optionId!=='deny')process.exit(10);const notification={method:'session/update',params:{sessionId:mode==='identity-session'?'other':'devin-fixture',update:{sessionUpdate:'tool_call',toolCallId:'known-call',title:'Calling inspect from strata',kind:'edit',_meta:{'cognition.ai/toolName':'mcp__strata__inspect'}}}};if(mode!=='identity-missing')send(notification);if(mode==='identity-reused')send(notification);if(mode==='identity-mutated')send({method:'session/update',params:{sessionId:'devin-fixture',update:{sessionUpdate:'tool_call_update',toolCallId:'known-call',_meta:{'cognition.ai/toolName':'exec'}}}});send({id:101,method:'session/request_permission',params:{sessionId:'devin-fixture',toolCall:{toolCallId:'known-call',title:'mcp__strata__inspect'},options:[{kind:'allow_once',optionId:'allow'},{kind:'reject_once',optionId:'deny'}]}});}
@@ -50,17 +50,18 @@ const makeBot = (extra = {}) => ({ id: 'bot_fixture', name: 'Fixture', provider:
 let next = 0;
 function fixture(mode = 'ok') {
   const log = join(root, `protocol-${++next}.jsonl`), plans = [], outgoing = [];
+  let enteredPrompt; const promptEntered = new Promise(resolve => { enteredPrompt = resolve; });
   const runtime = createBotRuntime({ stateDir: join(root, `state-${next}`), env: { ...process.env, HOME: join(root, 'native-account'), XDG_DATA_HOME: join(root, 'native-account-data') }, commands: { claude: '/not-installed', codex: '/not-installed', grok: '/not-installed', kimi: '/not-installed', ollama: '/not-installed', devin: '/fixture/devin' }, runTimeoutMs: 5000,
     spawnProcess(command, args, options) {
       if (command !== '/fixture/devin') return spawn(command, args, options);
       plans.push({ command, args, options });
       const child = spawn(process.execPath, [program], { ...options, env: { ...options.env, FIXTURE_ARGS: JSON.stringify(args), FIXTURE_MODE: mode, FIXTURE_LOG: log } });
       const write = child.stdin?.write.bind(child.stdin);
-      if (write) child.stdin.write = (chunk, ...more) => { try { outgoing.push(JSON.parse(String(chunk))); } catch {} return write(chunk, ...more); };
+      if (write) child.stdin.write = (chunk, ...more) => { try { const message = JSON.parse(String(chunk)); outgoing.push(message); if (message.method === 'session/prompt') enteredPrompt(); } catch {} return write(chunk, ...more); };
       return child;
     } });
   const frames = [], input = { bot: makeBot(), sessionId: `s_fixture_${next}`, message: 'Fixture only', tools: [], onFrame: frame => frames.push(frame) };
-  return { runtime, input, plans, outgoing, frames, log, messages: async () => (await readFile(log, 'utf8')).trim().split('\n').map(line => JSON.parse(line)) };
+  return { runtime, input, plans, outgoing, frames, log, promptEntered, messages: async () => (await readFile(log, 'utf8')).trim().split('\n').map(line => JSON.parse(line)) };
 }
 
 test('Devin public auth parser does not equate exit zero with signed in or expose credentials', () => {
@@ -121,6 +122,45 @@ test('Devin real stdio framing preserves thinking, exact native checkpoint and l
   const resumed = fixture();
   try { const result = await resumed.runtime.run({ ...resumed.input, checkpoint: { provider: 'devin', nativeSessionId: 'devin-fixture', model: 'fixture-model', workspace: root } }); assert.equal(result.text, 'Devin answer'); assert.equal(resumed.frames.some(f => f.text?.includes('OLD')), false); }
   finally { await resumed.runtime.close(); }
+});
+test('continuous Devin prompt survives 31 virtual minutes and Stop still waits for owned CLI cleanup', { timeout: 10000 }, async t => {
+  const f = fixture('hang'), controller = new AbortController();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const observed = f.runtime.run({ ...f.input, bot: { ...f.input.bot, continuousTeam: true }, signal: controller.signal }).then(value => ({ value }), error => ({ error }));
+  try {
+    await Promise.race([f.promptEntered, observed.then(() => { throw new Error('The fixture ended before its prompt.'); })]);
+    t.mock.timers.tick(31 * 60_000);
+    let settled = false; observed.then(() => { settled = true; }); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(settled, false); assert.equal(f.frames.some(frame => frame.type === 'error' || frame.type === 'done'), false);
+    // Real process cleanup retains its own bounded verification timers.
+    t.mock.timers.reset(); controller.abort(); assert.equal((await observed).error.name, 'AbortError');
+    assert.equal(f.frames.some(frame => frame.type === 'done'), false);
+  } finally { t.mock.timers.reset(); controller.abort(); await observed; await f.runtime.close(); }
+});
+test('Devin model fallback fails before prompting with actionable guidance and does not change the requested model', async () => {
+  const f = fixture('model-fallback');
+  try {
+    await assert.rejects(f.runtime.run({ ...f.input, bot: { ...f.input.bot, continuousTeam: true } }), /Devin selected a different model\. Refresh the native model catalog/);
+    const messages = await f.messages(); assert.equal(messages.some(message => message.method === 'session/prompt'), false);
+    assert.equal(messages.some(message => message.method === 'session/set_config_option' && message.params.configId === 'model'), false);
+    assert.equal(f.plans[0].args.at(-1), 'fixture-model'); assert.equal(f.input.bot.model, 'fixture-model');
+  } finally { await f.runtime.close(); }
+});
+for (const [mode, label] of [
+  ['mcp-escape', 'private MCP configuration path'], ['native-enabled', 'native tool disable list'],
+  ['inherited-rules', 'inherited rules empty'], ['inherited-hooks', 'inherited hooks empty'],
+  ['old-socket', 'fresh MCP bridge environment'], ['extra-tool', 'assigned MCP tool count'],
+  ['resource', 'MCP resources empty'], ['plugin', 'plugins empty'],
+  ['pending-plugin', 'plugin discovery complete'], ['owner-skill', 'built-in skills only'],
+]) test(`Devin closed isolation diagnostic is visible before any prompt or action: ${mode}`, async () => {
+  const f = fixture(mode); let actions = 0;
+  try {
+    await assert.rejects(f.runtime.run({ ...f.input, tools: [{ name: 'inspect', description: 'Inert fixture', inputSchema: { type: 'object' } }], executeTool: async () => { actions++; } }), error => {
+      assert.ok(error.message.includes(`(${label})`)); assert.match(error.message, /No model prompt was sent/); assert.equal(error.message.includes('/stale/socket'), false); assert.equal(error.message.includes('/owner/'), false); return true;
+    });
+    assert.equal(actions, 0); assert.equal((await f.messages()).some(message => message.method === 'session/prompt'), false);
+    assert.equal(f.frames.some(frame => frame.type === 'done'), false);
+  } finally { await f.runtime.close(); }
 });
 test('continuing the same Strata conversation reuses its private Devin state while replacing the previous MCP socket', async () => {
   const f = fixture();
@@ -199,11 +239,12 @@ test('Devin provider errors and missing or unsuccessful completion markers never
     finally { await f.runtime.close(); }
   }
 });
-test('Stop sends native cancel, revokes its process group, and never emits a successful completion', async () => {
+test('Stop sends native cancel, revokes its process group, and never emits a successful completion', { timeout: 10000 }, async () => {
   const f = fixture('hang'), controller = new AbortController();
-  const run = f.runtime.run({ ...f.input, signal: controller.signal });
-  for (let n = 0; n < 200 && !f.outgoing.some(m => m.method === 'session/prompt'); n++) await new Promise(resolve => setTimeout(resolve, 5));
-  assert.ok(f.outgoing.some(m => m.method === 'session/prompt')); controller.abort();
-  try { await assert.rejects(run, { name: 'AbortError' }); assert.equal(f.outgoing.some(m => m.method === 'session/cancel' && m.params.sessionId === 'devin-fixture'), true); assert.equal(f.frames.some(f => f.type === 'done'), false); }
-  finally { await f.runtime.close(); }
+  const observed = f.runtime.run({ ...f.input, signal: controller.signal }).then(value => ({ value }), error => ({ error }));
+  try {
+    await Promise.race([f.promptEntered, observed.then(() => { throw new Error('The fixture ended before its prompt.'); })]);
+    controller.abort(); assert.equal((await observed).error.name, 'AbortError');
+    assert.equal(f.outgoing.some(m => m.method === 'session/cancel' && m.params.sessionId === 'devin-fixture'), true); assert.equal(f.frames.some(f => f.type === 'done'), false);
+  } finally { controller.abort(); await observed; await f.runtime.close(); }
 });

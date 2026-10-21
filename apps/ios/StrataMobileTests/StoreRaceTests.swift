@@ -2707,6 +2707,96 @@ extension BotWorkspaceTests {
 }
 
 extension BotWorkspaceTests {
+    func testCompactTeamCardsKeepCompleteContentAndOnlyCollapseAssignmentsOrLongReports() throws {
+        var value = channelEntry(1); value["kind"] = "assignment"; value["content"] = "First line\nPrivate test fixture tail"
+        let assignment = try decode(value, as: BotTeamChannelMessage.self)
+        XCTAssertTrue(assignment.usesCompactCard); XCTAssertEqual(assignment.compactPreview, "First line…")
+        XCTAssertEqual(assignment.content, value["content"] as? String)
+        XCTAssertTrue(assignment.content.contains("Private test fixture tail"))
+        value["kind"] = "report"; value["content"] = String(repeating: "a", count: 1_800)
+        XCTAssertFalse(try decode(value, as: BotTeamChannelMessage.self).usesCompactCard)
+        value["content"] = String(repeating: "🧑🏽‍💻", count: 1_801)
+        let report = try decode(value, as: BotTeamChannelMessage.self)
+        XCTAssertTrue(report.usesCompactCard); XCTAssertEqual(report.compactPreview.count, 221)
+        XCTAssertEqual(report.content.count, 1_801)
+        value["kind"] = "message"
+        XCTAssertFalse(try decode(value, as: BotTeamChannelMessage.self).usesCompactCard)
+    }
+
+    func testContinuousTeamCapabilityIsSeparateAndCanonicalizesEveryLimit() throws {
+        let old = try decode(["teams": [], "runs": [], "teamUnrestrictedSupported": true], as: BotTeamsSnapshot.self)
+        XCTAssertNil(old.teamContinuousSupported)
+        let modern = try decode(["teams": [], "runs": [], "teamContinuousSupported": true], as: BotTeamsSnapshot.self)
+        XCTAssertTrue(modern.teamContinuousSupported == true)
+        for bad in ([1, "true", ["enabled": true]] as [Any]) {
+            XCTAssertThrowsError(try decode(["teams": [], "runs": [], "teamContinuousSupported": bad], as: BotTeamsSnapshot.self))
+        }
+        XCTAssertEqual(BotTeamLimits().forHost(unrestrictedTeams: true, continuousTeams: true), .continuous)
+        let intermediate = BotTeamLimits().forHost(unrestrictedTeams: true)
+        XCTAssertEqual(intermediate.maxParallel, 0); XCTAssertEqual(intermediate.maxTurns, 24); XCTAssertEqual(intermediate.maxDurationMs, 600_000)
+        XCTAssertEqual(BotTeamLimits.continuous.forHost(unrestrictedTeams: false), BotTeamLimits())
+        var draft = sharedDraft(); draft.limits = .continuous
+        XCTAssertTrue(BotWorkspaceStore.validTeamDraft(draft, continuousTeams: true))
+        XCTAssertFalse(BotWorkspaceStore.validTeamDraft(draft, unrestrictedTeams: true))
+        draft.limits.maxTurns = 24; XCTAssertFalse(BotWorkspaceStore.validTeamDraft(draft, continuousTeams: true))
+        draft.limits = .continuous; draft.memberIds.append(draft.memberIds[0])
+        XCTAssertFalse(BotWorkspaceStore.validTeamDraft(draft, continuousTeams: true))
+    }
+
+    func testContinuousTeamCreateAndEditSendAllZerosWhilePreservingInstructionsExecutionAndRevision() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }; var revision = 1
+        fixture.respond { request in
+            var row = self.managedTeam(revision: revision); row["limits"] = ["maxParallel": 0, "maxDepth": 0, "maxHops": 0, "maxTurns": 0, "maxDurationMs": 0]
+            if request.httpMethod == "POST" || request.httpMethod == "PATCH" { revision += 1; row["revision"] = revision; return ["team": row] }
+            var value = self.settingsSnapshot(); value["teams"] = [row]; value["teamContinuousSupported"] = true; value["teamInstructionsSupported"] = true; return value
+        }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(); await workspace.refreshTeams()
+        XCTAssertTrue(workspace.continuousTeams); XCTAssertFalse(workspace.unrestrictedTeams)
+        var draft = sharedDraft(); draft.briefing = BotTeamBriefing(instructions: "Keep progress public.", members: [])
+        let created = await workspace.createTeam(draft); XCTAssertTrue(created)
+        let existing = try XCTUnwrap(workspace.teams?.teams.first)
+        let edited = await workspace.updateTeam(existing, draft: draft); XCTAssertTrue(edited)
+        let mutations = fixture.requests.filter { $0.method == "POST" || $0.method == "PATCH" }
+        XCTAssertEqual(mutations.count, 2)
+        let zeros = ["maxParallel": 0, "maxDepth": 0, "maxHops": 0, "maxTurns": 0, "maxDurationMs": 0]
+        for request in mutations {
+            XCTAssertEqual(request.jsonBody?["limits"] as? [String: Int], zeros)
+            XCTAssertEqual(request.jsonBody?["memberIds"] as? [String], draft.memberIds)
+            XCTAssertEqual((request.jsonBody?["execution"] as? [String: String])?["workspace"], draft.execution?.workspace)
+            XCTAssertEqual((request.jsonBody?["briefing"] as? [String: Any])?["instructions"] as? String, "Keep progress public.")
+        }
+        XCTAssertEqual(mutations.last?.jsonBody?["expectedRevision"] as? Int, existing.revision)
+        XCTAssertFalse(fixture.requests.contains { $0.path.contains("/runs") || $0.path.contains("/computer") || $0.path.contains("/models") })
+    }
+
+    func testUnrestrictedAloneKeepsNumericWorkLimitsAndDoesNotSendContinuousZeros() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { request in
+            if request.httpMethod == "POST" { return ["team": self.managedTeam()] }
+            return ["teams": [], "runs": [], "teamUnrestrictedSupported": true]
+        }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(); await workspace.refreshTeams()
+        XCTAssertFalse(workspace.continuousTeams)
+        let rejected = await workspace.createTeam(BotTeamDraft(name: "Unsupported", memberIds: ["bot_coder", "bot_reviewer"], coordinatorId: "bot_coder", limits: .continuous))
+        XCTAssertFalse(rejected); XCTAssertFalse(fixture.requests.contains { $0.method == "POST" })
+        let saved = await workspace.createTeam(BotTeamDraft(name: "Intermediate", memberIds: ["bot_coder", "bot_reviewer"], coordinatorId: "bot_coder"))
+        XCTAssertTrue(saved)
+        let numeric = try XCTUnwrap(fixture.requests.first { $0.method == "POST" }?.jsonBody?["limits"] as? [String: Int])
+        XCTAssertEqual(numeric["maxParallel"], 0); XCTAssertEqual(numeric["maxTurns"], 24); XCTAssertEqual(numeric["maxDurationMs"], 600_000)
+    }
+
+    func testContinuousRunKeepsActualUsageAndAvoidsZeroBudgetLabels() throws {
+        var value = runRecord(); value["consumedTurns"] = 137; value["rosterFanoutTurns"] = 25
+        let run = try decode(value, as: BotTeamRun.self)
+        XCTAssertEqual(run.consumedTurns, 137); XCTAssertEqual(run.workTurns, 112)
+        XCTAssertEqual(run.turnLabel(unrestrictedTeams: true, continuousTeams: true), "137 turns used")
+        XCTAssertEqual(run.turnLabel(unrestrictedTeams: true), "112 work turns")
+        value["consumedTurns"] = 0; value.removeValue(forKey: "rosterFanoutTurns")
+        XCTAssertEqual(try decode(value, as: BotTeamRun.self).turnLabel(unrestrictedTeams: true, continuousTeams: true), "Until finished or stopped")
+    }
+}
+
+extension BotWorkspaceTests {
     func testLargeRosterOpeningRepliesAreSeparateFromWorkTurnCount() throws {
         var value = runRecord(); value["consumedTurns"] = 51; value["rosterFanoutTurns"] = 27
         let run = try decode(value, as: BotTeamRun.self)

@@ -47,7 +47,7 @@ struct BotTeamsSection: View {
                 .accessibilityIdentifier("createBotTeamButton")
             BotWorkspaceMessage(workspace: workspace, key: "teams")
         } header: { Text("Teams") } footer: {
-            Text("A coordinator can delegate to these bots within your limits. Creating a team starts no work.")
+            Text(workspace.continuousTeams ? "The coordinator keeps the team working until finished or stopped. Creating a team starts no work." : "A coordinator can delegate to these bots within your limits. Creating a team starts no work.")
         }
     }
 }
@@ -75,7 +75,7 @@ struct BotTeamEditor: View {
         _name = State(initialValue: team?.name ?? "")
         _selected = State(initialValue: Set(team?.memberIds ?? []))
         _coordinator = State(initialValue: team?.coordinatorId ?? "")
-        _limits = State(initialValue: (team?.limits ?? BotTeamLimits()).forHost(unrestrictedTeams: workspace.unrestrictedTeams))
+        _limits = State(initialValue: (team?.limits ?? BotTeamLimits()).forHost(unrestrictedTeams: workspace.unrestrictedTeams, continuousTeams: workspace.continuousTeams))
         _executionMode = State(initialValue: team?.execution?.mode ?? "individual")
         _computerId = State(initialValue: team?.execution?.computerId ?? "")
         _folder = State(initialValue: team?.execution?.workspace ?? "")
@@ -84,18 +84,19 @@ struct BotTeamEditor: View {
     private var supportsSettings: Bool { workspace.teams?.teamSettingsSupported == true }
     private var supportsInstructions: Bool { workspace.teams?.teamInstructionsSupported == true }
     private var unrestrictedTeams: Bool { workspace.unrestrictedTeams }
+    private var continuousTeams: Bool { workspace.continuousTeams }
     private var current: BotTeam? { baseline.flatMap { old in workspace.teams?.teams.first { $0.id == old.id } } }
     private var hasActiveWork: Bool { baseline.map { old in workspace.teams?.runs.contains { $0.teamId == old.id && $0.isActive } == true } ?? false }
     private var changed: Bool { baseline != nil && (current == nil || current?.revision != baseline?.revision) }
     private var computers: [BotTeamComputer] { (workspace.teams?.teamComputers ?? []).filter { $0.memberId == nil || selected.contains($0.memberId!) } }
     private var chosenComputer: BotTeamComputer? { computers.first { $0.id == computerId } }
     private var draft: BotTeamDraft {
-        BotTeamDraft(name: name.trimmingCharacters(in: .whitespacesAndNewlines), memberIds: selected.sorted(), coordinatorId: coordinator, limits: limits.forHost(unrestrictedTeams: unrestrictedTeams),
+        BotTeamDraft(name: name.trimmingCharacters(in: .whitespacesAndNewlines), memberIds: selected.sorted(), coordinatorId: coordinator, limits: limits.forHost(unrestrictedTeams: unrestrictedTeams, continuousTeams: continuousTeams),
                      execution: supportsSettings ? (executionMode == "shared" ? BotTeamExecution(mode: "shared", computerId: computerId, workspace: folder.trimmingCharacters(in: .whitespacesAndNewlines)) : .individual) : nil,
                      briefing: supportsInstructions ? BotTeamBriefing(instructions: briefing.instructions.trimmingCharacters(in: .whitespacesAndNewlines), members: briefing.members.filter { selected.contains($0.botId) }.map { BotTeamMemberBriefing(botId: $0.botId, role: $0.role.trimmingCharacters(in: .whitespacesAndNewlines), instructions: $0.instructions.trimmingCharacters(in: .whitespacesAndNewlines)) }.filter { !$0.role.isEmpty || !$0.instructions.isEmpty }.sorted { $0.botId < $1.botId }) : nil)
     }
     private var canSave: Bool {
-        BotWorkspaceStore.validTeamDraft(draft, unrestrictedTeams: unrestrictedTeams, availableMemberIds: Set(store.botCatalog?.bots.map(\.id) ?? [])) && workspace.mutation == nil && !hasActiveWork && !changed &&
+        BotWorkspaceStore.validTeamDraft(draft, unrestrictedTeams: unrestrictedTeams, continuousTeams: continuousTeams, availableMemberIds: Set(store.botCatalog?.bots.map(\.id) ?? [])) && workspace.mutation == nil && !hasActiveWork && !changed &&
         (baseline == nil || (supportsSettings && baseline?.revision != nil)) &&
         (executionMode != "shared" || (chosenComputer?.available == true && chosenComputer?.allowsFolder(folder.trimmingCharacters(in: .whitespacesAndNewlines)) == true))
     }
@@ -190,6 +191,10 @@ struct BotTeamEditor: View {
                     } header: { Text("Computer & working folder") }
                 }
                 Section {
+                    if continuousTeams {
+                        LabeledContent("Team work", value: "Until finished or stopped").accessibilityIdentifier("teamContinuousWorkLabel")
+                        Text("The coordinator can keep work moving until it is complete or you stop it.").font(.caption).foregroundStyle(.secondary)
+                    } else {
                     DisclosureGroup("Work limits") {
                         if unrestrictedTeams {
                             LabeledContent("Parallel work", value: "All available teammates").accessibilityIdentifier("teamParallelAvailableLabel")
@@ -203,6 +208,7 @@ struct BotTeamEditor: View {
                             Text("Large teams can answer the opening invitation once each; work and follow-up turns use this budget.").font(.caption).foregroundStyle(.secondary)
                         }
                         Stepper("Time limit: \(limits.maxDurationMs / 60_000) minutes", value: Binding(get: { limits.maxDurationMs / 60_000 }, set: { limits.maxDurationMs = $0 * 60_000 }), in: 1...60)
+                    }
                     }
                     if baseline == nil { Text("Review and enable the saved team before sending its first task.").font(.caption).foregroundStyle(.secondary) }
                 }
@@ -249,7 +255,7 @@ struct BotTeamEditor: View {
         }.disabled(anchor || !unrestrictedTeams && selected.count >= 12 && !selected.contains(id)).accessibilityIdentifier("teamMember-\(id)")
     }
     private func reload(_ team: BotTeam) {
-        baseline = team; name = team.name; selected = Set(team.memberIds); coordinator = team.coordinatorId; limits = team.limits.forHost(unrestrictedTeams: unrestrictedTeams)
+        baseline = team; name = team.name; selected = Set(team.memberIds); coordinator = team.coordinatorId; limits = team.limits.forHost(unrestrictedTeams: unrestrictedTeams, continuousTeams: continuousTeams)
         executionMode = team.execution?.mode ?? "individual"; computerId = team.execution?.computerId ?? ""; folder = team.execution?.workspace ?? ""
         briefing = team.briefing ?? BotTeamBriefing()
     }
@@ -294,6 +300,7 @@ struct BotTeamDetailView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @FocusState private var taskFocused: Bool
+    @State private var expandedMessages: Set<String> = []
     private var team: BotTeam? { workspace.teams?.teams.first { $0.id == teamId } }
     private var channel: BotTeamChannel? { workspace.channels[teamId] }
     private var channelKey: String { BotWorkspaceStore.channelKey(teamId) }
@@ -386,7 +393,7 @@ struct BotTeamDetailView: View {
                 } else if activeRuns.count > 1 {
                     Menu {
                         ForEach(activeRuns) { run in
-                            Button("Stop \(run.stateLabel.lowercased()) task · \(run.turnLabel(unrestrictedTeams: workspace.unrestrictedTeams))", role: .destructive) { confirmingStop = run }
+                            Button("Stop \(run.stateLabel.lowercased()) task · \(run.turnLabel(unrestrictedTeams: workspace.unrestrictedTeams, continuousTeams: workspace.continuousTeams))", role: .destructive) { confirmingStop = run }
                                 .accessibilityIdentifier("stopBotTeamRun-\(run.id)")
                         }
                     } label: { Label("Team work", systemImage: "stop.circle") }.disabled(workspace.mutation != nil)
@@ -501,7 +508,11 @@ struct BotTeamDetailView: View {
                     .accessibilityIdentifier("openTeamComputerButton")
             }
         } else { LabeledContent("Execution", value: "Each bot’s computer") }
-        LabeledContent("Limits", value: "\(team.limits.parallelLabel(unrestrictedTeams: workspace.unrestrictedTeams)) · \(team.limits.maxTurns) \(workspace.unrestrictedTeams ? "work turns" : "turns") · \(team.limits.maxDurationMs / 60_000)m")
+        if workspace.continuousTeams {
+            LabeledContent("Team work", value: "Until finished or stopped").accessibilityIdentifier("teamContinuousDetailLabel")
+        } else {
+            LabeledContent("Limits", value: "\(team.limits.parallelLabel(unrestrictedTeams: workspace.unrestrictedTeams)) · \(team.limits.maxTurns) \(workspace.unrestrictedTeams ? "work turns" : "turns") · \(team.limits.maxDurationMs / 60_000)m")
+        }
         Text("Everyone can join the conversation. The coordinator assigns work and brings results together. Each bot keeps its own model and permissions.").font(.caption).foregroundStyle(.secondary)
         Button(team.enabled ? "Disable team" : "Enable reviewed team") { Task { await workspace.setTeamEnabled(team, enabled: !team.enabled) } }
             .disabled(workspace.mutation != nil || !activeRuns.isEmpty)
@@ -522,14 +533,14 @@ struct BotTeamDetailView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     if let replyId = entry.replyToId, !isImplicitRootReply(entry) {
                         let original = entries.first { $0.id == replyId }
-                        Text("Replying to \(original?.author.name ?? "an earlier message")\(original.map { ": " + $0.content } ?? "")")
-                            .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        Text("Replying to \(original?.author.name ?? "an earlier message")")
+                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            .accessibilityIdentifier("teamMessageReply-\(entry.id)")
                     }
-                    if let recipients = entry.recipientIds, !recipients.isEmpty, Set(recipients) != Set(team.memberIds) {
+                    if entry.kind != "assignment", let recipients = entry.recipientIds, !recipients.isEmpty, Set(recipients) != Set(team.memberIds) {
                         Text("To " + recipients.map { id in store.botCatalog?.bots.first { $0.id == id }?.name ?? "Teammate" }.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary)
                     }
-                    Text(.init(entry.content)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                        .accessibilityIdentifier("teamMessageContent-\(entry.id)")
+                    messageContent(entry)
                     if entry.kind != "message" { Text(entry.kind.replacingOccurrences(of: "_", with: " ").capitalized).font(.caption2.weight(.medium)).foregroundStyle(.secondary) }
                 }.padding(.horizontal, 15).padding(.vertical, 12)
                     .background(human ? StrataTheme.grouped : StrataTheme.surface, in: RoundedRectangle(cornerRadius: 23))
@@ -541,6 +552,37 @@ struct BotTeamDetailView: View {
             }
             if !human { Spacer(minLength: dynamicTypeSize.isAccessibilitySize ? 4 : 22) }
         }.accessibilityElement(children: .contain).accessibilityIdentifier("teamMessage-\(entry.id)")
+    }
+    @ViewBuilder private func messageContent(_ entry: BotTeamChannelMessage) -> some View {
+        if entry.usesCompactCard {
+            VStack(alignment: .leading, spacing: 10) {
+                Button {
+                    if !expandedMessages.insert(entry.id).inserted { expandedMessages.remove(entry.id) }
+                } label: {
+                    HStack(alignment: .top, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(entry.kind == "assignment" ? assignmentTitle(entry) : "Read full report").font(.subheadline.weight(.semibold)).lineLimit(2)
+                            Text(entry.compactPreview).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
+                        }
+                        Spacer(minLength: 0)
+                        Image(systemName: expandedMessages.contains(entry.id) ? "chevron.up" : "chevron.down").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    }.contentShape(Rectangle())
+                }.buttonStyle(.plain).accessibilityIdentifier("teamMessageDisclosure-\(entry.id)")
+                    .accessibilityValue(expandedMessages.contains(entry.id) ? "Expanded" : "Collapsed")
+                    .accessibilityHint(expandedMessages.contains(entry.id) ? "Hide full text" : "Show full text")
+                if expandedMessages.contains(entry.id) {
+                    Text(.init(entry.content)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("teamMessageContent-\(entry.id)")
+                }
+            }
+        } else {
+            Text(.init(entry.content)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("teamMessageContent-\(entry.id)")
+        }
+    }
+    private func assignmentTitle(_ entry: BotTeamChannelMessage) -> String {
+        guard let recipients = entry.recipientIds, !recipients.isEmpty else { return "View assignment" }
+        return "Assigned to " + recipients.map { id in store.botCatalog?.bots.first { $0.id == id }?.name ?? "Teammate" }.joined(separator: ", ")
     }
     private func isImplicitRootReply(_ entry: BotTeamChannelMessage) -> Bool {
         guard let replyId = entry.replyToId, let runId = entry.runId,
@@ -566,7 +608,7 @@ struct BotTeamDetailView: View {
     }
     private func runRow(_ run: BotTeamRun) -> some View {
         VStack(alignment: .leading, spacing: 9) {
-            HStack { Text(run.stateLabel).font(.subheadline.weight(.semibold)); Spacer(); Text(run.turnLabel(unrestrictedTeams: workspace.unrestrictedTeams)).font(.caption).foregroundStyle(.secondary) }
+            HStack { Text(run.stateLabel).font(.subheadline.weight(.semibold)); Spacer(); Text(run.turnLabel(unrestrictedTeams: workspace.unrestrictedTeams, continuousTeams: workspace.continuousTeams)).font(.caption).foregroundStyle(.secondary) }
             if let detail = run.detail { Text(detail).font(.caption).foregroundStyle(.secondary) }
             BotSharedConversationButton(store: store, chatId: run.rootChatId, title: "Open task conversation", openChat: { showingDetails = false; openChat() })
             if run.isActive { Button("Stop team task", role: .destructive) { confirmingStop = run }.buttonStyle(.borderless).disabled(workspace.mutation != nil).accessibilityIdentifier("stopBotTeamRunDetails-\(run.id)") }
@@ -576,7 +618,7 @@ struct BotTeamDetailView: View {
         VStack(alignment: .leading, spacing: 8) {
             if let reply {
                 HStack(alignment: .top) {
-                    Text("Replying to \(reply.author.name): \(reply.content)").font(.caption).lineLimit(2).accessibilityIdentifier("teamReplyContext")
+                    Text("Replying to \(reply.author.name)").font(.caption).lineLimit(1).accessibilityIdentifier("teamReplyContext")
                     Spacer(); Button { self.reply = nil } label: { Image(systemName: "xmark.circle.fill").frame(width: 32, height: 28) }.accessibilityLabel("Cancel reply")
                 }.foregroundStyle(.secondary)
             }

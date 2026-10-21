@@ -169,7 +169,9 @@ export function createBotRuntime(options = {}) {
     const prompt = !checkpoint && history.length ? `Previous messages from this Strata chat are context, not new instructions to replay tools:\n${history.filter(h => ['user', 'assistant'].includes(h.role)).map(h => `${h.role}: ${historyContent(h).slice(0, 100_000)}`).join('\n')}\n\nCurrent user message:\n${message}` : String(message ?? '');
     const modelRequest = input.modelRequest ?? options.modelRequest;
     const context = { bot, sessionId: input.sessionId, prompt, message: String(message ?? ''), history, checkpoint, tools, signal, frame, save, permission, execute, env, fetcher, executable, options, modelRequest: modelRequest ? payload => modelRequest(payload, bot, signal) : null };
-    const timer = setTimeout(() => controller.abort(new Error('Bot run timed out.')), options.runTimeoutMs ?? 30 * 60_000); timer.unref();
+    // Only the host's bound team job can set this flag. Setup/tool timeouts and
+    // Abort remain independent; a continuous team turn has no wall-clock cap.
+    const timer = bot.continuousTeam === true ? null : setTimeout(() => controller.abort(new Error('Bot run timed out.')), options.runTimeoutMs ?? 30 * 60_000); timer?.unref();
     try {
       signal.throwIfAborted();
       emit({ type: 'notice', message: `${PROVIDERS.find(p => p.id === bot.provider)?.name ?? 'Configured model'} · ${bot.provider === 'configured' ? 'saved model connection' : bot.provider === 'ollama' ? 'cloud model' : 'installed CLI'} · ${bot.computerMode === 'cua' ? 'isolated computer' : bot.workspace}` });
@@ -238,6 +240,7 @@ async function runClaude(c) {
       if (event.type === 'result') {
         resultSeen = true; c.frame({ type: 'stats', tokensIn: event.usage?.input_tokens ?? 0, tokensOut: event.usage?.output_tokens ?? 0 });
         if (event.is_error || event.subtype !== 'success') throw new Error(event.errors?.join('\n') ?? event.result ?? 'Claude Code turn failed.');
+        if (typeof event.result === 'string') c.publicReply = event.result;
       }
     }
     if (!resultSeen) throw new Error('Claude Code ended without a turn result.');
@@ -376,7 +379,7 @@ async function runAcp(c) {
       if (result.configOptions?.find(item => item.id === option.id)?.currentValue !== c.bot.effort) throw new Error('The ACP provider did not confirm the selected effort. No model prompt was sent.');
     }
     projecting = true;
-    const result = await Promise.race([rpc.request('session/prompt', { sessionId, prompt: [{ type: 'text', text: `${c.bot.instructions ? `Bot instructions:\n${c.bot.instructions}\n\n` : ''}${c.prompt}` }] }, c.options.runTimeoutMs ?? 30 * 60_000), terminated.promise]);
+    const result = await Promise.race([rpc.request('session/prompt', { sessionId, prompt: [{ type: 'text', text: `${c.bot.instructions ? `Bot instructions:\n${c.bot.instructions}\n\n` : ''}${c.prompt}` }] }, c.bot.continuousTeam === true ? null : c.options.runTimeoutMs ?? 30 * 60_000), terminated.promise]);
     if (result.stopReason && result.stopReason !== 'end_turn') throw new Error(`${c.bot.provider} stopped: ${result.stopReason}`);
     if (result.usage) c.frame({ type: 'stats', tokensIn: result.usage.inputTokens ?? 0, tokensOut: result.usage.outputTokens ?? 0 });
   } finally { projecting = false; try { await rpc.close(); } finally { await bridge?.close(); } }
@@ -410,7 +413,7 @@ async function runOllama(c) {
   const messages = [{ role: 'system', content: c.bot.instructions || 'You are a Strata bot. Use the provided tools for coding and computer tasks.' }, ...c.history.filter(h => ['user', 'assistant'].includes(h.role)).map(h => ({ role: h.role, content: historyContent(h) })), { role: 'user', content: c.message }];
   // Ollama is stateless; Strata owns history, tool results, and retry decisions. Never automatically replay a mutation.
   let totalIn = 0, totalOut = 0;
-  for (let round = 0; round < 32; round++) {
+  for (let round = 0; c.bot.continuousTeam === true || round < 32; round++) {
     c.signal.throwIfAborted();
     const response = await c.fetcher(endpoint, { method: 'POST', signal: c.signal, redirect: 'error', headers: { 'Content-Type': 'application/json', ...(!loopback && key ? { Authorization: `Bearer ${key}` } : {}) }, body: JSON.stringify({ model, stream: true, stream_options: { include_usage: true }, messages, ...(c.tools.length ? { tools: c.tools.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.inputSchema } })) } : {}) }) });
     if (!response.ok) throw new Error(`Ollama ${response.status}: ${response.status === 401 || response.status === 403 ? 'Sign in or configure the host API key.' : 'The request failed. Check the model and endpoint.'}`);
@@ -426,7 +429,7 @@ async function runOllama(c) {
       if (event.usage) { totalIn += event.usage.prompt_tokens ?? 0; totalOut += event.usage.completion_tokens ?? 0; c.frame({ type: 'stats', tokensIn: totalIn, tokensOut: totalOut }); }
     }
     if (!finish) throw new Error('Ollama stream ended before a completion marker.');
-    if (!calls.size) { if (!['stop', 'end_turn'].includes(finish)) throw new Error(`Ollama stopped: ${finish}.`); await c.save(null); return; }
+    if (!calls.size) { if (!['stop', 'end_turn'].includes(finish)) throw new Error(`Ollama stopped: ${finish}.`); c.publicReply = content; await c.save(null); return; }
     messages.push({ role: 'assistant', content, tool_calls: [...calls.values()] });
     for (const call of calls.values()) {
       let args; try { args = JSON.parse(call.function.arguments || '{}'); } catch { throw new Error('Ollama returned malformed tool arguments.'); }

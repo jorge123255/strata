@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { ApiError, api } from '../lib/client';
 import { postWithFolderFallback } from '../lib/folder-pick';
-import { botTeamDraftError, botTeamRunActive, DEFAULT_BOT_TEAM_LIMITS, type Bot, type BotTeam, type BotTeamBriefing, type BotTeamComputer, type BotTeamExecution, type BotTeamLimits, type BotTeamMemberBriefing, type BotTeamsSnapshot } from '../lib/bots';
+import { botTeamDraftError, botTeamRunActive, CONTINUOUS_BOT_TEAM_LIMITS, DEFAULT_BOT_TEAM_LIMITS, type Bot, type BotTeam, type BotTeamBriefing, type BotTeamComputer, type BotTeamExecution, type BotTeamLimits, type BotTeamMemberBriefing, type BotTeamsSnapshot } from '../lib/bots';
 import { CuaBotAvatar } from '../components/CuaBotAvatar';
 import { Btn, Dialog, ErrorNotice, Icon, Select } from '../components/ui';
 import './BotTeamSettings.css';
 
 export type TeamEditorSection = 'general' | 'members' | 'computer';
-export function BotTeamEditor({ bots, team, computers = [], settingsSupported = false, instructionsSupported = false, unrestrictedSupported = false, activeWork = false, initialSection = 'general', onReload, onClose, onSaved }: {
-  bots: Bot[]; team?: BotTeam; computers?: BotTeamComputer[]; settingsSupported?: boolean; instructionsSupported?: boolean; unrestrictedSupported?: boolean; activeWork?: boolean; initialSection?: TeamEditorSection;
+export function BotTeamEditor({ bots, team, computers = [], settingsSupported = false, instructionsSupported = false, unrestrictedSupported = false, continuousSupported = false, activeWork = false, initialSection = 'general', onReload, onClose, onSaved }: {
+  bots: Bot[]; team?: BotTeam; computers?: BotTeamComputer[]; settingsSupported?: boolean; instructionsSupported?: boolean; unrestrictedSupported?: boolean; continuousSupported?: boolean; activeWork?: boolean; initialSection?: TeamEditorSection;
   onReload?: () => Promise<void>; onClose: () => void; onSaved: (team: BotTeam) => Promise<void>;
 }) {
   const [base, setBase] = useState(team), [name, setName] = useState(team?.name ?? '');
@@ -24,6 +24,8 @@ export function BotTeamEditor({ bots, team, computers = [], settingsSupported = 
   const choices = refreshedComputers ?? computers, supported = refreshedSupport ?? settingsSupported;
   const supportsInstructions = refreshedInstructionsSupport ?? instructionsSupported;
   const unrestricted = refreshedUnrestrictedSupport ?? unrestrictedSupported;
+  const [refreshedContinuousSupport, setRefreshedContinuousSupport] = useState<boolean | null>(null);
+  const continuous = refreshedContinuousSupport ?? continuousSupported;
   const target = execution.mode === 'shared' ? choices.find(item => item.id === execution.computerId) : undefined;
   const localFolder = !!target && target.computerMode === 'host' && target.id === 'host:local';
   const sharedAnchor = target?.computerMode === 'cua' ? target.memberId : undefined;
@@ -58,8 +60,8 @@ export function BotTeamEditor({ bots, team, computers = [], settingsSupported = 
     if (locked || conflict || revisionUnavailable || targetUnavailable) return;
     const selectedExecution: BotTeamExecution = execution.mode === 'shared' ? { ...execution, workspace: execution.workspace.trim() } : { mode: 'individual' };
     const selectedBriefing = { instructions: briefing.instructions.trim(), members: briefing.members.filter(member => memberIds.includes(member.botId) && (member.role.trim() || member.instructions.trim())).map(member => ({ ...member, role: member.role.trim(), instructions: member.instructions.trim() })) };
-    const draft = { name: name.trim(), memberIds, coordinatorId, enabled, limits: { ...limits, ...(unrestricted ? { maxParallel: 0 } : {}) }, ...(supported ? { execution: selectedExecution } : {}), ...(supportsInstructions ? { briefing: selectedBriefing } : {}) };
-    const validation = botTeamDraftError(draft, bots, choices, unrestricted); if (validation) { setError(validation); return; }
+    const draft = { name: name.trim(), memberIds, coordinatorId, enabled, limits: continuous ? { ...CONTINUOUS_BOT_TEAM_LIMITS } : { ...limits, ...(unrestricted ? { maxParallel: 0 } : {}) }, ...(supported ? { execution: selectedExecution } : {}), ...(supportsInstructions ? { briefing: selectedBriefing } : {}) };
+    const validation = botTeamDraftError(draft, bots, choices, unrestricted, continuous); if (validation) { setError(validation); return; }
     setBusy('save'); setError('');
     try {
       const body = { ...draft, ...(base && supported ? { expectedRevision: base.revision } : {}) };
@@ -79,6 +81,7 @@ export function BotTeamEditor({ bots, team, computers = [], settingsSupported = 
       folderRevision.current++; setBase(latest); setName(latest.name); setMemberIds(latest.memberIds); setCoordinatorId(latest.coordinatorId); setEnabled(latest.enabled); setLimits({ ...latest.limits }); setExecution(latest.execution ?? { mode: 'individual' });
       setBriefing(latest.briefing ?? { instructions: '', members: [] }); setRefreshedInstructionsSupport(snapshot.teamInstructionsSupported === true);
       setRefreshedUnrestrictedSupport(snapshot.teamUnrestrictedSupported === true);
+      setRefreshedContinuousSupport(snapshot.teamContinuousSupported === true);
       setRefreshedComputers(snapshot.teamComputers ?? []); setRefreshedSupport(snapshot.teamSettingsSupported === true); setConflict(false); await onReload?.();
     } catch (cause) { if (mounted.current) setError(message(cause)); }
     finally { if (mounted.current) setBusy(null); }
@@ -104,7 +107,7 @@ export function BotTeamEditor({ bots, team, computers = [], settingsSupported = 
         </> : <p className="xs muted">Each teammate uses its saved computer and working folder. Choose a shared team computer when everyone should work in the same place.</p>}
       </section>
       {unrestricted ? <p className="bot-team-settings-notice" role="status"><Icon name="experts" size={18}/><span>All available teammates can work at once. Teammates sharing one desktop take turns controlling it.</span></p> : null}
-      <details className="bots-advanced"><summary>Work limits</summary><div className="bots-limit-grid">{(unrestricted ? [{ key: 'maxTurns', label: 'Work turns', min: 1, max: 100 }] as const : [{ key: 'maxParallel', label: 'Parallel tasks', min: 1, max: 8 }, { key: 'maxTurns', label: 'Total turns', min: 1, max: 100 }] as const).map(field => <label className="input-field" key={field.key}><span>{field.label}</span><input className="st-input" type="number" min={field.min} max={field.max} disabled={locked} value={limits[field.key]} onChange={event => setLimits(value => ({ ...value, [field.key]: Number(event.target.value) }))}/></label>)}<label className="input-field"><span>Time limit · minutes</span><input className="st-input" type="number" min={1} max={60} disabled={locked} value={limits.maxDurationMs / 60000} onChange={event => setLimits(value => ({ ...value, maxDurationMs: Number(event.target.value) * 60000 }))}/></label><label className="input-field"><span>Maximum depth</span><input className="st-input" type="number" min={1} max={4} disabled={locked} value={limits.maxDepth} onChange={event => setLimits(value => ({ ...value, maxDepth: Number(event.target.value) }))}/></label><label className="input-field"><span>Message hops</span><input className="st-input" type="number" min={1} max={32} disabled={locked} value={limits.maxHops} onChange={event => setLimits(value => ({ ...value, maxHops: Number(event.target.value) }))}/></label></div></details>
+      {continuous ? <p className="bot-team-settings-notice" role="status"><Icon name="activity" size={18}/><span>Until finished or stopped. Team work has no automatic turn, time, depth or message-hop cutoff. Use Stop whenever you need to end it.</span></p> : <details className="bots-advanced"><summary>Work limits</summary><div className="bots-limit-grid">{(unrestricted ? [{ key: 'maxTurns', label: 'Work turns', min: 1, max: 100 }] as const : [{ key: 'maxParallel', label: 'Parallel tasks', min: 1, max: 8 }, { key: 'maxTurns', label: 'Total turns', min: 1, max: 100 }] as const).map(field => <label className="input-field" key={field.key}><span>{field.label}</span><input className="st-input" type="number" min={field.min} max={field.max} disabled={locked} value={limits[field.key]} onChange={event => setLimits(value => ({ ...value, [field.key]: Number(event.target.value) }))}/></label>)}<label className="input-field"><span>Time limit · minutes</span><input className="st-input" type="number" min={1} max={60} disabled={locked} value={limits.maxDurationMs / 60000} onChange={event => setLimits(value => ({ ...value, maxDurationMs: Number(event.target.value) * 60000 }))}/></label><label className="input-field"><span>Maximum depth</span><input className="st-input" type="number" min={1} max={4} disabled={locked} value={limits.maxDepth} onChange={event => setLimits(value => ({ ...value, maxDepth: Number(event.target.value) }))}/></label><label className="input-field"><span>Message hops</span><input className="st-input" type="number" min={1} max={32} disabled={locked} value={limits.maxHops} onChange={event => setLimits(value => ({ ...value, maxHops: Number(event.target.value) }))}/></label></div></details>}
       <p className="xs muted">Saving team settings starts no work. Earlier conversations and completed tasks keep their original settings.</p>
       {revisionUnavailable ? <ErrorNotice message="Refresh this team before changing its settings."/> : null}
       {error ? <ErrorNotice message={error}/> : null}

@@ -92,7 +92,9 @@ export function jsonRpcProcess({ command, args, cwd, env, signal, onNotification
   const api = {
     request(method, params, deadline = timeoutMs) { return new Promise((resolve, reject) => {
       const id = ++nextId;
-      const timer = setTimeout(() => { pending.delete(id); reject(new Error(`${method} timed out.`)); }, deadline); timer.unref();
+      // Explicit null is reserved for the active continuous team's prompt.
+      // Initialize, inventory, configuration and other requests keep deadlines.
+      const timer = deadline === null && method === 'session/prompt' ? null : setTimeout(() => { pending.delete(id); reject(new Error(`${method} timed out.`)); }, deadline ?? timeoutMs); timer?.unref();
       pending.set(id, { resolve, reject, timer });
       try { write({ jsonrpc: '2.0', id, method, params }); } catch (error) { pending.delete(id); clearTimeout(timer); reject(error); }
     }); },

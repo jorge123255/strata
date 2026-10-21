@@ -49,3 +49,23 @@ It verifies the actual native picker, all selected IDs in the authenticated brid
 and canonical `maxParallel: 0` (“All available teammates”). It creates only an inert saved
 team. It starts no model turn, SSH request, browser or CUA guest. Default fixture modes
 continue advertising the legacy twelve-member/positive-parallel contract.
+
+For continuous team work on a capable host:
+
+```sh
+node apps/ios/test-support/companion-fixture.mjs --test-continuous-teams \
+  'platform=iOS Simulator,id=<dedicated-scratch-simulator>'
+```
+
+This runs `CompanionSmokeTests/testContinuousTeamWorkHasNoNumericStopLimits`.
+It selects saved teammates in the native form, shows “Until finished or stopped”
+without numeric work controls, and verifies all five saved team-limit values are
+zero. The team remains disabled and no work starts. This capability is separate
+from unrestricted membership; older fixture modes retain their numeric work limits.
+
+`--test-team-compact` runs
+`CompanionSmokeTests/testCompactTeamAssignmentsAndReportsExpandWithoutChangingHistory`.
+An inert runtime first writes a real assignment and long report to the private
+fixture journal. The native test expands and collapses their previews, verifies
+the complete text remains accessible, and checks history is unchanged. No external
+provider, SSH, browser or guest computer is involved.

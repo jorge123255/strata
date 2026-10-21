@@ -133,3 +133,9 @@
   .bot-room-composer-top,.bot-room-composer-bottom { margin-left:46px; }
   .bot-room-replying,.bot-room-recipient-picker { margin-left:0; }
 }
+
+.bot-room-message-disclosure > summary { cursor:pointer; display:list-item; padding:2px 0 8px; }
+.bot-room-message-disclosure > summary strong { font-size:11px; font-weight:600; }
+.bot-room-message-disclosure > summary span { display:block; margin-top:5px; color:var(--st-ink-muted); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.bot-room-message-disclosure[open] > summary { margin-bottom:12px; border-bottom:1px solid var(--st-line-soft); }
+.bot-room-message-disclosure > summary:focus-visible { outline:2px solid var(--st-accent); outline-offset:4px; border-radius:6px; }

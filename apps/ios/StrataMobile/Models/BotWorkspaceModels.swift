@@ -69,10 +69,16 @@ struct BotTeamLimits: Codable, Equatable {
     var maxHops = 8
     var maxTurns = 24
     var maxDurationMs = 600_000
-    func forHost(unrestrictedTeams: Bool) -> Self {
+    static let continuous = Self(maxParallel: 0, maxDepth: 0, maxHops: 0, maxTurns: 0, maxDurationMs: 0)
+    func forHost(unrestrictedTeams: Bool, continuousTeams: Bool = false) -> Self {
+        if continuousTeams { return .continuous }
         var value = self
         if unrestrictedTeams { value.maxParallel = 0 }
         else if value.maxParallel == 0 { value.maxParallel = 2 }
+        if value.maxDepth == 0 { value.maxDepth = 2 }
+        if value.maxHops == 0 { value.maxHops = 8 }
+        if value.maxTurns == 0 { value.maxTurns = 24 }
+        if value.maxDurationMs == 0 { value.maxDurationMs = 600_000 }
         return value
     }
     func parallelLabel(unrestrictedTeams: Bool = false) -> String {
@@ -154,8 +160,9 @@ struct BotTeamRun: Decodable, Identifiable, Equatable {
         let total = max(0, consumedTurns)
         return total - min(total, max(0, rosterFanoutTurns ?? 0))
     }
-    func turnLabel(unrestrictedTeams: Bool) -> String {
-        unrestrictedTeams ? "\(workTurns) work turns" : "\(consumedTurns) turns"
+    func turnLabel(unrestrictedTeams: Bool, continuousTeams: Bool = false) -> String {
+        if continuousTeams { return consumedTurns > 0 ? "\(consumedTurns) turns used" : "Until finished or stopped" }
+        return unrestrictedTeams ? "\(workTurns) work turns" : "\(consumedTurns) turns"
     }
     var detail: String?
     var isActive: Bool { ["queued", "running", "stopping", "cleanup_pending"].contains(state) }
@@ -169,6 +176,7 @@ struct BotTeamsSnapshot: Decodable, Equatable {
     var teamSettingsSupported: Bool?
     var teamInstructionsSupported: Bool?
     var teamUnrestrictedSupported: Bool?
+    var teamContinuousSupported: Bool?
     var teamComputers: [BotTeamComputer]?
 }
 
@@ -194,6 +202,12 @@ struct BotTeamChannelMessage: Decodable, Identifiable, Equatable {
     var runId: String?
     var chatId: String?
     var state: String?
+    var usesCompactCard: Bool { kind == "assignment" || kind == "report" && content.count > 1_800 }
+    var compactPreview: String {
+        let first = content.split(whereSeparator: \.isNewline).first.map(String.init) ?? content
+        let length = kind == "assignment" ? 160 : 220
+        return String(first.prefix(length)) + (first.count > length || first != content ? "…" : "")
+    }
 }
 
 struct BotTeamChannel: Decodable, Equatable {

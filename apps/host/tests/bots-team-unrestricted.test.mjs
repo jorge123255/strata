@@ -51,7 +51,7 @@ test('legacy positive parallel settings are accepted but only team limits canoni
   assert.deepEqual(actual,expected);assert.equal(restored.list().teams[0].limits.maxParallel,0);assert.equal(restored.detail(team.id,run.id).run.limits.maxParallel,1);
 });
 
-test('fifty members each greet exactly once without spending the ordinary loop/work budget or gaining tools',async t=>{
+test('fifty members each greet exactly once with continuous team settings and no execution tools',async t=>{
   let f;f=fixture(t,50,async input=>{
     assert.equal(input.bot.teamConversationOnly,true);assert.equal(input.tools.some(t=>t.name==='shell'),false);
     if(input.message==='Hi everyone')await input.executeTool('invite_teammates',{botIds:f.members.slice(1).map(b=>b.id),message:'Please greet everyone once.'},'all-members');
@@ -59,7 +59,7 @@ test('fifty members each greet exactly once without spending the ordinary loop/w
   });const team=f.team(),run=f.bots.team.message(team.id,{message:'Hi everyone',requestId:'fifty',recipientIds:team.memberIds}).run;
   await until(()=>f.bots.team.detail(team.id,run.id).run.state==='completed');const finished=f.bots.team.detail(team.id,run.id).run;
   const replies=f.bots.team.channel(team.id).messages.filter(m=>m.content.startsWith('Hello from'));
-  assert.equal(new Set(replies.map(m=>m.author.botId)).size,50);assert.equal(f.seen.length,51);assert.equal(finished.consumedTurns,51);assert.equal(finished.rosterFanoutTurns,49);assert.equal(finished.limits.maxTurns,24);assert.equal(finished.consumedTurns-finished.rosterFanoutTurns,2);
+  assert.equal(new Set(replies.map(m=>m.author.botId)).size,50);assert.equal(f.seen.length,51);assert.equal(finished.consumedTurns,51);assert.equal(finished.rosterFanoutTurns,undefined);assert.equal(finished.limits.maxTurns,0);
 });
 
 test('more than eight independent tasks run together even for a legacy maxParallel1 request; Stop awaits all and preserves unrelated work',async t=>{
@@ -95,21 +95,15 @@ test('a busy bot stays single-owner across uncapped runs and rotating admission 
   f.teams.begin({chatId:first.rootChatId,turnId:'first'});f.teams.end({turnId:'first'});f.teams.tick();assert.deepEqual(f.sent,[first.rootChatId,second.rootChatId]);
 });
 
-test('initial roster allowance cannot be reused for another purpose, a peer fan-out or explicit small turn budgets',async t=>{
-  const f=journal(t,50),ids=[...f.bots.keys()];const team=f.teams.create({name:'Finite opening',memberIds:ids,coordinatorId:ids[0],enabled:true}).team;
-  const run=f.teams.message(team.id,{message:'Hello everyone',requestId:'finite-opening'}).run;f.teams.tick();
+test('continuous conversation invitations deduplicate identical deliveries without a hidden turn budget',async t=>{
+  const f=journal(t,50),ids=[...f.bots.keys()];const team=f.teams.create({name:'Continuous opening',memberIds:ids,coordinatorId:ids[0],enabled:true,limits:{maxTurns:3}}).team;
+  const run=f.teams.message(team.id,{message:'Hello everyone',requestId:'continuous-opening'}).run;f.teams.tick();
   const context={bot:f.bots.get(ids[0]),chatId:run.rootChatId,turnId:'opening-root',toolCallId:'hello',assertLive(){}};f.teams.begin(context);
-  await f.teams.execute('invite_teammates',{botIds:ids.slice(1),message:'Please greet once.'},context);
-  await assert.rejects(f.teams.execute('invite_teammates',{botIds:ids.slice(1),message:'A second whole-team round',purpose:'bid'},{...context,toolCallId:'reuse'}),/conversation budget/);
-  f.teams.tick();const saved=JSON.parse(readFileSync(join(f.directory,'bot-teams.json'))),child=saved.jobs.find(j=>j.rosterFanout);
-  const peer={bot:f.bots.get(child.botId),chatId:child.chatId,turnId:'opening-peer',toolCallId:'peer',assertLive(){}};f.teams.begin(peer);
-  await assert.rejects(f.teams.execute('invite_teammates',{botIds:ids.filter(id=>id!==peer.bot.id),message:'Peer tries another whole-team round'},peer),/conversation budget/);
-  assert.equal(saved.jobs.filter(j=>j.rosterFanout).length,49);assert.equal(f.teams.detail(team.id,run.id).run.rosterFanoutTurns,49);
-  await f.teams.stop(team.id,run.id);
-  const small=f.teams.create({name:'Explicit small budget',memberIds:ids,coordinatorId:ids[0],enabled:true,limits:{maxTurns:3}}).team;
-  const next=f.teams.message(small.id,{message:'Explicitly constrained',requestId:'small'}).run;f.teams.tick();const limited={...context,chatId:next.rootChatId,turnId:'limited'};f.teams.begin(limited);
-  await assert.rejects(f.teams.execute('invite_teammates',{botIds:ids.slice(1),message:'Cannot bypass explicit small limit'},limited),/conversation budget/);
-  assert.equal(f.teams.detail(small.id,next.id).run.limits.maxTurns,3);
+  const invited=await f.teams.execute('invite_teammates',{botIds:ids.slice(1),message:'Please greet once.'},context);
+  const duplicate=await f.teams.execute('invite_teammates',{botIds:ids.slice(1),message:'Another wording of the same addressed greeting'},{...context,toolCallId:'duplicate'});
+  assert.deepEqual(duplicate.deliveryIds,invited.deliveryIds);assert.match(duplicate.notice,/not woken twice/);
+  const saved=JSON.parse(readFileSync(join(f.directory,'bot-teams.json')));assert.equal(saved.jobs.length,50);assert.equal(saved.jobs.some(job=>job.rosterFanout),false);
+  assert.equal(f.teams.detail(team.id,run.id).run.limits.maxTurns,0);
 });
 
 test('catalog exposes every live run including cleanup states while bounding only terminal history and preserving newest-first order',async t=>{

@@ -107,7 +107,7 @@ export function createRemoteBotSSH({ sshPath = '/usr/bin/ssh', spawnProcess = sp
         }
       }
     });
-    timer = setTimeout(() => { failure = fault('ssh_timeout', 'The remote Bots request exceeded its time limit.'); cancel(); }, action === 'run' ? runTimeoutMs : managementTimeoutMs);
+    if (action !== 'run' || payload.input?.bot?.continuousTeam !== true) timer = setTimeout(() => { failure = fault('ssh_timeout', 'The remote Bots request exceeded its time limit.'); cancel(); }, action === 'run' ? runTimeoutMs : managementTimeoutMs);
     if (action === 'run' || action === 'computer' || action === 'host-folder') heartbeat = setInterval(() => { if (!stopping) { try { send({ type: 'heartbeat' }); } catch { cancel(); } } }, heartbeatMs);
     try {
       send(request);

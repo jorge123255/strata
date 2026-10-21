@@ -23,6 +23,15 @@ test('team validation rejects missing members, stale bot identity, foreign coord
   for(const changes of [{memberIds:[]},{memberIds:['a','a']},{memberIds:['a','removed']},{coordinatorId:'outside'},{limits:{...draft.limits,maxDurationMs:59999}},{limits:{...draft.limits,maxParallel:9}},{limits:{...draft.limits,maxDepth:1.5}}])assert.ok(bots.botTeamDraftError({...draft,...changes},roster));
   assert.equal(bots.botTeamRunActive('cleanup_pending'),true);assert.equal(bots.botTeamRunActive('cancelled'),false);assert.equal(bots.botActivityLabel('cleanup_pending'),'Checking cleanup');
 });
+test('continuous hosts require the exact zero shape and retain older protocol labels',()=>{
+  const roster=[{id:'a'},{id:'b'}],draft={name:'Crew',memberIds:['a','b'],coordinatorId:'a',limits:{...bots.CONTINUOUS_BOT_TEAM_LIMITS}};
+  assert.equal(bots.botTeamDraftError(draft,roster,undefined,true,true),null);
+  assert.ok(bots.botTeamDraftError(draft,roster,undefined,true,false));
+  for(const key of Object.keys(draft.limits))for(const value of [1,-1,NaN,Infinity,true,undefined])assert.ok(bots.botTeamDraftError({...draft,limits:{...draft.limits,[key]:value}},roster,undefined,true,true));
+  assert.equal(bots.botTeamWorkLabel(draft.limits,true,true),'All available teammates · Until finished or stopped');
+  assert.equal(bots.botTeamWorkLabel(bots.DEFAULT_BOT_TEAM_LIMITS,false,true),'All available teammates · 24 work turns · 10 minute limit');
+  assert.equal(bots.botTeamWorkLabel(bots.DEFAULT_BOT_TEAM_LIMITS,false,false),'2 parallel tasks · 24 turns · 10 minute limit');
+});
 test('MCP imports retain separate arguments and environment but never import bot or tool authority',()=>{
   const input={mcpServers:{local:{command:'/path with spaces/program',args:['--file','a b'],env:{TOKEN:'synthetic'},botIds:['foreign'],enabledToolIds:['everything']},remote:{url:'https://example.invalid/mcp',headers:{Authorization:'Bearer synthetic-key'}}}};
   const parsed=connections.parseBotConnectionImport(JSON.stringify(input));

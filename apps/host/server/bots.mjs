@@ -525,7 +525,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
       team.begin(context);
       const folderInstructions = hostFolders.tools(bot).length ? `An explicit ${bot.hostFolder.access === 'read' ? 'read-only' : 'read/write'} host-folder share is available at ${JSON.stringify(bot.hostFolder.path)}. Use host_list_files, host_read_file${bot.hostFolder.access === 'read-write' && bot.policy !== 'plan' ? ' and host_write_file' : ''} with paths relative to that folder. Normal file, command and browser tools stay inside the isolated computer. This share is file access, not a mounted folder or host shell.` : '';
       const instructions = (conversationOnly ? [team.instructions(context)] : [bot.instructions, work.instructions(bot.id), bot.extensionSnapshots?.skills?.instructions, bot.extensionSnapshots?.mcp?.instructions, team.instructions(context), folderInstructions]).filter(Boolean).join('\n\n');
-      const runtimeBot = { ...bot, instructions };
+      const runtimeBot = { ...bot, instructions, continuousTeam: team.isContinuousTurn(turnId) };
       if (conversationOnly) delete runtimeBot.extensionSnapshots;
       emit({ type: 'start', agent: true, model: bot.model || bot.provider });
       await runtime.run({ bot: runtimeBot, sessionId: session.id, message, history: session.messages, signal: combined, onFrame: emit, requestPermission, hostTools, executeHostTool,
@@ -533,7 +533,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
           const transportSignal = signal ?? (botOrSignal && typeof botOrSignal.addEventListener === 'function' && typeof botOrSignal.aborted === 'boolean' ? botOrSignal : null);
           if (active.get(session.id) !== owner || combined.aborted || bot.provider !== 'configured') throw fault(409, 'This bot turn has ended or has no configured model.');
           if (typeof modelRequest !== 'function') throw fault(503, 'Configured model inference is unavailable.');
-          return modelRequest({ ...payload, tools: [...localTools, ...hostTools].filter(tool => Array.isArray(payload?.tools) && payload.tools.some(requested => requested?.name === tool.name)), system: instructions || 'You are a Strata bot. Use the provided tools for coding and computer tasks.' }, bot, transportSignal ? AbortSignal.any([combined, transportSignal]) : combined, emit);
+          return modelRequest({ ...payload, tools: [...localTools, ...hostTools].filter(tool => Array.isArray(payload?.tools) && payload.tools.some(requested => requested?.name === tool.name)), system: instructions || 'You are a Strata bot. Use the provided tools for coding and computer tasks.' }, { ...bot, continuousTeam: team.isContinuousTurn(turnId) }, transportSignal ? AbortSignal.any([combined, transportSignal]) : combined, emit);
         },
         tools: [...localTools, ...hostTools], executeTool: (name, args, toolCallId) => {
           if (active.get(session.id) !== owner || combined.aborted) throw fault(409, 'This bot turn has ended.');

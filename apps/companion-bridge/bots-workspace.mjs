@@ -11,6 +11,7 @@ const states = new Set(['queued', 'running', 'completed', 'error', 'cancelled', 
 // Zero means all available members on capable hosts. Older positive values are
 // forwarded unchanged; the selected host remains the authority for execution.
 const limits = { maxParallel: [0, Number.MAX_SAFE_INTEGER], maxDepth: [1, 4], maxHops: [1, 32], maxTurns: [1, 100], maxDurationMs: [60_000, 3_600_000] };
+const continuousLimits = value => isObject(value) && Object.keys(value).length === Object.keys(limits).length && Object.keys(limits).every(key => value[key] === 0);
 const isObject = value => value && typeof value === 'object' && !Array.isArray(value);
 function object(value, keys, status) {
   if (!isObject(value) || Object.keys(value).some(key => !keys.includes(key))) throw error(status, 'Choose only the displayed team, skill or connection settings.');
@@ -118,7 +119,7 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
     if (body.enabled !== undefined && typeof body.enabled !== 'boolean') throw error(status, 'Review whether this team is enabled.');
     if (body.limits !== undefined) {
       object(body.limits, Object.keys(limits), status);
-      for (const [key, value] of Object.entries(body.limits)) if (!Number.isSafeInteger(value) || value < limits[key][0] || value > limits[key][1]) throw error(status, 'Choose supported team limits.');
+      if (!continuousLimits(body.limits)) for (const [key, value] of Object.entries(body.limits)) if (!Number.isSafeInteger(value) || value < limits[key][0] || value > limits[key][1]) throw error(status, 'Choose supported team limits.');
     }
   } else if (route.kind === 'channelMessage') {
     object(body, ['message', 'requestId', 'recipientIds', 'replyToId'], status);
@@ -187,7 +188,7 @@ function team(value) {
     // Keep only the public schema. Future/private profile fields cannot cross pairing.
     try { const publicValue = { instructions: value.briefing.instructions, members: value.briefing.members?.map(member => ({ botId: member.botId, role: member.role, instructions: member.instructions })) }; briefing = teamBriefing(publicValue, memberIds, 502); } catch { /* Optional newer information cannot hide an otherwise readable team. */ }
   }
-  return { id: value.id, name: text(value.name, 200), memberIds, coordinatorId: id(value.coordinatorId) ? value.coordinatorId : '', enabled: value.enabled === true, limits: Object.fromEntries(Object.entries(limits).filter(([k, [low, high]]) => Number.isSafeInteger(value.limits?.[k]) && value.limits[k] >= low && value.limits[k] <= high).map(([k]) => [k, value.limits[k]])), createdAt: date(value.createdAt), updatedAt: date(value.updatedAt), ...(preview ? { channelPreview: preview } : {}), ...(briefing ? { briefing } : {}), ...(Number.isSafeInteger(value.revision) && value.revision > 0 ? { revision: value.revision } : {}), ...(execution(value.execution) ? { execution: execution(value.execution) } : {}) };
+  return { id: value.id, name: text(value.name, 200), memberIds, coordinatorId: id(value.coordinatorId) ? value.coordinatorId : '', enabled: value.enabled === true, limits: continuousLimits(value.limits) ? Object.fromEntries(Object.keys(limits).map(key => [key, 0])) : Object.fromEntries(Object.entries(limits).filter(([k, [low, high]]) => Number.isSafeInteger(value.limits?.[k]) && value.limits[k] >= low && value.limits[k] <= high).map(([k]) => [k, value.limits[k]])), createdAt: date(value.createdAt), updatedAt: date(value.updatedAt), ...(preview ? { channelPreview: preview } : {}), ...(briefing ? { briefing } : {}), ...(Number.isSafeInteger(value.revision) && value.revision > 0 ? { revision: value.revision } : {}), ...(execution(value.execution) ? { execution: execution(value.execution) } : {}) };
 }
 function run(value) {
   const fanout = Number.isSafeInteger(value.consumedTurns) && Number.isSafeInteger(value.rosterFanoutTurns) && value.rosterFanoutTurns >= 0 && value.rosterFanoutTurns <= value.consumedTurns ? { rosterFanoutTurns: value.rosterFanoutTurns } : {};
@@ -247,7 +248,7 @@ export function publicBotWorkspace(body, route) {
   };
   if (route.kind === 'channel') return channelSnapshot(body, route);
   if (route.kind === 'channelMessage') return { channel: channelSnapshot(body.channel, route), ...(body.run && id(body.run.id) && body.run.teamId === route.teamId ? { run: run(body.run) } : {}) };
-  if (route.kind === 'teams' && Array.isArray(body.teams)) return { teams: rows('teams', team), runs: rows('runs', run, id, Infinity), ...(body.teamUnrestrictedSupported === true ? { teamUnrestrictedSupported: true } : {}), ...(body.channelsSupported === true ? { channelsSupported: true } : {}), ...(body.teamInstructionsSupported === true ? { teamInstructionsSupported: true } : {}), ...(body.teamSettingsSupported === true ? { teamSettingsSupported: true, teamComputers: (Array.isArray(body.teamComputers) ? body.teamComputers : []).slice(0, 1000).map(teamComputer).filter(Boolean) } : {}) };
+  if (route.kind === 'teams' && Array.isArray(body.teams)) return { teams: rows('teams', team), runs: rows('runs', run, id, Infinity), ...(body.teamUnrestrictedSupported === true ? { teamUnrestrictedSupported: true } : {}), ...(body.teamContinuousSupported === true ? { teamContinuousSupported: true } : {}), ...(body.channelsSupported === true ? { channelsSupported: true } : {}), ...(body.teamInstructionsSupported === true ? { teamInstructionsSupported: true } : {}), ...(body.teamSettingsSupported === true ? { teamSettingsSupported: true, teamComputers: (Array.isArray(body.teamComputers) ? body.teamComputers : []).slice(0, 1000).map(teamComputer).filter(Boolean) } : {}) };
   if (body.team && id(body.team.id)) return { team: team(body.team) };
   if (body.run && id(body.run.id)) return { run: run(body.run) };
   if (route.kind === 'activity') return { activity: rows('activity', v => ({ id: v.id, type: ['run', 'delivery', 'subagent'].includes(v.type) ? v.type : 'run', teamId: id(v.teamId) ? v.teamId : '', runId: id(v.runId) ? v.runId : '', title: text(v.title, 300), state: text(v.state, 60), ...Object.fromEntries(['botId', 'chatId', 'parentChatId', 'fromBotId', 'toBotId'].filter(k => id(v[k])).map(k => [k, v[k]])), createdAt: date(v.createdAt), updatedAt: date(v.updatedAt), ...(typeof v.detail === 'string' ? { detail: text(v.detail, 2_000) } : {}) })) };
@@ -280,6 +281,12 @@ export async function handleBotWorkspace({ path, method, req, res, session, host
   botWorkspaceRequest(upstreamPath, method, body, 400);
   requireCurrentSession();
   try {
+    let teamCatalog;
+    const currentTeams = async () => { if (!teamCatalog) { teamCatalog = await host.json('/api/bots/teams'); requireCurrentSession(); } return teamCatalog; };
+    if (['teams', 'team'].includes(route.kind) && continuousLimits(body?.limits)) {
+      const catalog = await currentTeams();
+      if (catalog.teamContinuousSupported !== true) throw error(409, 'Update Strata on your Mac before changing continuous team work.');
+    }
     if (route.kind === 'channelMessage') {
       const catalog = await host.json('/api/bots/teams'); requireCurrentSession();
       const selected = (catalog.teams ?? []).find(team => team.id === route.teamId);
@@ -287,7 +294,7 @@ export async function handleBotWorkspace({ path, method, req, res, session, host
       if (!selected || !selected.enabled || body.recipientIds?.some(botId => !members.has(botId))) throw error(409, 'Refresh this team and choose its available members.');
     }
     if (['teams', 'team'].includes(route.kind) && body?.briefing !== undefined) {
-      const catalog = await host.json('/api/bots/teams'); requireCurrentSession();
+      const catalog = await currentTeams();
       if (catalog.teamInstructionsSupported !== true) throw error(409, 'Update Strata on your Mac before changing team instructions.');
       const selected = route.kind === 'team' ? (catalog.teams ?? []).find(team => team.id === route.teamId) : undefined;
       if (route.kind === 'team' && !selected) throw error(404, 'This team is no longer available.');

@@ -30,7 +30,7 @@ export async function runConfiguredBot(c) {
   messages.push({ role: 'user', content: c.message });
   let tokensIn = 0, tokensOut = 0;
   const executedIds = new Set();
-  for (let round = 0; round < 32; round++) {
+  for (let round = 0; c.bot.continuousTeam === true || round < 32; round++) {
     c.signal.throwIfAborted();
     const result = await c.modelRequest({ messages, tools: c.tools, system: c.bot.instructions || 'You are a Strata bot. Use the provided tools for coding and computer tasks.' });
     c.signal.throwIfAborted();
@@ -43,6 +43,7 @@ export async function runConfiguredBot(c) {
     c.frame({ type: 'stats', tokensIn, tokensOut });
     if (!result.toolCalls.length) {
       if (!result.text.trim()) failure('The configured model returned no answer. Choose a model with text and tool support.');
+      c.publicReply = result.text;
       await c.save(null); return;
     }
     if (result.toolCalls.length > 100) failure('The configured model requested too many tools.');
@@ -69,9 +70,9 @@ function anthropicContent(value, vision) {
     return image && vision !== false ? [{ type: 'image', source: { type: 'base64', media_type: image[1], data: image[2] } }] : [];
   });
 }
-function payloadFor(protocol, model, request) {
+function payloadFor(protocol, model, request, continuousTeam = false) {
   const { messages, tools = [], system = '' } = request;
-  if (!Array.isArray(messages) || messages.length > 500 || !Array.isArray(tools) || tools.length > 100 || typeof system !== 'string') failure('The bot model request is invalid.');
+  if (!Array.isArray(messages) || (!continuousTeam && messages.length > 500) || !Array.isArray(tools) || tools.length > 100 || typeof system !== 'string') failure('The bot model request is invalid.');
   if (protocol === 'anthropic') {
     const rows = [];
     for (const message of messages) {
@@ -127,7 +128,7 @@ export function createBotModelClient({ providers, fetchImpl = fetch }) {
     const { connection, model } = providers.resolve({ connectionId: source.connectionId, modelId: source.model });
     if (bot.modelDestination && bot.modelDestination !== botModelDestination(connection)) failure('This model connection changed its address. Edit the bot and start a new chat to use it.');
     const protocol = connection.protocol;
-    const payload = payloadFor(protocol, model, request), body = JSON.stringify(payload);
+    const payload = payloadFor(protocol, model, request, bot.continuousTeam === true), body = JSON.stringify(payload);
     if (Buffer.byteLength(body) > MAX) failure('The bot model context exceeded the size limit. Start a new chat.');
     const headers = { 'content-type': 'application/json', ...(protocol === 'anthropic' ? { 'anthropic-version': '2023-06-01', ...(connection.apiKey ? { 'x-api-key': connection.apiKey } : {}) } : connection.apiKey ? { authorization: `Bearer ${connection.apiKey}` } : {}) };
     let response;

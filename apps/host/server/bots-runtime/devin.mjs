@@ -90,40 +90,78 @@ export async function devinModels(command, options = {}) {
     return devinCatalog(JSON.parse(output));
   } finally { await settings.close(); }
 }
-function isolationFailure() { return new Error('Devin could not confirm its isolated tool configuration. No model prompt was sent. Update Devin CLI or use another provider.'); }
+// Labels are a closed vocabulary. Never interpolate native metadata, paths,
+// sockets, environment values or account responses into a diagnostic.
+const isolationLabels = Object.freeze({
+  'initialize.protocol': 'ACP protocol', 'initialize.mcp_path': 'private MCP configuration path',
+  'config.path': 'private configuration path', 'config.version': 'configuration version',
+  'config.subagents': 'native subagents disabled', 'config.updates': 'automatic updates disabled',
+  'config.native_tools': 'native coding tools disabled', 'config.local_bypass': 'native permission bypass disabled',
+  'config.imports': 'external configuration imports disabled', 'config.disabled_tools': 'native tool disable list',
+  'config.permissions_deny': 'native tool deny list', 'config.permissions_allow': 'native permission allow list empty',
+  'config.permissions_ask': 'native permission ask list empty', 'config.hooks': 'configuration hooks empty',
+  'config.mcp_servers': 'configuration MCP servers empty', 'rules.list': 'inherited rules empty', 'hooks.list': 'inherited hooks empty',
+  'mcp.servers': 'MCP server inventory', 'mcp.identity': 'Strata MCP server identity', 'mcp.enabled': 'Strata MCP server enabled',
+  'mcp.connected': 'Strata MCP connection ready', 'mcp.source': 'private MCP server source', 'mcp.transport': 'MCP stdio transport',
+  'mcp.command': 'MCP bridge command', 'mcp.arguments': 'MCP bridge arguments', 'mcp.environment': 'fresh MCP bridge environment',
+  'mcp.disabled_tools': 'MCP disabled tools empty', 'mcp.tools': 'Strata MCP tool inventory', 'mcp.resources': 'MCP resources empty',
+  'mcp.tool_count': 'assigned MCP tool count', 'mcp.tool_schema': 'assigned MCP tool names and schemas',
+  'plugins.list': 'plugins empty', 'plugins.complete': 'plugin discovery complete', 'plugins.pending': 'plugin discovery settled',
+  'plugins.failed': 'plugin discovery without errors', 'skills.list': 'skill inventory', 'skills.scope': 'built-in skills only',
+});
+function isolationFailure(check) {
+  if (!Object.hasOwn(isolationLabels, check)) throw new Error('Unknown internal Devin isolation check.');
+  return Object.assign(new Error(`Devin could not confirm its isolated tool configuration (${isolationLabels[check]}). No model prompt was sent. ${check === 'mcp.connected' ? 'Wait for the Strata MCP connection to be ready before retrying.' : 'Review this isolation check before retrying or choose another provider.'}`), { code: 'devin_isolation_unverified', isolationCheck: check });
+}
+const requireIsolation = (condition, check) => { if (!condition) throw isolationFailure(check); };
 export function verifyDevinConfig(response, settings) {
   const c = response?.config;
-  if (response?.configPath !== settings.configPath || !c || c.version !== 1 || c.subagents_enabled !== false || c.auto_update !== false || c.agent?.codex_tools !== false
-    || c.local_tools_bypass_permissions !== false || CONFIG_SOURCES.some(name => c.read_config_from?.[name] !== false)
-    || !Array.isArray(c.disabled_tools) || DEVIN_DISABLED_TOOLS.some(name => !c.disabled_tools.includes(name))
-    || !Array.isArray(c.permissions?.deny) || DEVIN_DISABLED_TOOLS.some(name => !c.permissions.deny.includes(name))
-    || !Array.isArray(c.permissions?.allow) || c.permissions.allow.length || !Array.isArray(c.permissions?.ask) || c.permissions.ask.length
-    || !c.hooks || Object.keys(c.hooks).length || !c.mcpServers || Object.keys(c.mcpServers).length) throw isolationFailure();
+  requireIsolation(response?.configPath === settings.configPath, 'config.path');
+  requireIsolation(c && c.version === 1, 'config.version');
+  requireIsolation(c.subagents_enabled === false, 'config.subagents');
+  requireIsolation(c.auto_update === false, 'config.updates');
+  requireIsolation(c.agent?.codex_tools === false, 'config.native_tools');
+  requireIsolation(c.local_tools_bypass_permissions === false, 'config.local_bypass');
+  requireIsolation(CONFIG_SOURCES.every(name => c.read_config_from?.[name] === false), 'config.imports');
+  requireIsolation(Array.isArray(c.disabled_tools) && DEVIN_DISABLED_TOOLS.every(name => c.disabled_tools.includes(name)), 'config.disabled_tools');
+  requireIsolation(Array.isArray(c.permissions?.deny) && DEVIN_DISABLED_TOOLS.every(name => c.permissions.deny.includes(name)), 'config.permissions_deny');
+  requireIsolation(Array.isArray(c.permissions?.allow) && c.permissions.allow.length === 0, 'config.permissions_allow');
+  requireIsolation(Array.isArray(c.permissions?.ask) && c.permissions.ask.length === 0, 'config.permissions_ask');
+  requireIsolation(c.hooks && Object.keys(c.hooks).length === 0, 'config.hooks');
+  requireIsolation(c.mcpServers && Object.keys(c.mcpServers).length === 0, 'config.mcp_servers');
 }
 const ordered = value => value && typeof value === 'object' ? Array.isArray(value) ? value.map(ordered) : Object.fromEntries(Object.keys(value).sort().map(key => [key, ordered(value[key])])) : value;
 const canonical = value => JSON.stringify(ordered(value));
 export function verifyDevinInventory({ servers, tools, plugins, skills }, { bridge, definitions = [], settings }) {
-  if (!Array.isArray(servers?.servers) || servers.servers.length !== (bridge ? 1 : 0)) throw isolationFailure();
+  requireIsolation(Array.isArray(servers?.servers) && servers.servers.length === (bridge ? 1 : 0), 'mcp.servers');
   if (bridge) {
     const server = servers.servers[0];
-    if (server.serverId !== 'strata' || server.disabled !== false || server.connectionStatus !== 'connected'
-      || server.sourcePath !== settings.mcpConfigPath || server.transport !== 'stdio' || server.command !== bridge.command
-      || canonical(server.args) !== canonical(bridge.args) || canonical(server.env) !== canonical(bridge.env)
-      || !Array.isArray(server.disabledTools) || server.disabledTools.length
-      || tools?.serverId !== 'strata' || !Array.isArray(tools.tools) || !Array.isArray(tools.resources) || tools.resources.length
-      || tools.tools.length !== definitions.length) throw isolationFailure();
+    requireIsolation(server?.serverId === 'strata', 'mcp.identity');
+    requireIsolation(server.disabled === false, 'mcp.enabled');
+    requireIsolation(server.connectionStatus === 'connected', 'mcp.connected');
+    requireIsolation(server.sourcePath === settings.mcpConfigPath, 'mcp.source');
+    requireIsolation(server.transport === 'stdio', 'mcp.transport');
+    requireIsolation(server.command === bridge.command, 'mcp.command');
+    requireIsolation(canonical(server.args) === canonical(bridge.args), 'mcp.arguments');
+    requireIsolation(canonical(server.env) === canonical(bridge.env), 'mcp.environment');
+    requireIsolation(Array.isArray(server.disabledTools) && server.disabledTools.length === 0, 'mcp.disabled_tools');
+    requireIsolation(tools?.serverId === 'strata' && Array.isArray(tools.tools), 'mcp.tools');
+    requireIsolation(Array.isArray(tools.resources) && tools.resources.length === 0, 'mcp.resources');
+    requireIsolation(tools.tools.length === definitions.length, 'mcp.tool_count');
     const expected = new Map(definitions.map(tool => [tool.name, tool]));
     for (const tool of tools.tools) {
-      const definition = expected.get(tool.name);
-      if (!definition || tool.description !== definition.description || canonical(tool.inputSchema) !== canonical(definition.inputSchema)) throw isolationFailure();
+      const definition = expected.get(tool?.name);
+      requireIsolation(definition && tool.description === definition.description && canonical(tool.inputSchema) === canonical(definition.inputSchema), 'mcp.tool_schema');
       expected.delete(tool.name);
     }
-    if (expected.size) throw isolationFailure();
+    requireIsolation(expected.size === 0, 'mcp.tool_schema');
   }
-  if (!Array.isArray(plugins?.plugins) || plugins.plugins.length || plugins.availability?.complete !== true
-    || plugins.availability.originsPending !== 0 || plugins.availability.originsFailed !== 0
-    || !Array.isArray(skills?.skills) || skills.skills.some(skill => skill.isBuiltin !== true || skill.provider !== 'builtin'
-      || !['builtin:drs', 'builtin:upload-secrets'].includes(skill.path))) throw isolationFailure();
+  requireIsolation(Array.isArray(plugins?.plugins) && plugins.plugins.length === 0, 'plugins.list');
+  requireIsolation(plugins.availability?.complete === true, 'plugins.complete');
+  requireIsolation(plugins.availability.originsPending === 0, 'plugins.pending');
+  requireIsolation(plugins.availability.originsFailed === 0, 'plugins.failed');
+  requireIsolation(Array.isArray(skills?.skills), 'skills.list');
+  requireIsolation(skills.skills.every(skill => skill?.isBuiltin === true && skill.provider === 'builtin' && ['builtin:drs', 'builtin:upload-secrets'].includes(skill.path)), 'skills.scope');
 }
 const optionValues = option => option?.options?.flatMap(item => Array.isArray(item.options) ? item.options : [item]) ?? [];
 async function setOption(rpc, sessionId, options, category, value) {
@@ -184,7 +222,8 @@ export async function runDevin(c) {
       },
     });
     const init = await rpc.request('initialize', { protocolVersion: 1, clientInfo: { name: 'strata', version: '0.2.1' }, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false, _meta: { 'cognition.ai/mcp': true, 'cognition.ai/plugins': true, 'cognition.ai/persistOnCreate': true } } });
-    if (init.protocolVersion !== 1 || init._meta?.mcpConfigPath !== settings.mcpConfigPath) throw isolationFailure();
+    requireIsolation(init?.protocolVersion === 1, 'initialize.protocol');
+    requireIsolation(init?._meta?.mcpConfigPath === settings.mcpConfigPath, 'initialize.mcp_path');
     let session;
     if (c.checkpoint?.nativeSessionId) {
       if (!init.agentCapabilities?.loadSession) throw new Error('This Devin CLI cannot restore its session. Start a new chat; your Strata history is preserved.');
@@ -197,20 +236,22 @@ export async function runDevin(c) {
     if (typeof sessionId !== 'string' || !sessionId || sessionId.length > 300) throw new Error('Devin returned no valid native session id.');
     verifyDevinConfig(await rpc.request('_cognition.ai/config/read', { sessionId }), settings);
     const [rules, hooks] = await Promise.all([rpc.request('_cognition.ai/rules/list', { sessionId }), rpc.request('_cognition.ai/hooks/list', { sessionId })]);
-    if (!Array.isArray(rules?.rules) || rules.rules.length || !Array.isArray(hooks?.hooks) || hooks.hooks.length) throw isolationFailure();
+    requireIsolation(Array.isArray(rules?.rules) && rules.rules.length === 0, 'rules.list');
+    requireIsolation(Array.isArray(hooks?.hooks) && hooks.hooks.length === 0, 'hooks.list');
     const scope = { sessionId, cwd: settings.cwd, workspaceDir: settings.cwd };
     const [servers, plugins, skills] = await Promise.all([rpc.request('_cognition.ai/mcp/listServers', scope), rpc.request('_cognition.ai/plugins/list', scope), rpc.request('_cognition.ai/skills/list', scope)]);
     const inventory = bridge ? await rpc.request('_cognition.ai/mcp/listTools', { sessionId, serverId: 'strata' }) : null;
     verifyDevinInventory({ servers, tools: inventory, plugins, skills }, { bridge, definitions: c.tools, settings });
     const actualModel = session.configOptions?.find(option => option.category === 'model')?.currentValue;
-    if (typeof actualModel !== 'string' || c.bot.model && actualModel !== c.bot.model || actualModel === 'adaptive' || actualModel.startsWith('fusion-')) throw new Error('Devin could not confirm a single native model. Choose a verified model and start a new bot chat.');
+    if (typeof actualModel !== 'string' || actualModel === 'adaptive' || actualModel.startsWith('fusion-')) throw new Error('Devin could not confirm a single native model. Choose a verified model and start a new bot chat.');
+    if (c.bot.model && actualModel !== c.bot.model) throw new Error('Devin selected a different model. Refresh the native model catalog and reselect the desired model before retrying.');
     // Native Ask excludes mutating MCP tools regardless of the host's policy. Code mode permits
     // the bridge; native tools remain disabled/denied and Strata owns every action approval.
     let configOptions = await setOption(rpc, sessionId, session.configOptions, 'mode', 'accept-edits');
     if (c.bot.effort) configOptions = await setOption(rpc, sessionId, configOptions, 'thought_level', c.bot.effort);
     await c.save(sessionId);
     projecting = true;
-    const result = await rpc.request('session/prompt', { sessionId, prompt: [{ type: 'text', text: `${c.bot.instructions ? `Bot instructions:\n${c.bot.instructions}\n\n` : ''}${c.prompt}\n\nUse only the supplied Strata tools for all coding, files, shell, browser and computer actions. Strata owns approvals and team coordination.` }] }, c.options.runTimeoutMs ?? 30 * 60_000);
+    const result = await rpc.request('session/prompt', { sessionId, prompt: [{ type: 'text', text: `${c.bot.instructions ? `Bot instructions:\n${c.bot.instructions}\n\n` : ''}${c.prompt}\n\nUse only the supplied Strata tools for all coding, files, shell, browser and computer actions. Strata owns approvals and team coordination.` }] }, c.bot.continuousTeam === true ? null : c.options.runTimeoutMs ?? 30 * 60_000);
     if (result.stopReason !== 'end_turn') throw new Error(`Devin stopped: ${result.stopReason || 'missing completion marker'}.`);
     if (result.usage) c.frame({ type: 'stats', tokensIn: result.usage.inputTokens ?? 0, tokensOut: result.usage.outputTokens ?? 0 });
   } finally {
