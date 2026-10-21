@@ -16,7 +16,7 @@ const root = mkdtempSync(join(tmpdir(), 'strata-ios-ui-'));
 chmodSync(root, 0o700);
 
 const calls = [];
-const photoSimulator = ['--test-bot-photos', '--test-team-channel-layout', '--test-group-chat-layout'].includes(process.argv[2]) ? /(?:^|,)id=([A-Fa-f0-9-]{36})(?:,|$)/.exec(process.argv[3] ?? '')?.[1] : undefined;
+const photoSimulator = ['--test-team-settings', '--test-bot-photos', '--test-team-channel-layout', '--test-group-chat-layout'].includes(process.argv[2]) ? /(?:^|,)id=([A-Fa-f0-9-]{36})(?:,|$)/.exec(process.argv[3] ?? '')?.[1] : undefined;
 let originalSimulatorAppearance;
 if (photoSimulator) {
   const appearance = execFileSync('/usr/bin/xcrun', ['simctl', 'ui', photoSimulator, 'appearance'], { encoding: 'utf8' }).trim().toLowerCase();
@@ -45,7 +45,7 @@ const conversation = {
 const pending = [];
 let createdBotConversation;
 const lifecycleMode = ['--test-bot-lifecycle', '--test-bot-avatar-states', '--test-bot-photos'].includes(process.argv[2]);
-const workspaceFlags = ['--test-notifications', '--test-group-chat-layout', '--test-team-channel-layout', '--test-team-channel', '--test-bot-photos', '--test-bot-lifecycle', '--test-bot-avatar-states', '--test-workspace-skills', '--test-workspace-connections', '--test-workspace-teams', '--test-facelift'];
+const workspaceFlags = ['--test-team-settings', '--test-notifications', '--test-group-chat-layout', '--test-team-channel-layout', '--test-team-channel', '--test-bot-photos', '--test-bot-lifecycle', '--test-bot-avatar-states', '--test-workspace-skills', '--test-workspace-connections', '--test-workspace-teams', '--test-facelift'];
 const workspaceMode = workspaceFlags.includes(process.argv[2]);
 let teamConversation, savedTeam, teamRun;
 const teamLimits = { maxParallel: 2, maxDepth: 2, maxHops: 8, maxTurns: 24, maxDurationMs: 600000 };
@@ -100,17 +100,29 @@ if (lifecycleMode) {
 }
 // The new room acceptance uses the real durable bot/team/conversation services.
 // Only model output is scripted. No provider, shell, SSH, browser or VM exists.
-const teamChannelMode = ['--test-team-channel', '--test-team-channel-layout', '--test-group-chat-layout'].includes(process.argv[2]);
-let roomBots, roomChats, roomTeam, roomEmptyTeam, roomMembers = [], roomTurns = [];
+const teamSettingsMode = process.argv[2] === '--test-team-settings';
+const teamChannelMode = ['--test-team-settings', '--test-team-channel', '--test-team-channel-layout', '--test-group-chat-layout'].includes(process.argv[2]);
+let roomBots, roomChats, roomTeam, roomEmptyTeam, roomExtraMember, roomMembers = [], roomTurns = [];
+let settingsHold;
+const teamSettingsActions = [];
+const teamSettingsFolder = join(root, 'shared-team-folder');
+const teamSettingsOtherFolder = join(root, 'other-team-folder');
+if (teamSettingsMode) { mkdirSync(teamSettingsFolder); mkdirSync(teamSettingsOtherFolder); }
 if (teamChannelMode) {
   const { createBots } = await import('../../host/server/bots.mjs');
   const { createConversations } = await import('../../host/server/conversations.mjs');
   const directory = join(root, 'actual-team-service');
   mkdirSync(directory, { mode: 0o700 });
   roomBots = createBots({ directory, defaultWorkspace: () => directory,
+    ...(teamSettingsMode ? { remoteSSH: { run: async () => { throw new Error('No SSH execution in Team settings fixture'); }, cua: async () => { throw new Error('No CUA execution in Team settings fixture'); } } } : {}),
     conversations: () => roomChats,
     tools: { definitions: () => [], execute: () => { throw new Error('No external tools in native Team fixture'); }, finish: async () => {} },
     runtime: { providers: async () => [], close() {}, async run(input) {
+      if (teamSettingsMode && input.message === 'Hold settings fixture') {
+        teamSettingsActions.push('held-inert-routing-turn');
+        await new Promise(resolve => input.signal.addEventListener('abort', resolve, { once: true }));
+        return;
+      }
       roomTurns.push({ botId: input.bot.id, mode: input.bot.teamContext?.channelMode, message: input.message, toolNames: input.tools.map(tool => tool.name) });
       input.onFrame({ type: 'reasoning', text: 'Review the shared team channel and answer as the named teammate.' });
       const mode = input.bot.teamContext?.channelMode;
@@ -144,17 +156,20 @@ if (teamChannelMode) {
     } },
   });
   roomChats = createConversations({ directory, enabled: () => true, pending: id => roomBots.pending(id), stop: id => roomBots.stop(id), approve: input => roomBots.approve(input), validateSelection: selection => roomBots.validateSelection(selection), execute: input => roomBots.run(input) });
-  roomMembers = ['Coordinator', 'Builder', 'Reviewer'].map((name, index) => roomBots.create({ name, provider: 'codex', model: 'Fixture model', workspace: directory, policy: 'bypass', avatarConfig: { color: ['sky', 'orange', 'violet'][index], eyes: 'round', ears: 'round', shape: ['orb', 'tile', 'spark'][index] } }).bot);
+  roomMembers = ['Coordinator', 'Builder', 'Reviewer'].map((name, index) => roomBots.create({ name, provider: 'codex', model: 'Fixture model', workspace: teamSettingsMode ? '/workspace' : directory, ...(teamSettingsMode ? { computerMode: 'cua' } : {}), policy: 'bypass', avatarConfig: { color: ['sky', 'orange', 'violet'][index], eyes: 'round', ears: 'round', shape: ['orb', 'tile', 'spark'][index] } }).bot);
   roomTeam = roomBots.team.create({ name: 'Engineering', memberIds: roomMembers.map(bot => bot.id), coordinatorId: roomMembers[0].id, enabled: true }).team;
-  if (['--test-team-channel-layout', '--test-group-chat-layout'].includes(process.argv[2])) {
+  if (teamSettingsMode) roomExtraMember = roomBots.create({ name: 'Remote helper', provider: 'codex', model: 'Fixture model', workspace: '/srv/fixture-project', execution: { kind: 'ssh', host: 'fixture.invalid', user: 'fixture', name: 'Fixture SSH computer' }, policy: 'manual' }).bot;
+  if (['--test-team-settings', '--test-team-channel-layout', '--test-group-chat-layout'].includes(process.argv[2])) {
     // Layout-only UI reads an actual saved journal seeded by the inert fixture.
     // These setup turns have no provider or external tools and precede pairing.
     const until = async predicate => { const deadline = Date.now() + 5_000; while (!predicate()) { if (Date.now() > deadline) throw new Error('Inert layout seed did not settle'); await new Promise(resolve => setTimeout(resolve, 10)); } };
     roomBots.team.message(roomTeam.id, { message: 'Hi everyone', requestId: 'seed_greeting' });
     await until(() => roomBots.team.channel(roomTeam.id).activeRuns.length === 0);
+    if (!teamSettingsMode) {
     const held = roomBots.team.message(roomTeam.id, { message: 'Hold this synthetic task', requestId: 'seed_hold' });
     await until(() => roomTurns.some(turn => turn.mode === 'task' && turn.message.includes('Hold this')));
     await roomBots.team.stop(roomTeam.id, held.run.id);
+    }
   }
   if (process.argv[2] === '--test-group-chat-layout') roomEmptyTeam = roomBots.team.create({ name: 'Design circle', memberIds: roomMembers.map(bot => bot.id), coordinatorId: roomMembers[0].id, enabled: true }).team;
 }
@@ -211,7 +226,11 @@ const host = {
     }
     if (roomBots) {
       const route = new URL(path, 'http://fixture.invalid');
-      if (route.pathname === '/api/bots/teams') return roomBots.team.list();
+      const sharedComputer = /^\/api\/bots\/(bot_[a-f0-9-]+)\/computer$/.exec(route.pathname);
+      if (teamSettingsMode && sharedComputer && roomMembers.some(member => member.id === sharedComputer[1]) && (options.method ?? 'GET') === 'GET') return computerState();
+      if (route.pathname === '/api/bots/teams') return options.method === 'POST' ? roomBots.team.create(options.body) : roomBots.team.list();
+      const settings = /^\/api\/bots\/teams\/([^/]+)$/.exec(route.pathname);
+      if (settings && options.method === 'PATCH') return roomBots.team.update(settings[1], options.body);
       const room = /^\/api\/bots\/teams\/([^/]+)\/(channel|messages)(?:\/([^/]+)\/(stop))?$/.exec(route.pathname);
       if (room) {
         if (room[2] === 'channel') return roomBots.team.channel(room[1], Object.fromEntries([...route.searchParams].map(([key, value]) => [key, Number(value)])));
@@ -418,6 +437,22 @@ try {
           await lifecycleProfiles.saveProfile({ expectedUpdatedAt: bot.updatedAt, name: 'Mac reviewed bot', provider: 'codex', model: 'Fixture model', effort: 'high', policy: 'plan', computerId: 'local', workspace: lifecycleReloadedWorkspace }, bot.id);
           break;
         }
+        case '/team-settings-change': {
+          if (!teamSettingsMode) throw new Error('Team settings fixture required');
+          const current = roomBots.team.list().teams.find(team => team.id === roomTeam.id);
+          roomBots.team.update(roomTeam.id, { expectedRevision: current.revision, name: 'Mac revised team' });
+          teamSettingsActions.push('external-settings-change');
+          break;
+        }
+        case '/team-settings-active':
+          if (!teamSettingsMode) throw new Error('Team settings fixture required');
+          settingsHold = roomBots.team.message(roomTeam.id, { message: 'Hold settings fixture', requestId: 'settings_hold' });
+          break;
+        case '/team-settings-idle':
+          if (!teamSettingsMode || !settingsHold) throw new Error('Team settings hold required');
+          await roomBots.team.stop(roomTeam.id, settingsHold.run.id);
+          teamSettingsActions.push('stopped-inert-routing-turn');
+          break;
         case '/team-room-state':
           break;
         case '/team-progress':
@@ -486,7 +521,7 @@ try {
         response.writeHead(404).end(); return;
       }
       response.setHeader('Content-Type', 'application/json');
-      response.end(JSON.stringify({ conversation, createdBotConversation, pending, calls, ...(roomBots ? { teamChannel: roomBots.team.channel(roomTeam.id), roomTurns, roomTeam, roomEmptyTeam } : {}), ...(lifecycleProfiles ? { lifecycle: await lifecycleProfiles.list() } : {}), computerRunning, computerControlled: !!computerControl, botFace, downloadJobs: Object.fromEntries(downloadJobs), planCount: nextPlan, downloadCount: nextDownload }));
+      response.end(JSON.stringify({ conversation, createdBotConversation, pending, calls, ...(roomBots ? { teamChannel: roomBots.team.channel(roomTeam.id), roomTurns, roomTeam, roomEmptyTeam, ...(teamSettingsMode ? { teamSettings: roomBots.team.list(), roomMembers, roomExtraMember, teamSettingsFolder, teamSettingsOtherFolder, teamSettingsActions } : {}) } : {}), ...(lifecycleProfiles ? { lifecycle: await lifecycleProfiles.list() } : {}), computerRunning, computerControlled: !!computerControl, botFace, downloadJobs: Object.fromEntries(downloadJobs), planCount: nextPlan, downloadCount: nextDownload }));
     } catch (error) {
       response.writeHead(500, { 'Content-Type': 'application/json' });
       response.end(JSON.stringify({ error: error.message }));
@@ -507,7 +542,8 @@ try {
       testProcess = spawn('xcodebuild', [
         '-project', project, '-scheme', 'StrataMobile', '-destination', destination,
         '-derivedDataPath', derivedData,
-        '-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation', '--test-computer': 'testActualSampleAvatarAndIsolatedComputerControl', '--test-bot-photos': 'testPhotoLedBotsCreationAppearanceAndWorkspaceNavigation', '--test-bot-lifecycle': 'testPhoneBotCreationEditingCASAndApprovalModes', '--test-bot-avatar-states': 'testBotAvatarStatesInteractionAndRosterFilters', '--test-facelift': 'testFaceliftPrincipalScreensAndSharedHistory', '--test-workspace-skills': 'testReviewedSkillAssignmentAndWorkspaceNavigation', '--test-workspace-connections': 'testSavedConnectionCheckAndReviewedAccess', '--test-workspace-teams': 'testTeamExplicitTaskSharedThinkingStopAndActivity', '--test-team-channel': 'testNaturalTeamChannelPeersAssignmentsThinkingAndStop', '--test-team-channel-layout': 'testTeamChannelNormalDarkAndLargeTypeLayout', '--test-group-chat-layout': 'testGroupRosterAndRoomPhotoLayoutWithRealMenus', '--test-notifications': 'testNotificationPreferencesPrivateInboxRoutingMuteAndRelaunch' })[process.argv[2]],
+        ...(process.env.STRATA_TEST_RESULT_BUNDLE ? ['-resultBundlePath', process.env.STRATA_TEST_RESULT_BUNDLE] : []),
+        '-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation', '--test-computer': 'testActualSampleAvatarAndIsolatedComputerControl', '--test-bot-photos': 'testPhotoLedBotsCreationAppearanceAndWorkspaceNavigation', '--test-bot-lifecycle': 'testPhoneBotCreationEditingCASAndApprovalModes', '--test-bot-avatar-states': 'testBotAvatarStatesInteractionAndRosterFilters', '--test-facelift': 'testFaceliftPrincipalScreensAndSharedHistory', '--test-workspace-skills': 'testReviewedSkillAssignmentAndWorkspaceNavigation', '--test-workspace-connections': 'testSavedConnectionCheckAndReviewedAccess', '--test-workspace-teams': 'testTeamExplicitTaskSharedThinkingStopAndActivity', '--test-team-channel': 'testNaturalTeamChannelPeersAssignmentsThinkingAndStop', '--test-team-channel-layout': 'testTeamChannelNormalDarkAndLargeTypeLayout', '--test-group-chat-layout': 'testGroupRosterAndRoomPhotoLayoutWithRealMenus', '--test-team-settings': 'testTeamMembershipSharedComputerFoldersConflictAndPersistence', '--test-notifications': 'testNotificationPreferencesPrivateInboxRoutingMuteAndRelaunch' })[process.argv[2]],
         '-parallel-testing-enabled', 'NO', 'test',
       ], { stdio: 'inherit', env: { ...process.env,
         TEST_RUNNER_STRATA_TEST_INVITATION: connection.invitation,
@@ -518,7 +554,7 @@ try {
       testProcess.once('exit', code => resolve(code ?? 1));
     });
     process.exitCode = status;
-    if (process.env.STRATA_TEST_STATE_OUTPUT) writeFileSync(process.env.STRATA_TEST_STATE_OUTPUT, JSON.stringify({ calls, ...(roomBots ? { teamChannel: roomBots.team.channel(roomTeam.id), roomTurns, roomTeam, roomEmptyTeam } : {}), ...(lifecycleProfiles ? { lifecycle: await lifecycleProfiles.list() } : {}), savedTeam, teamRun, skillAssignments, skills: skillCatalog(), connectionAccess: { botIds: mcpConnection.botIds, enabledToolIds: mcpConnection.enabledToolIds, readOnlyToolIds: mcpConnection.readOnlyToolIds } }), { mode: 0o600 });
+    if (process.env.STRATA_TEST_STATE_OUTPUT) writeFileSync(process.env.STRATA_TEST_STATE_OUTPUT, JSON.stringify({ calls, ...(roomBots ? { teamChannel: roomBots.team.channel(roomTeam.id), roomTurns, roomTeam, roomEmptyTeam, ...(teamSettingsMode ? { teamSettings: roomBots.team.list(), roomMembers, roomExtraMember, teamSettingsFolder, teamSettingsOtherFolder, teamSettingsActions } : {}) } : {}), ...(lifecycleProfiles ? { lifecycle: await lifecycleProfiles.list() } : {}), savedTeam, teamRun, skillAssignments, skills: skillCatalog(), connectionAccess: { botIds: mcpConnection.botIds, enabledToolIds: mcpConnection.enabledToolIds, readOnlyToolIds: mcpConnection.readOnlyToolIds } }), { mode: 0o600 });
     await close();
   } else {
     if (process.argv.length > 2) throw new Error('Usage: companion-fixture.mjs [--test|--test-downloads|--test-bots|--test-computer|--test-workspace-skills|--test-workspace-connections|--test-workspace-teams|--test-facelift|--test-bot-lifecycle|--test-bot-avatar-states <simulator destination>]');

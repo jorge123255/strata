@@ -56,28 +56,101 @@ struct BotTeamEditor: View {
     @ObservedObject var store: CompanionStore
     @ObservedObject var workspace: BotWorkspaceStore
     @Environment(\.dismiss) private var dismiss
-    @State private var name = ""
-    @State private var selected: Set<String> = []
-    @State private var coordinator = ""
-    @State private var limits = BotTeamLimits()
-    @FocusState private var nameFocused: Bool
+    @State private var baseline: BotTeam?
+    @State private var name: String
+    @State private var selected: Set<String>
+    @State private var coordinator: String
+    @State private var limits: BotTeamLimits
+    @State private var executionMode: String
+    @State private var computerId: String
+    @State private var folder: String
+    @State private var confirmingReload = false
+    @FocusState private var focused: Field?
+    private enum Field { case name, folder }
+
+    init(store: CompanionStore, workspace: BotWorkspaceStore, team: BotTeam? = nil) {
+        self.store = store; self.workspace = workspace
+        _baseline = State(initialValue: team)
+        _name = State(initialValue: team?.name ?? "")
+        _selected = State(initialValue: Set(team?.memberIds ?? []))
+        _coordinator = State(initialValue: team?.coordinatorId ?? "")
+        _limits = State(initialValue: team?.limits ?? BotTeamLimits())
+        _executionMode = State(initialValue: team?.execution?.mode ?? "individual")
+        _computerId = State(initialValue: team?.execution?.computerId ?? "")
+        _folder = State(initialValue: team?.execution?.workspace ?? "")
+    }
+    private var supportsSettings: Bool { workspace.teams?.teamSettingsSupported == true }
+    private var current: BotTeam? { baseline.flatMap { old in workspace.teams?.teams.first { $0.id == old.id } } }
+    private var hasActiveWork: Bool { baseline.map { old in workspace.teams?.runs.contains { $0.teamId == old.id && $0.isActive } == true } ?? false }
+    private var changed: Bool { baseline != nil && (current == nil || current?.revision != baseline?.revision) }
+    private var computers: [BotTeamComputer] { (workspace.teams?.teamComputers ?? []).filter { $0.memberId == nil || selected.contains($0.memberId!) } }
+    private var chosenComputer: BotTeamComputer? { computers.first { $0.id == computerId } }
+    private var draft: BotTeamDraft {
+        BotTeamDraft(name: name.trimmingCharacters(in: .whitespacesAndNewlines), memberIds: selected.sorted(), coordinatorId: coordinator, limits: limits,
+                     execution: supportsSettings ? (executionMode == "shared" ? BotTeamExecution(mode: "shared", computerId: computerId, workspace: folder.trimmingCharacters(in: .whitespacesAndNewlines)) : .individual) : nil)
+    }
+    private var canSave: Bool {
+        BotWorkspaceStore.validTeamDraft(draft) && workspace.mutation == nil && !hasActiveWork && !changed &&
+        (baseline == nil || (supportsSettings && baseline?.revision != nil)) &&
+        (executionMode != "shared" || (chosenComputer?.available == true && chosenComputer?.allowsFolder(folder.trimmingCharacters(in: .whitespacesAndNewlines)) == true))
+    }
     var body: some View {
         NavigationStack {
             Form {
-                Section("Team") { TextField("Team name", text: $name).focused($nameFocused).submitLabel(.done).onSubmit { nameFocused = false }.accessibilityIdentifier("botTeamNameInput") }
-                Section("Members") {
+                Section("Team") {
+                    TextField("Team name", text: $name).focused($focused, equals: .name).submitLabel(.done).onSubmit { focused = nil }.accessibilityIdentifier("botTeamNameInput")
+                }
+                Section {
                     ForEach(store.botCatalog?.bots ?? []) { bot in
-                        Toggle(isOn: Binding(get: { selected.contains(bot.id) }, set: { on in
-                            if on { selected.insert(bot.id); if coordinator.isEmpty { coordinator = bot.id } }
-                            else { selected.remove(bot.id); if coordinator == bot.id { coordinator = selected.sorted().first ?? "" } }
-                        })) {
-                            HStack { AvatarBadge(bot.face, size: 32); Text(bot.name) }
-                        }.accessibilityIdentifier("teamMember-\(bot.id)")
+                        memberToggle(id: bot.id, name: bot.name, face: bot.face)
+                    }
+                    ForEach(selected.subtracting(Set(store.botCatalog?.bots.map(\.id) ?? [])).sorted(), id: \.self) { id in
+                        memberToggle(id: id, name: "Unavailable bot", face: .default(for: "Bot"))
                     }
                     Picker("Coordinator", selection: $coordinator) {
-                        if coordinator.isEmpty { Text("Choose members first").tag("") }
+                        if coordinator.isEmpty { Text("Choose a coordinator").tag("") }
                         ForEach((store.botCatalog?.bots ?? []).filter { selected.contains($0.id) }) { bot in Text(bot.name).tag(bot.id) }
                     }.accessibilityIdentifier("teamCoordinatorPicker")
+                    Text("The coordinator assigns work and brings results together. Choose 2–12 teammates.").font(.caption).foregroundStyle(.secondary)
+                } header: { Text("Team members") }
+                if supportsSettings {
+                    Section {
+                        Picker("Execution", selection: $executionMode) {
+                            Text("Each bot’s computer").tag("individual")
+                            Text("Shared team computer").tag("shared")
+                        }.accessibilityIdentifier("teamExecutionPicker")
+                        if executionMode == "shared" {
+                            Picker("Computer", selection: Binding(get: { computerId }, set: { id in
+                                computerId = id
+                                folder = computers.first { $0.id == id }?.workspace ?? ""
+                            })) {
+                                Text("Choose a configured computer").tag("")
+                                if !computerId.isEmpty, chosenComputer == nil { Text("Saved computer unavailable").tag(computerId).disabled(true) }
+                                ForEach(computers) { computer in
+                                    Text(computer.name + (computer.available ? "" : " · Unavailable")).tag(computer.id).disabled(!computer.available)
+                                }
+                            }.accessibilityIdentifier("teamComputerPicker")
+                            if let computer = chosenComputer {
+                                Label(computer.label, systemImage: computer.isIsolated ? "rectangle.inset.filled.and.person.filled" : "desktopcomputer")
+                                    .font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("teamComputerContext")
+                                if let detail = computer.detail, !detail.isEmpty { Text(detail).font(.caption).foregroundStyle(.secondary) }
+                            }
+                            HStack(alignment: .top) {
+                                TextField("Full folder path on this computer", text: $folder, axis: .vertical)
+                                    .font(.body.monospaced()).autocorrectionDisabled().textInputAutocapitalization(.never)
+                                    .focused($focused, equals: .folder).accessibilityIdentifier("teamWorkingFolderInput")
+                                if !folder.isEmpty {
+                                    Button { folder = ""; focused = .folder } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                                        .buttonStyle(.borderless).accessibilityLabel("Clear working folder").accessibilityIdentifier("clearTeamWorkingFolderButton")
+                                }
+                            }
+                            Text(chosenComputer?.isIsolated == true ? "Use a folder inside this isolated computer’s /workspace. This does not select a folder on your iPhone or Mac." : "Enter or paste the full folder path on the selected computer. The team shares files there; your iPhone’s folders are separate.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            Text("Each teammate keeps its saved computer and working folder.").font(.caption).foregroundStyle(.secondary)
+                        }
+                        Text("Models, approval policies and assigned tools remain specific to each bot. Saving starts no work.").font(.caption).foregroundStyle(.secondary)
+                    } header: { Text("Computer & working folder") }
                 }
                 Section {
                     DisclosureGroup("Work limits") {
@@ -87,22 +160,63 @@ struct BotTeamEditor: View {
                         Stepper("Conversation turns: \(limits.maxTurns)", value: $limits.maxTurns, in: 1...100)
                         Stepper("Time limit: \(limits.maxDurationMs / 60_000) minutes", value: Binding(get: { limits.maxDurationMs / 60_000 }, set: { limits.maxDurationMs = $0 * 60_000 }), in: 1...60)
                     }
-                    Text("Review and enable the saved team before sending its first task. Each bot keeps its own provider, permissions and assigned tools.").font(.caption).foregroundStyle(.secondary)
-                    BotWorkspaceMessage(workspace: workspace, key: "teams")
+                    if baseline == nil { Text("Review and enable the saved team before sending its first task.").font(.caption).foregroundStyle(.secondary) }
                 }
             }.disabled(workspace.mutation != nil)
-                .navigationTitle("Create team").navigationBarTitleDisplayMode(.inline)
+                .safeAreaInset(edge: .bottom) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        if hasActiveWork { Label("Team work is active. Finish or stop it before changing the team.", systemImage: "clock").font(.caption).accessibilityIdentifier("teamEditActiveWorkMessage") }
+                        if changed {
+                            Text("This team changed on another device. Reload its latest settings before saving.").font(.caption).accessibilityIdentifier("teamEditConflictMessage")
+                            Button("Reload latest team") { confirmingReload = true }.font(.subheadline).accessibilityIdentifier("reloadBotTeamButton")
+                        }
+                        BotWorkspaceMessage(workspace: workspace, key: "teams")
+                        Button(baseline == nil ? "Create team" : "Save changes") { save() }
+                            .buttonStyle(.borderedProminent).frame(maxWidth: .infinity).disabled(!canSave)
+                            .accessibilityIdentifier("confirmBotTeamButton")
+                    }.padding(16).frame(maxWidth: .infinity).background(.regularMaterial)
+                        .accessibilityElement(children: .contain).accessibilityIdentifier("teamEditorFooter")
+                }
+                .navigationTitle(baseline == nil ? "Create team" : "Edit team").navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(workspace.mutation != nil) }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Create") { Task {
-                            if await workspace.createTeam(BotTeamDraft(name: name.trimmingCharacters(in: .whitespacesAndNewlines), memberIds: selected.sorted(), coordinatorId: coordinator, limits: limits)) { dismiss() }
-                        } }.disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || name.count > 80 || selected.count < 2 || selected.count > 12 || !selected.contains(coordinator) || workspace.mutation != nil)
-                            .accessibilityIdentifier("confirmBotTeamButton")
-                    }
-                    ToolbarItemGroup(placement: .keyboard) { if nameFocused { Spacer(); Button("Done") { nameFocused = false }.accessibilityIdentifier("dismissBotTeamNameKeyboardButton") } }
+                    ToolbarItemGroup(placement: .keyboard) { if focused != nil { Spacer(); Button("Done") { focused = nil }.accessibilityIdentifier("dismissBotTeamNameKeyboardButton") } }
                 }
                 .interactiveDismissDisabled(workspace.mutation != nil)
+                .confirmationDialog("Discard your changes and reload this team?", isPresented: $confirmingReload) {
+                    Button("Reload latest team", role: .destructive) { if let current { reload(current) } }
+                }
+                .task { await store.refreshBots(); await workspace.refreshTeams() }
+        }
+    }
+    private func memberToggle(id: String, name: String, face: AvatarConfig) -> some View {
+        let anchor = executionMode == "shared" && chosenComputer?.memberId == id
+        return Toggle(isOn: Binding(get: { selected.contains(id) }, set: { on in
+            if on { selected.insert(id); if coordinator.isEmpty { coordinator = id } }
+            else if !anchor { selected.remove(id); if coordinator == id { coordinator = "" } }
+        })) {
+            HStack {
+                AvatarBadge(face, size: 32)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(name)
+                    if anchor { Text("Hosts the shared computer. Choose another before removing.").font(.caption).foregroundStyle(.secondary) }
+                }
+            }
+        }.disabled(anchor).accessibilityIdentifier("teamMember-\(id)")
+    }
+    private func reload(_ team: BotTeam) {
+        baseline = team; name = team.name; selected = Set(team.memberIds); coordinator = team.coordinatorId; limits = team.limits
+        executionMode = team.execution?.mode ?? "individual"; computerId = team.execution?.computerId ?? ""; folder = team.execution?.workspace ?? ""
+    }
+    private func save() {
+        guard canSave else { return }
+        focused = nil
+        let value = draft
+        Task {
+            let saved: Bool
+            if let baseline { saved = await workspace.updateTeam(baseline, draft: value) }
+            else { saved = await workspace.createTeam(value) }
+            if saved { dismiss() }
         }
     }
 }
@@ -120,6 +234,7 @@ struct BotTeamDetailView: View {
     @State private var confirmingStop: BotTeamRun?
     @State private var visible = false
     @State private var showingDetails = false
+    @State private var editingTeam: BotTeam?
     @State private var settingsExpanded = false
     @State private var tasksExpanded = false
     @State private var initiallyPositioned = false
@@ -290,18 +405,35 @@ struct BotTeamDetailView: View {
                 }
             }.strataList().navigationTitle("Team details").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingDetails = false }.accessibilityIdentifier("closeTeamDetailsButton") } }
+                .sheet(item: $editingTeam) { team in BotTeamEditor(store: store, workspace: workspace, team: team) }
                 .confirmationDialog("Stop this team task and its delegated work?", isPresented: Binding(get: { confirmingStop != nil }, set: { if !$0 { confirmingStop = nil } })) {
                     if let run = confirmingStop { Button("Stop all team work", role: .destructive) { confirmingStop = nil; Task { await workspace.stopRun(run); await workspace.refreshChannel(teamId) } } }
                 }
         }
     }
     @ViewBuilder private func teamSettings(_ team: BotTeam) -> some View {
+        Button("Edit team members & settings", systemImage: "person.2.badge.gearshape") { editingTeam = team }
+            .disabled(workspace.teams?.teamSettingsSupported != true || team.revision == nil || workspace.mutation != nil || !activeRuns.isEmpty)
+            .accessibilityIdentifier("editBotTeamButton")
+        if !activeRuns.isEmpty { Text("Team work is active. Finish or stop it before changing the team.").font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("teamSettingsActiveWorkMessage") }
+        if workspace.teams?.teamSettingsSupported != true { Text("Update Strata on your Mac to edit this team and choose a shared computer.").font(.caption).foregroundStyle(.secondary) }
         ForEach(team.memberIds, id: \.self) { id in
             let bot = store.botCatalog?.bots.first { $0.id == id }
             HStack { AvatarBadge(bot?.face ?? .default(for: "Bot"), size: 30); Text(bot?.name ?? "Unavailable bot"); Spacer(); if id == team.coordinatorId { Text("Coordinator").font(.caption).foregroundStyle(.secondary) } }
         }
+        if let execution = team.execution, execution.isShared {
+            let computer = workspace.teams?.teamComputers?.first { $0.id == execution.computerId }
+            LabeledContent("Shared computer", value: computer?.name ?? "Saved computer unavailable")
+            if let folder = execution.workspace { LabeledContent("Working folder", value: folder).font(.subheadline).accessibilityIdentifier("teamSavedWorkingFolder") }
+            if computer?.isIsolated == true, let anchor = computer?.memberId {
+                NavigationLink {
+                    BotComputerView(store: store, botId: anchor, name: computer?.name ?? team.name)
+                } label: { Label("Open team computer", systemImage: "desktopcomputer") }
+                    .accessibilityIdentifier("openTeamComputerButton")
+            }
+        } else { LabeledContent("Execution", value: "Each bot’s computer") }
         LabeledContent("Limits", value: "\(team.limits.maxParallel) parallel · \(team.limits.maxTurns) turns · \(team.limits.maxDurationMs / 60_000)m")
-        Text("Everyone can join the conversation. The coordinator assigns work and brings results together. Each bot keeps its own model, computer and permissions.").font(.caption).foregroundStyle(.secondary)
+        Text("Everyone can join the conversation. The coordinator assigns work and brings results together. Each bot keeps its own model and permissions.").font(.caption).foregroundStyle(.secondary)
         Button(team.enabled ? "Disable team" : "Enable reviewed team") { Task { await workspace.setTeamEnabled(team, enabled: !team.enabled) } }
             .disabled(workspace.mutation != nil || !activeRuns.isEmpty)
             .accessibilityIdentifier("toggleBotTeamEnabledButton")

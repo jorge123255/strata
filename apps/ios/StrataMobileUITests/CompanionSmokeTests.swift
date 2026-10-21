@@ -817,6 +817,122 @@ final class CompanionSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testTeamMembershipSharedComputerFoldersConflictAndPersistence() async throws {
+        let control = try pairWorkspaceFixture(), initial = try await fixtureControl(control, action: "state")
+        let team = try XCTUnwrap(initial["roomTeam"] as? [String: Any]), id = try XCTUnwrap(team["id"] as? String)
+        let members = try XCTUnwrap(initial["roomMembers"] as? [[String: Any]])
+        let owner = try XCTUnwrap(members[0]["id"] as? String), builder = try XCTUnwrap(members[1]["id"] as? String), reviewer = try XCTUnwrap(members[2]["id"] as? String)
+        let helper = try XCTUnwrap((initial["roomExtraMember"] as? [String: Any])?["id"] as? String)
+        let localFolder = try XCTUnwrap(initial["teamSettingsFolder"] as? String), otherFolder = try XCTUnwrap(initial["teamSettingsOtherFolder"] as? String)
+        let channel = try XCTUnwrap(initial["teamChannel"] as? [String: Any]), initialMessages = try XCTUnwrap(channel["messages"] as? [[String: Any]])
+        let originalMessageIds = initialMessages.compactMap { $0["id"] as? String }
+        try tapWorkspace(app.buttons["team-" + id])
+        func openEditor() throws {
+            try openTeamDetails()
+            if !app.buttons["editBotTeamButton"].exists { try tapWorkspace(app.buttons["botTeamSettingsDisclosure"]) }
+            try tapWorkspace(app.buttons["editBotTeamButton"])
+            try require(app.textFields["botTeamNameInput"])
+        }
+        func replaceFolder(_ value: String) throws {
+            try tapWorkspace(app.buttons["clearTeamWorkingFolderButton"])
+            let field = app.descendants(matching: .any).matching(identifier: "teamWorkingFolderInput").firstMatch
+            try tapWorkspace(field); field.typeText(value)
+            if app.keyboards.firstMatch.exists { app.buttons["dismissBotTeamNameKeyboardButton"].tap() }
+        }
+        func save() throws {
+            let name = app.textFields["botTeamNameInput"]
+            try waitEnabled(app.buttons["confirmBotTeamButton"]); app.buttons["confirmBotTeamButton"].tap()
+            let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: name)
+            guard XCTWaiter.wait(for: [closed], timeout: 15) == .completed else { throw acceptanceError("Team save did not finish.") }
+        }
+        try openEditor()
+        try tapSwitch(app.switches["teamMember-" + helper]); try tapSwitch(app.switches["teamMember-" + reviewer])
+        try tapWorkspace(app.buttons["teamCoordinatorPicker"]); try require(app.buttons["Builder"]); app.buttons["Builder"].tap()
+        try tapWorkspace(app.buttons["teamExecutionPicker"]); app.buttons["Shared team computer"].tap()
+        try tapWorkspace(app.buttons["teamComputerPicker"]); app.buttons["This Mac"].tap()
+        try replaceFolder(localFolder)
+        attachScreenshot("Team settings — edited members coordinator and shared Mac folder")
+        try save()
+        try tapWorkspace(app.descendants(matching: .any).matching(identifier: "teamSavedWorkingFolder").firstMatch, performTap: false)
+        app.buttons["closeTeamDetailsButton"].tap()
+        try tapWorkspace(app.staticTexts["Hi everyone! I am Reviewer. Ready to help the team."], performTap: false)
+        app.terminate(); app.launch(); tapTab("Bots"); try tapWorkspace(app.buttons["team-" + id])
+        try openEditor()
+        XCTAssertEqual(app.switches["teamMember-" + helper].value as? String, "1")
+        XCTAssertEqual(app.switches["teamMember-" + reviewer].value as? String, "0")
+        try tapWorkspace(app.buttons["teamCoordinatorPicker"], performTap: false)
+        XCTAssertTrue(app.buttons["teamCoordinatorPicker"].label.contains("Builder"))
+        let folder = app.descendants(matching: .any).matching(identifier: "teamWorkingFolderInput").firstMatch
+        try tapWorkspace(folder, performTap: false); XCTAssertEqual(folder.value as? String, localFolder)
+        attachScreenshot("Team settings — roster and shared folder retained after relaunch")
+        try replaceFolder(otherFolder)
+        _ = try await fixtureControl(control, action: "team-settings-change")
+        try require(app.staticTexts["teamEditConflictMessage"])
+        XCTAssertEqual(folder.value as? String, otherFolder, "A remote change must not silently replace the unsaved folder.")
+        XCTAssertFalse(app.buttons["confirmBotTeamButton"].isEnabled)
+        attachScreenshot("Team settings — version conflict preserves the draft")
+        app.buttons["reloadBotTeamButton"].tap()
+        try XCTUnwrap(app.buttons.matching(identifier: "Reload latest team").allElementsBoundByIndex.last(where: { $0.isHittable })).tap()
+        let reloaded = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.staticTexts["teamEditConflictMessage"])
+        XCTAssertEqual(XCTWaiter.wait(for: [reloaded], timeout: 5), .completed)
+        try tapWorkspace(folder, performTap: false); XCTAssertEqual(folder.value as? String, localFolder)
+        try tapWorkspace(app.buttons["teamComputerPicker"]); app.buttons["Coordinator’s computer"].tap()
+        for _ in 0..<3 {
+            app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.32)).press(forDuration: 0.02, thenDragTo: app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.73)))
+        }
+        try require(app.switches["teamMember-" + owner])
+        XCTAssertFalse(app.switches["teamMember-" + owner].isEnabled, "The shared CUA owner must remain a member.")
+        try replaceFolder("/outside")
+        XCTAssertFalse(app.buttons["confirmBotTeamButton"].isEnabled)
+        try replaceFolder("/workspace/team")
+        attachScreenshot("Team settings — exact isolated guest and contained working folder")
+        try save()
+        try tapWorkspace(app.buttons["openTeamComputerButton"])
+        try require(app.descendants(matching: .any).matching(identifier: "computerControlState").firstMatch)
+        XCTAssertTrue(app.buttons["startBotComputerButton"].exists)
+        attachScreenshot("Team settings — existing shared CUA guest opens view only")
+        app.navigationBars.buttons.firstMatch.tap()
+        app.buttons["closeTeamDetailsButton"].tap()
+        try openEditor()
+        try tapWorkspace(app.buttons["teamComputerPicker"]); app.buttons["Fixture SSH computer"].tap()
+        let emptyFolder = app.descendants(matching: .any).matching(identifier: "teamWorkingFolderInput").firstMatch
+        try tapWorkspace(emptyFolder); emptyFolder.typeText("/srv/team fixture")
+        app.buttons["dismissBotTeamNameKeyboardButton"].tap()
+        attachScreenshot("Team settings — configured SSH target and remote folder")
+        try save(); app.buttons["closeTeamDetailsButton"].tap()
+        try openEditor()
+        _ = try await fixtureControl(control, action: "team-settings-active")
+        try require(app.staticTexts["teamEditActiveWorkMessage"])
+        XCTAssertFalse(app.buttons["confirmBotTeamButton"].isEnabled)
+        attachScreenshot("Team settings — active work blocks changes without losing the draft")
+        app.buttons["Cancel"].tap()
+        try tapWorkspace(app.buttons["editBotTeamButton"], performTap: false); XCTAssertFalse(app.buttons["editBotTeamButton"].isEnabled)
+        _ = try await fixtureControl(control, action: "team-settings-idle")
+        try waitEnabled(app.buttons["editBotTeamButton"])
+        app.buttons["closeTeamDetailsButton"].tap()
+        app.terminate()
+        _ = try await fixtureControl(control, action: "appearance-dark")
+        app.launchArguments = ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
+        app.launch(); tapTab("Bots"); try tapWorkspace(app.buttons["team-" + id]); try openEditor()
+        try tapWorkspace(app.buttons["teamComputerPicker"], performTap: false)
+        attachScreenshot("Team settings — Dark accessibility XXXL and reachable Save")
+        XCTAssertTrue(app.buttons["confirmBotTeamButton"].isHittable)
+        app.buttons["Cancel"].tap(); app.buttons["closeTeamDetailsButton"].tap()
+        let final = try await fixtureControl(control, action: "state")
+        let settings = try XCTUnwrap(final["teamSettings"] as? [String: Any]), teams = try XCTUnwrap(settings["teams"] as? [[String: Any]])
+        let saved = try XCTUnwrap(teams.first { $0["id"] as? String == id })
+        XCTAssertEqual(Set(saved["memberIds"] as? [String] ?? []), Set([owner, builder, helper]))
+        XCTAssertEqual(saved["coordinatorId"] as? String, builder)
+        XCTAssertEqual((saved["execution"] as? [String: String])?["workspace"], "/srv/team fixture")
+        let finalChannel = try XCTUnwrap(final["teamChannel"] as? [String: Any]), finalMessages = try XCTUnwrap(finalChannel["messages"] as? [[String: Any]])
+        XCTAssertTrue(Set(originalMessageIds).isSubset(of: Set(finalMessages.compactMap { $0["id"] as? String })))
+        XCTAssertTrue((finalChannel["activeRuns"] as? [Any])?.isEmpty == true)
+        let calls = try XCTUnwrap(final["calls"] as? [[String: Any]])
+        XCTAssertEqual(calls.filter { $0["method"] as? String == "PATCH" }.count, 3)
+        XCTAssertTrue(calls.allSatisfy { $0["method"] as? String == "GET" || ($0["method"] as? String == "PATCH" && $0["path"] as? String == "/api/bots/teams/" + id) })
+    }
+
+    @MainActor
     func testTeamExplicitTaskSharedThinkingStopAndActivity() async throws {
         let controlURL = try pairWorkspaceFixture()
         try openCreateMenu()
@@ -851,11 +967,11 @@ final class CompanionSmokeTests: XCTestCase {
         let stop = app.buttons["stopBotTeamRun-run_fixture"]
         try require(stop)
         _ = try await fixtureControl(controlURL, action: "team-progress")
-        try openTeamDetails(); try require(app.staticTexts["7 turns"]); app.buttons["closeTeamDetailsButton"].tap()
+        try openTeamDetails(); try tapWorkspace(app.staticTexts["7 turns"], performTap: false); app.buttons["closeTeamDetailsButton"].tap()
         try waitEnabled(stop); stop.tap()
         try require(app.buttons["Stop all team work"]); app.buttons["Stop all team work"].tap()
         try openTeamDetails(); try tapWorkspace(app.buttons["botTeamPreviousTasksDisclosure"])
-        try require(app.staticTexts["Cancelled"])
+        try tapWorkspace(app.staticTexts["Cancelled"], performTap: false)
         app.buttons["closeTeamDetailsButton"].tap()
         app.navigationBars.buttons.firstMatch.tap()
         try selectWorkspace("Activity")
@@ -917,6 +1033,8 @@ final class CompanionSmokeTests: XCTestCase {
             var bottom = window.maxY - 24
             if app.tabBars.firstMatch.exists { bottom = min(bottom, app.tabBars.firstMatch.frame.minY - 18) }
             if app.keyboards.firstMatch.exists { bottom = min(bottom, app.keyboards.firstMatch.frame.minY - 12) }
+            let teamFooter = app.otherElements["teamEditorFooter"]
+            if teamFooter.exists { bottom = min(bottom, teamFooter.frame.minY - 12) }
             // The persistent roster controls sit above the tab bar. Swiping
             // from that overlay cannot move the underlying list.
             let targetIdentifier = element.exists ? element.identifier : ""
@@ -925,7 +1043,7 @@ final class CompanionSmokeTests: XCTestCase {
                 bottom = min(bottom, rosterMenu.frame.minY - 12)
             }
             let teamInput = app.descendants(matching: .any).matching(identifier: "botTeamTaskInput").firstMatch
-            if !app.buttons["closeTeamDetailsButton"].exists, teamInput.exists, !["botTeamTaskInput", "startBotTeamTaskButton", "teamChannelRecipientPicker", "teamComposerMenuButton"].contains(targetIdentifier) {
+            if !app.buttons["closeTeamDetailsButton"].exists, !app.buttons["confirmBotTeamButton"].exists, teamInput.exists, !["botTeamTaskInput", "startBotTeamTaskButton", "teamChannelRecipientPicker", "teamComposerMenuButton"].contains(targetIdentifier) {
                 bottom = min(bottom, teamInput.frame.minY - 54)
             }
             let frame = element.exists ? element.frame : .zero, y = frame.midY

@@ -1256,6 +1256,127 @@ final class BotWorkspaceTests: XCTestCase {
     }
     private func decode<T: Decodable>(_ value: [String: Any], as type: T.Type) throws -> T { try JSONDecoder().decode(type, from: JSONSerialization.data(withJSONObject: value)) }
 
+    private func managedTeam(revision: Int = 1) -> [String: Any] {
+        var value = team(enabled: true); value["revision"] = revision; value["execution"] = ["mode": "individual"]; return value
+    }
+    private func settingsSnapshot(revision: Int = 1, active: Bool = false) -> [String: Any] {
+        ["teams": [managedTeam(revision: revision)], "runs": active ? [runRecord()] : [], "teamSettingsSupported": true,
+         "teamComputers": [["id": "host:ssh_fixture", "name": "Saved SSH computer", "label": "Configured remote computer", "computerMode": "host", "workspace": "/srv/team", "available": true],
+                           ["id": "cua:bot_coder", "name": "Coder’s computer", "label": "Isolated computer", "computerMode": "cua", "workspace": "/workspace", "available": true, "memberId": "bot_coder"]]]
+    }
+    private func sharedDraft() -> BotTeamDraft {
+        BotTeamDraft(name: "Edited team", memberIds: ["bot_coder", "bot_reviewer"], coordinatorId: "bot_reviewer", execution: BotTeamExecution(mode: "shared", computerId: "host:ssh_fixture", workspace: "/srv/team project"))
+    }
+    func testTeamSettingsRemainOptionalForOlderHosts() throws {
+        let old = try decode(["teams": [team()], "runs": []], as: BotTeamsSnapshot.self)
+        XCTAssertNil(old.teamSettingsSupported); XCTAssertNil(old.teamComputers)
+        XCTAssertNil(old.teams.first?.revision); XCTAssertNil(old.teams.first?.execution)
+        let modern = try decode(settingsSnapshot(), as: BotTeamsSnapshot.self)
+        XCTAssertEqual(modern.teamComputers?.last?.workspace, "/workspace")
+        XCTAssertTrue(modern.teamComputers?.last?.isIsolated == true)
+    }
+    func testTeamUpdateUsesExactRevisionAnchorAndFolderWithoutRecreatingOrChangingHistory() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }; var revision = 1
+        fixture.respond { request in
+            if request.url!.path.hasSuffix("/channel") { return self.channelSnapshot([self.channelEntry(1)]) }
+            if request.httpMethod == "PATCH" { revision = 2; return ["team": self.managedTeam(revision: revision)] }
+            if request.url!.path == "/v1/bots/teams" { return self.settingsSnapshot(revision: revision) }
+            return nil
+        }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore()
+        await workspace.refreshTeams(); await workspace.refreshChannel("team_fixture")
+        let original = try XCTUnwrap(workspace.teams?.teams.first)
+        let saved = await workspace.updateTeam(original, draft: sharedDraft())
+        XCTAssertTrue(saved); XCTAssertEqual(workspace.teams?.teams.first?.revision, 2)
+        XCTAssertEqual(workspace.channels["team_fixture"]?.messages.map(\.id), ["tm_1"])
+        let patch = try XCTUnwrap(fixture.requests.first { $0.method == "PATCH" })
+        XCTAssertEqual(patch.path, "/v1/bots/teams/team_fixture")
+        XCTAssertEqual(Set(patch.jsonBody!.keys), Set(["name", "memberIds", "coordinatorId", "limits", "execution", "expectedRevision"]))
+        XCTAssertEqual(patch.jsonBody?["expectedRevision"] as? Int, 1)
+        XCTAssertEqual(patch.jsonBody?["execution"] as? [String: String], ["mode": "shared", "computerId": "host:ssh_fixture", "workspace": "/srv/team project"])
+        XCTAssertFalse(fixture.requests.contains { $0.method == "POST" || $0.path.contains("/conversations") || $0.path.contains("/computer") })
+    }
+    func testInvalidMembershipFolderAnchorAndActiveOrStaleEditsCannotWrite() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }; var active = true; var revision = 1
+        fixture.respond { _ in self.settingsSnapshot(revision: revision, active: active) }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(); await workspace.refreshTeams()
+        let original = try XCTUnwrap(workspace.teams?.teams.first)
+        let busy = await workspace.updateTeam(original, draft: sharedDraft()); XCTAssertFalse(busy)
+        active = false; revision = 2; await workspace.refreshTeams()
+        let stale = await workspace.updateTeam(original, draft: sharedDraft()); XCTAssertFalse(stale)
+        let fresh = try XCTUnwrap(workspace.teams?.teams.first)
+        var invalid = sharedDraft(); invalid.memberIds = ["bot_coder", "bot_coder"]
+        var drafts = [invalid]
+        invalid = sharedDraft(); invalid.coordinatorId = "outside"; drafts.append(invalid)
+        invalid = sharedDraft(); invalid.execution?.computerId = "outside"; drafts.append(invalid)
+        invalid = sharedDraft(); invalid.execution?.workspace = "relative/folder"; drafts.append(invalid)
+        invalid = sharedDraft(); invalid.execution?.workspace = "/srv/invalid\nfolder"; drafts.append(invalid)
+        invalid = sharedDraft(); invalid.execution?.mode = "unknown"; drafts.append(invalid)
+        for draft in drafts { let saved = await workspace.updateTeam(fresh, draft: draft); XCTAssertFalse(saved) }
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+    }
+    func testSharedCUARequiresItsMemberAndContainedFolderAndUnavailableTargetCannotWrite() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        var snapshot = settingsSnapshot()
+        fixture.respond { _ in snapshot }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(); await workspace.refreshTeams()
+        let original = try XCTUnwrap(workspace.teams?.teams.first)
+        var draft = sharedDraft(); draft.execution = BotTeamExecution(mode: "shared", computerId: "cua:bot_coder", workspace: "/workspace/sub project")
+        XCTAssertTrue(BotWorkspaceStore.validTeamDraft(draft))
+        let isolated = try XCTUnwrap(workspace.teams?.teamComputers?.last)
+        XCTAssertTrue(isolated.allowsFolder("/workspace/sub project"))
+        for folder in ["/workspace/../outside", "/workspace-sibling", "/etc", "/workspace/sub/../../outside"] {
+            draft.execution?.workspace = folder
+            let saved = await workspace.updateTeam(original, draft: draft); XCTAssertFalse(saved)
+        }
+        draft.execution?.workspace = "/workspace"
+        draft.memberIds = ["bot_reviewer", "bot_other"]
+        let removedAnchor = await workspace.updateTeam(original, draft: draft); XCTAssertFalse(removedAnchor)
+        var rows = try XCTUnwrap(snapshot["teamComputers"] as? [[String: Any]])
+        rows[0]["available"] = false; snapshot["teamComputers"] = rows; await workspace.refreshTeams()
+        let unavailable = await workspace.updateTeam(original, draft: sharedDraft()); XCTAssertFalse(unavailable)
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+    }
+    func testTeamConflictRefreshesLatestWithoutRetryOrReplacingDraftHistory() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }; var revision = 1
+        fixture.respond { _ in self.settingsSnapshot(revision: revision) }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(); await workspace.refreshTeams()
+        let original = try XCTUnwrap(workspace.teams?.teams.first), held = fixture.hold("/v1/bots/teams/team_fixture")
+        let saved = Task { await workspace.updateTeam(original, draft: self.sharedDraft()) }
+        await fulfillment(of: [held.requested], timeout: 2)
+        revision = 2; held.finish(["error": "This team changed. Reload its latest settings."], status: 409)
+        let result = await saved.value; XCTAssertFalse(result)
+        XCTAssertEqual(workspace.teams?.teams.first?.revision, 2); XCTAssertEqual(original.revision, 1)
+        XCTAssertTrue(workspace.messages["teams"]?.contains("changed") == true)
+        XCTAssertEqual(fixture.requests.filter { $0.method == "PATCH" }.count, 1)
+        XCTAssertNil(workspace.mutation)
+    }
+    func testTeamUpdateAfterForgetCannotPublishOrRefreshAnotherMac() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { _ in self.settingsSnapshot() }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(); await workspace.refreshTeams()
+        let original = try XCTUnwrap(workspace.teams?.teams.first), held = fixture.hold("/v1/bots/teams/team_fixture")
+        let saving = Task { await workspace.updateTeam(original, draft: self.sharedDraft()) }
+        await fulfillment(of: [held.requested], timeout: 2); store.forgetMac()
+        held.finish(["team": managedTeam(revision: 2)])
+        let result = await saving.value; XCTAssertFalse(result)
+        XCTAssertEqual(workspace.teams?.teams.first?.revision, 1)
+        XCTAssertEqual(fixture.requests.count, 2); XCTAssertNil(workspace.mutation)
+    }
+    func testSharedTeamCreationAndEnablementUseSavedAnchorsWithoutStartingWork() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { request in request.httpMethod == "GET" ? self.settingsSnapshot() : ["team": self.managedTeam(revision: 2)] }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(); await workspace.refreshTeams()
+        let created = await workspace.createTeam(sharedDraft()); XCTAssertTrue(created)
+        let original = try XCTUnwrap(workspace.teams?.teams.first)
+        await workspace.setTeamEnabled(original, enabled: false)
+        let creation = try XCTUnwrap(fixture.requests.first { $0.method == "POST" })
+        XCTAssertEqual(creation.jsonBody?["enabled"] as? Bool, false)
+        XCTAssertEqual(creation.jsonBody?["execution"] as? [String: String], ["mode": "shared", "computerId": "host:ssh_fixture", "workspace": "/srv/team project"])
+        XCTAssertEqual(fixture.requests.first { $0.method == "PATCH" }?.jsonBody?["expectedRevision"] as? Int, 1)
+        XCTAssertFalse(fixture.requests.contains { $0.path.contains("/runs") || $0.path.contains("/messages") || $0.path.contains("/computer") })
+    }
+
     private func channelEntry(_ sequence: Int, teamId: String = "team_fixture", content: String = "Public team reply") -> [String: Any] {
         ["id": "tm_\(sequence)", "sequence": sequence, "teamId": teamId, "kind": "message", "author": ["type": "bot", "botId": "bot_reviewer", "name": "Reviewer", "avatarConfig": ["color": "sky", "eyes": "round", "ears": "round", "shape": "orb"]], "content": content, "createdAt": "2026-10-21T01:00:00.000Z", "chatId": "s_shared"]
     }

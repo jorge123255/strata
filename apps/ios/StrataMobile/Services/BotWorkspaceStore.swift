@@ -60,6 +60,7 @@ final class BotWorkspaceStore: ObservableObject {
             if (error as? CompanionHTTPError)?.statusCode == 409 {
                 if key == "skills" { await refreshSkills() }
                 else if key == "connections" { await refreshConnections() }
+                else if key == "teams" { await refreshTeams() }
             }
             if isCurrent() { messages[key] = message }
             return nil
@@ -67,15 +68,46 @@ final class BotWorkspaceStore: ObservableObject {
     }
 
     func createTeam(_ draft: BotTeamDraft) async -> Bool {
+        guard Self.validTeamDraft(draft), validTeamExecution(draft) else { return false }
         struct Result: Decodable { var team: BotTeam }
         let value: Result? = await change("teams", path: "/v1/bots/teams", body: draft)
         if value != nil { await refreshTeams() }
         return value != nil && isCurrent()
     }
-    func setTeamEnabled(_ team: BotTeam, enabled: Bool) async {
-        struct Update: Encodable { var enabled: Bool }
+    func updateTeam(_ team: BotTeam, draft: BotTeamDraft) async -> Bool {
+        guard teams?.teamSettingsSupported == true, CompanionClient.isSafeIdentifier(team.id),
+              let revision = team.revision, revision > 0,
+              teams?.teams.first(where: { $0.id == team.id })?.revision == revision,
+              teams?.runs.contains(where: { $0.teamId == team.id && $0.isActive }) != true,
+              Self.validTeamDraft(draft), validTeamExecution(draft) else { return false }
         struct Result: Decodable { var team: BotTeam }
-        let value: Result? = await change("teams", path: "/v1/bots/teams/\(team.id)", method: "PATCH", body: Update(enabled: enabled))
+        let body = BotTeamUpdate(expectedRevision: revision, name: draft.name, memberIds: draft.memberIds,
+                                 coordinatorId: draft.coordinatorId, limits: draft.limits, execution: draft.execution ?? .individual)
+        let value: Result? = await change("teams", path: "/v1/bots/teams/\(team.id)", method: "PATCH", body: body)
+        if value != nil { await refreshTeams() }
+        return value != nil && isCurrent()
+    }
+    private func validTeamExecution(_ draft: BotTeamDraft) -> Bool {
+        guard let execution = draft.execution, execution.isShared else { return true }
+        return teams?.teamSettingsSupported == true && teams?.teamComputers?.contains {
+            $0.id == execution.computerId && $0.available && ($0.memberId == nil || draft.memberIds.contains($0.memberId!)) && $0.allowsFolder(execution.workspace ?? "")
+        } == true
+    }
+    static func validTeamDraft(_ draft: BotTeamDraft) -> Bool {
+        guard !draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, draft.name.count <= 80,
+              (2...12).contains(draft.memberIds.count), Set(draft.memberIds).count == draft.memberIds.count,
+              draft.memberIds.allSatisfy(CompanionClient.isSafeIdentifier), draft.memberIds.contains(draft.coordinatorId) else { return false }
+        guard let execution = draft.execution else { return true }
+        if execution.mode == "individual" { return execution.computerId == nil && execution.workspace == nil }
+        guard execution.mode == "shared", let computer = execution.computerId, !computer.isEmpty, computer.utf8.count <= 250,
+              let path = execution.workspace, path.hasPrefix("/"), path.utf16.count <= 4_000,
+              !path.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { return false }
+        return true
+    }
+    func setTeamEnabled(_ team: BotTeam, enabled: Bool) async {
+        struct Update: Encodable { var enabled: Bool; var expectedRevision: Int? }
+        struct Result: Decodable { var team: BotTeam }
+        let value: Result? = await change("teams", path: "/v1/bots/teams/\(team.id)", method: "PATCH", body: Update(enabled: enabled, expectedRevision: team.revision))
         if value != nil { await refreshTeams() }
     }
     func startTeam(_ team: BotTeam, message: String, requestId: String) async -> BotTeamRun? {

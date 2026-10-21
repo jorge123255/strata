@@ -17,6 +17,33 @@ struct BotTeam: Decodable, Identifiable, Equatable {
     var limits: BotTeamLimits
     var createdAt: BotWorkspaceTimestamp?
     var channelPreview: BotTeamChannelPreview?
+    var revision: Int?
+    var execution: BotTeamExecution?
+}
+
+/// The target is a configured Mac/SSH computer or a member's exact CUA guest.
+/// A team never invents a new SSH connection or computer from a path.
+struct BotTeamExecution: Codable, Equatable {
+    var mode: String
+    var computerId: String?
+    var workspace: String?
+    static var individual: Self { Self(mode: "individual") }
+    var isShared: Bool { mode == "shared" }
+}
+
+struct BotTeamComputer: Decodable, Identifiable, Equatable {
+    var id: String
+    var name: String
+    var label: String
+    var computerMode: String
+    var workspace: String
+    var available: Bool
+    var detail: String?
+    var memberId: String?
+    var isIsolated: Bool { computerMode == "cua" }
+    func allowsFolder(_ path: String) -> Bool {
+        !isIsolated || ((path == "/workspace" || path.hasPrefix("/workspace/")) && !path.split(separator: "/").contains(".."))
+    }
 }
 
 struct BotTeamChannelPreview: Decodable, Equatable {
@@ -45,6 +72,8 @@ struct BotTeamsSnapshot: Decodable, Equatable {
     var teams: [BotTeam]
     var runs: [BotTeamRun]
     var reason: String?
+    var teamSettingsSupported: Bool?
+    var teamComputers: [BotTeamComputer]?
 }
 
 /// Immutable, attributed entries in the shared room. Detailed Thinking and tool
@@ -95,6 +124,16 @@ struct BotTeamDraft: Encodable {
     var coordinatorId: String
     var enabled = false
     var limits = BotTeamLimits()
+    var execution: BotTeamExecution?
+}
+
+struct BotTeamUpdate: Encodable {
+    var expectedRevision: Int
+    var name: String
+    var memberIds: [String]
+    var coordinatorId: String
+    var limits: BotTeamLimits
+    var execution: BotTeamExecution
 }
 
 struct BotWorkspaceActivity: Decodable, Identifiable, Equatable {
