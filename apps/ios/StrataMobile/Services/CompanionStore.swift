@@ -36,6 +36,8 @@ final class CompanionStore: ObservableObject {
     @Published private(set) var botsMessage: String?
     @Published private(set) var isLoadingBots = false
     @Published private(set) var creatingBotConversationId: String?
+    @Published private(set) var openingBotConversationId: String?
+    private var openingBotOperation: UUID?
     @Published private(set) var savingBotAvatarId: String?
     @Published private(set) var savingBotProfile = false
     @Published private(set) var botProfileError: String?
@@ -361,7 +363,60 @@ final class CompanionStore: ObservableObject {
     /// A Team routing/worker transcript remains accessible in full history, but
     /// its private prompt is never used as an individual bot's roster teaser.
     func botRosterConversations(_ bot: CompanionBot) -> [MacConversationSummary] {
-        botConversations(bot).filter { $0.teamId == nil }
+        botConversations(bot).filter { $0.teamId == nil && $0.teamRunId == nil && $0.parentChatId == nil }
+    }
+
+    func cancelOpeningBotConversation() {
+        guard openingBotOperation != nil else { return }
+        conversationGeneration = UUID(); isSelectingConversation = false
+    }
+
+    /// A roster tap opens this bot's personal chat, never a team worker's
+    /// transcript. Creating an empty chat freezes its saved settings only;
+    /// inference and computer actions still require an explicit message.
+    @discardableResult
+    func openBotConversation(_ botId: String) async -> Bool {
+        guard let client, let bot = botCatalog?.bots.first(where: { $0.id == botId }),
+              CompanionClient.isSafeIdentifier(botId), openingBotConversationId == nil,
+              creatingBotConversationId == nil, !isSending, !isSubmittingMessage, !savingBotProfile else { return false }
+        let generation = connectionGeneration, operation = UUID(), selection = UUID()
+        openingBotOperation = operation; openingBotConversationId = botId
+        conversationGeneration = selection; hasChosenConversation = true; isSelectingConversation = true; error = nil
+        defer {
+            if connectionGeneration == generation, openingBotOperation == operation {
+                openingBotOperation = nil; openingBotConversationId = nil; creatingBotConversationId = nil
+                if conversationGeneration == selection { isSelectingConversation = false }
+            }
+        }
+        do {
+            let list: MacConversationList = try await client.perform("/v1/conversations")
+            guard connectionGeneration == generation, openingBotOperation == operation,
+                  conversationGeneration == selection, !Task.isCancelled else { return false }
+            conversations = list.conversations
+            let savedIds = Set(bot.conversations ?? [])
+            let existing = list.conversations.first { $0.teamId == nil && $0.teamRunId == nil && $0.parentChatId == nil && ($0.botId == botId || ($0.botId == nil && savedIds.contains($0.id))) }
+            let detail: MacConversationDetail
+            if let existing {
+                detail = try await client.perform(conversationPath(existing.id))
+                guard detail.conversation.id == existing.id else { throw CompanionError.server("This bot’s conversation changed. Refresh Bots and try again.") }
+            } else {
+                if bot.paused == true { throw CompanionError.server("This bot is paused. Resume it in Bot settings to start a conversation.") }
+                creatingBotConversationId = botId
+                detail = try await client.perform("/v1/bots/" + escapedComponent(botId) + "/conversations", method: "POST", body: [String: String]())
+            }
+            guard connectionGeneration == generation, openingBotOperation == operation,
+                  conversationGeneration == selection, !Task.isCancelled else { return false }
+            guard detail.conversation.botId == botId, detail.conversation.teamId == nil,
+                  detail.conversation.teamRunId == nil, detail.conversation.parentChatId == nil else {
+                throw CompanionError.server("This conversation does not belong to the bot’s personal chat. Refresh Bots and try again.")
+            }
+            currentChatId = nil; messages = []; apply(detail); error = nil
+            return true
+        } catch is CancellationError { return false }
+        catch {
+            if connectionGeneration == generation, openingBotOperation == operation, conversationGeneration == selection { self.error = friendly(error) }
+            return false
+        }
     }
 
     var currentBotMood: BotMood {
@@ -383,7 +438,7 @@ final class CompanionStore: ObservableObject {
 
     @discardableResult
     func newBotConversation(_ bot: CompanionBot, computerId: String? = nil, modelId: String? = nil, workspace: String? = nil, effort: String? = nil, policy: BotApprovalPolicy? = nil) async -> Bool {
-        guard let client, let currentBot = botCatalog?.bots.first(where: { $0.id == bot.id }),
+        guard let client, let currentBot = botCatalog?.bots.first(where: { $0.id == bot.id }), openingBotConversationId == nil,
               !isSending, !isSubmittingMessage, creatingBotConversationId == nil, !savingBotProfile else { return false }
         if currentBot.paused == true { error = "This bot is paused. Resume it in Strata on your Mac."; return false }
         var options: [String: String] = [:]
@@ -452,6 +507,7 @@ final class CompanionStore: ObservableObject {
         botProfileOperation = nil; savingBotProfile = false; botProfileError = nil
         savingBotAvatarId = nil
         botsRequest = nil; isLoadingBots = false; botCatalog = nil; botsMessage = nil; creatingBotConversationId = nil
+        openingBotOperation = nil; openingBotConversationId = nil
     }
 
     func refreshModelManagement(refreshTargets: Bool = false) async {

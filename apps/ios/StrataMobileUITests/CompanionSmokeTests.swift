@@ -294,7 +294,7 @@ final class CompanionSmokeTests: XCTestCase {
         sensitivePairingVisible = false
 
         tapTab("Bots")
-        let bot = app.buttons["bot-fixture-bot"]
+        let bot = app.buttons["botProfile-fixture-bot"]
         XCTAssertTrue(bot.waitForExistence(timeout: 10)); bot.tap()
         XCTAssertTrue(app.staticTexts["Code & computer"].waitForExistence(timeout: 5))
         let provider = app.descendants(matching: .any).matching(identifier: "botProviderDetail").firstMatch
@@ -316,7 +316,7 @@ final class CompanionSmokeTests: XCTestCase {
         XCTAssertFalse(beforeCalls.contains { ($0["method"] as? String) == "POST" }, "Opening bots and history must not start work.")
 
         tapTab("Bots")
-        if app.buttons["bot-fixture-bot"].exists { app.buttons["bot-fixture-bot"].tap() }
+        if app.buttons["botProfile-fixture-bot"].exists { app.buttons["botProfile-fixture-bot"].tap() }
         let create = app.buttons["newBotConversationButton"]
         try tapWorkspace(create)
         let computer = app.buttons["botComputerPicker"]
@@ -349,7 +349,7 @@ final class CompanionSmokeTests: XCTestCase {
         attachScreenshot("Bots — same conversation continued and stopped")
 
         app.terminate(); app.launch(); tapTab("Bots")
-        let reopenedBot = app.buttons["bot-fixture-bot"]
+        let reopenedBot = app.buttons["botProfile-fixture-bot"]
         XCTAssertTrue(reopenedBot.waitForExistence(timeout: 10)); reopenedBot.tap()
         let saved = app.buttons["botConversation-fixture-bot-created"]
         // Native List materializes later rows as they scroll into view.
@@ -365,6 +365,82 @@ final class CompanionSmokeTests: XCTestCase {
         XCTAssertEqual(calls.filter { ($0["path"] as? String)?.hasSuffix("/messages") == true }.count, 1)
         let creation = try XCTUnwrap(calls.first { ($0["path"] as? String) == "/api/bots/fixture-bot/conversations" })
         XCTAssertEqual(creation["body"] as? [String: String], ["computerId": "ssh_fixture", "modelId": "bm_fixture", "workspace": "/srv/fixture-project"])
+    }
+
+    @MainActor
+    func testDirectBotRosterChatProfileNewConversationAndRelaunch() async throws {
+        let control = try pairWorkspaceFixture()
+        try tapWorkspace(app.buttons["bot-fixture-bot"])
+        try require(app.staticTexts["macConversationTitle"])
+        XCTAssertEqual(app.staticTexts["macConversationTitle"].label, "Mac browser research")
+        XCTAssertFalse(app.staticTexts["PRIVATE_TEAM_WORKER_MUST_NOT_OPEN_FROM_ROSTER"].exists)
+        var state = try await fixtureControl(control, action: "state")
+        XCTAssertTrue(try XCTUnwrap(state["calls"] as? [[String: Any]]).allSatisfy { $0["method"] as? String == "GET" })
+        attachScreenshot("Bot roster tap — saved personal chat and Thinking without starting work")
+
+        try tapWorkspace(app.buttons["chatBotProfileButton"])
+        try require(app.buttons["newBotConversationButton"])
+        try tapWorkspace(app.buttons["botConversation-fixture-mac-research"])
+        try require(app.staticTexts["macConversationTitle"])
+        try tapWorkspace(app.buttons["newChatButton"])
+        try require(app.navigationBars["New conversation"])
+        XCTAssertTrue(app.staticTexts["Workspace companion"].exists)
+        app.buttons["Cancel"].tap()
+        XCTAssertEqual(app.staticTexts["macConversationTitle"].label, "Mac browser research")
+
+        tapTab("Bots")
+        try tapWorkspace(app.buttons["bot-fixture-reviewer"])
+        try require(app.staticTexts["macConversationTitle"])
+        XCTAssertEqual(app.staticTexts["macConversationTitle"].label, "Review companion conversation")
+        state = try await fixtureControl(control, action: "state")
+        let blank = try XCTUnwrap(state["createdBotConversation"] as? [String: Any])
+        XCTAssertEqual((blank["messages"] as? [Any])?.count, 0)
+        XCTAssertEqual((blank["preferences"] as? [String: Any])?["botId"] as? String, "fixture-reviewer")
+        var writes = try XCTUnwrap(state["calls"] as? [[String: Any]]).filter { $0["method"] as? String != "GET" }
+        XCTAssertEqual(writes.count, 1)
+        XCTAssertEqual(writes.first?["path"] as? String, "/api/bots/fixture-reviewer/conversations")
+        XCTAssertEqual(writes.first?["body"] as? [String: String], [:])
+        attachScreenshot("First bot roster tap — one empty chat using saved bot settings")
+
+        try tapWorkspace(app.buttons["newChatButton"])
+        try require(app.navigationBars["New conversation"])
+        XCTAssertTrue(app.staticTexts["Review companion"].exists)
+        app.buttons["Cancel"].tap()
+        try tapWorkspace(app.buttons["chatBotProfileButton"])
+        try tapWorkspace(app.buttons["newBotConversationButton"])
+        let createFromProfile = app.buttons["confirmBotConversationButton"]
+        reveal(createFromProfile); try waitEnabled(createFromProfile); createFromProfile.tap()
+        try require(app.staticTexts["macConversationTitle"])
+        XCTAssertEqual(app.staticTexts["macConversationTitle"].label, "Review companion conversation")
+        XCTAssertFalse(app.buttons["newBotConversationButton"].exists, "Creating from a pushed profile returns to the chat composer.")
+        attachScreenshot("Bot profile — explicit new conversation returns to the composer")
+        let input = app.descendants(matching: .any).matching(identifier: "messageInput").firstMatch
+        try require(input); input.tap(); input.typeText("Continue the direct bot fixture")
+        app.buttons["sendMessageButton"].tap()
+        let reply = app.staticTexts.matching(identifier: "assistantMessage").matching(NSPredicate(format: "label CONTAINS %@", "BOT_SAME_SESSION_CONTINUED")).firstMatch
+        try require(reply)
+        try require(app.buttons["stopMessageButton"]); app.buttons["stopMessageButton"].tap()
+        let stopped = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.buttons["stopMessageButton"])
+        await fulfillment(of: [stopped], timeout: 10)
+        attachScreenshot("Direct bot chat — explicit fixture message and shared reply")
+
+        app.terminate(); app.launchArguments = ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]; app.launch(); tapTab("Bots")
+        try tapWorkspace(app.buttons["botProfile-fixture-reviewer"])
+        try tapWorkspace(app.buttons["newBotConversationButton"], performTap: false)
+        attachScreenshot("Direct bot profile — accessibility XXXL and reachable secondary settings")
+        app.navigationBars.buttons.firstMatch.tap()
+        try tapWorkspace(app.buttons["bot-fixture-reviewer"])
+        try require(reply)
+        try require(app.buttons["chatBotProfileButton"]); XCTAssertTrue(app.buttons["chatBotProfileButton"].isHittable)
+        attachScreenshot("Direct bot chat — accessibility XXXL retained history after relaunch")
+        tapTab("Bots"); try tapWorkspace(app.buttons["featuredBotButton"]); try require(reply)
+        state = try await fixtureControl(control, action: "state")
+        writes = try XCTUnwrap(state["calls"] as? [[String: Any]]).filter { $0["method"] as? String != "GET" }
+        XCTAssertEqual(writes.filter { ($0["path"] as? String)?.hasSuffix("/conversations") == true }.count, 2, "One roster-created blank plus one explicitly requested new conversation.")
+        XCTAssertEqual(writes.filter { ($0["path"] as? String)?.hasSuffix("/messages") == true }.count, 1)
+        XCTAssertEqual(writes.filter { ($0["path"] as? String)?.hasSuffix("/stop") == true }.count, 1)
+        XCTAssertFalse(writes.contains { ($0["path"] as? String)?.contains("/computer/") == true || ($0["path"] as? String)?.contains("/approval") == true })
+        app.launchArguments = []
     }
 
     @MainActor
@@ -394,7 +470,7 @@ final class CompanionSmokeTests: XCTestCase {
         let calls = try XCTUnwrap(state["calls"] as? [[String: Any]])
         XCTAssertFalse(calls.contains { ($0["path"] as? String)?.hasSuffix("/messages") == true || ($0["path"] as? String)?.contains("/computer/") == true })
         app.terminate(); app.launch(); tapTab("Bots")
-        try tapWorkspace(app.buttons["bot-" + id]); try require(app.buttons["editBotProfileButton"]); app.buttons["editBotProfileButton"].tap()
+        try tapWorkspace(app.buttons["botProfile-" + id]); try require(app.buttons["editBotProfileButton"]); app.buttons["editBotProfileButton"].tap()
         try require(app.buttons["avatar-shape-orb"]); XCTAssertTrue(app.buttons["avatar-shape-orb"].isSelected)
         attachScreenshot("Bots — saved geometric character retained after relaunch")
         try tapWorkspace(app.buttons["avatar-character-fox"])
@@ -491,7 +567,7 @@ final class CompanionSmokeTests: XCTestCase {
         try require(app.staticTexts["botRosterFilteredEmpty"])
         search.tap(); search.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: "no matching bot".count))
         if app.keyboards.firstMatch.exists { app.buttons["Done"].firstMatch.exists ? app.buttons["Done"].firstMatch.tap() : app.keyboards.buttons["Search"].tap() }
-        try tapWorkspace(app.buttons["bot-fixture-bot"])
+        try tapWorkspace(app.buttons["botProfile-fixture-bot"])
         try tapWorkspace(app.buttons["botConversation-fixture-mac-research"])
         let face = app.buttons["animateBotAvatarButton"]; try require(face)
         _ = try await fixtureControl(control, action: "thinking")
@@ -572,7 +648,7 @@ final class CompanionSmokeTests: XCTestCase {
             if destination == "Connections" { try require(app.buttons["botConnection-mcpc_fixture"]) }
             attachScreenshot("Facelift — " + destination)
         }
-        let bot = app.buttons["bot-fixture-bot"]
+        let bot = app.buttons["botProfile-fixture-bot"]
         try tapWorkspace(bot)
         let conversation = app.buttons["botConversation-fixture-mac-research"]
         try tapWorkspace(conversation)
@@ -1082,7 +1158,7 @@ final class CompanionSmokeTests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 25), .completed)
         sensitivePairingVisible = false
         tapTab("Bots")
-        let bot = app.buttons["bot-fixture-bot"]
+        let bot = app.buttons["botProfile-fixture-bot"]
         XCTAssertTrue(bot.waitForExistence(timeout: 10)); bot.tap()
         let customize = app.buttons["customizeBotAvatarButton"]
         XCTAssertTrue(customize.waitForExistence(timeout: 5)); customize.tap()

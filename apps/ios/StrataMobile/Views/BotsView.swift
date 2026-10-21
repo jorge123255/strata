@@ -23,6 +23,8 @@ struct BotsView: View {
     @State private var creatingBot = false
     @State private var botQuery = ""
     @State private var rosterFilter: BotRosterFilter = .all
+    @State private var openingTask: Task<Void, Never>?
+    @State private var profileBotId: String?
     @FocusState private var searchFocused: Bool
     @Environment(\.scenePhase) private var scenePhase
 
@@ -42,7 +44,7 @@ struct BotsView: View {
             if store.isPaired { await store.refreshBots(); await workspace?.refreshTeams() }
         }
         .onAppear { rosterVisible = true }
-        .onDisappear { rosterVisible = false }
+        .onDisappear { rosterVisible = false; openingTask?.cancel(); openingTask = nil; store.cancelOpeningBotConversation() }
         .task(id: rosterVisible && scenePhase == .active && store.isPaired && destination == .team) {
             guard rosterVisible, scenePhase == .active, store.isPaired, destination == .team else { return }
             while !Task.isCancelled && rosterVisible && scenePhase == .active && destination == .team {
@@ -65,6 +67,9 @@ struct BotsView: View {
         .refreshable { await store.refresh(silently: true); await store.refreshBots(); await workspace?.refreshTeams() }
         .sheet(isPresented: $creatingTeam) { if let workspace { BotTeamEditor(store: store, workspace: workspace) } }
         .sheet(isPresented: $creatingBot) { BotProfileEditor(store: store) }
+        .navigationDestination(isPresented: Binding(get: { profileBotId != nil }, set: { if !$0 { profileBotId = nil } })) {
+            if let profileBotId { BotDetailView(store: store, botId: profileBotId, openChat: openChat) }
+        }
         .toolbar {
             if store.isPaired {
                 ToolbarItem(placement: .topBarTrailing) { NotificationInboxButton(notifications: store.notifications) }
@@ -97,12 +102,17 @@ struct BotsView: View {
                 if store.isLoadingBots, store.botCatalog == nil { ProgressView("Checking your bots…") }
                 if let catalog = store.botCatalog {
                     if botQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, rosterFilter == .all, let featured = featuredBot(catalog) {
-                        NavigationLink { BotDetailView(store: store, botId: featured.id, openChat: openChat) } label: {
+                        HStack(alignment: .top, spacing: 8) {
+                            Spacer(minLength: 32)
+                            Button { openBot(featured) } label: {
                             VStack(spacing: 8) {
                                 ExpressiveBotAvatar(config: featured.face, size: 124, mood: store.botMood(featured), animated: true)
                                 Text(featured.name).font(.subheadline.weight(.medium)).foregroundStyle(StrataTheme.secondaryInk)
+                                if store.openingBotConversationId == featured.id { ProgressView("Opening conversation…").font(.caption) }
                             }.frame(maxWidth: .infinity).padding(.vertical, 19)
-                        }.listRowBackground(Color.clear).listRowSeparator(.hidden).accessibilityIdentifier("featuredBotButton")
+                            }.buttonStyle(.plain).disabled(!canOpenBot).accessibilityLabel("Chat with " + featured.name).accessibilityIdentifier("featuredBotButton")
+                            botProfileLink(featured, identifier: "featuredBotProfileButton")
+                        }.listRowBackground(Color.clear).listRowSeparator(.hidden)
                     }
                     Section {
                         let entries = rosterEntries(catalog)
@@ -116,7 +126,11 @@ struct BotsView: View {
                         ForEach(entries) { entry in
                             switch entry {
                             case .bot(let bot):
-                                NavigationLink { BotDetailView(store: store, botId: bot.id, openChat: openChat) } label: { botCard(bot) }.accessibilityIdentifier("bot-\(bot.id)")
+                                HStack(spacing: 8) {
+                                    Button { openBot(bot) } label: { botCard(bot) }.buttonStyle(.plain)
+                                        .disabled(!canOpenBot).accessibilityIdentifier("bot-\(bot.id)")
+                                    botProfileLink(bot, identifier: "botProfile-" + bot.id)
+                                }
                             case .team(let team):
                                 if let workspace {
                                     NavigationLink { BotTeamDetailView(store: store, workspace: workspace, teamId: team.id, openChat: openChat) } label: { teamCard(team, catalog: catalog) }.accessibilityIdentifier("team-\(team.id)")
@@ -135,6 +149,25 @@ struct BotsView: View {
     }
     private var canCreateTeam: Bool {
         (store.botCatalog?.bots.count ?? 0) >= 2 && workspace?.teams != nil && workspace?.teams?.reason == nil && workspace?.mutation == nil
+    }
+    private var canOpenBot: Bool {
+        store.openingBotConversationId == nil && store.creatingBotConversationId == nil && !store.isSending && !store.isSubmittingMessage && !store.savingBotProfile
+    }
+    private func botProfileLink(_ bot: CompanionBot, identifier: String) -> some View {
+        Button { profileBotId = bot.id } label: {
+            Image(systemName: "info.circle").font(.system(size: 19)).foregroundStyle(StrataTheme.secondaryInk).frame(minWidth: 44, minHeight: 44)
+        }.buttonStyle(.plain).accessibilityLabel(bot.name + " profile and settings").accessibilityIdentifier(identifier)
+    }
+    private func openBot(_ bot: CompanionBot) {
+        guard openingTask == nil, canOpenBot else { return }
+        searchFocused = false
+        let generation = store.pairingGeneration
+        openingTask = Task {
+            let opened = await store.openBotConversation(bot.id)
+            guard !Task.isCancelled, rosterVisible, generation == store.pairingGeneration else { openingTask = nil; return }
+            openingTask = nil
+            if opened { openChat() }
+        }
     }
     private var emptyBots: some View {
         VStack(alignment: .leading, spacing: 13) {
@@ -185,7 +218,8 @@ struct BotsView: View {
                 }
                 Text(latest?.preview.flatMap { $0.isEmpty ? nil : $0 } ?? bot.capabilityLabel).font(.subheadline).foregroundStyle(StrataTheme.secondaryInk).lineLimit(2)
             }
-            if bot.paused == true { Image(systemName: "pause.circle").foregroundStyle(.secondary) }
+            if store.openingBotConversationId == bot.id { ProgressView().accessibilityLabel("Opening conversation") }
+            else if bot.paused == true { Image(systemName: "pause.circle").foregroundStyle(.secondary) }
             else if store.botIsWorking(bot) { ProgressView().controlSize(.small) }
         }.padding(.vertical, 10)
     }
@@ -241,13 +275,14 @@ struct BotsView: View {
     }
 }
 
-private struct BotDetailView: View {
+struct BotDetailView: View {
     @ObservedObject var store: CompanionStore
     let botId: String
     let openChat: () -> Void
     @State private var showingSetup = false
     @State private var showingAvatar = false
     @State private var showingEditor = false
+    @Environment(\.dismiss) private var dismiss
     private var bot: CompanionBot? { store.botCatalog?.bots.first { $0.id == botId } }
 
     // Profile sections follow the actual Cua Bots PhoneProfile layout while
@@ -295,7 +330,7 @@ private struct BotDetailView: View {
                         Button {
                             Task {
                                 await store.selectConversation(conversation)
-                                if store.currentConversation?.id == conversation.id { openChat() }
+                                if store.currentConversation?.id == conversation.id { openSelectedChat() }
                             }
                         } label: {
                             HStack(alignment: .top, spacing: 12) {
@@ -332,13 +367,15 @@ private struct BotDetailView: View {
         }
         .refreshable { await store.refresh(silently: true); await store.refreshBots() }
         .sheet(isPresented: $showingSetup) {
-            if let bot { BotConversationSetupView(store: store, bot: bot, openChat: openChat) }
+            if let bot { BotConversationSetupView(store: store, bot: bot, openChat: openSelectedChat) }
         }
         .sheet(isPresented: $showingAvatar) {
             if let bot { BotAvatarEditor(store: store, bot: bot) }
         }
         .sheet(isPresented: $showingEditor) { if let bot { BotProfileEditor(store: store, bot: bot) } }
     }
+
+    private func openSelectedChat() { dismiss(); openChat() }
 
     private func profileAction(_ title: String, detail: String, icon: String) -> some View {
         HStack(spacing: 14) {
@@ -412,7 +449,7 @@ struct BotAvatarView: View {
     }
 }
 
-private struct BotConversationSetupView: View {
+struct BotConversationSetupView: View {
     @ObservedObject var store: CompanionStore
     let initialBot: CompanionBot
     let openChat: () -> Void

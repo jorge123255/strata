@@ -9,6 +9,7 @@ struct ChatView: View {
     @State private var followsLatest = true
     @State private var nearBottom = true
     @State private var userScrolling = false
+    @State private var setupBot: CompanionBot?
     @FocusState private var composerFocused: Bool
 
     var body: some View {
@@ -28,6 +29,7 @@ struct ChatView: View {
         .background(StrataTheme.background)
         .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $showingHistory) { history }
+        .sheet(item: $setupBot) { bot in BotConversationSetupView(store: store, bot: bot, openChat: {}) }
         .onAppear { if let id = store.currentConversation?.id { store.notifications.focus(CompanionNotificationDestination(type: "chat", id: id)) } }
         .onDisappear { if store.notifications.focusedDestination?.type == "chat" { store.notifications.focus(nil) } }
     }
@@ -40,6 +42,11 @@ struct ChatView: View {
             }
             Spacer(minLength: 12)
             if store.isPaired {
+                if let bot = conversationBot {
+                    NavigationLink { BotDetailView(store: store, botId: bot.id, openChat: {}) } label: {
+                        Image(systemName: "info.circle").font(.system(size: 19)).frame(width: 40, height: 44)
+                    }.accessibilityLabel(bot.name + " profile and settings").accessibilityIdentifier("chatBotProfileButton")
+                }
                 if let id = store.currentConversation?.id {
                     Menu { NotificationMuteButton(notifications: store.notifications, destination: CompanionNotificationDestination(type: "chat", id: id)) } label: {
                         Image(systemName: "ellipsis").frame(width: 38, height: 44)
@@ -50,10 +57,16 @@ struct ChatView: View {
                 }
                 .disabled(store.isSending)
                 .accessibilityLabel("Conversation history").accessibilityIdentifier("chatHistoryButton")
-                Button { store.newChat(); composerFocused = false } label: {
+                Button {
+                    composerFocused = false
+                    if store.currentConversation?.botId != nil {
+                        if let bot = conversationBot { setupBot = bot }
+                        else { store.error = "Refresh Bots to start another conversation with this bot." }
+                    } else { store.newChat() }
+                } label: {
                     Image(systemName: "square.and.pencil").font(.system(size: 18, weight: .medium)).frame(width: 44, height: 44).strataChrome()
                 }
-                .disabled(store.isSubmittingMessage || store.isSending)
+                .disabled(store.isSubmittingMessage || store.isSending || store.openingBotConversationId != nil)
                 .accessibilityLabel("New conversation").accessibilityIdentifier("newChatButton")
             }
         }

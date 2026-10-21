@@ -679,6 +679,171 @@ final class BotsTests: XCTestCase {
         XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
     }
 
+    func testRosterTapOpensPersonalHistoryInsteadOfNewerTeamWorker() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { request in
+            switch request.url!.path {
+            case "/v1/bots": return Self.catalog
+            case "/v1/conversations": return Self.rosterList(personal: true)
+            case "/v1/conversations/mac-existing": return Self.botDetail
+            default: return nil
+            }
+        }
+        let store = fixture.makeStore(); await store.refreshBots()
+        let opened = await store.openBotConversation("bot_coder")
+        XCTAssertTrue(opened); XCTAssertEqual(store.currentConversation?.id, "mac-existing")
+        XCTAssertEqual(store.currentConversation?.messages.first?.thinkingText, "Inspect the code before continuing.")
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+        XCTAssertFalse(fixture.requests.contains { $0.path.contains("team-worker") })
+        XCTAssertNil(store.openingBotConversationId); XCTAssertFalse(store.isSelectingConversation)
+    }
+
+    func testRosterTapWithOnlyTeamHistoryCreatesOneEmptySavedDefaultChat() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { request in
+            switch request.url!.path {
+            case "/v1/bots": return Self.catalog
+            case "/v1/conversations": return Self.rosterList(personal: false)
+            case "/v1/bots/bot_coder/conversations":
+                var detail = Self.botDetail, conversation = detail["conversation"] as! [String: Any]
+                conversation["messages"] = []; conversation["mode"] = "bypass"; detail["conversation"] = conversation
+                return detail
+            default: return nil
+            }
+        }
+        let store = fixture.makeStore(); await store.refreshBots()
+        let opened = await store.openBotConversation("bot_coder")
+        XCTAssertTrue(opened); XCTAssertEqual(store.currentConversation?.messages.count, 0)
+        XCTAssertEqual(store.currentConversation?.mode, "bypass")
+        let writes = fixture.requests.filter { $0.method != "GET" }
+        XCTAssertEqual(writes.map(\.path), ["/v1/bots/bot_coder/conversations"])
+        XCTAssertEqual(writes.first?.body, [:], "Empty creation retains the saved model, computer, workspace and policy; no work is submitted.")
+        XCTAssertNil(store.creatingBotConversationId); XCTAssertNil(store.openingBotConversationId)
+    }
+
+    func testRepeatedRosterTapDeduplicatesPendingRequest() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { request in
+            if request.url!.path == "/v1/bots" { return Self.catalog }
+            if request.url!.path == "/v1/bots/bot_coder/conversations" { return Self.botDetail }
+            return nil
+        }
+        let store = fixture.makeStore(); await store.refreshBots()
+        let pending = fixture.hold("/v1/conversations")
+        let first = Task { await store.openBotConversation("bot_coder") }
+        await fulfillment(of: [pending.requested], timeout: 2)
+        XCTAssertEqual(store.openingBotConversationId, "bot_coder")
+        let repeated = await store.openBotConversation("bot_coder"); XCTAssertFalse(repeated)
+        pending.finish(Self.rosterList(personal: false))
+        let opened = await first.value; XCTAssertTrue(opened)
+        XCTAssertEqual(fixture.requests.filter { $0.path == "/v1/conversations" }.count, 1)
+        XCTAssertEqual(fixture.requests.filter { $0.method == "POST" }.count, 1)
+    }
+
+    func testRosterOpeningCannotReturnAfterNewChatOrNavigationAway() async throws {
+        for cancelNavigation in [false, true] {
+            let fixture = StoreTransport(); defer { fixture.close() }
+            fixture.respond { $0.url!.path == "/v1/bots" ? Self.catalog : nil }
+            let store = fixture.makeStore(); await store.refreshBots()
+            let pending = fixture.hold("/v1/conversations")
+            let opening = Task { await store.openBotConversation("bot_coder") }
+            await fulfillment(of: [pending.requested], timeout: 2)
+            if cancelNavigation { store.cancelOpeningBotConversation() } else { store.newChat() }
+            pending.finish(Self.rosterList(personal: false))
+            let opened = await opening.value; XCTAssertFalse(opened)
+            XCTAssertNil(store.currentConversation); XCTAssertNil(store.openingBotConversationId)
+            XCTAssertFalse(store.isSelectingConversation)
+            XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+        }
+    }
+
+    func testForgottenPairingCannotRestorePendingRosterChat() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { $0.url!.path == "/v1/bots" ? Self.catalog : nil }
+        let store = fixture.makeStore(); await store.refreshBots()
+        let pending = fixture.hold("/v1/conversations")
+        let opening = Task { await store.openBotConversation("bot_coder") }
+        await fulfillment(of: [pending.requested], timeout: 2)
+        store.forgetMac(); pending.finish(Self.rosterList(personal: false))
+        let opened = await opening.value; XCTAssertFalse(opened)
+        XCTAssertFalse(store.isPaired); XCTAssertNil(store.currentConversation); XCTAssertNil(store.openingBotConversationId)
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+    }
+
+    func testPausedBotPersonalHistoryIsReadableButCannotCreateBlank() async throws {
+        for hasPersonal in [false, true] {
+            let fixture = StoreTransport(); defer { fixture.close() }
+            fixture.respond { request in
+                switch request.url!.path {
+                case "/v1/bots":
+                    var catalog = Self.catalog, bots = Self.catalog["bots"] as! [[String: Any]]
+                    bots[0]["paused"] = true; catalog["bots"] = bots; return catalog
+                case "/v1/conversations": return Self.rosterList(personal: hasPersonal)
+                case "/v1/conversations/mac-existing": return Self.botDetail
+                default: return nil
+                }
+            }
+            let store = fixture.makeStore(); await store.refreshBots()
+            let opened = await store.openBotConversation("bot_coder")
+            XCTAssertEqual(opened, hasPersonal)
+            if !hasPersonal { XCTAssertTrue(store.error?.contains("paused") == true) }
+            XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+            XCTAssertNil(store.openingBotConversationId)
+        }
+    }
+
+    func testRosterDetailMustRetainExactBotAndPersonalIdentity() async throws {
+        for changedField in ["botId", "teamId", "teamRunId", "parentChatId", "id"] {
+            let fixture = StoreTransport(); defer { fixture.close() }
+            fixture.respond { request in
+                switch request.url!.path {
+                case "/v1/bots": return Self.catalog
+                case "/v1/conversations": return Self.rosterList(personal: true)
+                case "/v1/conversations/mac-existing":
+                    var detail = Self.botDetail, conversation = detail["conversation"] as! [String: Any]
+                    conversation[changedField] = "unexpected-other"; detail["conversation"] = conversation; return detail
+                default: return nil
+                }
+            }
+            let store = fixture.makeStore(); await store.refreshBots()
+            let opened = await store.openBotConversation("bot_coder"); XCTAssertFalse(opened)
+            XCTAssertNil(store.currentConversation); XCTAssertNotNil(store.error)
+            XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+        }
+    }
+
+    func testRosterReadFailureShowsErrorAndAllowsRetryWithoutCreatingWork() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { request in
+            if request.url!.path == "/v1/bots" { return Self.catalog }
+            if request.url!.path == "/v1/conversations/mac-existing" { return Self.botDetail }
+            return nil
+        }
+        let store = fixture.makeStore(); await store.refreshBots()
+        // Empty default list enters creation; its unregistered fixture route
+        // deliberately returns HTTP 404 before the app can select a chat.
+        let failed = await store.openBotConversation("bot_coder"); XCTAssertFalse(failed)
+        XCTAssertNotNil(store.error); XCTAssertNil(store.openingBotConversationId)
+        fixture.respond { request in
+            switch request.url!.path {
+            case "/v1/bots": return Self.catalog
+            case "/v1/conversations": return Self.rosterList(personal: true)
+            case "/v1/conversations/mac-existing": return Self.botDetail
+            default: return nil
+            }
+        }
+        let opened = await store.openBotConversation("bot_coder"); XCTAssertTrue(opened); XCTAssertNil(store.error)
+        XCTAssertFalse(fixture.requests.contains { $0.path.hasSuffix("/messages") || $0.path.contains("/computer/") })
+    }
+
+    private static func rosterList(personal: Bool) -> [String: Any] {
+        let team: [String: Any] = ["id": "team-worker", "title": "Private team worker", "botId": "bot_coder", "teamId": "team_fixture", "active": false, "updatedAt": "99999"]
+        let direct: [String: Any] = ["id": "mac-existing", "title": "Personal bot chat", "botId": "bot_coder", "active": false, "updatedAt": "12345"]
+        let legacyRun: [String: Any] = ["id": "legacy-run", "title": "Legacy team worker", "botId": "bot_coder", "teamRunId": "run_fixture", "active": false]
+        let child: [String: Any] = ["id": "child-worker", "title": "Child worker", "botId": "bot_coder", "parentChatId": "parent_fixture", "active": false]
+        return ["conversations": personal ? [team, legacyRun, child, direct] : [team, legacyRun, child]]
+    }
+
     private static var selectableCatalog: [String: Any] {
         var result = catalog
         var bots = result["bots"] as! [[String: Any]]

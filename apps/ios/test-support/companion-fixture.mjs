@@ -16,7 +16,7 @@ const root = mkdtempSync(join(tmpdir(), 'strata-ios-ui-'));
 chmodSync(root, 0o700);
 
 const calls = [];
-const photoSimulator = ['--test-team-settings', '--test-bot-photos', '--test-team-channel-layout', '--test-group-chat-layout'].includes(process.argv[2]) ? /(?:^|,)id=([A-Fa-f0-9-]{36})(?:,|$)/.exec(process.argv[3] ?? '')?.[1] : undefined;
+const photoSimulator = ['--test-direct-bots', '--test-team-settings', '--test-bot-photos', '--test-team-channel-layout', '--test-group-chat-layout'].includes(process.argv[2]) ? /(?:^|,)id=([A-Fa-f0-9-]{36})(?:,|$)/.exec(process.argv[3] ?? '')?.[1] : undefined;
 let originalSimulatorAppearance;
 if (photoSimulator) {
   const appearance = execFileSync('/usr/bin/xcrun', ['simctl', 'ui', photoSimulator, 'appearance'], { encoding: 'utf8' }).trim().toLowerCase();
@@ -44,8 +44,10 @@ const conversation = {
 };
 const pending = [];
 let createdBotConversation;
+const directCreatedConversations = [];
 const lifecycleMode = ['--test-bot-lifecycle', '--test-bot-avatar-states', '--test-bot-photos'].includes(process.argv[2]);
-const workspaceFlags = ['--test-team-settings', '--test-notifications', '--test-group-chat-layout', '--test-team-channel-layout', '--test-team-channel', '--test-bot-photos', '--test-bot-lifecycle', '--test-bot-avatar-states', '--test-workspace-skills', '--test-workspace-connections', '--test-workspace-teams', '--test-facelift'];
+const directBotsMode = process.argv[2] === '--test-direct-bots';
+const workspaceFlags = ['--test-direct-bots', '--test-team-settings', '--test-notifications', '--test-group-chat-layout', '--test-team-channel-layout', '--test-team-channel', '--test-bot-photos', '--test-bot-lifecycle', '--test-bot-avatar-states', '--test-workspace-skills', '--test-workspace-connections', '--test-workspace-teams', '--test-facelift'];
 const workspaceMode = workspaceFlags.includes(process.argv[2]);
 let teamConversation, savedTeam, teamRun;
 const teamLimits = { maxParallel: 2, maxDepth: 2, maxHops: 8, maxTurns: 24, maxDurationMs: 600000 };
@@ -56,10 +58,11 @@ const mcpConnection = { id: 'mcpc_fixture', name: 'Fixture tools', transport: 's
 const fixtureComputerMode = process.argv[2] === '--test-computer' ? 'cua' : 'host';
 const configuredFixtureName = ['--test-bot-photos', '--test-team-channel-layout', '--test-group-chat-layout'].includes(process.argv[2]) ? 'Configured fixture / Qwen extended long model name for a separate remote Strata computer' : 'Configured fixture';
 let botFace = { color: 'sky', eyes: 'star', ears: 'scalloped' };
-if (process.argv[2] === '--test-bot-avatar-states') {
+if (process.argv[2] === '--test-bot-avatar-states' || directBotsMode) {
   conversation.preferences = { botId: 'fixture-bot', botName: 'Workspace companion', botAvatarConfig: structuredClone(botFace),
     botComputerMode: 'host', botComputer: 'Fixture Mac', botModel: 'Fixture model' };
 }
+if (directBotsMode) teamConversation = { id: 'fixture-team-worker', title: 'Private team routing conversation', active: false, updatedAt: new Date(Date.now() + 60000).toISOString(), mode: 'manual', workspace: '/fixture/default', preferences: { botId: 'fixture-bot', botName: 'Workspace companion', teamId: 'team_direct_fixture', teamRunId: 'run_direct_fixture' }, messages: [{ id: 'private-team', role: 'assistant', content: 'PRIVATE_TEAM_WORKER_MUST_NOT_OPEN_FROM_ROSTER' }] };
 let computerRunning = false;
 let computerControl;
 const computerImage = readFileSync(new URL('./computer-fixture.png', import.meta.url)).toString('base64');
@@ -69,9 +72,10 @@ const computerState = () => ({ available: true, running: computerRunning, comput
   control: { active: !!computerControl, owned: !!computerControl, ...(computerControl ? { expiresAt: computerControl.expiresAt } : {}) } });
 const botsCatalog = () => ({
   avatarShapes: [...BOT_AVATAR_SHAPES],
+  ...(directBotsMode ? { lifecycleSupported: true } : {}),
   bots: [{ id: 'fixture-bot', name: 'Workspace companion', avatar: '🦊', avatarConfig: botFace, computerMode: fixtureComputerMode, provider: 'codex', model: 'Fixture model', workspace: fixtureComputerMode === 'cua' ? '/workspace' : '/fixture/default', capabilities: 'both', policy: 'manual', execution: { kind: 'local' },
     conversations: [conversation.id, ...(createdBotConversation?.preferences?.botId === 'fixture-bot' ? [createdBotConversation.id] : []), ...(teamConversation ? [teamConversation.id] : [])] },
-    ...(workspaceMode ? [{ id: 'fixture-reviewer', name: 'Review companion', avatarConfig: { color: 'violet', eyes: 'happy', ears: 'round', kind: 'cat' }, computerMode: 'host', provider: 'claude', model: 'Fixture reviewer', workspace: '/fixture/default', capabilities: 'code', policy: 'manual', execution: { kind: 'local' }, conversations: [] }] : [])],
+    ...(workspaceMode ? [{ id: 'fixture-reviewer', name: 'Review companion', avatarConfig: { color: 'violet', eyes: 'happy', ears: 'round', kind: 'cat' }, computerMode: 'host', provider: 'claude', model: 'Fixture reviewer', workspace: '/fixture/default', capabilities: 'code', policy: 'manual', execution: { kind: 'local' }, conversations: createdBotConversation?.preferences?.botId === 'fixture-reviewer' ? [createdBotConversation.id] : [] }] : [])],
   providers: ['claude', 'codex', 'grok', 'kimi', 'ollama', 'configured'].map(id => ({ id, name: ({ claude: 'Claude Code', codex: 'Codex', grok: 'Grok', kimi: 'Kimi', ollama: 'Ollama Cloud', configured: 'Configured models' })[id], available: true, detail: 'Synthetic provider. No account or model is used.' })),
   computers: [{ id: 'local', name: 'Fixture Mac', kind: 'local', available: true, detail: 'Synthetic computer. No tools are executed.' },
     { id: 'ssh_fixture', name: 'Remote fixture computer', kind: 'ssh', available: true, detail: 'Prepared synthetic target. No SSH connection is made.' }],
@@ -302,6 +306,11 @@ const host = {
       if (action === 'release') { computerControl = null; return { released: true }; }
       return computerState();
     }
+    if (directBotsMode && path === '/api/bots/fixture-reviewer/conversations') {
+      createdBotConversation = { id: directCreatedConversations.length ? 'fixture-reviewer-created-' + (directCreatedConversations.length + 1) : 'fixture-reviewer-created', title: 'Review companion conversation', updatedAt: new Date().toISOString(), active: false, mode: 'manual', workspace: '/fixture/default', modelName: 'Fixture reviewer', messages: [], preferences: { botId: 'fixture-reviewer', botName: 'Review companion', botComputerMode: 'host', botComputer: 'Fixture Mac', botModel: 'Fixture reviewer' } };
+      directCreatedConversations.push(createdBotConversation);
+      return structuredClone({ conversation: createdBotConversation, pending: [] });
+    }
     if (path === '/api/bots/fixture-bot/conversations') {
       createdBotConversation = { id: 'fixture-bot-created', title: 'New Workspace companion conversation', active: false, mode: 'manual',
         workspace: options.body?.workspace ?? '/fixture/default',
@@ -352,7 +361,7 @@ const host = {
       downloadJobs.get(target).unshift(job); newestDownload = job;
       return structuredClone({ job });
     }
-    if (path === '/api/companion/conversations') return options.method === 'POST' ? detail() : { conversations: [conversation, ...(createdBotConversation ? [createdBotConversation] : []), ...(teamConversation ? [teamConversation] : [])], activeChatId: teamConversation?.active ? teamConversation.id : conversation.id };
+    if (path === '/api/companion/conversations') return options.method === 'POST' ? detail() : { conversations: directBotsMode ? [teamConversation, ...[...directCreatedConversations].reverse(), conversation] : [conversation, ...(createdBotConversation ? [createdBotConversation] : []), ...(teamConversation ? [teamConversation] : [])], activeChatId: teamConversation?.active ? teamConversation.id : conversation.id };
     if (path === `/api/companion/conversations/${conversation.id}`) return detail();
     if (path === `/api/companion/conversations/${conversation.id}/messages`) {
       conversation.messages.push(
@@ -543,7 +552,7 @@ try {
         '-project', project, '-scheme', 'StrataMobile', '-destination', destination,
         '-derivedDataPath', derivedData,
         ...(process.env.STRATA_TEST_RESULT_BUNDLE ? ['-resultBundlePath', process.env.STRATA_TEST_RESULT_BUNDLE] : []),
-        '-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation', '--test-computer': 'testActualSampleAvatarAndIsolatedComputerControl', '--test-bot-photos': 'testPhotoLedBotsCreationAppearanceAndWorkspaceNavigation', '--test-bot-lifecycle': 'testPhoneBotCreationEditingCASAndApprovalModes', '--test-bot-avatar-states': 'testBotAvatarStatesInteractionAndRosterFilters', '--test-facelift': 'testFaceliftPrincipalScreensAndSharedHistory', '--test-workspace-skills': 'testReviewedSkillAssignmentAndWorkspaceNavigation', '--test-workspace-connections': 'testSavedConnectionCheckAndReviewedAccess', '--test-workspace-teams': 'testTeamExplicitTaskSharedThinkingStopAndActivity', '--test-team-channel': 'testNaturalTeamChannelPeersAssignmentsThinkingAndStop', '--test-team-channel-layout': 'testTeamChannelNormalDarkAndLargeTypeLayout', '--test-group-chat-layout': 'testGroupRosterAndRoomPhotoLayoutWithRealMenus', '--test-team-settings': 'testTeamMembershipSharedComputerFoldersConflictAndPersistence', '--test-notifications': 'testNotificationPreferencesPrivateInboxRoutingMuteAndRelaunch' })[process.argv[2]],
+        '-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test-direct-bots': 'testDirectBotRosterChatProfileNewConversationAndRelaunch', '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation', '--test-computer': 'testActualSampleAvatarAndIsolatedComputerControl', '--test-bot-photos': 'testPhotoLedBotsCreationAppearanceAndWorkspaceNavigation', '--test-bot-lifecycle': 'testPhoneBotCreationEditingCASAndApprovalModes', '--test-bot-avatar-states': 'testBotAvatarStatesInteractionAndRosterFilters', '--test-facelift': 'testFaceliftPrincipalScreensAndSharedHistory', '--test-workspace-skills': 'testReviewedSkillAssignmentAndWorkspaceNavigation', '--test-workspace-connections': 'testSavedConnectionCheckAndReviewedAccess', '--test-workspace-teams': 'testTeamExplicitTaskSharedThinkingStopAndActivity', '--test-team-channel': 'testNaturalTeamChannelPeersAssignmentsThinkingAndStop', '--test-team-channel-layout': 'testTeamChannelNormalDarkAndLargeTypeLayout', '--test-group-chat-layout': 'testGroupRosterAndRoomPhotoLayoutWithRealMenus', '--test-team-settings': 'testTeamMembershipSharedComputerFoldersConflictAndPersistence', '--test-notifications': 'testNotificationPreferencesPrivateInboxRoutingMuteAndRelaunch' })[process.argv[2]],
         '-parallel-testing-enabled', 'NO', 'test',
       ], { stdio: 'inherit', env: { ...process.env,
         TEST_RUNNER_STRATA_TEST_INVITATION: connection.invitation,
@@ -554,7 +563,7 @@ try {
       testProcess.once('exit', code => resolve(code ?? 1));
     });
     process.exitCode = status;
-    if (process.env.STRATA_TEST_STATE_OUTPUT) writeFileSync(process.env.STRATA_TEST_STATE_OUTPUT, JSON.stringify({ calls, ...(roomBots ? { teamChannel: roomBots.team.channel(roomTeam.id), roomTurns, roomTeam, roomEmptyTeam, ...(teamSettingsMode ? { teamSettings: roomBots.team.list(), roomMembers, roomExtraMember, teamSettingsFolder, teamSettingsOtherFolder, teamSettingsActions } : {}) } : {}), ...(lifecycleProfiles ? { lifecycle: await lifecycleProfiles.list() } : {}), savedTeam, teamRun, skillAssignments, skills: skillCatalog(), connectionAccess: { botIds: mcpConnection.botIds, enabledToolIds: mcpConnection.enabledToolIds, readOnlyToolIds: mcpConnection.readOnlyToolIds } }), { mode: 0o600 });
+    if (process.env.STRATA_TEST_STATE_OUTPUT) writeFileSync(process.env.STRATA_TEST_STATE_OUTPUT, JSON.stringify({ calls, ...(directBotsMode ? { conversation, createdBotConversation, directCreatedConversations, teamConversation, computerRunning, computerControlled: !!computerControl } : {}), ...(roomBots ? { teamChannel: roomBots.team.channel(roomTeam.id), roomTurns, roomTeam, roomEmptyTeam, ...(teamSettingsMode ? { teamSettings: roomBots.team.list(), roomMembers, roomExtraMember, teamSettingsFolder, teamSettingsOtherFolder, teamSettingsActions } : {}) } : {}), ...(lifecycleProfiles ? { lifecycle: await lifecycleProfiles.list() } : {}), savedTeam, teamRun, skillAssignments, skills: skillCatalog(), connectionAccess: { botIds: mcpConnection.botIds, enabledToolIds: mcpConnection.enabledToolIds, readOnlyToolIds: mcpConnection.readOnlyToolIds } }), { mode: 0o600 });
     await close();
   } else {
     if (process.argv.length > 2) throw new Error('Usage: companion-fixture.mjs [--test|--test-downloads|--test-bots|--test-computer|--test-workspace-skills|--test-workspace-connections|--test-workspace-teams|--test-facelift|--test-bot-lifecycle|--test-bot-avatar-states <simulator destination>]');
