@@ -16,7 +16,7 @@ const root = mkdtempSync(join(tmpdir(), 'strata-ios-ui-'));
 chmodSync(root, 0o700);
 
 const calls = [];
-const photoSimulator = process.argv[2] === '--test-bot-photos' ? /(?:^|,)id=([A-Fa-f0-9-]{36})(?:,|$)/.exec(process.argv[3] ?? '')?.[1] : undefined;
+const photoSimulator = ['--test-bot-photos', '--test-team-channel-layout'].includes(process.argv[2]) ? /(?:^|,)id=([A-Fa-f0-9-]{36})(?:,|$)/.exec(process.argv[3] ?? '')?.[1] : undefined;
 let originalSimulatorAppearance;
 if (photoSimulator) {
   const appearance = execFileSync('/usr/bin/xcrun', ['simctl', 'ui', photoSimulator, 'appearance'], { encoding: 'utf8' }).trim().toLowerCase();
@@ -45,7 +45,7 @@ const conversation = {
 const pending = [];
 let createdBotConversation;
 const lifecycleMode = ['--test-bot-lifecycle', '--test-bot-avatar-states', '--test-bot-photos'].includes(process.argv[2]);
-const workspaceFlags = ['--test-bot-photos', '--test-bot-lifecycle', '--test-bot-avatar-states', '--test-workspace-skills', '--test-workspace-connections', '--test-workspace-teams', '--test-facelift'];
+const workspaceFlags = ['--test-team-channel-layout', '--test-team-channel', '--test-bot-photos', '--test-bot-lifecycle', '--test-bot-avatar-states', '--test-workspace-skills', '--test-workspace-connections', '--test-workspace-teams', '--test-facelift'];
 const workspaceMode = workspaceFlags.includes(process.argv[2]);
 let teamConversation, savedTeam, teamRun;
 const teamLimits = { maxParallel: 2, maxDepth: 2, maxHops: 8, maxTurns: 24, maxDurationMs: 600000 };
@@ -54,7 +54,7 @@ const skillAssignments = { 'fixture-bot': ['library.review'] };
 const skillCatalog = () => ({ skills: [{ id: 'library.review', name: 'Library review', description: 'Existing shared library instructions', body: 'Review changes carefully.', triggers: [], source: 'library', status: 'enabled', revision: 'library-digest', digest: 'library-digest' }, ...skillDrafts].map(skill => ({ ...skill, botIds: Object.entries(skillAssignments).filter(([, ids]) => ids.includes(skill.id)).map(([id]) => id) })), assignments: Object.entries(skillAssignments).map(([botId, skillIds]) => ({ botId, skillIds })) });
 const mcpConnection = { id: 'mcpc_fixture', name: 'Fixture tools', transport: 'stdio', inventoryDigest: 'a'.repeat(64), command: '/fixture/never-executed', args: [], env: { TEST_SECRET: 'PRIVATE-FIXTURE-SECRET' }, apiKey: 'PRIVATE-FIXTURE-KEY', apiKeySet: true, status: 'unchecked', detail: 'Synthetic connection; no program runs.', botIds: ['fixture-bot'], enabledToolIds: ['tool_read'], readOnlyToolIds: ['tool_read'], tools: [{ id: 'tool_read', name: 'Read workspace', description: 'Synthetic read-only inventory', readOnly: true }, { id: 'tool_write', name: 'Write workspace', description: 'Synthetic write inventory; approval policy applies', readOnly: false }] };
 const fixtureComputerMode = process.argv[2] === '--test-computer' ? 'cua' : 'host';
-const configuredFixtureName = process.argv[2] === '--test-bot-photos' ? 'Configured fixture / Qwen extended long model name for a separate remote Strata computer' : 'Configured fixture';
+const configuredFixtureName = ['--test-bot-photos', '--test-team-channel-layout'].includes(process.argv[2]) ? 'Configured fixture / Qwen extended long model name for a separate remote Strata computer' : 'Configured fixture';
 let botFace = { color: 'sky', eyes: 'star', ears: 'scalloped' };
 if (process.argv[2] === '--test-bot-avatar-states') {
   conversation.preferences = { botId: 'fixture-bot', botName: 'Workspace companion', botAvatarConfig: structuredClone(botFace),
@@ -98,8 +98,68 @@ if (lifecycleMode) {
     },
   });
 }
+// The new room acceptance uses the real durable bot/team/conversation services.
+// Only model output is scripted. No provider, shell, SSH, browser or VM exists.
+const teamChannelMode = ['--test-team-channel', '--test-team-channel-layout'].includes(process.argv[2]);
+let roomBots, roomChats, roomTeam, roomMembers = [], roomTurns = [];
+if (teamChannelMode) {
+  const { createBots } = await import('../../host/server/bots.mjs');
+  const { createConversations } = await import('../../host/server/conversations.mjs');
+  const directory = join(root, 'actual-team-service');
+  mkdirSync(directory, { mode: 0o700 });
+  roomBots = createBots({ directory, defaultWorkspace: () => directory,
+    conversations: () => roomChats,
+    tools: { definitions: () => [], execute: () => { throw new Error('No external tools in native Team fixture'); }, finish: async () => {} },
+    runtime: { providers: async () => [], close() {}, async run(input) {
+      roomTurns.push({ botId: input.bot.id, mode: input.bot.teamContext?.channelMode, message: input.message, toolNames: input.tools.map(tool => tool.name) });
+      input.onFrame({ type: 'reasoning', text: 'Review the shared team channel and answer as the named teammate.' });
+      const mode = input.bot.teamContext?.channelMode;
+      if (mode === 'routing') {
+        if (input.message.includes('[Strata teammate result')) {
+          input.onFrame({ type: 'delta', text: 'The team report is recorded. The fixture task is complete.' });
+        } else if (input.message.includes('finished their public bids')) {
+          await input.executeTool('assign_team_task', { botId: roomMembers[1].id, message: 'Implement the bounded fixture task and report in the channel.' }, 'fixture_assign');
+          input.onFrame({ type: 'delta', text: 'Builder owns the fixture task. Reviewer will help with checks.' });
+        } else if (input.message.toLowerCase().includes('who wants')) {
+          await input.executeTool('invite_teammates', { botIds: roomMembers.slice(1).map(bot => bot.id), message: 'Who can own this bounded fixture task?', purpose: 'bid' }, 'fixture_bids');
+          input.onFrame({ type: 'delta', text: 'Who can take this? Please share your fit here.' });
+        } else if (input.message.toLowerCase().includes('hold')) {
+          await input.executeTool('assign_team_task', { botId: roomMembers[1].id, message: 'Hold this synthetic task until Stop.' }, 'fixture_hold');
+          input.onFrame({ type: 'delta', text: 'Builder is holding the synthetic task.' });
+        } else {
+          await input.executeTool('invite_teammates', { botIds: roomMembers.slice(1).map(bot => bot.id), message: 'Say hello to the team once.', purpose: 'conversation' }, 'fixture_hello');
+          input.onFrame({ type: 'delta', text: 'Hi! I am Coordinator. We can work together here.' });
+        }
+      } else if (mode === 'bid') {
+        input.onFrame({ type: 'delta', text: input.bot.name === 'Builder' ? 'I can implement it and report back here.' : 'I can review the implementation and help Builder.' });
+      } else if (mode === 'task') {
+        if (input.message.includes('Hold this')) await new Promise(resolve => input.signal.addEventListener('abort', resolve, { once: true }));
+        else {
+          await input.executeTool('invite_teammates', { botIds: [roomMembers[2].id], message: 'Reviewer, can you review my approach?', purpose: 'conversation' }, 'fixture_peer_question');
+          input.onFrame({ type: 'delta', text: 'The fixture task is complete. Coordinator, the checks passed.' });
+        }
+      } else {
+        input.onFrame({ type: 'delta', text: input.message.includes('review my approach') ? 'Builder, your approach looks good. I can help with the checks.' : `Hi everyone! I am ${input.bot.name}. Ready to help the team.` });
+      }
+    } },
+  });
+  roomChats = createConversations({ directory, enabled: () => true, pending: id => roomBots.pending(id), stop: id => roomBots.stop(id), approve: input => roomBots.approve(input), validateSelection: selection => roomBots.validateSelection(selection), execute: input => roomBots.run(input) });
+  roomMembers = ['Coordinator', 'Builder', 'Reviewer'].map((name, index) => roomBots.create({ name, provider: 'codex', model: 'Fixture model', workspace: directory, policy: 'bypass', avatarConfig: { color: ['sky', 'orange', 'violet'][index], eyes: 'round', ears: 'round', shape: ['orb', 'tile', 'spark'][index] } }).bot);
+  roomTeam = roomBots.team.create({ name: 'Engineering', memberIds: roomMembers.map(bot => bot.id), coordinatorId: roomMembers[0].id, enabled: true }).team;
+  if (process.argv[2] === '--test-team-channel-layout') {
+    // Layout-only UI reads an actual saved journal seeded by the inert fixture.
+    // These setup turns have no provider or external tools and precede pairing.
+    const until = async predicate => { const deadline = Date.now() + 5_000; while (!predicate()) { if (Date.now() > deadline) throw new Error('Inert layout seed did not settle'); await new Promise(resolve => setTimeout(resolve, 10)); } };
+    roomBots.team.message(roomTeam.id, { message: 'Hi everyone', requestId: 'seed_greeting' });
+    await until(() => roomBots.team.channel(roomTeam.id).activeRuns.length === 0);
+    const held = roomBots.team.message(roomTeam.id, { message: 'Hold this synthetic task', requestId: 'seed_hold' });
+    await until(() => roomTurns.some(turn => turn.mode === 'task' && turn.message.includes('Hold this')));
+    await roomBots.team.stop(roomTeam.id, held.run.id);
+  }
+}
 const currentBotsCatalog = async () => {
   const base = botsCatalog();
+  if (roomBots) return { ...base, ...await roomBots.list() };
   if (!lifecycleProfiles) return base;
   const real = await lifecycleProfiles.list();
   return { ...base, ...real, bots: [...base.bots, ...real.bots], selectionSupported: true,
@@ -128,6 +188,21 @@ const tool = (id, state) => ({
 const host = {
   async json(path, options = {}) {
     calls.push({ path, method: options.method ?? 'GET', body: options.body ?? null });
+    if (roomBots) {
+      const route = new URL(path, 'http://fixture.invalid');
+      if (route.pathname === '/api/bots/teams') return roomBots.team.list();
+      const room = /^\/api\/bots\/teams\/([^/]+)\/(channel|messages)(?:\/([^/]+)\/(stop))?$/.exec(route.pathname);
+      if (room) {
+        if (room[2] === 'channel') return roomBots.team.channel(room[1], Object.fromEntries([...route.searchParams].map(([key, value]) => [key, Number(value)])));
+        if (room[2] === 'messages') return roomBots.team.message(room[1], options.body);
+      }
+      const stop = /^\/api\/bots\/teams\/([^/]+)\/runs\/([^/]+)\/stop$/.exec(route.pathname);
+      if (stop) return roomBots.team.stop(stop[1], stop[2]);
+      if (path === '/api/bots/activity') return roomBots.team.activity();
+      if (path === '/api/companion/conversations') return roomChats.list();
+      const chat = /^\/api\/companion\/conversations\/([^/]+)$/.exec(route.pathname);
+      if (chat) return roomChats.detail(chat[1]);
+    }
     if (path === '/api/models') return { variants: [], loaded: null };
     if (path === '/api/native') return { instances: [], catalog: { families: [] } };
     if (path === '/api/monitor') return { phase: 'idle', outputTps: 12, hardware: { ramUsedGb: 8, ramTotalGb: 48 } };
@@ -156,6 +231,7 @@ const host = {
       if (options.method === 'POST') { savedTeam = { id: 'team_fixture', ...structuredClone(options.body), enabled: false, limits: options.body.limits ?? teamLimits }; return { team: savedTeam }; }
       return { teams: savedTeam ? [savedTeam] : [], runs: teamRun ? [teamRun] : [] };
     }
+    if (workspaceMode && path.startsWith('/api/bots/teams/team_fixture/channel')) throw Object.assign(new Error('Shared channels require the new host'), { status: 404 });
     if (workspaceMode && path === '/api/bots/teams/team_fixture' && options.method === 'PATCH') { Object.assign(savedTeam, options.body); return { team: savedTeam }; }
     if (workspaceMode && path === '/api/bots/teams/team_fixture/runs') {
       if (!savedTeam?.enabled) throw Object.assign(new Error('Review and enable fixture team first'), { status: 409 });
@@ -278,6 +354,7 @@ async function close() {
       if (control?.listening) await new Promise(resolve => control.close(resolve));
       await bridge?.close();
       await lifecycleProfiles?.close();
+      await roomBots?.close(); roomChats?.close();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -304,6 +381,8 @@ try {
           await lifecycleProfiles.saveProfile({ expectedUpdatedAt: bot.updatedAt, name: 'Mac reviewed bot', provider: 'codex', model: 'Fixture model', effort: 'high', policy: 'plan', computerId: 'local', workspace: lifecycleReloadedWorkspace }, bot.id);
           break;
         }
+        case '/team-room-state':
+          break;
         case '/team-progress':
           if (!teamRun) throw new Error('Start a synthetic team first');
           teamRun.consumedTurns = 7;
@@ -370,7 +449,7 @@ try {
         response.writeHead(404).end(); return;
       }
       response.setHeader('Content-Type', 'application/json');
-      response.end(JSON.stringify({ conversation, createdBotConversation, pending, calls, ...(lifecycleProfiles ? { lifecycle: await lifecycleProfiles.list() } : {}), computerRunning, computerControlled: !!computerControl, botFace, downloadJobs: Object.fromEntries(downloadJobs), planCount: nextPlan, downloadCount: nextDownload }));
+      response.end(JSON.stringify({ conversation, createdBotConversation, pending, calls, ...(roomBots ? { teamChannel: roomBots.team.channel(roomTeam.id), roomTurns, roomTeam } : {}), ...(lifecycleProfiles ? { lifecycle: await lifecycleProfiles.list() } : {}), computerRunning, computerControlled: !!computerControl, botFace, downloadJobs: Object.fromEntries(downloadJobs), planCount: nextPlan, downloadCount: nextDownload }));
     } catch (error) {
       response.writeHead(500, { 'Content-Type': 'application/json' });
       response.end(JSON.stringify({ error: error.message }));
@@ -391,7 +470,7 @@ try {
       testProcess = spawn('xcodebuild', [
         '-project', project, '-scheme', 'StrataMobile', '-destination', destination,
         '-derivedDataPath', derivedData,
-        '-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation', '--test-computer': 'testActualSampleAvatarAndIsolatedComputerControl', '--test-bot-photos': 'testPhotoLedBotsCreationAppearanceAndWorkspaceNavigation', '--test-bot-lifecycle': 'testPhoneBotCreationEditingCASAndApprovalModes', '--test-bot-avatar-states': 'testBotAvatarStatesInteractionAndRosterFilters', '--test-facelift': 'testFaceliftPrincipalScreensAndSharedHistory', '--test-workspace-skills': 'testReviewedSkillAssignmentAndWorkspaceNavigation', '--test-workspace-connections': 'testSavedConnectionCheckAndReviewedAccess', '--test-workspace-teams': 'testTeamExplicitTaskSharedThinkingStopAndActivity' })[process.argv[2]],
+        '-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation', '--test-computer': 'testActualSampleAvatarAndIsolatedComputerControl', '--test-bot-photos': 'testPhotoLedBotsCreationAppearanceAndWorkspaceNavigation', '--test-bot-lifecycle': 'testPhoneBotCreationEditingCASAndApprovalModes', '--test-bot-avatar-states': 'testBotAvatarStatesInteractionAndRosterFilters', '--test-facelift': 'testFaceliftPrincipalScreensAndSharedHistory', '--test-workspace-skills': 'testReviewedSkillAssignmentAndWorkspaceNavigation', '--test-workspace-connections': 'testSavedConnectionCheckAndReviewedAccess', '--test-workspace-teams': 'testTeamExplicitTaskSharedThinkingStopAndActivity', '--test-team-channel': 'testNaturalTeamChannelPeersAssignmentsThinkingAndStop', '--test-team-channel-layout': 'testTeamChannelNormalDarkAndLargeTypeLayout' })[process.argv[2]],
         '-parallel-testing-enabled', 'NO', 'test',
       ], { stdio: 'inherit', env: { ...process.env,
         TEST_RUNNER_STRATA_TEST_INVITATION: connection.invitation,
@@ -402,7 +481,7 @@ try {
       testProcess.once('exit', code => resolve(code ?? 1));
     });
     process.exitCode = status;
-    if (process.env.STRATA_TEST_STATE_OUTPUT) writeFileSync(process.env.STRATA_TEST_STATE_OUTPUT, JSON.stringify({ calls, ...(lifecycleProfiles ? { lifecycle: await lifecycleProfiles.list() } : {}), savedTeam, teamRun, skillAssignments, skills: skillCatalog(), connectionAccess: { botIds: mcpConnection.botIds, enabledToolIds: mcpConnection.enabledToolIds, readOnlyToolIds: mcpConnection.readOnlyToolIds } }), { mode: 0o600 });
+    if (process.env.STRATA_TEST_STATE_OUTPUT) writeFileSync(process.env.STRATA_TEST_STATE_OUTPUT, JSON.stringify({ calls, ...(roomBots ? { teamChannel: roomBots.team.channel(roomTeam.id), roomTurns, roomTeam } : {}), ...(lifecycleProfiles ? { lifecycle: await lifecycleProfiles.list() } : {}), savedTeam, teamRun, skillAssignments, skills: skillCatalog(), connectionAccess: { botIds: mcpConnection.botIds, enabledToolIds: mcpConnection.enabledToolIds, readOnlyToolIds: mcpConnection.readOnlyToolIds } }), { mode: 0o600 });
     await close();
   } else {
     if (process.argv.length > 2) throw new Error('Usage: companion-fixture.mjs [--test|--test-downloads|--test-bots|--test-computer|--test-workspace-skills|--test-workspace-connections|--test-workspace-teams|--test-facelift|--test-bot-lifecycle|--test-bot-avatar-states <simulator destination>]');

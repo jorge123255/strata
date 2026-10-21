@@ -1235,6 +1235,171 @@ final class BotWorkspaceTests: XCTestCase {
     }
     private func decode<T: Decodable>(_ value: [String: Any], as type: T.Type) throws -> T { try JSONDecoder().decode(type, from: JSONSerialization.data(withJSONObject: value)) }
 
+    private func channelEntry(_ sequence: Int, teamId: String = "team_fixture", content: String = "Public team reply") -> [String: Any] {
+        ["id": "tm_\(sequence)", "sequence": sequence, "teamId": teamId, "kind": "message", "author": ["type": "bot", "botId": "bot_reviewer", "name": "Reviewer", "avatarConfig": ["color": "sky", "eyes": "round", "ears": "round", "shape": "orb"]], "content": content, "createdAt": "2026-10-21T01:00:00.000Z", "chatId": "s_shared"]
+    }
+    private func channelSnapshot(_ rows: [[String: Any]], older: Bool = false) -> [String: Any] {
+        ["teamId": "team_fixture", "supported": true, "messages": rows, "activeRuns": [], "nextSequence": rows.last?["sequence"] as? Int ?? 0, "hasMore": false, "hasMoreBefore": older]
+    }
+
+    func testTeamChannelReadsMergeOrderedHistoryAndKeepForwardCursorAfterOlderPages() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        var queries: [String] = []
+        fixture.respond { request in
+            guard request.url!.path.hasSuffix("/channel") else { return nil }
+            let query = request.url!.query ?? ""; queries.append(query)
+            if query == "before=101" { return self.channelSnapshot([self.channelEntry(1), self.channelEntry(100)]) }
+            if query == "after=102" { return self.channelSnapshot([self.channelEntry(103)]) }
+            return self.channelSnapshot([self.channelEntry(101), self.channelEntry(102)], older: true)
+        }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore()
+        await workspace.refreshChannel("team_fixture")
+        XCTAssertTrue(workspace.channels["team_fixture"]?.hasMoreBefore == true)
+        await workspace.refreshChannel("team_fixture", older: true)
+        await workspace.refreshChannel("team_fixture")
+        XCTAssertEqual(queries, ["", "before=101", "after=102"])
+        XCTAssertEqual(workspace.channels["team_fixture"]?.messages.map(\.sequence), [1, 100, 101, 102, 103])
+        XCTAssertFalse(workspace.channels["team_fixture"]?.hasMoreBefore ?? true)
+        XCTAssertEqual(workspace.channels["team_fixture"]?.messages.first?.author.avatarConfig?.shape, .orb)
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+        XCTAssertNil(store.currentConversation)
+    }
+
+    func testTeamChannelSendStaysInRoomAndRetriesUseExactTypedRequest() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let posted = channelSnapshot([channelEntry(1), channelEntry(2)])
+        fixture.respond { request in
+            if request.url!.path.hasSuffix("/channel") { return self.channelSnapshot([self.channelEntry(1)]) }
+            if request.url!.path.hasSuffix("/messages") { return ["channel": posted, "run": self.runRecord()] }
+            if request.url!.path == "/v1/bots/teams" { return ["teams": [self.team(enabled: true)], "runs": [self.runRecord()]] }
+            return nil
+        }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore()
+        await workspace.refreshChannel("team_fixture")
+        let selected = try decode(team(enabled: true), as: BotTeam.self)
+        let draft = BotTeamChannelPost(message: "Hi everyone", requestId: "request_room", recipientIds: selected.memberIds, replyToId: "tm_1")
+        let sent = await workspace.postTeamMessage(selected, draft: draft)
+        let repeated = await workspace.postTeamMessage(selected, draft: draft)
+        XCTAssertTrue(sent); XCTAssertTrue(repeated)
+        let writes = fixture.requests.filter { $0.method == "POST" }
+        XCTAssertEqual(writes.count, 2)
+        XCTAssertEqual(writes.map { $0.jsonBody?["requestId"] as? String }, ["request_room", "request_room"])
+        XCTAssertEqual(writes.first?.jsonBody?["recipientIds"] as? [String], selected.memberIds)
+        XCTAssertEqual(Set(writes.first!.jsonBody!.keys), ["message", "requestId", "recipientIds", "replyToId"])
+        XCTAssertEqual(workspace.channels["team_fixture"]?.messages.map(\.sequence), [1, 2])
+        XCTAssertNil(store.currentConversation)
+        XCTAssertFalse(fixture.requests.contains { $0.path.hasSuffix("/runs") || $0.path.contains("serving") || $0.path.contains("model-management") })
+    }
+
+    func testBusyChannelPostWindowCannotSkipUnreadGapAndIdsKeepTheirSequences() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        var queries: [String] = []
+        fixture.respond { request in
+            if request.url!.path.hasSuffix("/channel") {
+                let query = request.url!.query ?? ""; queries.append(query)
+                if query == "after=100" { return self.channelSnapshot((101...200).map { self.channelEntry($0) }) }
+                if query == "after=251" {
+                    var moved = self.channelEntry(252); moved["id"] = "tm_1"
+                    return self.channelSnapshot([moved])
+                }
+                return self.channelSnapshot((1...100).map { self.channelEntry($0) })
+            }
+            if request.url!.path.hasSuffix("/messages") { return ["channel": self.channelSnapshot((152...251).map { self.channelEntry($0) })] }
+            if request.url!.path == "/v1/bots/teams" { return ["teams": [self.team(enabled: true)], "runs": []] }
+            return nil
+        }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore()
+        await workspace.refreshChannel("team_fixture")
+        let sent = await workspace.postTeamMessage(try decode(team(enabled: true), as: BotTeam.self), draft: BotTeamChannelPost(message: "Hello", requestId: "request_room"))
+        XCTAssertTrue(sent)
+        XCTAssertEqual(workspace.channels["team_fixture"]?.nextSequence, 100)
+        await workspace.refreshChannel("team_fixture")
+        XCTAssertEqual(workspace.channels["team_fixture"]?.messages.map(\.sequence), Array(1...251))
+        XCTAssertEqual(workspace.channels["team_fixture"]?.nextSequence, 251)
+        await workspace.refreshChannel("team_fixture")
+        XCTAssertEqual(queries, ["", "after=100", "after=251"])
+        XCTAssertEqual(workspace.channels["team_fixture"]?.messages.first?.sequence, 1)
+        XCTAssertEqual(workspace.channels["team_fixture"]?.messages.count, 251)
+        XCTAssertNotNil(workspace.messages[BotWorkspaceStore.channelKey("team_fixture")])
+    }
+
+    func testLateChannelReadCannotOverwriteNewerSendOrForgottenPairing() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { request in
+            if request.url!.path.hasSuffix("/channel") { return self.channelSnapshot([self.channelEntry(1)]) }
+            if request.url!.path.hasSuffix("/messages") { return ["channel": self.channelSnapshot([self.channelEntry(1), self.channelEntry(2)])] }
+            if request.url!.path == "/v1/bots/teams" { return ["teams": [self.team(enabled: true)], "runs": []] }
+            return nil
+        }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore()
+        await workspace.refreshChannel("team_fixture")
+        let held = fixture.hold("/v1/bots/teams/team_fixture/channel")
+        let reading = Task { await workspace.refreshChannel("team_fixture") }
+        await fulfillment(of: [held.requested], timeout: 2)
+        let sent = await workspace.postTeamMessage(try decode(team(enabled: true), as: BotTeam.self), draft: BotTeamChannelPost(message: "Coordinate this task", requestId: "request_room"))
+        XCTAssertTrue(sent)
+        held.finish(channelSnapshot([channelEntry(1)])); await reading.value
+        XCTAssertEqual(workspace.channels["team_fixture"]?.messages.count, 2)
+        fixture.release("/v1/bots/teams/team_fixture/channel")
+        let late = fixture.hold("/v1/bots/teams/team_fixture/channel")
+        let forgetting = Task { await workspace.refreshChannel("team_fixture", reset: true) }
+        await fulfillment(of: [late.requested], timeout: 2)
+        store.forgetMac(); late.finish(channelSnapshot([channelEntry(9)])); await forgetting.value
+        XCTAssertEqual(workspace.channels["team_fixture"]?.messages.map(\.sequence), [1, 2])
+    }
+
+    func testChannelUnsupportedIsExplicitAndTransientErrorKeepsReadableHistory() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { _ in self.channelSnapshot([self.channelEntry(1)]) }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore()
+        await workspace.refreshChannel("team_fixture")
+        let error = fixture.hold("/v1/bots/teams/team_fixture/channel")
+        let reading = Task { await workspace.refreshChannel("team_fixture") }
+        await fulfillment(of: [error.requested], timeout: 2)
+        error.finish(["error": "Synthetic offline Mac"], status: 503); await reading.value
+        XCTAssertEqual(workspace.channels["team_fixture"]?.messages.count, 1)
+        XCTAssertTrue(workspace.channels["team_fixture"]?.supported == true)
+        XCTAssertEqual(workspace.messages[BotWorkspaceStore.channelKey("team_fixture")], "Synthetic offline Mac")
+        fixture.release("/v1/bots/teams/team_fixture/channel")
+        let unsupported = fixture.hold("/v1/bots/teams/team_fixture/channel")
+        let old = Task { await workspace.refreshChannel("team_fixture") }
+        await fulfillment(of: [unsupported.requested], timeout: 2)
+        unsupported.finish(["error": "Unsupported"], status: 404); await old.value
+        XCTAssertFalse(workspace.channels["team_fixture"]?.supported ?? true)
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+    }
+
+    func testMalformedCrossTeamChannelAndInvalidRecipientsNeverPublishOrSend() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { _ in self.channelSnapshot([self.channelEntry(1, teamId: "other_team")]) }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore()
+        await workspace.refreshChannel("team_fixture")
+        XCTAssertNil(workspace.channels["team_fixture"])
+        XCTAssertNotNil(workspace.messages[BotWorkspaceStore.channelKey("team_fixture")])
+        fixture.respond { _ in self.channelSnapshot([]) }
+        await workspace.refreshChannel("team_fixture")
+        let selected = try decode(team(enabled: true), as: BotTeam.self)
+        let sent = await workspace.postTeamMessage(selected, draft: BotTeamChannelPost(message: "Hello", requestId: "request_room", recipientIds: ["other_bot"]))
+        XCTAssertFalse(sent)
+        await workspace.refreshChannel("../other")
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+    }
+
+    func testPairingRevokedDuringTeamMessageCannotPublishChannelOrNavigate() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { _ in self.channelSnapshot([]) }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore()
+        await workspace.refreshChannel("team_fixture")
+        let held = fixture.hold("/v1/bots/teams/team_fixture/messages")
+        let selected = try decode(team(enabled: true), as: BotTeam.self)
+        let sending = Task { await workspace.postTeamMessage(selected, draft: BotTeamChannelPost(message: "Hello", requestId: "request_room")) }
+        await fulfillment(of: [held.requested], timeout: 2)
+        store.forgetMac(); held.finish(["channel": channelSnapshot([channelEntry(1)]), "run": runRecord()])
+        let sent = await sending.value
+        XCTAssertFalse(sent); XCTAssertTrue(workspace.channels["team_fixture"]?.messages.isEmpty == true)
+        XCTAssertNil(store.currentConversation)
+    }
+
     func testTeamCatalogAndCreationDoNotPromptAndOnlyExplicitTaskStartsTheSharedRun() async throws {
         let fixture = StoreTransport(); defer { fixture.close() }
         let savedTeam = team(), running = runRecord(), cancelled = runRecord(state: "cancelled")

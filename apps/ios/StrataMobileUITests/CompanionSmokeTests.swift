@@ -648,6 +648,95 @@ final class CompanionSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testNaturalTeamChannelPeersAssignmentsThinkingAndStop() async throws {
+        let controlURL = try pairWorkspaceFixture()
+        let team = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "team-")).firstMatch
+        try require(team); try tapWorkspace(team)
+        try require(app.navigationBars["Team channel"])
+        let input = app.descendants(matching: .any).matching(identifier: "botTeamTaskInput").firstMatch
+        let send = app.buttons["startBotTeamTaskButton"]
+        try tapWorkspace(input); input.typeText("Hi everyone")
+        app.buttons["dismissBotTeamTaskKeyboardButton"].tap()
+        try waitEnabled(send); send.tap()
+        let builderHello = app.staticTexts["Hi everyone! I am Builder. Ready to help the team."]
+        try require(builderHello)
+        try tapWorkspace(app.staticTexts["Hi everyone! I am Reviewer. Ready to help the team."], performTap: false)
+        XCTAssertTrue(app.navigationBars["Team channel"].exists, "Sending stays in the shared room.")
+        attachScreenshot("Team channel — named peers talking together")
+        let state = try await fixtureControl(controlURL, action: "team-room-state")
+        let channel = try XCTUnwrap(state["teamChannel"] as? [String: Any])
+        let entries = try XCTUnwrap(channel["messages"] as? [[String: Any]])
+        let peer = try XCTUnwrap(entries.first { ($0["author"] as? [String: Any])?["name"] as? String == "Reviewer" && ($0["content"] as? String)?.contains("Hi everyone") == true })
+        let peerId = try XCTUnwrap(peer["id"] as? String)
+        try tapWorkspace(app.buttons["replyTeamMessage-\(peerId)"])
+        try require(app.staticTexts["teamReplyContext"])
+        input.typeText("Who wants this task?")
+        app.buttons["dismissBotTeamTaskKeyboardButton"].tap()
+        try waitEnabled(send); send.tap()
+        let report = app.staticTexts["The fixture task is complete. Coordinator, the checks passed."]
+        try tapWorkspace(report, performTap: false)
+        try tapWorkspace(app.staticTexts["Builder, your approach looks good. I can help with the checks."], performTap: false)
+        if app.buttons["latestTeamMessagesButton"].exists { app.buttons["latestTeamMessagesButton"].tap() }
+        try tapWorkspace(report, performTap: false)
+        attachScreenshot("Team channel — bids ownership and public worker report")
+        let details = app.buttons.matching(NSPredicate(format: "label == %@", "Thinking & tools")).firstMatch
+        try tapWorkspace(details)
+        let thinking = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "thinkingDisclosure-")).firstMatch
+        try require(thinking); thinking.tap()
+        attachScreenshot("Team channel — explicit shared Thinking link")
+        tapTab("Bots")
+        try require(app.navigationBars["Team channel"])
+        try tapWorkspace(input); input.typeText("Hold this synthetic task")
+        app.buttons["dismissBotTeamTaskKeyboardButton"].tap()
+        try waitEnabled(send); send.tap()
+        let stop = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "stopBotTeamRun-")).firstMatch
+        try require(stop); try waitEnabled(stop); stop.tap()
+        try require(app.buttons["Stop all team work"]); app.buttons["Stop all team work"].tap()
+        try tapWorkspace(app.staticTexts["Stopped by you."], performTap: false)
+        attachScreenshot("Team channel — explicit Stop keeps public history")
+        app.terminate(); app.launch()
+        tapTab("Bots")
+        let restoredTeam = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "team-")).firstMatch
+        try tapWorkspace(restoredTeam)
+        try tapWorkspace(app.staticTexts["Stopped by you."], performTap: false)
+        app.terminate()
+        app.launchArguments = ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
+        app.launch(); tapTab("Bots")
+        try tapWorkspace(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "team-")).firstMatch)
+        try require(app.descendants(matching: .any).matching(identifier: "botTeamTaskInput").firstMatch)
+        XCTAssertTrue(app.buttons["startBotTeamTaskButton"].isHittable)
+        attachScreenshot("Team channel — accessibility text and reachable composer")
+        let final = try await fixtureControl(controlURL, action: "team-room-state")
+        let calls = try XCTUnwrap(final["calls"] as? [[String: Any]])
+        let posts = calls.filter { ($0["path"] as? String)?.contains("/teams/") == true && ($0["path"] as? String)?.hasSuffix("/messages") == true && $0["method"] as? String == "POST" }
+        XCTAssertEqual(posts.count, 3)
+        XCTAssertEqual((posts[1]["body"] as? [String: Any])?["replyToId"] as? String, peerId)
+        XCTAssertFalse(calls.contains { ($0["path"] as? String)?.hasSuffix("/runs") == true && $0["method"] as? String == "POST" })
+        XCTAssertFalse(calls.contains { ($0["path"] as? String)?.contains("model-management") == true || ($0["path"] as? String)?.contains("/computer/") == true || ($0["path"] as? String)?.contains("/approval") == true })
+        let finalChannel = try XCTUnwrap(final["teamChannel"] as? [String: Any])
+        XCTAssertTrue((finalChannel["activeRuns"] as? [Any])?.isEmpty == true)
+    }
+
+    @MainActor
+    func testTeamChannelNormalDarkAndLargeTypeLayout() async throws {
+        let controlURL = try pairWorkspaceFixture()
+        for (style, large) in [("Light", false), ("Dark", false), ("Dark", true)] {
+            app.terminate()
+            _ = try await fixtureControl(controlURL, action: style == "Dark" ? "appearance-dark" : "appearance-light")
+            app.launchArguments = large ? ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"] : []
+            app.launch(); tapTab("Bots")
+            try tapWorkspace(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "team-")).firstMatch)
+            try tapWorkspace(app.staticTexts["Strata"], performTap: false)
+            XCTAssertTrue(app.buttons["startBotTeamTaskButton"].isHittable)
+            XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "botTeamTaskInput").firstMatch.isHittable)
+            attachScreenshot("Team channel layout — " + style + (large ? " accessibility XXXL" : " normal"))
+        }
+        let state = try await fixtureControl(controlURL, action: "team-room-state")
+        let calls = try XCTUnwrap(state["calls"] as? [[String: Any]])
+        XCTAssertTrue(calls.allSatisfy { $0["method"] as? String == "GET" }, "Layout navigation starts no work.")
+    }
+
+    @MainActor
     func testTeamExplicitTaskSharedThinkingStopAndActivity() async throws {
         let controlURL = try pairWorkspaceFixture()
         let create = app.buttons["createBotTeamButton"]
@@ -661,13 +750,15 @@ final class CompanionSmokeTests: XCTestCase {
         try waitEnabled(app.buttons["confirmBotTeamButton"]); app.buttons["confirmBotTeamButton"].tap()
         let team = app.buttons["team-team_fixture"]
         try require(team); try tapWorkspace(team)
+        try tapWorkspace(app.buttons["botTeamSettingsDisclosure"])
         let enabled = app.buttons["toggleBotTeamEnabledButton"]
-        try require(enabled); try waitEnabled(enabled); enabled.tap()
+        try tapWorkspace(enabled, performTap: false); try waitEnabled(enabled); enabled.tap()
         let input = app.descendants(matching: .any).matching(identifier: "botTeamTaskInput").firstMatch
         try tapWorkspace(input); input.typeText("Review this synthetic workspace")
         app.buttons["dismissBotTeamTaskKeyboardButton"].tap()
         let start = app.buttons["startBotTeamTaskButton"]
         try waitEnabled(start); try tapWorkspace(start)
+        try tapWorkspace(app.buttons["Open task conversation"])
         let thinking = app.buttons["thinkingDisclosure-team-assistant"]
         try require(thinking); thinking.tap()
         try require(app.staticTexts["thinkingContent-team-assistant"])
@@ -677,8 +768,9 @@ final class CompanionSmokeTests: XCTestCase {
         try require(stop)
         _ = try await fixtureControl(controlURL, action: "team-progress")
         try require(app.staticTexts["7 turns"])
-        try tapWorkspace(stop)
+        try waitEnabled(stop); stop.tap()
         try require(app.buttons["Stop all team work"]); app.buttons["Stop all team work"].tap()
+        try tapWorkspace(app.buttons["botTeamPreviousTasksDisclosure"])
         try require(app.staticTexts["Cancelled"])
         app.navigationBars.buttons.firstMatch.tap()
         try selectWorkspace("Activity")
@@ -727,6 +819,17 @@ final class CompanionSmokeTests: XCTestCase {
             var bottom = window.maxY - 24
             if app.tabBars.firstMatch.exists { bottom = min(bottom, app.tabBars.firstMatch.frame.minY - 18) }
             if app.keyboards.firstMatch.exists { bottom = min(bottom, app.keyboards.firstMatch.frame.minY - 12) }
+            // The persistent roster controls sit above the tab bar. Swiping
+            // from that overlay cannot move the underlying list.
+            let targetIdentifier = element.exists ? element.identifier : ""
+            let rosterFilter = app.segmentedControls["botRosterFilterPicker"]
+            if rosterFilter.exists, !["botRosterSearchInput", "botRosterFilterPicker"].contains(targetIdentifier) {
+                bottom = min(bottom, rosterFilter.frame.minY - 12)
+            }
+            let teamInput = app.descendants(matching: .any).matching(identifier: "botTeamTaskInput").firstMatch
+            if teamInput.exists, !["botTeamTaskInput", "startBotTeamTaskButton", "teamChannelRecipientPicker"].contains(targetIdentifier) {
+                bottom = min(bottom, teamInput.frame.minY - 54)
+            }
             let frame = element.exists ? element.frame : .zero, y = frame.midY
             if element.exists, element.isHittable, frame.width > 0, y > top, y < bottom {
                 if performTap {
