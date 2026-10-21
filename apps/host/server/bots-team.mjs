@@ -469,7 +469,15 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
     return { accepted: true, deliveryId: next.id, ...(next.type === 'subagent' ? { subagentId: next.id } : {}), chatId: next.chatId, state: next.state, notice: 'The teammate will run asynchronously. Continue your work; a bounded completion report arrives later in this chat.' };
   }
   const timer = setInterval(tick, 1000); timer.unref();
-  return { list, create, update, executionForRun: id => copy(runs.get(id)?.executionSnapshot), sharedAnchor: id => [...teams.values()].some(team => team.execution?.mode === 'shared' && team.execution.computerId === `cua:${id}`), start, channel, message, detail: (teamId, id) => ({ run: publicRun(requireRun(teamId, id)) }), stop, activity, begin, end, tick,
+  return { list, create, update, executionForRun: id => copy(runs.get(id)?.executionSnapshot), sharedAnchor: id => [...teams.values()].some(team => team.execution?.mode === 'shared' && team.execution.computerId === `cua:${id}`),
+    hasTeam: id => teams.has(id),
+    connectorAccess(teamId, botId, teamRunId) {
+      const current = teams.get(teamId), run = runs.get(teamRunId);
+      // Team grants belong to this team's active work, never to a member's
+      // unrelated private chat or a later continuation of a completed task.
+      return !!current?.enabled && current.memberIds.includes(botId) && run?.teamId === teamId && ['queued', 'running'].includes(run.state);
+    },
+    start, channel, message, detail: (teamId, id) => ({ run: publicRun(requireRun(teamId, id)) }), stop, activity, begin, end, tick,
     modeForChat(chatId, bot) {
       const mode = bot?.teamContext?.channelMode;
       if (!mode) return null;

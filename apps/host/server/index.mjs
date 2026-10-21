@@ -524,7 +524,7 @@ const cuaBotTools = createBotCUATools({ directory: store.DATA_DIR, python: resol
 const botTools = { definitions: bot => (bot.computerMode === 'cua' ? cuaBotTools : hostBotTools).definitions(bot), execute: options => (options.bot.computerMode === 'cua' ? cuaBotTools : hostBotTools).execute(options), async finish(chatId) { await Promise.all([hostBotTools.finish(chatId), cuaBotTools.finish(chatId)]); }, async close() { await Promise.all([hostBotTools.close(), cuaBotTools.close()]); } };
 const botModelSources = createBotModelSources({ providers: modelProviders, localInstances: () => native.readyInstances() });
 const botSkills = createBotSkills({ directory: store.DATA_DIR, library: () => skillState, workspacePath: id => workspaces.find(w => w.id === id)?.path ?? null, hasBot: id => bots?.hasBot(id) === true, notify: (event, data) => hub.send(event, data) });
-const botMcp = createBotMcp({ directory: store.DATA_DIR, hasBot: id => bots?.hasBot(id) === true, notify: (event, data) => hub.send(event, data) });
+const botMcp = createBotMcp({ directory: store.DATA_DIR, hasBot: id => bots?.hasBot(id) === true, hasTeam: id => bots?.hasTeam(id) === true, teamAccess: (teamId, botId, teamRunId) => bots?.teamConnectorAccess(teamId, botId, teamRunId) === true, notify: (event, data) => hub.send(event, data) });
 bots = createBots({ directory: store.DATA_DIR, skills: botSkills, mcp: botMcp, remoteSSH: botSSH, cuaTools: cuaBotTools, modelProviders: botModelSources, modelRequest: createBotModelClient({ providers: botModelSources }), runtime: createBotRuntime({ stateDir: join(store.DATA_DIR, 'bots-runtime'), remoteSSH: botSSH }), tools: botTools,
   conversations: () => conversations, defaultWorkspace: () => workspaces[0]?.path ?? WORKSPACE, notify: (event, data) => hub.send(event, data) });
 const botRoutes = createBotRoutes({ bots, port: PORT });
@@ -1049,7 +1049,7 @@ const server = http.createServer(async (req, res) => {
   if (path === '/api/remote-serving' || path.startsWith('/api/remote-serving/')) return remoteServingRoutes(req, res, url);
   if (path === '/api/remote-lifecycle' || path.startsWith('/api/remote-lifecycle/')) return remoteLifecycleRoutes(req, res, url);
   if (path === '/api/model-management' || path.startsWith('/api/model-management/')) return modelManagementRoutes(req, res, path, method);
-  if (/^\/api\/bots\/(skills|connections)(?:\/|$)/.test(path)) return botExtensionRoutes(req, res, url);
+  if (/^\/api\/bots\/(skills|connections|connectors)(?:\/|$)/.test(path)) return botExtensionRoutes(req, res, url);
   if (path === '/api/bots/notifications' || path.startsWith('/api/bots/notifications/')) return botNotificationRoutes(req, res, url);
   if (path === '/api/bots' || path.startsWith('/api/bots/')) return botRoutes(req, res, url);
   if (path === '/api/companion/conversations' || path.startsWith('/api/companion/conversations/')) return conversationRoutes(req, res, url);

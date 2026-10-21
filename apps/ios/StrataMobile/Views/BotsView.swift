@@ -315,6 +315,12 @@ struct BotDetailView: View {
                         }.disabled(bot.updatedAt == nil || store.botIsWorking(bot)).accessibilityIdentifier("botSettingsCard")
                     }
                 }.listRowBackground(StrataTheme.surface)
+                Section {
+                    NavigationLink {
+                        BotConnectorsForBotView(store: store, botId: bot.id)
+                    } label: { profileAction("Connectors", detail: "Service accounts and tools", icon: "link") }
+                        .accessibilityIdentifier("botConnectorsButton")
+                }
                 Section("Computers") {
                     LabeledContent("Execution", value: bot.executionLabel)
                         .accessibilityElement(children: .combine).accessibilityIdentifier("botComputerDetail")

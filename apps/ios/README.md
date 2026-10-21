@@ -41,6 +41,16 @@ Bot avatars use a small native emoji set shared with the Mac. A conversation kee
 
 Create bots, sign in to providers, and configure computer access in the Mac app. Provider credentials and SSH connection details stay on the Mac. Bot providers and execution computers are separate from the existing model library and Maya connections. Older Mac builds show an update message without affecting existing chats or model controls.
 
+## Connect services to bots and teams
+
+Open **Bots → workspace menu → Connectors**, or open **Connectors** from a bot profile or **Team connectors** in team details. Choose a service from the catalog or add a **Custom HTTP connector**. Name the account, enter its server URL and choose authentication. HTTP setup and bearer keys can be entered on iPhone; local programs and OAuth app registrations are configured on Mac. Credentials are saved privately on the Mac and are never returned to the phone.
+
+For account sign-in, choose **Start account sign-in**, then finish in a browser on your Mac. The phone can share the sign-in link to your Mac and show current status. If the browser cannot return to Strata, paste the complete callback address into the connector’s sign-in screen. Each service may require its own account, token scopes or OAuth app setup.
+
+Choose **Check & discover tools**, then explicitly select bot access, team access and tools before choosing **Save access**. Discovery grants no access. Team grants apply only during that team’s work and follow its current membership; members’ private chats use their separate bot grants. Connector instructions describe how to use that account. New conversations receive assigned tools, and removing access revokes it immediately. Tools retain the bot’s approval policy; read-only classification is reviewed on Mac.
+
+You can edit HTTP setup, disable a connector while retaining its account, sign out an OAuth account, or remove the connector and its saved credentials. If another device changes the setup or access, Strata retains your draft and requires a fresh review before saving. Earlier Mac builds keep saved-connection checks and bot access available, with an update message for newer controls. Connectors do not change model serving, configured model accounts or Maya.
+
 ## Download a model
 
 Open **Models → Downloads**, choose the destination computer, and choose **Review download**. The review names the computer and shows the expected download size, storage needed, free storage, picture reading choice, and any required engine changes. Starting may unload native models and prepare or update the engine; the review explains those steps. Choose **Download on…** only when you are ready. Downloading does not load the model automatically.

@@ -5,7 +5,9 @@ import { join } from 'node:path';
 import { error, json, readBody } from './util.mjs';
 import { isLocalCompanionRequest } from './companion-routes.mjs';
 
-export const botExtensionFault = (status, message) => Object.assign(new Error(message), { status });
+const extensionFaults = new WeakSet();
+export const botExtensionFault = (status, message) => { const failure = Object.assign(new Error(message), { status }); extensionFaults.add(failure); return failure; };
+export const isBotExtensionFault = failure => !!failure && typeof failure === 'object' && extensionFaults.has(failure);
 export const extensionHash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 export const extensionText = (value, max, label, required = false) => {
   if (typeof value !== 'string' || value.includes('\0') || value.length > max || required && !value.trim()) throw botExtensionFault(400, `Enter a valid ${label}.`);
@@ -44,7 +46,7 @@ export function createBotExtensionRoutes({ skills, mcp, port }) {
     try {
       const body = ['POST', 'PATCH'].includes(req.method) ? await readBody(req, 256 * 1024).catch(() => { throw botExtensionFault(400, 'Enter valid JSON within the configuration size limit.'); }) : {};
       const result = await (url.pathname.startsWith('/api/bots/skills') ? skills : mcp).handle(req.method, url, body);
-      return json(res, req.method === 'POST' && !/\/(assign|check)$/.test(url.pathname) ? 201 : 200, result);
+      return json(res, req.method === 'POST' && !/\/(assign|check|auth(?:\/complete)?)$/.test(url.pathname) ? 201 : 200, result);
     } catch (failure) { return error(res, failure.status ?? 503, failure.status ? failure.message : 'This Bots connection is unavailable. Check its setup and try again.'); }
   };
 }

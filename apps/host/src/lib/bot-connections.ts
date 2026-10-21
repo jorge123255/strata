@@ -23,3 +23,15 @@ export function parseBotConnectionImport(text: string): BotConnectionDraft[] {
     return { name, transport: row.url ? 'http' : 'stdio', url: String(row.url ?? ''), command: String(row.command ?? ''), args: row.args as string[] ?? [], ...(row.env ? { env: row.env as Record<string,string> } : {}), ...(apiKey ? {apiKey} : {}), botIds: [], enabledToolIds: [] };
   });
 }
+
+/** Only HTTPS account sign-in URLs may leave the connector manager. */
+export function connectorAuthorizationURL(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  try { const url = new URL(value); return url.protocol === 'https:' && !url.username && !url.password ? url.href : null; } catch { return null; }
+}
+/** Team access grants apply only to team work, not members' private conversations. */
+export function connectorInScope(connection: {botIds:string[];teamIds?:string[]}, scope: string): boolean {
+  if (scope.startsWith('bot:')) return connection.botIds.includes(scope.slice(4));
+  if (scope.startsWith('team:')) return connection.teamIds?.includes(scope.slice(5)) === true;
+  return true;
+}

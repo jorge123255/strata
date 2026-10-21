@@ -24,7 +24,7 @@ export const PROVIDER_CATALOG = [
   { id: 'qwen-us', name: 'Qwen · US', baseUrl: 'https://dashscope-us.aliyuncs.com/compatible-mode/v1', protocol: 'openai-chat' },
   { id: 'together', name: 'Together AI', baseUrl: 'https://api.together.ai/v1', protocol: 'openai-chat' },
   { id: 'vercel-ai-gateway', name: 'Vercel AI Gateway', baseUrl: 'https://ai-gateway.vercel.sh/v1', protocol: 'openai-chat' },
-  { id: 'xai', name: 'xAI', baseUrl: 'https://api.x.ai/v1', protocol: 'openai-responses' },
+  { id: 'xai', name: 'xAI · Grok', baseUrl: 'https://api.x.ai/v1', protocol: 'openai-responses' },
   { id: 'zai', name: 'Z.AI', baseUrl: 'https://api.z.ai/api/paas/v4', protocol: 'openai-chat' },
 ];
 const PROTOCOLS = ['openai-chat', 'openai-responses', 'anthropic'];

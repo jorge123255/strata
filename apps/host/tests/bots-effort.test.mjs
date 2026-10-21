@@ -55,7 +55,7 @@ test('ACP applies only advertised effort and requires exact readback before any 
 
 test('unknown configured and Ollama effort stay default and reject unsupported overrides before inference', async () => {
   let prompts = 0;
-  const runtime = createBotRuntime({ fetch: () => { prompts++; throw new Error('Must not request'); }, modelRequest: () => { prompts++; throw new Error('Must not request'); } });
+  const runtime = createBotRuntime({ commands: { grok: '/not-installed' }, fetch: () => { prompts++; throw new Error('Must not request'); }, modelRequest: () => { prompts++; throw new Error('Must not request'); } });
   for (const provider of ['grok', 'kimi', 'ollama', 'configured']) assert.deepEqual((await runtime.models(provider)).models, []);
   for (const provider of ['ollama', 'configured']) await assert.rejects(runtime.run({ bot: bot(provider), message: 'No prompt', tools: [] }), /could not be verified/);
   assert.equal(prompts, 0); await runtime.close();

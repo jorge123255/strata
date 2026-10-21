@@ -37,13 +37,13 @@ async function fixture(t, handler) {
   return { bridge, calls, ...bridge.authority.pair(bridge.authority.code, 'Workspace fixture') };
 }
 
-test('workspace host admission rejects arbitrary methods, programs, secrets, policy and queries', async () => {
+test('workspace host admission rejects arbitrary methods, programs, OAuth client secrets, policy and queries', async () => {
   const calls = []; const host = new HostClient({ upstream: 'http://127.0.0.1:47831', fetcher: async (url, options) => { calls.push({ url, ...options }); return new Response('{}'); } });
   await host.request('/api/bots/teams'); await host.request('/api/bots/skills?botId=bot_coder'); await host.request('/api/bots/provider-models?provider=codex');
   await host.request('/api/bots/provider-models?provider=devin');
   await host.request('/api/bots/teams', { method: 'POST', body: { name: team.name, memberIds: team.memberIds, coordinatorId: team.coordinatorId, enabled: false, limits } });
   for (const [path, method, body] of [
-    ['/api/bots/connections', 'POST', { command: '/bin/sh' }], ['/api/bots/connections/mcpc_fixture', 'PATCH', { apiKey: 'SECRET' }],
+    ['/api/bots/connections', 'POST', { command: '/bin/sh' }], ['/api/bots/connections/mcpc_fixture', 'PATCH', { oauthClientSecret: 'SECRET' }],
     ['/api/bots/connections/mcpc_fixture', 'PATCH', { command: '/bin/sh' }], ['/api/bots/teams', 'POST', { ...team, provider: 'codex' }],
     ['/api/bots/teams/team_fixture/runs', 'POST', { message: 'Task', policy: 'bypass' }], ['/api/bots/skills', 'POST', { name: 'X', description: '', body: 'Y', status: 'enabled' }],
     ['/api/bots/activity?include=secrets', 'GET'], ['/api/bots/skills?botId=bot_coder&botId=bot_reviewer', 'GET'], ['/api/bots/provider-models?provider=evil', 'GET'],

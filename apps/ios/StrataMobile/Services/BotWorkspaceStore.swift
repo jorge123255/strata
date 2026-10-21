@@ -10,6 +10,7 @@ final class BotWorkspaceStore: ObservableObject {
     @Published private(set) var activity: [BotWorkspaceActivity] = []
     @Published private(set) var skills: BotSkillsSnapshot?
     @Published private(set) var connections: BotConnectionsSnapshot?
+    @Published private(set) var connectorCatalog: BotConnectorCatalog?
     @Published private(set) var messages: [String: String] = [:]
     @Published private(set) var loading: Set<String> = []
     @Published private(set) var mutation: String?
@@ -34,6 +35,10 @@ final class BotWorkspaceStore: ObservableObject {
     func refreshConnections() async {
         await load("connections", path: "/v1/bots/connections") { (value: BotConnectionsSnapshot) in self.connections = value; self.messages["connections"] = value.reason }
     }
+    func refreshConnectorCatalog() async {
+        guard connections?.connectorFeatures?.catalog == true else { return }
+        await load("connectorCatalog", path: "/v1/bots/connectors/catalog") { (value: BotConnectorCatalog) in self.connectorCatalog = value; self.messages["connectorCatalog"] = value.reason }
+    }
     private func load<T: Decodable>(_ key: String, path: String, apply: (T) -> Void) async {
         guard let client, isCurrent() else { return }
         let request = UUID(); requests[key] = request; loading.insert(key)
@@ -51,7 +56,9 @@ final class BotWorkspaceStore: ObservableObject {
         requests[key] = nil; loading.remove(key)
         defer { mutation = nil }
         do {
-            let value: T = try await client.perform(path, method: method, jsonBody: body)
+            let value: T
+            if method == "DELETE" { value = try await client.perform(path, method: method) }
+            else { value = try await client.perform(path, method: method, jsonBody: body) }
             guard isCurrent(), !Task.isCancelled else { return nil }
             return value
         } catch {
@@ -257,12 +264,60 @@ final class BotWorkspaceStore: ObservableObject {
         let value: Result? = await change("connections", path: "/v1/bots/connections/\(connection.id)/check", body: [String: String]())
         if value != nil { await refreshConnections() }
     }
-    func saveConnection(_ connection: BotMCPConnection, botIds: [String], toolIds: [String]) async -> Bool {
-        struct Update: Encodable { var botIds: [String]; var enabledToolIds: [String]; var readOnlyToolIds: [String]; var expectedInventoryDigest: String }
+    func saveConnection(_ connection: BotMCPConnection, botIds: [String], toolIds: [String], teamIds: [String]? = nil, instructions: String? = nil) async -> Bool {
+        guard CompanionClient.isSafeIdentifier(connection.id),
+              teamIds == nil || connections?.connectorFeatures?.teamAccess == true,
+              instructions == nil || connections?.connectorFeatures?.teamAccess == true,
+              (instructions?.utf16.count ?? 0) <= 8000, instructions?.contains("\0") != true else { return false }
+        struct Update: Encodable { var botIds: [String]; var enabledToolIds: [String]; var readOnlyToolIds: [String]; var expectedInventoryDigest: String; var teamIds: [String]?; var customInstructions: String? }
         struct Result: Decodable { var connection: BotMCPConnection }
         let selected = Set(toolIds)
-        let value: Result? = await change("connections", path: "/v1/bots/connections/\(connection.id)", method: "PATCH", body: Update(botIds: botIds, enabledToolIds: toolIds, readOnlyToolIds: connection.readOnlyToolIds.filter { selected.contains($0) }, expectedInventoryDigest: connection.inventoryDigest))
+        let value: Result? = await change("connections", path: "/v1/bots/connections/\(connection.id)", method: "PATCH", body: Update(botIds: botIds, enabledToolIds: toolIds, readOnlyToolIds: connection.readOnlyToolIds.filter { selected.contains($0) }, expectedInventoryDigest: connection.inventoryDigest, teamIds: teamIds, customInstructions: instructions))
         if value != nil { await refreshConnections() }
         return value != nil && isCurrent()
     }
+    func saveConnectorSetup(_ draft: BotConnectorDraft, editing connection: BotMCPConnection? = nil) async -> Bool {
+        guard connections?.connectorFeatures?.httpCreation == true, draft.isValid,
+              draft.authType != "oauth" || connections?.connectorFeatures?.oauth == true,
+              connection == nil || connection?.transport == "http", connection == nil || CompanionClient.isSafeIdentifier(connection!.id) else { return false }
+        struct Result: Decodable { var connection: BotMCPConnection }
+        let path = connection.map { "/v1/bots/connections/\($0.id)" } ?? "/v1/bots/connections"
+        var reviewedDraft = draft
+        reviewedDraft.expectedInventoryDigest = connection?.inventoryDigest
+        let value: Result? = await change("connections", path: path, method: connection == nil ? "POST" : "PATCH", body: reviewedDraft)
+        if value != nil { await refreshConnections() }
+        return value != nil && isCurrent()
+    }
+    func setConnectorEnabled(_ connection: BotMCPConnection, enabled: Bool) async -> Bool {
+        guard connections?.connectorFeatures?.teamAccess == true, CompanionClient.isSafeIdentifier(connection.id) else { return false }
+        struct Update: Encodable { var enabled: Bool; var expectedInventoryDigest: String }
+        struct Result: Decodable { var connection: BotMCPConnection }
+        let value: Result? = await change("connections", path: "/v1/bots/connections/\(connection.id)", method: "PATCH", body: Update(enabled: enabled, expectedInventoryDigest: connection.inventoryDigest))
+        if value != nil { await refreshConnections() }
+        return value != nil && isCurrent()
+    }
+    func removeConnector(_ connection: BotMCPConnection) async -> Bool {
+        guard connections?.connectorFeatures?.httpCreation == true, CompanionClient.isSafeIdentifier(connection.id) else { return false }
+        struct Result: Decodable { var deleted: Bool }
+        let value: Result? = await change("connections", path: "/v1/bots/connections/\(connection.id)", method: "DELETE", body: [String: String]())
+        if value != nil { await refreshConnections() }
+        return value?.deleted == true && isCurrent()
+    }
+    @discardableResult func connectorAuthentication(_ connection: BotMCPConnection, action: String, callbackURL: String? = nil) async -> Bool {
+        guard connections?.connectorFeatures?.oauth == true, connection.authType == "oauth",
+              CompanionClient.isSafeIdentifier(connection.id), ["start", "poll", "disconnect", "complete"].contains(action) else { return false }
+        struct Result: Decodable { var connection: BotMCPConnection }
+        let path = "/v1/bots/connections/\(connection.id)/auth" + (action == "complete" ? "/complete" : "")
+        if action == "poll" {
+            await load("connections", path: path) { (value: Result) in
+                if let index = self.connections?.connections.firstIndex(where: { $0.id == value.connection.id }) { self.connections?.connections[index] = value.connection }
+            }
+            return messages["connections"] == nil && isCurrent()
+        }
+        let body = callbackURL.map { ["callbackURL": $0] } ?? [:]
+        let value: Result? = await change("connections", path: path, method: action == "disconnect" ? "DELETE" : "POST", body: body)
+        if value != nil { await refreshConnections() }
+        return value != nil && isCurrent()
+    }
+
 }

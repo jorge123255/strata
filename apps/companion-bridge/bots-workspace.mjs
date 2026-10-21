@@ -36,6 +36,29 @@ function teamBriefing(value, memberIds, status) {
   if (total > 24000) throw error(status, 'Keep all team instructions and roles within 24,000 characters in total.');
   return { instructions: value.instructions, members: value.members.map(member => ({ botId: member.botId, role: member.role, instructions: member.instructions })) };
 }
+function connectorURL(value, status) {
+  string(value, 4000, status);
+  let url; try { url = new URL(value); } catch { throw error(status, 'Enter a complete connector URL.'); }
+  if (url.username || url.password || url.search || url.hash || url.protocol !== 'https:' && !(url.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname))) throw error(status, 'Use HTTPS, or an HTTP loopback address on the Mac.');
+  return url.href;
+}
+function connectorSettings(body, method, status) {
+  object(body, ['name', 'transport', 'url', 'catalogId', 'accountLabel', 'authType', 'apiKey', 'clearKey', 'botIds', 'teamIds', 'enabledToolIds', 'readOnlyToolIds', 'expectedInventoryDigest', 'customInstructions', 'enabled'], status);
+  if (method === 'POST' || body.name !== undefined) string(body.name, 120, status);
+  if (method === 'POST' || body.transport !== undefined) if (body.transport !== 'http') throw error(status, 'Set up local connector programs on your Mac.');
+  if (body.url !== undefined) connectorURL(body.url, status);
+  if (method === 'POST' && !body.catalogId && !body.url) throw error(status, 'Choose a connector or enter its server URL.');
+  if (body.catalogId !== undefined && !id(body.catalogId)) throw error(status, 'Choose a supported connector.');
+  if (body.accountLabel !== undefined) string(body.accountLabel, 120, status, true);
+  if (body.authType !== undefined && !['none', 'bearer', 'oauth'].includes(body.authType)) throw error(status, 'Choose supported connector authentication.');
+  if (body.apiKey !== undefined) string(body.apiKey, 8192, status, true);
+  for (const key of ['clearKey', 'enabled']) if (body[key] !== undefined && typeof body[key] !== 'boolean') throw error(status, 'Review the connector settings.');
+  if (body.customInstructions !== undefined) string(body.customInstructions, 8000, status, true);
+  if (body.botIds !== undefined) ids(body.botIds, status, id, 256);
+  if (body.teamIds !== undefined) ids(body.teamIds, status, id, 50);
+  for (const key of ['enabledToolIds', 'readOnlyToolIds']) if (body[key] !== undefined) ids(body[key], status, toolId, 256);
+  if ((body.expectedInventoryDigest !== undefined || method === 'PATCH') && (typeof body.expectedInventoryDigest !== 'string' || !/^[a-f0-9]{64}$/.test(body.expectedInventoryDigest))) throw error(status, 'Review the current connector setup, tools and access before saving.');
+}
 export function botWorkspaceRequest(path, method, body, status = 403, validateBody = true) {
   if (path.includes('..') || path.includes('%') || !path.startsWith('/api/bots/')) return null;
   const url = new URL(path, 'http://loopback.invalid');
@@ -48,15 +71,16 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
   else if (p === '/api/bots/skills') route = { kind: 'skills' };
   else if (p === '/api/bots/skills/assign') route = { kind: 'assignment' };
   else if (p === '/api/bots/connections') route = { kind: 'connections' };
+  else if (p === '/api/bots/connectors/catalog') route = { kind: 'connectorCatalog' };
   else {
     const channel = /^\/api\/bots\/teams\/([A-Za-z0-9_-]{1,120})\/(channel|messages)$/.exec(p);
     const team = /^\/api\/bots\/teams\/([A-Za-z0-9_-]{1,120})(?:\/runs(?:\/([A-Za-z0-9_-]{1,120})(?:\/(stop))?)?)?$/.exec(p);
     const skill = /^\/api\/bots\/skills\/([A-Za-z0-9_-]{1,120})$/.exec(p);
-    const connection = /^\/api\/bots\/connections\/([A-Za-z0-9_-]{1,120})(?:\/(check))?$/.exec(p);
+    const connection = /^\/api\/bots\/connections\/([A-Za-z0-9_-]{1,120})(?:\/(check|auth|auth\/complete))?$/.exec(p);
     if (channel) route = { kind: channel[2] === 'channel' ? 'channel' : 'channelMessage', teamId: channel[1] };
     else if (team) route = { kind: p.includes('/runs') ? 'run' : 'team', teamId: team[1], runId: team[2], action: team[3] };
     else if (skill) route = { kind: 'skill', skillId: skill[1] };
-    else if (connection) route = { kind: 'connection', connectionId: connection[1], action: connection[2] };
+    else if (connection) route = { kind: connection[2]?.startsWith('auth') ? 'connectionAuth' : 'connection', connectionId: connection[1], action: connection[2] };
     else return null;
   }
   if (query.length) {
@@ -67,7 +91,7 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
     else if (route.kind === 'channel' && ['after', 'before'].includes(key) && /^(0|[1-9][0-9]{0,15})$/.test(value) && Number.isSafeInteger(Number(value))) route[key] = Number(value);
     else throw error(status, 'Choose a saved bot or provider.');
   } else if (route.kind === 'providerModels') throw error(status, 'Choose a provider.');
-  const allowed = { teams: ['GET', 'POST'], team: ['PATCH'], channel: ['GET'], channelMessage: ['POST'], run: route.action === 'stop' ? ['POST'] : route.runId ? ['GET'] : ['POST'], activity: ['GET'], skills: ['GET', 'POST'], skill: ['PATCH', 'DELETE'], assignment: ['POST'], connections: ['GET'], connection: route.action ? ['POST'] : ['PATCH', 'DELETE'], providerModels: ['GET'] };
+  const allowed = { teams: ['GET', 'POST'], team: ['PATCH'], channel: ['GET'], channelMessage: ['POST'], run: route.action === 'stop' ? ['POST'] : route.runId ? ['GET'] : ['POST'], activity: ['GET'], skills: ['GET', 'POST'], skill: ['PATCH', 'DELETE'], assignment: ['POST'], connections: ['GET', 'POST'], connection: route.action ? ['POST'] : ['PATCH', 'DELETE'], connectionAuth: route.action === 'auth/complete' ? ['POST'] : ['GET', 'POST', 'DELETE'], connectorCatalog: ['GET'], providerModels: ['GET'] };
   if (!allowed[route.kind].includes(method)) throw error(status, 'This workspace action is unavailable from iPhone.');
   if (!validateBody) return route;
   if (method === 'GET' || method === 'DELETE') {
@@ -111,12 +135,15 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
     if ((body.status === 'enabled' || body.expectedRevision !== undefined || body.expectedDigest !== undefined) && (body.expectedRevision === undefined || body.expectedDigest === undefined)) throw error(status, 'Review the current skill before enabling it.');
   } else if (route.kind === 'assignment') {
     object(body, ['botId', 'skillIds'], status); if (!id(body.botId)) throw error(status, 'Choose a saved bot.'); ids(body.skillIds, status, toolId, 32);
-  } else if (route.kind === 'connection') {
-    object(body, route.action ? [] : ['name', 'botIds', 'enabledToolIds', 'readOnlyToolIds', 'expectedInventoryDigest'], status);
-    if (body.name !== undefined) string(body.name, 120, status);
-    if (body.botIds !== undefined) ids(body.botIds, status);
-    for (const key of ['enabledToolIds', 'readOnlyToolIds']) if (body[key] !== undefined) ids(body[key], status, toolId, 256);
-    if ((body.expectedInventoryDigest !== undefined || ['botIds', 'enabledToolIds', 'readOnlyToolIds'].some(key => body[key] !== undefined)) && (typeof body.expectedInventoryDigest !== 'string' || !/^[a-f0-9]{64}$/.test(body.expectedInventoryDigest))) throw error(status, 'Review the current connection tools before changing access.');
+  } else if (route.kind === 'connections' || route.kind === 'connection') {
+    if (route.action) object(body, [], status); else connectorSettings(body, method, status);
+  } else if (route.kind === 'connectionAuth') {
+    object(body, route.action === 'auth/complete' ? ['callbackURL'] : [], status);
+    if (route.action === 'auth/complete') {
+      string(body.callbackURL, 16000, status);
+      let callback; try { callback = new URL(body.callbackURL); } catch { throw error(status, 'Paste the full connector sign-in callback.'); }
+      if (callback.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(callback.hostname) || callback.username || callback.password || callback.hash) throw error(status, 'Use the Mac callback shown by this connector sign-in.');
+    }
   }
   return route;
 }
@@ -170,8 +197,26 @@ function channelSnapshot(value, route) {
 function skill(value) {
   return { id: value.id, name: text(value.name, 200), description: text(value.description, 2_000), body: text(value.body, 64_000), triggers: (Array.isArray(value.triggers) ? value.triggers : []).filter(t => typeof t === 'string').slice(0, 50).map(t => text(t, 200)), source: value.source === 'library' ? 'library' : 'draft', status: value.status === 'enabled' ? 'enabled' : 'draft', revision: Number.isInteger(value.revision) ? value.revision : text(value.revision, 128), digest: text(value.digest, 128), botIds: safeIds(value.botIds) };
 }
+function connectorLink(value, loopback = false) {
+  if (typeof value !== 'string' || value.length > 16000) return undefined;
+  try {
+    const url = new URL(value);
+    if (url.username || url.password || url.hash || url.protocol !== 'https:' && !(url.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname))) return undefined;
+    if (loopback && (url.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) || url.search)) return undefined;
+    return url.href;
+  } catch { return undefined; }
+}
+function connectorAuth(value) {
+  if (!isObject(value)) return undefined;
+  const authorizationURL = connectorLink(value.authorizationURL), redirectURL = connectorLink(value.redirectURL, true);
+  return { status: ['not_connected', 'connected', 'connecting', 'waiting', 'expired', 'error'].includes(value.status) ? value.status : 'not_connected', detail: text(value.detail, 2000), ...(authorizationURL ? { authorizationURL } : {}), ...(redirectURL ? { redirectURL } : {}), ...(date(value.expiresAt) !== undefined ? { expiresAt: date(value.expiresAt) } : {}) };
+}
+function connectorFeatures(value) {
+  return isObject(value) ? { connectorFeatures: Object.fromEntries(['catalog', 'httpCreation', 'teamAccess', 'oauth'].map(key => [key, value[key] === true])) } : {};
+}
 function connection(value) {
-  return { id: value.id, name: text(value.name, 200), transport: value.transport === 'http' ? 'http' : 'stdio', apiKeySet: value.apiKeySet === true, inventoryDigest: typeof value.inventoryDigest === 'string' && /^[a-f0-9]{64}$/.test(value.inventoryDigest) ? value.inventoryDigest : '', botIds: safeIds(value.botIds), enabledToolIds: safeTools(value.enabledToolIds), readOnlyToolIds: safeTools(value.readOnlyToolIds), status: ['unchecked', 'starting', 'connected', 'unavailable'].includes(value.status) ? value.status : 'unchecked', detail: text(value.detail, 2_000), ...(date(value.checkedAt) !== undefined ? { checkedAt: date(value.checkedAt) } : {}), tools: (Array.isArray(value.tools) ? value.tools : []).filter(t => t && toolId(t.id)).slice(0, 256).map(t => ({ id: t.id, name: text(t.name, 300), description: text(t.description, 2_000), readOnly: t.readOnly === true })) };
+  let url; try { if (value.transport === 'http' && value.url) url = connectorURL(value.url, 502); } catch { /* Do not project malformed or credential-bearing URLs. */ }
+  return { id: value.id, name: text(value.name, 200), transport: value.transport === 'http' ? 'http' : 'stdio', ...(url ? { url } : {}), ...(id(value.catalogId) ? { catalogId: value.catalogId } : {}), accountLabel: text(value.accountLabel, 120), authType: ['none', 'bearer', 'oauth'].includes(value.authType) ? value.authType : value.apiKeySet ? 'bearer' : 'none', enabled: value.enabled !== false, customInstructions: text(value.customInstructions, 8000), teamIds: safeIds(value.teamIds), ...(connectorAuth(value.auth) ? { auth: connectorAuth(value.auth) } : {}), oauthClientIdSet: value.oauthClientIdSet === true, oauthClientSecretSet: value.oauthClientSecretSet === true, apiKeySet: value.apiKeySet === true, inventoryDigest: typeof value.inventoryDigest === 'string' && /^[a-f0-9]{64}$/.test(value.inventoryDigest) ? value.inventoryDigest : '', botIds: safeIds(value.botIds), enabledToolIds: safeTools(value.enabledToolIds), readOnlyToolIds: safeTools(value.readOnlyToolIds), status: ['unchecked', 'starting', 'connected', 'unavailable'].includes(value.status) ? value.status : 'unchecked', detail: text(value.detail, 2_000), ...(date(value.checkedAt) !== undefined ? { checkedAt: date(value.checkedAt) } : {}), tools: (Array.isArray(value.tools) ? value.tools : []).filter(t => t && toolId(t.id)).slice(0, 256).map(t => ({ id: t.id, name: text(t.name, 300), description: text(t.description, 2_000), readOnly: t.readOnly === true })) };
 }
 export function publicBotWorkspace(body, route) {
   if (!isObject(body)) throw error(502, 'Strata returned unreadable workspace information.');
@@ -188,8 +233,9 @@ export function publicBotWorkspace(body, route) {
   if (route.kind === 'skills' && Array.isArray(body.skills)) return { skills: rows('skills', skill, toolId), assignments: (Array.isArray(body.assignments) ? body.assignments : []).filter(v => id(v?.botId)).slice(0, 500).map(v => ({ botId: v.botId, skillIds: safeTools(v.skillIds) })) };
   if (body.skill && id(body.skill.id)) return { skill: skill(body.skill) };
   if (route.kind === 'assignment') return { saved: true };
-  if (route.kind === 'connections' && Array.isArray(body.connections)) return { connections: rows('connections', connection) };
-  if (body.connection && id(body.connection.id)) return { connection: connection(body.connection) };
+  if (route.kind === 'connectorCatalog') return { connectors: rows('connectors', value => ({ id: value.id, name: text(value.name, 120), description: text(value.description, 2000), category: text(value.category, 120), transport: 'http', ...(connectorLink(value.url) ? { url: connectorLink(value.url) } : {}), authTypes: (Array.isArray(value.authTypes) ? value.authTypes : []).filter(kind => ['none', 'bearer', 'oauth'].includes(kind)), ...(connectorLink(value.documentationURL) ? { documentationURL: connectorLink(value.documentationURL) } : {}), setupNote: text(value.setupNote, 2000) })), ...connectorFeatures(body.connectorFeatures) };
+  if (route.kind === 'connections' && Array.isArray(body.connections)) return { connections: rows('connections', connection), ...connectorFeatures(body.connectorFeatures) };
+  if (body.connection && id(body.connection.id)) return { connection: connection(body.connection), ...(route.kind === 'connectionAuth' && connectorAuth(body.auth) ? { auth: connectorAuth(body.auth) } : {}) };
   if (route.kind === 'providerModels') return { provider: route.provider, models: (Array.isArray(body.models) ? body.models : []).filter(v => typeof v?.id === 'string').slice(0, 500).map(v => ({ id: text(v.id, 300), name: text(v.name, 300), efforts: (Array.isArray(v.efforts) ? v.efforts : []).filter(e => typeof e === 'string' && /^[A-Za-z0-9_-]{1,40}$/.test(e)).slice(0, 20), ...(typeof v.defaultEffort === 'string' ? { defaultEffort: text(v.defaultEffort, 40) } : {}) })), detail: text(body.detail, 1_000) };
   if (body.deleted === true || body.removed === true) return { deleted: true };
   if (body.saved === true) return { saved: true };
@@ -217,7 +263,7 @@ export async function handleBotWorkspace({ path, method, req, res, session, host
       if (route.kind === 'team' && !selected) throw error(404, 'This team is no longer available.');
       teamBriefing(body.briefing, body.memberIds ?? selected?.memberIds, 409);
     }
-    if ((route.kind === 'teams' || route.kind === 'team') && (body?.memberIds || body?.coordinatorId) || route.kind === 'assignment' || route.kind === 'connection' && body?.botIds) {
+    if ((route.kind === 'teams' || route.kind === 'team') && (body?.memberIds || body?.coordinatorId) || route.kind === 'assignment' || ['connection', 'connections'].includes(route.kind) && body?.botIds) {
       const catalog = await host.json('/api/bots'); requireCurrentSession();
       const botIds = new Set((catalog.bots ?? []).map(bot => bot.id));
       if ((body?.memberIds ?? body?.botIds ?? [body?.botId]).filter(Boolean).some(botId => !botIds.has(botId)) || body?.coordinatorId && !botIds.has(body.coordinatorId)) throw error(409, 'Refresh the saved bots before changing this item.');
@@ -235,15 +281,33 @@ export async function handleBotWorkspace({ path, method, req, res, session, host
         if (body.skillIds.some(skillId => !skills.some(skill => skill.id === skillId && (skill.status === 'enabled' || prior.has(skillId))))) throw error(409, 'Review and enable skills before assigning them.');
       }
     }
-    if (route.kind === 'connection') {
+    if (['connection', 'connections', 'connectionAuth'].includes(route.kind) && method !== 'GET') {
       const catalog = await host.json('/api/bots/connections'); requireCurrentSession();
-      const selected = (catalog.connections ?? []).find(connection => connection.id === route.connectionId);
-      if (!selected) throw error(404, 'This connection is no longer available.');
+      const selected = route.connectionId ? (catalog.connections ?? []).find(connection => connection.id === route.connectionId) : undefined;
+      if (route.connectionId && !selected) throw error(404, 'This connection is no longer available.');
+      if (route.kind === 'connections' && catalog.connectorFeatures?.httpCreation !== true) throw error(409, 'Update Strata on your Mac before adding connectors from iPhone.');
+      if (route.kind === 'connectionAuth' && (catalog.connectorFeatures?.oauth !== true || selected?.transport !== 'http')) throw error(409, 'Set up browser sign-in for this connector on your Mac.');
+      if (body?.teamIds !== undefined && catalog.connectorFeatures?.teamAccess !== true) throw error(409, 'Update Strata on your Mac before changing team connector access.');
+      const setupKeys = ['transport', 'url', 'catalogId', 'authType', 'apiKey', 'clearKey'];
+      if (route.kind === 'connection' && setupKeys.some(key => Object.hasOwn(body ?? {}, key)) && (catalog.connectorFeatures?.httpCreation !== true || selected?.transport !== 'http')) throw error(409, 'Edit this connector’s program or credentials on your Mac.');
+      if (body?.teamIds !== undefined) {
+        const teams = await host.json('/api/bots/teams'); requireCurrentSession();
+        const current = new Set((teams.teams ?? []).map(team => team.id));
+        if (body.teamIds.some(teamId => !current.has(teamId))) throw error(409, 'Refresh the saved teams before changing connector access.');
+      }
+      if (route.kind === 'connectionAuth' && route.action === 'auth/complete') {
+        let callback, expected; try { callback = new URL(body.callbackURL); expected = new URL(selected.auth?.redirectURL); } catch { throw error(409, 'Start a fresh connector sign-in on your Mac.'); }
+        if (callback.origin !== expected.origin || callback.pathname !== expected.pathname) throw error(409, 'Use this connector’s current sign-in callback.');
+      }
+      if (!selected) {
+        if (body?.enabledToolIds?.length || body?.readOnlyToolIds?.length) throw error(409, 'Save and check the connector before enabling tools.');
+      } else {
       if (body?.expectedInventoryDigest !== undefined && body.expectedInventoryDigest !== selected.inventoryDigest) throw error(409, 'This connection changed. Review its current tools before saving access.');
       const known = new Set((selected.tools ?? []).map(tool => tool.id));
       if (body?.enabledToolIds?.some(tool => !known.has(tool))) throw error(409, 'Check this connection and review its current tools.');
       const readonly = new Set(selected.readOnlyToolIds ?? []);
       if (body?.readOnlyToolIds?.some(tool => !readonly.has(tool) || !known.has(tool) || body.enabledToolIds && !body.enabledToolIds.includes(tool))) throw error(409, 'Classify read-only tools deliberately on your Mac.');
+      }
     }
     requireCurrentSession();
     const result = await host.json(upstreamPath, { method, ...(body !== undefined ? { body } : {}), deviceId: session.id });

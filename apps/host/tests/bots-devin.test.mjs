@@ -52,6 +52,7 @@ function fixture(mode = 'ok') {
   const log = join(root, `protocol-${++next}.jsonl`), plans = [], outgoing = [];
   const runtime = createBotRuntime({ stateDir: join(root, `state-${next}`), env: { ...process.env, HOME: join(root, 'native-account'), XDG_DATA_HOME: join(root, 'native-account-data') }, commands: { claude: '/not-installed', codex: '/not-installed', grok: '/not-installed', kimi: '/not-installed', ollama: '/not-installed', devin: '/fixture/devin' }, runTimeoutMs: 5000,
     spawnProcess(command, args, options) {
+      if (command !== '/fixture/devin') return spawn(command, args, options);
       plans.push({ command, args, options });
       const child = spawn(process.execPath, [program], { ...options, env: { ...options.env, FIXTURE_ARGS: JSON.stringify(args), FIXTURE_MODE: mode, FIXTURE_LOG: log } });
       const write = child.stdin?.write.bind(child.stdin);

@@ -765,6 +765,100 @@ final class CompanionSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testConnectorsHTTPSetupTeamAccessToolsAndPersistence() async throws {
+        let control = try pairWorkspaceFixture()
+        try selectWorkspace("Connectors")
+        try tapWorkspace(app.buttons["createBotConnectorButton"])
+        let name = app.textFields["connectorNameInput"], url = app.textFields["connectorURLInput"]
+        try require(name); name.tap(); name.typeText("Project service")
+        let account = app.textFields["connectorAccountInput"]
+        account.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+        account.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 20))
+        account.typeText("Work")
+        url.tap(); url.typeText("https://connector.fixture.invalid/mcp")
+        if app.keyboards.firstMatch.exists { app.buttons["dismissConnectorKeyboardButton"].tap() }
+        let authPicker = app.buttons["connectorAuthPicker"]
+        try waitEnabled(authPicker); authPicker.tap()
+        let bearer = app.buttons["Bearer API key"]; try require(bearer); bearer.tap()
+        let chosen = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS %@", "Bearer API key"), object: authPicker)
+        guard XCTWaiter.wait(for: [chosen], timeout: 5) == .completed else { throw acceptanceError("Connector authentication selection did not reach Bearer API key. No setup was submitted.") }
+        let key = app.secureTextFields["connectorKeyInput"]; try require(key); key.tap(); key.typeText("SYNTHETIC_CONNECTOR_KEY")
+        try waitEnabled(app.buttons["saveBotConnectorSetupButton"]); app.buttons["saveBotConnectorSetupButton"].tap()
+        let setupClosed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: name)
+        XCTAssertEqual(XCTWaiter.wait(for: [setupClosed], timeout: 15), .completed)
+        let initial = try await fixtureControl(control, action: "state"), data = try XCTUnwrap(initial["connectors"] as? [String: Any])
+        let rows = try XCTUnwrap(data["connections"] as? [[String: Any]]), row = try XCTUnwrap(rows.first), id = try XCTUnwrap(row["id"] as? String)
+        XCTAssertEqual(rows.count, 1); XCTAssertEqual(row["botIds"] as? [String], []); XCTAssertEqual(row["teamIds"] as? [String], []); XCTAssertEqual(row["enabledToolIds"] as? [String], [])
+        XCTAssertTrue(row["apiKeySet"] as? Bool == true); XCTAssertFalse(String(describing: data).contains("SYNTHETIC_CONNECTOR_KEY"))
+        attachScreenshot("Connectors — HTTP account added without implicit access")
+        let creationAX = XCTAttachment(string: app.debugDescription); creationAX.name = "Connector list after creation"; creationAX.lifetime = .keepAlways; add(creationAX)
+        // The creation action lives below the catalog. Return the real list to
+        // the top before finding its newly inserted account row.
+        for _ in 0..<5 {
+            let window = app.windows.firstMatch, origin = window.coordinate(withNormalizedOffset: .zero)
+            origin.withOffset(CGVector(dx: 200, dy: 200)).press(forDuration: 0.02, thenDragTo: origin.withOffset(CGVector(dx: 200, dy: 660)))
+        }
+        try tapWorkspace(app.buttons["botConnection-" + id])
+        let check = app.buttons["checkBotConnectionButton"]; try require(check); check.tap()
+        try require(app.buttons["Check saved connector"]); app.buttons["Check saved connector"].tap()
+        try require(app.staticTexts["Status, Connected"])
+        let checked = try await fixtureControl(control, action: "state"), inventory = try XCTUnwrap((checked["connectors"] as? [String: Any])?["connections"] as? [[String: Any]])
+        let tools = try XCTUnwrap(inventory.first?["tools"] as? [[String: Any]]), read = try XCTUnwrap(tools.first?["id"] as? String)
+        XCTAssertEqual(inventory.first?["enabledToolIds"] as? [String], [], "Discovery never enables tools.")
+        func setOn(_ element: XCUIElement) throws {
+            try tapWorkspace(element, performTap: false)
+            if element.value as? String == "1" { return }
+            let target = element.switches.firstMatch.exists ? element.switches.firstMatch : element
+            target.coordinate(withNormalizedOffset: CGVector(dx: 0.80, dy: 0.5)).tap()
+            let changed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == '1'"), object: element)
+            guard XCTWaiter.wait(for: [changed], timeout: 4) == .completed else { throw acceptanceError("Connector access switch did not turn on.") }
+        }
+        try setOn(app.switches["connectionBotAccess-fixture-bot"])
+        try setOn(app.switches["connectionTeamAccess-team_connector_fixture"])
+        let instructions = app.textViews["connectorInstructionsInput"]
+        try tapWorkspace(instructions); instructions.typeText("Use this account for the project only.")
+        if app.keyboards.firstMatch.exists { app.buttons["dismissConnectorKeyboardButton"].tap() }
+        try setOn(app.switches["connectionToolAccess-" + read])
+        try tapWorkspace(app.buttons["saveBotConnectionAccessButton"])
+        try require(app.staticTexts["botConnectorAccessSaved"])
+        attachScreenshot("Connectors — personal and team access with explicit tool opt-in")
+        XCTAssertFalse(app.staticTexts["SYNTHETIC_CONNECTOR_KEY"].exists)
+        app.terminate(); app.launch(); tapTab("Bots"); try selectWorkspace("Connectors")
+        try tapWorkspace(app.buttons["botConnection-" + id])
+        try tapWorkspace(app.buttons["editBotConnectorSetupButton"])
+        let editName = app.textFields["connectorNameInput"]; try require(editName)
+        editName.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap(); editName.typeText(" reviewed")
+        XCTAssertFalse(app.secureTextFields["connectorKeyInput"].value as? String == "SYNTHETIC_CONNECTOR_KEY")
+        app.buttons["saveBotConnectorSetupButton"].tap()
+        let editClosed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: editName)
+        XCTAssertEqual(XCTWaiter.wait(for: [editClosed], timeout: 15), .completed)
+        try tapWorkspace(app.switches["connectionTeamAccess-team_connector_fixture"], performTap: false)
+        XCTAssertEqual(app.switches["connectionTeamAccess-team_connector_fixture"].value as? String, "1")
+        try tapWorkspace(instructions, performTap: false); XCTAssertEqual(instructions.value as? String, "Use this account for the project only.")
+        try tapWorkspace(app.switches["connectionToolAccess-" + read], performTap: false)
+        XCTAssertEqual(app.switches["connectionToolAccess-" + read].value as? String, "1")
+        attachScreenshot("Connectors — shared access and instructions retained after relaunch")
+        let final = try await fixtureControl(control, action: "state"), finalData = try XCTUnwrap(final["connectors"] as? [String: Any])
+        let finalRows = try XCTUnwrap(finalData["connections"] as? [[String: Any]]), saved = try XCTUnwrap(finalRows.first)
+        XCTAssertEqual(saved["name"] as? String, "Project service reviewed"); XCTAssertEqual(saved["accountLabel"] as? String, "Work"); XCTAssertEqual(saved["botIds"] as? [String], ["fixture-bot"])
+        XCTAssertEqual(saved["teamIds"] as? [String], ["team_connector_fixture"]); XCTAssertEqual(saved["enabledToolIds"] as? [String], [read]); XCTAssertEqual(saved["readOnlyToolIds"] as? [String], [])
+        XCTAssertEqual(final["connectorChecks"] as? Int, 1); XCTAssertEqual(final["connectorToolCalls"] as? Int, 0)
+        XCTAssertFalse(String(describing: finalData).contains("SYNTHETIC_CONNECTOR_KEY"))
+        let calls = try XCTUnwrap(final["calls"] as? [[String: Any]])
+        XCTAssertEqual(calls.filter { $0["method"] as? String == "POST" && $0["path"] as? String == "/api/bots/connections" }.count, 1)
+        let patches = calls.filter { $0["method"] as? String == "PATCH" }
+        XCTAssertEqual(patches.count, 2)
+        XCTAssertTrue(patches.allSatisfy { (($0["body"] as? [String: Any])?["expectedInventoryDigest"] as? String)?.count == 64 })
+        XCTAssertTrue(calls.allSatisfy { $0["method"] as? String == "GET" || ($0["path"] as? String)?.hasPrefix("/api/bots/connections") == true })
+        app.navigationBars.buttons.firstMatch.tap(); try selectWorkspace("Team")
+        try tapWorkspace(app.buttons["botProfile-fixture-bot"])
+        try tapWorkspace(app.buttons["botConnectorsButton"])
+        try require(app.navigationBars["Connectors"])
+        try tapWorkspace(app.buttons["botConnection-" + id])
+        attachScreenshot("Connectors — bot profile shortcut opens its assigned account")
+    }
+
+    @MainActor
     func testNaturalTeamChannelPeersAssignmentsThinkingAndStop() async throws {
         let controlURL = try pairWorkspaceFixture()
         let team = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "team-")).firstMatch
@@ -1201,7 +1295,8 @@ final class CompanionSmokeTests: XCTestCase {
     private func require(_ element: XCUIElement) throws {
         guard element.waitForExistence(timeout: 10) else { throw acceptanceError("A required workspace control did not appear.") }
     }
-    private func selectWorkspace(_ title: String) throws {
+    private func selectWorkspace(_ requested: String) throws {
+        let title = requested == "Connections" ? "Connectors" : requested
         let menu = app.buttons["botsWorkspaceMenuButton"]
         try require(menu); menu.tap()
         let button = app.buttons["botsWorkspaceDestination-" + title]

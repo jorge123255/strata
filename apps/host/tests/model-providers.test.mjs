@@ -99,3 +99,7 @@ test('every API key preset discovers and streams with its configured protocol', 
   }
   assert.throws(() => service.save({ kind: 'provider', provider: 'qwen', apiKey: 'test-key', models: [{ id: 'test' }] }), /full http/);
 });
+
+test('Grok API is discoverable by name without changing xAI connection identity or protocol', () => {
+  assert.deepEqual(PROVIDER_CATALOG.find(provider => provider.id === 'xai'), { id: 'xai', name: 'xAI · Grok', baseUrl: 'https://api.x.ai/v1', protocol: 'openai-responses' });
+});

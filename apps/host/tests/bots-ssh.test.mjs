@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, readdir, rm, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
@@ -39,8 +40,18 @@ test('worker bundle pins SDK, browser library and all transitive lockfile bytes'
   const first = await botSSHBundle(), second = await botSSHBundle();
   assert.equal(first.hash, second.hash); assert.equal(first.dependencies['@anthropic-ai/claude-agent-sdk'], '0.3.304');
   assert.ok(first.assets['package-lock.json']); assert.ok(first.assets['server/bots-runtime/devin.mjs']); assert.ok(first.assets['server/bots-tools.mjs']); assert.ok(first.assets['server/bots-models.mjs']); assert.ok(first.assets['server/bots-cua.mjs']); assert.ok(first.assets['server/bots-cua.py']);
+  assert.ok(first.assets['server/bots-runtime/grok.mjs']);
   const lock = JSON.parse(Buffer.from(first.assets['package-lock.json'], 'base64')); assert.equal(lock.packages['node_modules/playwright-core'].version, '1.63.0');
   for (const [name, expected] of first.files) assert.equal(createHash('sha256').update(Buffer.from(first.assets[name], 'base64')).digest('hex'), expected);
+});
+test('complete SSH package imports its runtime with the same pinned Grok helper', async () => {
+  const bundle = await botSSHBundle(), unpacked = join(scratch, 'complete-worker-bundle');
+  for (const [name, encoded] of Object.entries(bundle.assets)) { const path = join(unpacked, name); await mkdir(dirname(path), { recursive: true }); await writeFile(path, Buffer.from(encoded, 'base64')); }
+  const source = await readFile(new URL('../server/bots-runtime/grok.mjs', import.meta.url));
+  const copied = await readFile(join(unpacked, 'server/bots-runtime/grok.mjs'));
+  assert.equal(copied.equals(source), true);
+  const runtime = await import(pathToFileURL(join(unpacked, 'server/bots-runtime/index.mjs')).href);
+  assert.equal(typeof runtime.createBotRuntime, 'function');
 });
 test('private Node pins match recorded desktop runtime and Python bootstrap compiles', async () => {
   assert.equal(BOT_NODE_ARCHIVES['linux-x64'], '6159227e0af7d7c3c6bb2fa900452b04a6cb8841a702a79acc613209d70b04d0');

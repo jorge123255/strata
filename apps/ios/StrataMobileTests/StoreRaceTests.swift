@@ -2157,3 +2157,143 @@ final class BotLifecycleTests: XCTestCase {
         XCTAssertNotEqual(a, BotAvatarState.flourish(conversation: try decode(first, as: MacConversation.self)))
     }
 }
+
+
+@MainActor
+final class BotConnectorTests: XCTestCase {
+    private let features: [String: Any] = ["catalog": true, "httpCreation": true, "teamAccess": true, "oauth": true]
+    private func connector() -> [String: Any] {
+        ["id": "mcpc_fixture", "name": "Project service", "transport": "http", "url": "https://example.invalid/mcp", "accountLabel": "Work", "authType": "bearer", "apiKeySet": true, "inventoryDigest": String(repeating: "a", count: 64), "botIds": ["bot_coder"], "teamIds": ["team_project"], "customInstructions": "Keep changes in this project.", "enabled": true, "enabledToolIds": ["tool_read"], "readOnlyToolIds": ["tool_read"], "status": "connected", "detail": "Ready", "tools": [["id": "tool_read", "name": "Read", "description": "Read", "readOnly": true], ["id": "tool_write", "name": "Write", "description": "Write", "readOnly": false]]]
+    }
+    private func decode<T: Decodable>(_ value: Any, as: T.Type) throws -> T { try JSONDecoder().decode(T.self, from: JSONSerialization.data(withJSONObject: value)) }
+
+    func testConnectorDraftIsHTTPOnlyAndRetainsNoImplicitAccessOrProgramConfiguration() throws {
+        var draft = BotConnectorDraft(); draft.name = "Work service"; draft.url = "https://example.invalid/mcp"; draft.authType = "bearer"; draft.apiKey = "synthetic-only"
+        XCTAssertTrue(draft.isValid)
+        let encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(draft)) as? [String: Any])
+        XCTAssertEqual(Set(encoded.keys), ["name", "transport", "url", "accountLabel", "authType", "apiKey"])
+        for invalid in ["https://user:secret@example.invalid/mcp", "https://example.invalid/mcp?key=x", "http://remote.invalid/mcp", "file:///tmp/program"] { draft.url = invalid; XCTAssertFalse(draft.isValid) }
+        draft.url = "https://example.invalid/mcp"; draft.transport = "stdio"; XCTAssertFalse(draft.isValid)
+        XCTAssertNil(BotConnectorDraft.authorizationURL("javascript:alert(1)")); XCTAssertNil(BotConnectorDraft.authorizationURL("https://user:secret@example.invalid/authorize"))
+        XCTAssertNotNil(BotConnectorDraft.authorizationURL("https://example.invalid/authorize?state=synthetic"))
+    }
+
+    func testPhoneConnectorCreationNeedsCapabilityAndSendsOnlyHTTPSetup() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let row = connector(), flags = features
+        var capable = false
+        fixture.respond { request in
+            if request.httpMethod == "POST" { return ["connection": row] }
+            if request.url!.path == "/v1/bots/connections" { return ["connections": [row], "connectorFeatures": capable ? flags : [:]] }
+            return nil
+        }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore()
+        var draft = BotConnectorDraft(); draft.name = "Project service"; draft.url = "https://example.invalid/mcp"; draft.authType = "bearer"; draft.apiKey = "synthetic-only"
+        await workspace.refreshConnections()
+        let refused = await workspace.saveConnectorSetup(draft); XCTAssertFalse(refused); XCTAssertFalse(fixture.requests.contains { $0.method == "POST" })
+        capable = true; await workspace.refreshConnections()
+        let saved = await workspace.saveConnectorSetup(draft); XCTAssertTrue(saved)
+        let body = try XCTUnwrap(fixture.requests.first { $0.method == "POST" }?.jsonBody)
+        XCTAssertEqual(body["transport"] as? String, "http"); XCTAssertNil(body["teamIds"]); XCTAssertNil(body["command"]); XCTAssertNil(body["env"])
+        XCTAssertEqual(workspace.connections?.connections.first?.accountLabel, "Work")
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.path == "/v1/bots/connections" })
+    }
+
+    func testPhoneEditingKeepsSavedKeyAndGrantsOutOfSetupRequest() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let row = connector(), flags = features
+        fixture.respond { request in request.httpMethod == "PATCH" ? ["connection": row] : ["connections": [row], "connectorFeatures": flags] }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore()
+        await workspace.refreshConnections()
+        let original = try decode(row, as: BotMCPConnection.self)
+        var draft = BotConnectorDraft(connection: original); draft.name = "Renamed service"
+        let saved = await workspace.saveConnectorSetup(draft, editing: original); XCTAssertTrue(saved)
+        let body = try XCTUnwrap(fixture.requests.first { $0.method == "PATCH" }?.jsonBody)
+        XCTAssertEqual(body["name"] as? String, "Renamed service"); XCTAssertEqual(body["authType"] as? String, "bearer"); XCTAssertEqual(body["expectedInventoryDigest"] as? String, original.inventoryDigest)
+        for omitted in ["apiKey", "clearKey", "botIds", "teamIds", "enabledToolIds", "command", "env", "oauthClientId", "oauthClientSecret"] { XCTAssertNil(body[omitted]) }
+    }
+
+    func testConnectorRemovalOmitsDELETEBodyAndUsesBridgeDeletedProjection() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let row = connector(), flags = features
+        fixture.respond { request in request.httpMethod == "DELETE" ? ["deleted": true] : ["connections": [row], "connectorFeatures": flags] }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore()
+        await workspace.refreshConnections()
+        let original = try decode(row, as: BotMCPConnection.self)
+        let removed = await workspace.removeConnector(original); XCTAssertTrue(removed)
+        let request = try XCTUnwrap(fixture.requests.first { $0.method == "DELETE" })
+        XCTAssertEqual(request.path, "/v1/bots/connections/mcpc_fixture"); XCTAssertNil(request.jsonBody)
+    }
+
+    func testSavedLongConnectorInstructionsAllowAccessAndUseEightThousandUTF16Limit() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        var value = connector(); value["customInstructions"] = String(repeating: "x", count: 5000)
+        let row = value, flags = features
+        fixture.respond { request in request.httpMethod == "PATCH" ? ["connection": row] : ["connections": [row], "connectorFeatures": flags] }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore()
+        await workspace.refreshConnections()
+        let original = try decode(row, as: BotMCPConnection.self)
+        let retained = await workspace.saveConnection(original, botIds: ["bot_coder"], toolIds: ["tool_read"], teamIds: ["team_project"], instructions: original.customInstructions)
+        XCTAssertTrue(retained, "Existing long instructions must not block an access grant.")
+        let boundary = await workspace.saveConnection(original, botIds: [], toolIds: [], teamIds: [], instructions: String(repeating: "x", count: 8000)); XCTAssertTrue(boundary)
+        let tooLong = await workspace.saveConnection(original, botIds: [], toolIds: [], teamIds: [], instructions: String(repeating: "x", count: 8001)); XCTAssertFalse(tooLong)
+        let patches = fixture.requests.filter { $0.method == "PATCH" }
+        XCTAssertEqual(patches.count, 2); XCTAssertEqual(patches.compactMap { ($0.jsonBody?["customInstructions"] as? String)?.utf16.count }, [5000, 8000])
+    }
+
+    func testStaleConnectorSetupUsesCapturedInventoryAndDoesNotReplayOverNewSetup() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let old = connector(), flags = features
+        var changed = old; changed["inventoryDigest"] = String(repeating: "b", count: 64); changed["url"] = "https://new.fixture.invalid/mcp"
+        let latest = changed
+        fixture.respond { request in request.url!.path == "/v1/bots/connections" ? ["connections": [latest], "connectorFeatures": flags] : nil }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore()
+        await workspace.refreshConnections()
+        let captured = try decode(old, as: BotMCPConnection.self)
+        var draft = BotConnectorDraft(connection: captured); draft.name = "Unsaved phone draft"
+        let patch = fixture.hold("/v1/bots/connections/mcpc_fixture")
+        let saving = Task { await workspace.saveConnectorSetup(draft, editing: captured) }
+        await fulfillment(of: [patch.requested], timeout: 2)
+        let body = try XCTUnwrap(fixture.requests.first { $0.method == "PATCH" }?.jsonBody)
+        XCTAssertEqual(body["expectedInventoryDigest"] as? String, String(repeating: "a", count: 64)); XCTAssertEqual(body["url"] as? String, "https://example.invalid/mcp")
+        patch.finish(["error": "The connector changed. Review the current setup."], status: 409)
+        let saved = await saving.value; XCTAssertFalse(saved)
+        XCTAssertEqual(workspace.connections?.connections.first?.url, "https://new.fixture.invalid/mcp")
+        XCTAssertEqual(draft.name, "Unsaved phone draft"); XCTAssertEqual(fixture.requests.filter { $0.method == "PATCH" }.count, 1)
+        XCTAssertNotNil(workspace.messages["connections"])
+    }
+
+    func testConnectorTeamGrantsUseInventoryCASAndNeverSendSecrets() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let row = connector(), flags = features
+        fixture.respond { request in request.httpMethod == "PATCH" ? ["connection": row] : ["connections": [row], "connectorFeatures": flags] }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore()
+        await workspace.refreshConnections()
+        let connection = try decode(row, as: BotMCPConnection.self)
+        let saved = await workspace.saveConnection(connection, botIds: ["bot_coder"], toolIds: ["tool_read", "tool_write"], teamIds: ["team_project"], instructions: "Use this work account.")
+        XCTAssertTrue(saved)
+        let body = try XCTUnwrap(fixture.requests.first { $0.method == "PATCH" }?.jsonBody)
+        XCTAssertEqual(Set(body.keys), ["botIds", "teamIds", "enabledToolIds", "readOnlyToolIds", "customInstructions", "expectedInventoryDigest"])
+        XCTAssertEqual(body["expectedInventoryDigest"] as? String, String(repeating: "a", count: 64)); XCTAssertEqual(body["readOnlyToolIds"] as? [String], ["tool_read"])
+        XCTAssertEqual(body["teamIds"] as? [String], ["team_project"]); XCTAssertNil(body["apiKey"])
+        XCTAssertFalse(fixture.requests.contains { $0.path.contains("messages") || $0.path.contains("serving") })
+    }
+
+    func testConnectorAuthUsesExplicitScopedActionsAndRejectsProgramSetupOnPhone() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        var value = connector(); value["authType"] = "oauth"; value["auth"] = ["status": "waiting", "detail": "Finish on Mac", "authorizationURL": "https://example.invalid/authorize"]
+        let row = value, flags = features
+        fixture.respond { request in request.url!.path.hasSuffix("/auth") ? ["connection": row] : ["connections": [row], "connectorFeatures": flags] }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore()
+        await workspace.refreshConnections()
+        let connection = try decode(row, as: BotMCPConnection.self)
+        let started = await workspace.connectorAuthentication(connection, action: "start"); XCTAssertTrue(started)
+        let polled = await workspace.connectorAuthentication(connection, action: "poll"); XCTAssertTrue(polled)
+        let disconnected = await workspace.connectorAuthentication(connection, action: "disconnect"); XCTAssertTrue(disconnected)
+        XCTAssertEqual(fixture.requests.filter { $0.path.hasSuffix("/auth") }.map(\.method), ["POST", "GET", "DELETE"])
+        var program = connection; program.transport = "stdio"
+        var draft = BotConnectorDraft(); draft.name = "Program"; draft.url = "https://example.invalid/mcp"
+        let refused = await workspace.saveConnectorSetup(draft, editing: program); XCTAssertFalse(refused)
+        XCTAssertFalse(fixture.requests.contains { $0.method == "PATCH" })
+    }
+}

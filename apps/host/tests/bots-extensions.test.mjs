@@ -174,7 +174,7 @@ test('real MCP SDK stdio handshake, inventory and approved call use a credential
   const f = fixture(t), service = createBotMcp(f), script = fileURLToPath(new URL('./fixtures/bots-external-mcp.mjs', import.meta.url));
   const prior = process.env.STRATA_MCP_PARENT_SECRET; process.env.STRATA_MCP_PARENT_SECRET = 'must-never-inherit';
   t.after(() => { if (prior === undefined) delete process.env.STRATA_MCP_PARENT_SECRET; else process.env.STRATA_MCP_PARENT_SECRET = prior; });
-  const { connection } = service.create({ name: 'Actual protocol fixture', transport: 'stdio', command: process.execPath, args: [script], env: { STRATA_MCP_FIXTURE: 'explicit' }, botIds: [id] });
+  const { connection } = service.create({ name: 'Actual protocol fixture', transport: 'stdio', command: process.execPath, args: [script], env: { STRATA_MCP_FIXTURE: 'STRATA_EXPLICIT_ENVIRONMENT_FIXTURE' }, botIds: [id] });
   const checked = (await service.check(connection.id)).connection;
   assert.equal(checked.status, 'connected'); assert.equal(checked.tools.length, 1); assert.deepEqual(checked.enabledToolIds, []);
   updateAccess(service, connection.id, { enabledToolIds: [checked.tools[0].id] });

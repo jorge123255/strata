@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import { findExecutable, executableVersion, executableJsonStatus, jsonRpcProcess, killOwned, redact, abortError } from './process.mjs';
 import { startToolBridge, toolResult } from './tool-bridge.mjs';
 import { devinStatus, devinModels, runDevin } from './devin.mjs';
+import { grokModels } from './grok.mjs';
 
 const PROVIDERS = [
   { id: 'claude', name: 'Claude Code', transport: 'Claude Agent SDK / installed CLI', loginCommand: 'claude auth login', models: ['sonnet', 'opus', 'haiku'] },
@@ -45,6 +46,12 @@ export function createBotRuntime(options = {}) {
     if (!signal && cached && Date.now() - cached.at < 15000) return structuredClone(await cached.value);
     const value = (async () => {
       if (options.catalogs?.[provider]) return { provider, models: structuredClone(await options.catalogs[provider]()) };
+      if (provider === 'grok') {
+        const command = await executable(provider);
+        if (!command) return { provider, models: [], detail: 'Install Grok CLI and sign in on the execution computer.' };
+        try { return { provider, ...await grokModels(command, { env, signal, spawnProcess: options.spawnProcess, timeoutMs: options.catalogTimeoutMs }), detail: 'Models from this computer’s signed-in Grok CLI. Effort options come from its model metadata and are confirmed by the native session before a prompt.' }; }
+        catch { signal?.throwIfAborted(); return { provider, models: [], detail: 'Could not load Grok models. Sign in with grok login on the execution computer, then refresh. Provider default remains available.' }; }
+      }
       if (provider === 'devin') {
         const command = await executable(provider);
         if (!command) return { provider, models: [], detail: 'Install Devin CLI and sign in on the execution computer.' };
@@ -96,17 +103,18 @@ export function createBotRuntime(options = {}) {
       const hasKey = provider.id === 'ollama' && Boolean(env.OLLAMA_API_KEY);
       const claudeStatus = provider.id === 'claude' && command ? await executableJsonStatus(command, ['auth', 'status', '--json'], env) : null;
       const devinAuth = provider.id === 'devin' && command ? await devinStatus(command, { stateDir: options.stateDir, env, spawnProcess: options.spawnProcess }).catch(() => 'unverified') : null;
-      let daemon = false, models = provider.models;
+      const grokCatalog = provider.id === 'grok' && command ? await models('grok') : null;
+      let daemon = false, providerModels = grokCatalog?.models.map(row => row.id) ?? provider.models;
       if (provider.id === 'ollama' && !hasKey) {
         try {
           const response = await fetcher('http://127.0.0.1:11434/api/tags', { signal: AbortSignal.timeout(2000) });
-          if (response.ok) { daemon = true; const body = await response.json(); models = (body.models ?? []).map(m => m.name).filter(n => typeof n === 'string' && /(?:cloud|remote)/i.test(n)); }
+          if (response.ok) { daemon = true; const body = await response.json(); providerModels = (body.models ?? []).map(m => m.name).filter(n => typeof n === 'string' && /(?:cloud|remote)/i.test(n)); }
         } catch { /* daemon unavailable */ }
       }
-      return { ...provider, models, installed: Boolean(command), ready: provider.id === 'ollama' ? hasKey || daemon : provider.id === 'devin' ? Boolean(command) && devinAuth === 'signed_in' : Boolean(command) && claudeStatus?.loggedIn !== false,
+      return { ...provider, models: providerModels, installed: Boolean(command), ready: provider.id === 'ollama' ? hasKey || daemon : provider.id === 'devin' ? Boolean(command) && devinAuth === 'signed_in' : Boolean(command) && claudeStatus?.loggedIn !== false && grokCatalog?.authState !== 'signed_out',
         version: command ? await executableVersion(command, env) : null,
-        auth: { state: devinAuth ?? (claudeStatus?.loggedIn === false ? 'signed_out' : claudeStatus?.loggedIn === true ? 'signed_in' : hasKey ? 'configured' : daemon ? 'daemon' : 'unverified'), help: provider.id === 'ollama' ? 'Use OLLAMA_API_KEY on the Mac host, or sign in to the local Ollama daemon. Cloud requests run on Ollama servers.' : `Uses the installed CLI account on this Mac. Sign in with ${provider.loginCommand}, then refresh providers. Account and model access are checked when a turn runs.` },
-        catalogSource: models.length ? 'suggested' : 'provider-default', supports: { code: true, computer: true, thinking: 'when-provider-emits', execution: ['local'] } };
+        auth: { state: grokCatalog?.authState ?? devinAuth ?? (claudeStatus?.loggedIn === false ? 'signed_out' : claudeStatus?.loggedIn === true ? 'signed_in' : hasKey ? 'configured' : daemon ? 'daemon' : 'unverified'), help: provider.id === 'ollama' ? 'Use OLLAMA_API_KEY on the Mac host, or sign in to the local Ollama daemon. Cloud requests run on Ollama servers.' : `Uses the installed CLI account on this Mac. Sign in with ${provider.loginCommand}, then refresh providers. Account and model access are checked when a turn runs.` },
+        catalogSource: grokCatalog?.models.length ? 'native-cli' : providerModels.length ? 'suggested' : 'provider-default', supports: { code: true, computer: true, thinking: 'when-provider-emits', execution: ['local'] } };
     }));
     try { return structuredClone(await providersCache); } catch (error) { providersCache = null; throw error; }
   }

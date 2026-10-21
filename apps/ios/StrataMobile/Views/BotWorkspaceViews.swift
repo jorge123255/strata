@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum BotWorkspaceDestination: String, CaseIterable, Identifiable {
-    case team = "Team", activity = "Activity", skills = "Skills", connections = "Connections"
+    case team = "Team", activity = "Activity", skills = "Skills", connections = "Connectors"
     var id: String { rawValue }
 }
 
@@ -455,6 +455,10 @@ struct BotTeamDetailView: View {
         }
     }
     @ViewBuilder private func teamSettings(_ team: BotTeam) -> some View {
+        NavigationLink {
+            BotConnectionsView(store: store, workspace: workspace, teamId: team.id)
+        } label: { Label("Team connectors", systemImage: "link") }
+            .accessibilityIdentifier("teamConnectorsButton")
         Button("Edit team members & settings", systemImage: "person.2.badge.gearshape") { editingTeam = team }
             .disabled(workspace.teams?.teamSettingsSupported != true || team.revision == nil || workspace.mutation != nil || !activeRuns.isEmpty)
             .accessibilityIdentifier("editBotTeamButton")
@@ -801,101 +805,6 @@ private struct BotSkillEditor: View {
                 }
                 .interactiveDismissDisabled(workspace.mutation != nil)
         }
-    }
-}
-
-private struct BotConnectionsView: View {
-    @ObservedObject var store: CompanionStore
-    @ObservedObject var workspace: BotWorkspaceStore
-    var body: some View {
-        List {
-            Section {
-                Label("Programs run on your Mac", systemImage: "desktopcomputer")
-                Text("Add MCP programs, URLs and credentials in Strata on Mac. Here you can check saved connections and choose which bots and tools have access.").font(.caption).foregroundStyle(.secondary)
-            }
-            Section("Saved MCP connections") {
-                ForEach(workspace.connections?.connections ?? []) { connection in
-                    NavigationLink {
-                        BotConnectionDetailView(store: store, workspace: workspace, connectionId: connection.id)
-                    } label: {
-                        HStack(spacing: 12) {
-                            Image(systemName: connection.transport == "stdio" ? "terminal" : "network")
-                                .font(.title3).frame(width: 42, height: 42).background(StrataTheme.grouped, in: RoundedRectangle(cornerRadius: 14))
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text(connection.name).font(.body.weight(.semibold))
-                                Text(connection.statusLabel + " · \(connection.tools.count) tools").font(.caption).foregroundStyle(StrataTheme.secondaryInk)
-                            }
-                        }.padding(.vertical, 4)
-                    }.accessibilityIdentifier("botConnection-\(connection.id)")
-                }
-                BotWorkspaceMessage(workspace: workspace, key: "connections")
-            }
-        }.strataList()
-            .task(id: ObjectIdentifier(workspace)) { await workspace.refreshConnections() }
-            .refreshable { await workspace.refreshConnections() }
-    }
-}
-
-private struct BotConnectionDetailView: View {
-    @ObservedObject var store: CompanionStore
-    @ObservedObject var workspace: BotWorkspaceStore
-    let connectionId: String
-    @State private var botIds: Set<String> = []
-    @State private var toolIds: Set<String> = []
-    @State private var loaded = false
-    @State private var reviewedConnection: BotMCPConnection?
-    @State private var saved = false
-    @State private var confirmingCheck = false
-    private var connection: BotMCPConnection? { workspace.connections?.connections.first { $0.id == connectionId } }
-    private var ready: Bool { loaded && reviewedConnection?.inventoryDigest.count == 64 && reviewedConnection?.inventoryDigest == connection?.inventoryDigest }
-    var body: some View {
-        List {
-            if let connection {
-                Section {
-                    LabeledContent("Status", value: connection.statusLabel)
-                    LabeledContent("Transport", value: connection.transport == "stdio" ? "Program on Mac" : "HTTP from Mac")
-                    if let checked = connection.checkedAt?.date { LabeledContent("Last checked", value: checked.formatted(date: .abbreviated, time: .shortened)) }
-                    if !connection.detail.isEmpty { Text(connection.detail).font(.caption).foregroundStyle(.secondary) }
-                    Button("Check connection") { confirmingCheck = true }.disabled(workspace.mutation != nil)
-                        .accessibilityIdentifier("checkBotConnectionButton")
-                } footer: { Text("Checking a program connection launches its configured program on your Mac. It lists tools; it does not call them.") }
-                Section("Bot access") {
-                    ForEach(store.botCatalog?.bots ?? []) { bot in Toggle(bot.name, isOn: selection(bot.id, in: $botIds)).accessibilityIdentifier("connectionBotAccess-\(bot.id)") }
-                }.disabled(!ready || workspace.mutation != nil)
-                Section("Tool access") {
-                    ForEach(connection.tools) { tool in
-                        Toggle(isOn: selection(tool.id, in: $toolIds)) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(tool.name).font(.subheadline.weight(.semibold))
-                                Text(tool.description).font(.caption).foregroundStyle(.secondary).lineLimit(3)
-                                if tool.readOnly { Label("Reviewed read-only on Mac", systemImage: "checkmark.shield").font(.caption2).foregroundStyle(.secondary) }
-                            }
-                        }.accessibilityIdentifier("connectionToolAccess-\(tool.id)")
-                    }
-                }.disabled(!ready || workspace.mutation != nil)
-                Section {
-                    if !ready, loaded { Button("Reload and review tools") { Task { await reload() } } }
-                    Button("Save access") { if let reviewedConnection { Task { saved = await workspace.saveConnection(reviewedConnection, botIds: botIds.sorted(), toolIds: toolIds.sorted()) } } }
-                        .disabled(!ready || workspace.mutation != nil).accessibilityIdentifier("saveBotConnectionAccessButton")
-                    if saved { Label("Access saved", systemImage: "checkmark.circle").font(.caption).foregroundStyle(StrataTheme.accentText) }
-                    Text("Read-only classifications are reviewed on Mac. Other tools keep the bot’s approval policy. Connection credentials are kept on Mac.").font(.caption).foregroundStyle(.secondary)
-                }
-            } else { Text("This connection is no longer available.").foregroundStyle(.secondary) }
-            BotWorkspaceMessage(workspace: workspace, key: "connections")
-        }.strataList().navigationTitle(connection?.name ?? "Connection").navigationBarTitleDisplayMode(.inline)
-            .task { await reload() }
-            .confirmationDialog("Check this saved connection on your Mac?", isPresented: $confirmingCheck) {
-                if let connection { Button("Check saved connection") { Task { await workspace.checkConnection(connection); await reload() } } }
-            }
-    }
-    private func reload() async {
-        loaded = false; await workspace.refreshConnections()
-        if workspace.messages["connections"] == nil, let connection {
-            botIds = Set(connection.botIds); toolIds = Set(connection.enabledToolIds); reviewedConnection = connection; loaded = true
-        }
-    }
-    private func selection(_ id: String, in set: Binding<Set<String>>) -> Binding<Bool> {
-        Binding(get: { set.wrappedValue.contains(id) }, set: { value in if value { set.wrappedValue.insert(id) } else { set.wrappedValue.remove(id) }; saved = false })
     }
 }
 

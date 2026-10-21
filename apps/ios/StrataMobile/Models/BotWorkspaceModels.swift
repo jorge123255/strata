@@ -242,6 +242,38 @@ enum BotWorkspaceTimestamp: Decodable, Equatable {
     }
 }
 
+struct BotConnectorFeatures: Decodable, Equatable {
+    var catalog: Bool?
+    var httpCreation: Bool?
+    var teamAccess: Bool?
+    var oauth: Bool?
+}
+
+struct BotConnectorCatalogEntry: Decodable, Identifiable, Equatable {
+    var id: String
+    var name: String
+    var description: String
+    var category: String
+    var transport: String
+    var url: String?
+    var authTypes: [String]
+    var documentationURL: String?
+    var setupNote: String?
+}
+
+struct BotConnectorCatalog: Decodable, Equatable {
+    var connectors: [BotConnectorCatalogEntry]
+    var connectorFeatures: BotConnectorFeatures?
+    var reason: String?
+}
+
+struct BotConnectorAuth: Decodable, Equatable {
+    var status: String
+    var detail: String
+    var authorizationURL: String?
+    var expiresAt: String?
+}
+
 struct BotMCPConnection: Decodable, Identifiable, Equatable {
     var id: String
     var name: String
@@ -255,12 +287,64 @@ struct BotMCPConnection: Decodable, Identifiable, Equatable {
     var detail: String
     var tools: [BotConnectionTool]
     var checkedAt: BotWorkspaceTimestamp?
-    var statusLabel: String { status == "starting" ? "Checking…" : status.capitalized }
+    var url: String?
+    var catalogId: String?
+    var accountLabel: String?
+    var authType: String?
+    var teamIds: [String]?
+    var customInstructions: String?
+    var enabled: Bool?
+    var auth: BotConnectorAuth?
+    var oauthClientIdSet: Bool?
+    var oauthClientSecretSet: Bool?
+    var statusLabel: String {
+        if enabled == false { return "Disabled" }
+        if auth?.status == "waiting" { return "Sign-in waiting" }
+        return status == "starting" ? "Checking…" : status.capitalized
+    }
 }
 
 struct BotConnectionsSnapshot: Decodable, Equatable {
     var connections: [BotMCPConnection]
     var reason: String?
+    var connectorFeatures: BotConnectorFeatures?
+}
+
+/// Phone setup is deliberately HTTP-only. Programs and their environments are configured on Mac.
+struct BotConnectorDraft: Encodable, Equatable {
+    var name = ""
+    var transport = "http"
+    var url = ""
+    var accountLabel = "Personal"
+    var authType = "none"
+    var catalogId: String?
+    var apiKey: String?
+    var clearKey: Bool?
+    var expectedInventoryDigest: String?
+    init() {}
+    init(entry: BotConnectorCatalogEntry) {
+        name = entry.name; url = entry.url ?? ""; catalogId = entry.id
+        authType = entry.authTypes.contains("oauth") ? "oauth" : entry.authTypes.contains("bearer") ? "bearer" : "none"
+    }
+    init(connection: BotMCPConnection) {
+        name = connection.name; url = connection.url ?? ""; accountLabel = connection.accountLabel ?? "Personal"
+        authType = connection.authType ?? (connection.apiKeySet ? "bearer" : "none"); catalogId = connection.catalogId; expectedInventoryDigest = connection.inventoryDigest
+    }
+    var isValid: Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard transport == "http", !trimmed.isEmpty, name.utf16.count <= 120, !name.contains("\0"),
+              !accountLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, accountLabel.utf16.count <= 120,
+              !accountLabel.contains("\0"), ["none", "bearer", "oauth"].contains(authType),
+              let value = URLComponents(string: url), let scheme = value.scheme?.lowercased(), let host = value.host,
+              value.user == nil, value.password == nil, value.query == nil, value.fragment == nil,
+              scheme == "https" || scheme == "http" && ["127.0.0.1", "localhost", "[::1]", "::1"].contains(host),
+              url.utf16.count <= 4000 else { return false }
+        return [apiKey].compactMap { $0 }.allSatisfy { $0.utf16.count <= 8192 && !$0.contains("\0") }
+    }
+    static func authorizationURL(_ value: String?) -> URL? {
+        guard let value, let parts = URLComponents(string: value), parts.scheme?.lowercased() == "https", parts.host != nil, parts.user == nil, parts.password == nil else { return nil }
+        return parts.url
+    }
 }
 
 struct BotProviderModel: Decodable, Identifiable, Equatable {
