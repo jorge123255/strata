@@ -121,7 +121,7 @@ final class CompanionClient {
     }
 
     func botProviderModels(_ provider: String) async throws -> BotProviderModels {
-        guard ["claude", "codex", "grok", "kimi", "ollama", "configured"].contains(provider) else { throw CompanionError.server("Choose a supported provider.") }
+        guard ["claude", "codex", "devin", "grok", "kimi", "ollama", "configured"].contains(provider) else { throw CompanionError.server("Choose a supported provider.") }
         var req = try request("/v1/bots/provider-models")
         var url = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)!
         url.queryItems = [URLQueryItem(name: "provider", value: provider)]; req.url = url.url

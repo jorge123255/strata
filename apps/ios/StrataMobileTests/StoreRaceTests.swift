@@ -473,7 +473,7 @@ final class BotsTests: XCTestCase {
         fixture.respond { $0.url!.path == "/v1/bots" ? Self.catalog : nil }
         let store = fixture.makeStore()
         await store.refreshBots()
-        XCTAssertEqual(store.botCatalog?.providers.map(\.id), ["claude", "codex", "grok", "kimi", "ollama"])
+        XCTAssertEqual(store.botCatalog?.providers.map(\.id), ["claude", "codex", "devin", "grok", "kimi", "ollama"])
         XCTAssertEqual(store.botCatalog?.bots.first?.capabilityLabel, "Code & computer")
         XCTAssertEqual(fixture.requests.map(\.path), ["/v1/bots"])
         XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
@@ -867,7 +867,7 @@ final class BotsTests: XCTestCase {
     private static var catalog: [String: Any] {
         ["bots": [["id": "bot_coder", "name": "Coder", "provider": "codex", "model": "default", "capabilities": "both", "policy": "manual",
                    "execution": ["kind": "local"], "conversations": ["mac-existing"]]],
-         "providers": ["claude", "codex", "grok", "kimi", "ollama"].map { ["id": $0, "name": $0.capitalized, "available": true, "detail": "Ready"] as [String: Any] },
+         "providers": ["claude", "codex", "devin", "grok", "kimi", "ollama"].map { ["id": $0, "name": $0.capitalized, "available": true, "detail": "Ready"] as [String: Any] },
          "computers": [["id": "local", "name": "Your Mac", "kind": "local", "available": true, "detail": "Ready"]]]
     }
     private static var botDetail: [String: Any] {
@@ -1948,6 +1948,52 @@ final class BotLifecycleTests: XCTestCase {
         value.computerId = "local"; value.provider = "configured"; value.modelId = "removed"; XCTAssertThrowsError(try value.validated(in: catalog, original: nil))
         var old = catalog; old.lifecycleSupported = nil; value = draft(); XCTAssertThrowsError(try value.validated(in: old, original: nil))
         value.computerMode = "cua"; XCTAssertThrowsError(try value.validated(in: catalog, original: nil)); value.workspace = "/workspace"; XCTAssertNoThrow(try value.validated(in: catalog, original: nil))
+    }
+
+    func testDevinCatalogModelsUseHostChoicesAndDoNotInventEffort() async throws {
+        let transport = StoreTransport(); defer { transport.close() }
+        var catalog = Self.catalog
+        catalog["providers"] = [["id": "devin", "name": "Devin CLI", "available": true, "detail": "Ready"]]
+        transport.respond { request in
+            if request.url!.path == "/v1/bots" { return catalog }
+            if request.url!.path == "/v1/bots/provider-models" {
+                XCTAssertEqual(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems, [URLQueryItem(name: "provider", value: "devin")])
+                return ["provider": "devin", "models": [["id": "fixture-devin-model", "name": "Host's Devin model", "efforts": []]]]
+            }
+            return nil
+        }
+        let store = transport.makeStore(); await store.refreshBots()
+        XCTAssertEqual(store.botCatalog?.providers.map(\.id), ["devin"])
+        XCTAssertEqual(store.botCatalog?.providers.first?.name, "Devin CLI")
+        let loaded = await store.botModels(provider: "devin")
+        let choices = try XCTUnwrap(loaded)
+        XCTAssertEqual(choices.provider, "devin"); XCTAssertEqual(choices.models.map(\.id), ["fixture-devin-model"])
+        var bot = try decode(Self.bot, as: CompanionBot.self); bot.provider = "devin"; bot.model = "fixture-devin-model"
+        let efforts = await store.supportedBotEfforts(bot); XCTAssertTrue(efforts.isEmpty)
+        let before = transport.requests.count
+        let unsupported = await store.botModels(provider: "not-a-provider"); XCTAssertNil(unsupported)
+        XCTAssertEqual(transport.requests.count, before, "Unknown providers never reach the paired host.")
+        XCTAssertTrue(transport.requests.allSatisfy { $0.method == "GET" })
+    }
+
+    func testDevinProfileSavesSelectedModelWithoutStartingAConversationOrProvider() async throws {
+        let transport = StoreTransport(); defer { transport.close() }
+        var catalog = Self.catalog
+        catalog["providers"] = [["id": "devin", "name": "Devin CLI", "available": true, "detail": "Ready"]]
+        var created = Self.bot; created["id"] = "bot_devin"; created["provider"] = "devin"; created["model"] = "fixture-devin-model"
+        var saved = catalog; saved["bot"] = created; saved["bots"] = [created]
+        transport.respond { request in request.url!.path == "/v1/bots" ? (request.httpMethod == "POST" ? saved : catalog) : nil }
+        let store = transport.makeStore(); await store.refresh(); await store.refreshBots()
+        var value = draft(); value.provider = "devin"; value.model = "fixture-devin-model"; value.modelId = "old-configured-selection"
+        let result = await store.saveBotProfile(value, original: nil, expectedPairingGeneration: store.pairingGeneration)
+        XCTAssertEqual(result?.provider, "devin"); XCTAssertEqual(result?.model, "fixture-devin-model")
+        let writes = transport.requests.filter { $0.method != "GET" }
+        XCTAssertEqual(writes.map(\.path), ["/v1/bots"])
+        let body = try XCTUnwrap(writes.first?.jsonBody)
+        XCTAssertEqual(body["provider"] as? String, "devin"); XCTAssertEqual(body["model"] as? String, "fixture-devin-model")
+        XCTAssertEqual(body["policy"] as? String, "manual"); XCTAssertNil(body["effort"]); XCTAssertNil(body["modelId"])
+        XCTAssertNil(body["apiKey"]); XCTAssertNil(body["execution"])
+        XCTAssertNil(store.currentConversation)
     }
 
     func testCreateProfileUsesOnlyManagementEndpointAndLeavesSelectedHistoryUntouched() async throws {

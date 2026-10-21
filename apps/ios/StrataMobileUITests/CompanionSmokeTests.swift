@@ -444,6 +444,49 @@ final class CompanionSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testPhoneCreatesDevinBotWithHostModelsAndNoImplicitRun() async throws {
+        let control = try pairWorkspaceFixture()
+        try openCreateMenu(); try require(app.buttons["createBotButton"]); app.buttons["createBotButton"].tap()
+        let name = app.textFields["profileBotNameInput"]; try require(name); name.tap(); name.typeText("Devin companion")
+        if app.keyboards.firstMatch.exists { app.buttons["Done"].firstMatch.tap() }
+        try tapWorkspace(app.buttons["profileBotProviderPicker"])
+        let devin = app.buttons.matching(NSPredicate(format: "label == %@", "Devin CLI")).firstMatch
+        try require(devin); devin.tap()
+        try tapWorkspace(app.buttons["profileBotModelPicker"])
+        let model = app.buttons.matching(NSPredicate(format: "label == %@", "Devin fixture model")).firstMatch
+        try require(model); model.tap()
+        let effort = app.buttons["profileBotEffortPicker"]; try require(effort)
+        XCTAssertTrue((effort.value as? String ?? "").contains("Provider default"), "An empty host effort catalog retains the provider default.")
+        attachScreenshot("Devin bot — models from host and provider default effort")
+        try waitEnabled(app.buttons["saveBotProfileButton"]); app.buttons["saveBotProfileButton"].tap()
+        let saved = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: name)
+        await fulfillment(of: [saved], timeout: 15)
+        let state = try await fixtureControl(control, action: "state")
+        let bot = try XCTUnwrap(((state["lifecycle"] as? [String: Any])?["bots"] as? [[String: Any]])?.first)
+        XCTAssertEqual(bot["provider"] as? String, "devin"); XCTAssertEqual(bot["model"] as? String, "fixture-devin-model")
+        XCTAssertTrue((bot["effort"] as? String ?? "").isEmpty); XCTAssertEqual(bot["policy"] as? String, "manual")
+        let calls = try XCTUnwrap(state["calls"] as? [[String: Any]])
+        XCTAssertTrue(calls.contains { ($0["path"] as? String) == "/api/bots/provider-models?provider=devin" })
+        XCTAssertNil(state["createdBotConversation"] as? [String: Any])
+        XCTAssertFalse(calls.contains { ($0["path"] as? String)?.hasSuffix("/messages") == true || ($0["path"] as? String)?.contains("/computer/") == true })
+        let id = try XCTUnwrap(bot["id"] as? String)
+        try tapWorkspace(app.buttons["bot-" + id])
+        try require(app.staticTexts["macConversationTitle"])
+        try require(app.descendants(matching: .any).matching(identifier: "messageInput").firstMatch)
+        attachScreenshot("Devin bot — empty shared conversation ready for a message")
+        tapTab("Bots"); try tapWorkspace(app.buttons["bot-" + id])
+        try require(app.staticTexts["macConversationTitle"])
+        let opened = try await fixtureControl(control, action: "state")
+        let chat = try XCTUnwrap(opened["createdBotConversation"] as? [String: Any])
+        let preferences = try XCTUnwrap(chat["preferences"] as? [String: Any])
+        XCTAssertEqual(preferences["botId"] as? String, id); XCTAssertEqual(preferences["botModel"] as? String, "fixture-devin-model")
+        XCTAssertEqual(chat["mode"] as? String, "manual"); XCTAssertTrue((chat["messages"] as? [[String: Any]] ?? []).isEmpty)
+        let writes = try XCTUnwrap(opened["calls"] as? [[String: Any]]).filter { $0["method"] as? String != "GET" }
+        XCTAssertEqual(writes.count, 2, "One profile save plus one roster-created empty conversation, reused on the next tap.")
+        XCTAssertFalse(writes.contains { ($0["path"] as? String)?.hasSuffix("/messages") == true || ($0["path"] as? String)?.contains("/computer/") == true })
+    }
+
+    @MainActor
     func testPhoneBotCreationEditingCASAndApprovalModes() async throws {
         let control = try pairWorkspaceFixture()
         try openCreateMenu(); try require(app.buttons["createBotButton"]); app.buttons["createBotButton"].tap()

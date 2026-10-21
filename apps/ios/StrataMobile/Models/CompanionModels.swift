@@ -256,7 +256,7 @@ struct BotProfileDraft: Encodable, Equatable {
         guard !result.name.isEmpty, result.name.utf16.count <= 80, result.name.rangeOfCharacter(from: .controlCharacters) == nil,
               instructions.utf16.count <= 32_000, model.utf16.count <= 250,
               ["code", "computer", "both"].contains(capabilities), ["host", "cua"].contains(computerMode),
-              ["claude", "codex", "grok", "kimi", "ollama", "configured"].contains(provider) else {
+              ["claude", "codex", "devin", "grok", "kimi", "ollama", "configured"].contains(provider) else {
             throw CompanionError.server("Check the bot's name, instructions and provider.")
         }
         result.avatarConfig = try avatarConfig.validated(supportedShapes: catalog.avatarShapes)
