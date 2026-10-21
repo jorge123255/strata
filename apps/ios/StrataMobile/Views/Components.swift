@@ -199,17 +199,17 @@ struct DetailRow: View {
 struct StrataTeamAvatars: View {
     let bots: [CompanionBot]
     var size: CGFloat = 48
+    var horizontal = false
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: size * 0.3).fill(StrataTheme.grouped)
-            if bots.isEmpty { Image(systemName: "person.3").foregroundStyle(StrataTheme.ink) }
+            if bots.isEmpty { Image(systemName: "person.3.fill").font(.system(size: size * 0.44)).foregroundStyle(StrataTheme.secondaryInk) }
             else {
                 ForEach(Array(bots.prefix(3).enumerated()), id: \.element.id) { index, bot in
-                    AvatarBadge(bot.face, size: size * 0.58)
-                        .offset(x: index == 0 ? -size * 0.17 : index == 1 ? size * 0.17 : 0,
-                                y: index == 2 ? size * 0.14 : -size * 0.12)
+                    AvatarBadge(bot.face, size: size * (horizontal ? 0.78 : 0.66))
+                        .offset(x: horizontal ? (CGFloat(index) - CGFloat(min(bots.count, 3) - 1) / 2) * size * 0.36 : index == 1 ? -size * 0.20 : index == 2 ? size * 0.20 : 0,
+                                y: horizontal ? 0 : index == 0 ? -size * 0.18 : size * 0.16)
                 }
             }
-        }.frame(width: size, height: size).accessibilityHidden(true)
+        }.frame(width: horizontal ? size * 1.50 : size, height: size).accessibilityHidden(true)
     }
 }

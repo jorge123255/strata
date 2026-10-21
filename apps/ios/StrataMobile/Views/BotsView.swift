@@ -1,5 +1,16 @@
 import SwiftUI
 
+private enum BotRosterEntry: Identifiable {
+    case bot(CompanionBot), team(BotTeam)
+    var id: String { switch self { case .bot(let value): "bot-" + value.id; case .team(let value): "team-" + value.id } }
+}
+
+private struct BotWorkspaceObservation<Content: View>: View {
+    @ObservedObject var workspace: BotWorkspaceStore
+    let content: (BotWorkspaceStore) -> Content
+    var body: some View { content(workspace) }
+}
+
 struct BotsView: View {
     @ObservedObject var store: CompanionStore
     let pair: () -> Void
@@ -7,29 +18,80 @@ struct BotsView: View {
     @State private var destination: BotWorkspaceDestination = .team
     @State private var workspace: BotWorkspaceStore?
     @State private var workspaceGeneration: UUID?
+    @State private var rosterVisible = false
     @State private var creatingTeam = false
     @State private var creatingBot = false
     @State private var botQuery = ""
     @State private var rosterFilter: BotRosterFilter = .all
     @FocusState private var searchFocused: Bool
+    @Environment(\.scenePhase) private var scenePhase
 
     // Adapted from Cua Bots iOS PhoneViews.swift (FSL-1.1-MIT,
     // Copyright (c) 2026 Cua AI, Inc.). Uses Strata's existing paired store.
     var body: some View {
         Group {
-          if store.isPaired, let workspace, destination != .team {
-            BotWorkspaceDestinationView(destination: destination, store: store, workspace: workspace, openChat: openChat).strataList()
-          } else { List {
+            if let workspace { BotWorkspaceObservation(workspace: workspace) { _ in workspaceContent } }
+            else { workspaceContent }
+        }
+        .task(id: store.pairingGeneration) {
+            if workspaceGeneration != store.pairingGeneration || workspace == nil {
+                creatingTeam = false; creatingBot = false; botQuery = ""; rosterFilter = .all
+                workspace = store.isPaired ? store.botWorkspaceStore() : nil
+                workspaceGeneration = store.pairingGeneration
+            }
+            if store.isPaired { await store.refreshBots(); await workspace?.refreshTeams() }
+        }
+        .onAppear { rosterVisible = true }
+        .onDisappear { rosterVisible = false }
+        .task(id: rosterVisible && scenePhase == .active && store.isPaired && destination == .team) {
+            guard rosterVisible, scenePhase == .active, store.isPaired, destination == .team else { return }
+            while !Task.isCancelled && rosterVisible && scenePhase == .active && destination == .team {
+                do { try await Task.sleep(for: .seconds(5)) } catch { break }
+                guard !Task.isCancelled, rosterVisible, scenePhase == .active, destination == .team else { break }
+                if workspace?.mutation == nil, workspace?.loading.contains("teams") != true { await workspace?.refreshTeams() }
+            }
+        }
+    }
+
+    private var workspaceContent: some View {
+        Group {
+            if store.isPaired, let workspace, destination != .team {
+                BotWorkspaceDestinationView(destination: destination, store: store, workspace: workspace, openChat: openChat).strataList()
+            } else { roster }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) { if store.isPaired { rosterControls } }
+        .navigationTitle(destination == .team ? "Bots" : destination.rawValue)
+        .navigationBarTitleDisplayMode(.inline).toolbar(.visible, for: .navigationBar)
+        .refreshable { await store.refresh(silently: true); await store.refreshBots(); await workspace?.refreshTeams() }
+        .sheet(isPresented: $creatingTeam) { if let workspace { BotTeamEditor(store: store, workspace: workspace) } }
+        .sheet(isPresented: $creatingBot) { BotProfileEditor(store: store) }
+        .toolbar {
+            if store.isPaired {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button { creatingBot = true } label: { Label("Create bot", systemImage: "sparkles") }
+                            .disabled(store.botCatalog?.lifecycleSupported != true || store.savingBotProfile || store.status?.hostConnected != true)
+                            .accessibilityIdentifier("createBotButton")
+                        Button { creatingTeam = true } label: { Label("Create team", systemImage: "person.3") }
+                            .disabled(!canCreateTeam).accessibilityIdentifier("createBotTeamButton")
+                    } label: { Image(systemName: "plus").font(.system(size: 23, weight: .medium)).frame(width: 44, height: 44) }
+                        .accessibilityLabel("Create bot or team").accessibilityIdentifier("createBotMenuButton")
+                }
+            }
+        }
+    }
+
+    private var roster: some View {
+        List {
             if !store.isPaired {
                 ConnectionNeededView(icon: "sparkles.rectangle.stack", title: "Meet your bots", message: "Pair your Mac to open your bots and their shared conversations.", pair: pair)
                     .listRowBackground(Color.clear).listRowSeparator(.hidden)
             } else {
                 if let message = store.botsMessage {
                     Section {
-                        Label(message, systemImage: "info.circle").font(.subheadline).foregroundStyle(StrataTheme.secondaryInk)
-                            .accessibilityIdentifier("botsUnavailable")
+                        Label(message, systemImage: "info.circle").foregroundStyle(StrataTheme.secondaryInk).accessibilityIdentifier("botsUnavailable")
                         Button("Check again") { Task { await store.refreshBots() } }.disabled(store.isLoadingBots)
-                    }.listRowBackground(StrataTheme.surface)
+                    }.listRowBackground(Color.clear)
                 }
                 if store.isLoadingBots, store.botCatalog == nil { ProgressView("Checking your bots…") }
                 if let catalog = store.botCatalog {
@@ -38,133 +100,144 @@ struct BotsView: View {
                             VStack(spacing: 8) {
                                 ExpressiveBotAvatar(config: featured.face, size: 124, mood: store.botMood(featured), animated: true)
                                 Text(featured.name).font(.subheadline.weight(.medium)).foregroundStyle(StrataTheme.secondaryInk)
-                            }.frame(maxWidth: .infinity).padding(.vertical, 16)
-                        }.listRowBackground(Color.clear).listRowSeparator(.hidden)
-                            .accessibilityIdentifier("featuredBotButton")
+                            }.frame(maxWidth: .infinity).padding(.vertical, 19)
+                        }.listRowBackground(Color.clear).listRowSeparator(.hidden).accessibilityIdentifier("featuredBotButton")
                     }
                     Section {
+                        let entries = rosterEntries(catalog)
                         if catalog.bots.isEmpty, catalog.reason == nil { emptyBots }
-                        if !catalog.bots.isEmpty, filteredBots(catalog).isEmpty {
+                        if !catalog.bots.isEmpty, entries.isEmpty {
                             VStack(alignment: .leading, spacing: 10) {
-                                Text("No bots match this search or filter.").foregroundStyle(StrataTheme.secondaryInk).accessibilityIdentifier("botRosterFilteredEmpty")
-                                Button("Clear filters") { botQuery = ""; rosterFilter = .all; searchFocused = false }
-                                    .accessibilityIdentifier("clearBotRosterFiltersButton")
+                                Text("No bots or teams match this search or filter.").foregroundStyle(StrataTheme.secondaryInk).accessibilityIdentifier("botRosterFilteredEmpty")
+                                Button("Clear filters") { botQuery = ""; rosterFilter = .all; searchFocused = false }.accessibilityIdentifier("clearBotRosterFiltersButton")
                             }.padding(.vertical, 18)
                         }
-                        ForEach(filteredBots(catalog)) { bot in
-                            NavigationLink { BotDetailView(store: store, botId: bot.id, openChat: openChat) } label: { botCard(bot, catalog: catalog) }
-                                .accessibilityIdentifier("bot-\(bot.id)")
+                        ForEach(entries) { entry in
+                            switch entry {
+                            case .bot(let bot):
+                                NavigationLink { BotDetailView(store: store, botId: bot.id, openChat: openChat) } label: { botCard(bot) }.accessibilityIdentifier("bot-\(bot.id)")
+                            case .team(let team):
+                                if let workspace {
+                                    NavigationLink { BotTeamDetailView(store: store, workspace: workspace, teamId: team.id, openChat: openChat) } label: { teamCard(team, catalog: catalog) }.accessibilityIdentifier("team-\(team.id)")
+                                }
+                            }
                         }
                     }.listRowBackground(Color.clear).listRowSeparator(.hidden)
-                    if let workspace {
-                        BotTeamsSection(store: store, workspace: workspace, openChat: openChat, createTeam: { creatingTeam = true })
-                            .listRowBackground(StrataTheme.surface).listRowSeparator(.hidden)
-                    }
+                    if let message = workspace?.messages["teams"] { Text(message).font(.caption).foregroundStyle(StrataTheme.warning).listRowBackground(Color.clear) }
                     if catalog.lifecycleSupported != true {
-                        Text("Update Strata on your Mac to create and edit bots on your iPhone. Existing shared conversations are still available.")
-                            .font(.caption).foregroundStyle(StrataTheme.secondaryInk).listRowBackground(Color.clear).listRowSeparator(.hidden)
+                        Text("Update Strata on your Mac to create and edit bots on your iPhone. Existing shared conversations are still available.").font(.caption).foregroundStyle(StrataTheme.secondaryInk).listRowBackground(Color.clear)
                     }
                 }
             }
-          }.listStyle(.plain).scrollContentBackground(.hidden).background(StrataTheme.background)
-              .listRowSpacing(4).listSectionSeparator(.hidden) }
-        }
-        .safeAreaInset(edge: .top, spacing: 0) {
-            if store.isPaired {
-                Picker("Bots workspace", selection: $destination) {
-                    ForEach(BotWorkspaceDestination.allCases) { item in Text(item.rawValue).tag(item) }
-                }.pickerStyle(.segmented).padding(.horizontal, 16).padding(.vertical, 12)
-                    .background(StrataTheme.background).accessibilityIdentifier("botsWorkspacePicker")
-            }
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            if store.isPaired, destination == .team, store.botCatalog != nil { rosterControls }
-        }
-        .navigationTitle("Bots").navigationBarTitleDisplayMode(.inline).toolbar(.visible, for: .navigationBar)
-        .refreshable { await store.refresh(silently: true); await store.refreshBots() }
-        .sheet(isPresented: $creatingTeam) { if let workspace { BotTeamEditor(store: store, workspace: workspace) } }
-        .sheet(isPresented: $creatingBot) { BotProfileEditor(store: store) }
-        .toolbar {
-            if store.isPaired, store.botCatalog?.lifecycleSupported == true {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { creatingBot = true } label: { Label("Create bot", systemImage: "plus") }
-                        .disabled(store.savingBotProfile || store.status?.hostConnected != true).accessibilityIdentifier("createBotButton")
-                }
-            }
-        }
-        .task(id: store.pairingGeneration) {
-            if workspaceGeneration != store.pairingGeneration || workspace == nil {
-                creatingTeam = false
-                creatingBot = false; botQuery = ""; rosterFilter = .all
-                workspace = store.isPaired ? store.botWorkspaceStore() : nil
-                workspaceGeneration = store.pairingGeneration
-            }
-            if store.isPaired { await store.refreshBots(); await workspace?.refreshTeams() }
-        }
+        }.listStyle(.plain).scrollContentBackground(.hidden).background(StrataTheme.background)
+            .listRowSpacing(4).listSectionSeparator(.hidden).accessibilityIdentifier("botAndTeamRoster")
     }
-
+    private var canCreateTeam: Bool {
+        (store.botCatalog?.bots.count ?? 0) >= 2 && workspace?.teams != nil && workspace?.teams?.reason == nil && workspace?.mutation == nil
+    }
     private var emptyBots: some View {
         VStack(alignment: .leading, spacing: 13) {
             Image(systemName: "sparkles.rectangle.stack").font(.system(size: 32, weight: .light)).foregroundStyle(StrataTheme.accentText)
             Text(store.botCatalog?.lifecycleSupported == true ? "Create your first bot" : "Your team starts on Mac").font(.title3.weight(.semibold)).foregroundStyle(StrataTheme.ink)
-            Text("Create a coding bot, a computer-control bot, or one that can do both. Its conversations will appear here.")
-                .font(.subheadline).foregroundStyle(StrataTheme.secondaryInk).lineSpacing(4)
-        }.frame(maxWidth: .infinity, alignment: .leading).strataCard(padding: 24)
-        .accessibilityIdentifier("botsEmptyState")
+            Text("Create a coding bot, a computer-control bot, or one that can do both. Its conversations will appear here.").font(.subheadline).foregroundStyle(StrataTheme.secondaryInk)
+        }.frame(maxWidth: .infinity, alignment: .leading).strataCard(padding: 24).accessibilityIdentifier("botsEmptyState")
     }
-
     private var rosterControls: some View {
-        VStack(spacing: 10) {
-            Picker("Show bots", selection: $rosterFilter) {
-                ForEach(BotRosterFilter.allCases) { Text($0.rawValue).tag($0) }
-            }.pickerStyle(.segmented).accessibilityIdentifier("botRosterFilterPicker")
-            HStack(spacing: 10) {
-                Image(systemName: "magnifyingglass").foregroundStyle(StrataTheme.secondaryInk)
-                TextField("Search bots", text: $botQuery).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    .focused($searchFocused).submitLabel(.search).onSubmit { searchFocused = false }
-                    .accessibilityIdentifier("botRosterSearchInput")
-                if !botQuery.isEmpty {
-                    Button { botQuery = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(StrataTheme.secondaryInk) }
-                        .buttonStyle(.plain).accessibilityLabel("Clear search").frame(width: 44, height: 44)
+        HStack(spacing: 10) {
+            Menu {
+                Section("Workspace") {
+                    ForEach(BotWorkspaceDestination.allCases) { item in
+                        Button { destination = item; searchFocused = false } label: { Label(item == .team ? "Bots & teams" : item.rawValue, systemImage: item == .team ? "person.2" : item == .activity ? "waveform.path" : item == .skills ? "sparkles" : "puzzlepiece.extension") }
+                            .accessibilityIdentifier("botsWorkspaceDestination-\(item.rawValue)")
+                    }
                 }
-            }.padding(.horizontal, 16).padding(.vertical, 9).frame(minHeight: 50)
-                .background(StrataTheme.grouped, in: Capsule())
-        }.padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 10).background(StrataTheme.background)
+                Section("Show") {
+                    ForEach(BotRosterFilter.allCases) { filter in
+                        Button { rosterFilter = filter; destination = .team } label: { if rosterFilter == filter { Label(filter.rawValue, systemImage: "checkmark") } else { Text(filter.rawValue) } }
+                            .accessibilityIdentifier("botRosterFilter-\(filter.rawValue)")
+                    }
+                }
+            } label: { Image(systemName: "square.grid.2x2").font(.system(size: 21)).frame(width: 48, height: 48).strataChrome() }
+                .accessibilityLabel("Bots workspace and filters").accessibilityIdentifier("botsWorkspaceMenuButton")
+            if destination == .team {
+                HStack(spacing: 9) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(StrataTheme.secondaryInk)
+                    TextField("Search", text: $botQuery).textInputAutocapitalization(.never).autocorrectionDisabled().focused($searchFocused).submitLabel(.search).onSubmit { searchFocused = false }.accessibilityIdentifier("botRosterSearchInput")
+                    if !botQuery.isEmpty { Button { botQuery = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).accessibilityLabel("Clear search").frame(width: 36, height: 36) }
+                }.padding(.horizontal, 16).frame(minHeight: 48).background(StrataTheme.grouped, in: Capsule())
+            } else { Text(destination.rawValue).font(.subheadline).foregroundStyle(StrataTheme.secondaryInk); Spacer() }
+        }.padding(.horizontal, 16).padding(.vertical, 10).background(StrataTheme.background)
     }
-
     private func featuredBot(_ catalog: CompanionBots) -> CompanionBot? {
         if let id = store.currentConversation?.botId, let bot = catalog.bots.first(where: { $0.id == id }) { return bot }
         return catalog.bots.first(where: { store.botIsWorking($0) }) ?? catalog.bots.first
     }
-
-    private func botCard(_ bot: CompanionBot, catalog: CompanionBots) -> some View {
-        let conversations = store.botConversations(bot)
-        let active = store.botIsWorking(bot)
+    private func botCard(_ bot: CompanionBot) -> some View {
+        let latest = store.botRosterConversations(bot).first
         return HStack(spacing: 14) {
-            KoalaAvatar(bot.face, mood: store.botMood(bot), animated: false).frame(width: 60, height: 60)
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 8) {
+            KoalaAvatar(bot.face, mood: store.botMood(bot), animated: false).frame(width: 58, height: 58)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(bot.name).font(.body.weight(.semibold)).foregroundStyle(StrataTheme.ink).lineLimit(1)
                     Spacer(minLength: 0)
-                    if bot.paused == true { Text("Paused").font(.caption).foregroundStyle(StrataTheme.secondaryInk) }
-                    else if active { ProgressView().controlSize(.small) }
+                    rosterDate(latest?.updatedAt.flatMap(rosterTimestamp))
                 }
-                Text(conversations.first?.preview ?? bot.capabilityLabel)
-                    .font(.subheadline).foregroundStyle(StrataTheme.secondaryInk).lineLimit(2)
+                Text(latest?.preview.flatMap { $0.isEmpty ? nil : $0 } ?? bot.capabilityLabel).font(.subheadline).foregroundStyle(StrataTheme.secondaryInk).lineLimit(2)
             }
-        }.padding(.vertical, 9)
+            if bot.paused == true { Image(systemName: "pause.circle").foregroundStyle(.secondary) }
+            else if store.botIsWorking(bot) { ProgressView().controlSize(.small) }
+        }.padding(.vertical, 10)
     }
-
-    private func filteredBots(_ catalog: CompanionBots) -> [CompanionBot] {
+    private func teamCard(_ team: BotTeam, catalog: CompanionBots) -> some View {
+        let preview = previewForTeam(team)
+        return HStack(spacing: 14) {
+            StrataTeamAvatars(bots: team.memberIds.compactMap { id in catalog.bots.first { $0.id == id } }, size: 58)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(team.name).font(.body.weight(.semibold)).foregroundStyle(StrataTheme.ink).lineLimit(1)
+                    Spacer(minLength: 0); rosterDate(preview?.createdAt.date ?? team.createdAt?.date)
+                }
+                Text(preview?.line ?? (team.enabled ? "Start a conversation with your team" : "Review and enable this team"))
+                    .font(.subheadline).foregroundStyle(StrataTheme.secondaryInk).lineLimit(2).accessibilityIdentifier("teamRosterPreview-\(team.id)")
+            }
+            if workspace?.teams?.runs.contains(where: { $0.teamId == team.id && $0.isActive }) == true { ProgressView().controlSize(.small) }
+        }.padding(.vertical, 10)
+    }
+    private func previewForTeam(_ team: BotTeam) -> BotTeamChannelPreview? {
+        if let row = workspace?.channels[team.id]?.messages.last, row.sequence > (team.channelPreview?.sequence ?? 0) {
+            return BotTeamChannelPreview(id: row.id, sequence: row.sequence, kind: row.kind, author: row.author, content: row.content, createdAt: row.createdAt)
+        }
+        return team.channelPreview
+    }
+    @ViewBuilder private func rosterDate(_ date: Date?) -> some View { if let date { Text(date, style: .time).font(.caption).foregroundStyle(StrataTheme.secondaryInk).lineLimit(1) } }
+    private func rosterTimestamp(_ raw: String) -> Date? {
+        if let value = Double(raw), value > 0 { return Date(timeIntervalSince1970: value > 100_000_000_000 ? value / 1_000 : value) }
+        let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.date(from: raw) ?? ISO8601DateFormatter().date(from: raw)
+    }
+    private func rosterEntries(_ catalog: CompanionBots) -> [BotRosterEntry] {
         let query = botQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        return catalog.bots.filter { bot in
+        let bots = catalog.bots.filter { bot in
             let matches = query.isEmpty || [bot.name, bot.provider, bot.model].contains { $0.localizedCaseInsensitiveContains(query) }
-            let mood = store.botMood(bot)
-            let attention = [.needsApproval, .paused, .error].contains(mood)
+            let attention = [.needsApproval, .paused, .error].contains(store.botMood(bot))
             return matches && (rosterFilter == .all || rosterFilter == .working && store.botIsWorking(bot) || rosterFilter == .attention && attention)
+        }.map(BotRosterEntry.bot)
+        let teams = (workspace?.teams?.teams ?? []).filter { team in
+            let matches = query.isEmpty || team.name.localizedCaseInsensitiveContains(query) || team.memberIds.contains { id in catalog.bots.first { $0.id == id }?.name.localizedCaseInsensitiveContains(query) == true }
+            let active = workspace?.teams?.runs.contains { $0.teamId == team.id && $0.isActive } == true
+            return matches && (rosterFilter == .all || rosterFilter == .working && active || rosterFilter == .attention && !team.enabled)
+        }.map(BotRosterEntry.team)
+        return (teams + bots).sorted { a, b in
+            @MainActor func date(_ entry: BotRosterEntry) -> Date {
+                switch entry {
+                case .bot(let value): return store.botRosterConversations(value).first?.updatedAt.flatMap(rosterTimestamp) ?? .distantPast
+                case .team(let value): return previewForTeam(value)?.createdAt.date ?? value.createdAt?.date ?? .distantPast
+                }
+            }
+            let left = date(a), right = date(b)
+            return left == right ? a.id < b.id : left > right
         }
     }
-
 }
 
 private struct BotDetailView: View {

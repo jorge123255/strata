@@ -15,6 +15,18 @@ struct BotTeam: Decodable, Identifiable, Equatable {
     var coordinatorId: String
     var enabled: Bool
     var limits: BotTeamLimits
+    var createdAt: BotWorkspaceTimestamp?
+    var channelPreview: BotTeamChannelPreview?
+}
+
+struct BotTeamChannelPreview: Decodable, Equatable {
+    var id: String
+    var sequence: Int
+    var kind: String
+    var author: BotTeamChannelAuthor
+    var content: String
+    var createdAt: BotWorkspaceTimestamp
+    var line: String { author.type == "system" ? content : "\(author.name): \(content)" }
 }
 
 struct BotTeamRun: Decodable, Identifiable, Equatable {

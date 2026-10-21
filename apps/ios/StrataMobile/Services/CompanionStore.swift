@@ -355,6 +355,12 @@ final class CompanionStore: ObservableObject {
         return conversations.filter { $0.botId == bot.id || ids.contains($0.id) }
     }
 
+    /// A Team routing/worker transcript remains accessible in full history, but
+    /// its private prompt is never used as an individual bot's roster teaser.
+    func botRosterConversations(_ bot: CompanionBot) -> [MacConversationSummary] {
+        botConversations(bot).filter { $0.teamId == nil }
+    }
+
     var currentBotMood: BotMood {
         let paused = botCatalog?.bots.first { $0.id == currentConversation?.botId }?.paused == true
         return BotAvatarState.mood(conversation: currentConversation, pending: pendingApprovals, paused: paused)

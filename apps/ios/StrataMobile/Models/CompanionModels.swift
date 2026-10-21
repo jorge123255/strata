@@ -316,8 +316,9 @@ struct MacConversationSummary: Decodable, Identifiable, Equatable {
     var active: Bool
     var preview: String?
     var botId: String?
+    var teamId: String?
 
-    enum CodingKeys: String, CodingKey { case id, title, updatedAt, workspace, modelName, mode, active, preview, botId }
+    enum CodingKeys: String, CodingKey { case id, title, updatedAt, workspace, modelName, mode, active, preview, botId, teamId }
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = try values.decode(String.self, forKey: .id)
@@ -331,6 +332,7 @@ struct MacConversationSummary: Decodable, Identifiable, Equatable {
         active = try values.decodeIfPresent(Bool.self, forKey: .active) ?? false
         preview = try values.decodeIfPresent(String.self, forKey: .preview)
         botId = try values.decodeIfPresent(String.self, forKey: .botId)
+        teamId = try values.decodeIfPresent(String.self, forKey: .teamId)
     }
 
     var workspaceName: String? { workspace.map { URL(fileURLWithPath: $0).lastPathComponent }.flatMap { $0.isEmpty ? nil : $0 } }
