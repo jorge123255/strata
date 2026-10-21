@@ -303,8 +303,10 @@ final class CompanionSmokeTests: XCTestCase {
         XCTAssertTrue(permissions.exists); XCTAssertTrue(permissions.label.contains("Ask before actions"))
         attachScreenshot("Bots — saved provider computer and permissions")
         let history = app.buttons["botConversation-fixture-mac-research"]
-        XCTAssertTrue(history.waitForExistence(timeout: 5)); reveal(history); history.tap()
-        XCTAssertTrue(app.staticTexts["Earlier Mac history is available on the phone."].waitForExistence(timeout: 10))
+        try tapWorkspace(history, performTap: false)
+        guard history.exists, history.isHittable else { throw acceptanceError("The saved history row must be visible and reachable after scrolling.") }
+        history.tap()
+        guard app.staticTexts["Earlier Mac history is available on the phone."].waitForExistence(timeout: 10) else { throw acceptanceError("Opening the bot must show its saved Mac history.") }
         let thinking = app.buttons["thinkingDisclosure-fixture-assistant"]
         XCTAssertTrue(thinking.waitForExistence(timeout: 5)); thinking.tap()
         XCTAssertTrue(app.staticTexts["thinkingContent-fixture-assistant"].waitForExistence(timeout: 5))
@@ -316,7 +318,7 @@ final class CompanionSmokeTests: XCTestCase {
         tapTab("Bots")
         if app.buttons["bot-fixture-bot"].exists { app.buttons["bot-fixture-bot"].tap() }
         let create = app.buttons["newBotConversationButton"]
-        XCTAssertTrue(create.waitForExistence(timeout: 5)); reveal(create); create.tap()
+        try tapWorkspace(create)
         let computer = app.buttons["botComputerPicker"]
         XCTAssertTrue(computer.waitForExistence(timeout: 5)); computer.tap()
         let remoteComputer = app.buttons["Remote fixture computer"]
@@ -351,7 +353,9 @@ final class CompanionSmokeTests: XCTestCase {
         XCTAssertTrue(reopenedBot.waitForExistence(timeout: 10)); reopenedBot.tap()
         let saved = app.buttons["botConversation-fixture-bot-created"]
         // Native List materializes later rows as they scroll into view.
-        reveal(saved); XCTAssertTrue(saved.waitForExistence(timeout: 10)); saved.tap()
+        try tapWorkspace(saved, performTap: false)
+        guard saved.exists, saved.isHittable else { throw acceptanceError("The saved conversation must be visible and reachable after scrolling.") }
+        saved.tap()
         XCTAssertTrue(reply.waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["thinkingDisclosure-bot-assistant"].exists)
         attachScreenshot("Bots — shared history retained after relaunch")
@@ -715,7 +719,7 @@ final class CompanionSmokeTests: XCTestCase {
 
     private func tapSwitch(_ element: XCUIElement) throws { try tapWorkspace(element, horizontal: 0.93) }
 
-    private func tapWorkspace(_ element: XCUIElement, horizontal: CGFloat? = nil) throws {
+    private func tapWorkspace(_ element: XCUIElement, horizontal: CGFloat? = nil, performTap: Bool = true) throws {
         for _ in 0..<12 {
             let window = app.windows.firstMatch.frame
             let navigation = app.navigationBars.firstMatch
@@ -725,8 +729,10 @@ final class CompanionSmokeTests: XCTestCase {
             if app.keyboards.firstMatch.exists { bottom = min(bottom, app.keyboards.firstMatch.frame.minY - 12) }
             let frame = element.exists ? element.frame : .zero, y = frame.midY
             if element.exists, element.isHittable, frame.width > 0, y > top, y < bottom {
-                if let horizontal { element.coordinate(withNormalizedOffset: CGVector(dx: horizontal, dy: 0.5)).tap() }
-                else { element.tap() }
+                if performTap {
+                    if let horizontal { element.coordinate(withNormalizedOffset: CGVector(dx: horizontal, dy: 0.5)).tap() }
+                    else { element.tap() }
+                }
                 return
             }
             // SwiftUI List may not expose a hittable scroll container on this
