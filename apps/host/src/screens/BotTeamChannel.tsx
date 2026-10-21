@@ -6,6 +6,8 @@ import { CuaBotAvatar } from '../components/CuaBotAvatar';
 import { Markdown } from '../components/Markdown';
 import { Btn, Dialog, ErrorNotice, Icon } from '../components/ui';
 import './BotTeamChannel.css';
+import { NotificationMuteButton } from '../components/BotNotifications';
+import { useNotificationDestination } from '../lib/notifications';
 
 const messageError = (cause: unknown) => cause instanceof Error ? cause.message : String(cause);
 const roomPath = (teamId: string) => `/api/bots/teams/${encodeURIComponent(teamId)}`;
@@ -84,6 +86,7 @@ export function BotTeamChannel({ team, bots, visible, current, onUnsupported, on
   onOpenConversation: (chatId: string, conversation?: Session) => Promise<void>; onStateChange: () => Promise<void>; onDetails: () => void; onShowWork: () => void;
 }) {
   const channel = useTeamChannel(team.id, visible, onUnsupported);
+  useNotificationDestination({ type: 'team', id: team.id }, visible);
   const [prompt, setPrompt] = useState(''), [recipients, setRecipients] = useState<string[]>([]), [picker, setPicker] = useState(false), [replyTo, setReplyTo] = useState<BotTeamChannelMessage | null>(null);
   const [actions, setActions] = useState(false), [sending, setSending] = useState(false), [stopping, setStopping] = useState(''), [error, setError] = useState(''), [unread, setUnread] = useState(0), [away, setAway] = useState(false);
   const requestId = useRef<string | null>(null), mounted = useRef(true), sendingRef = useRef(false), feed = useRef<HTMLDivElement>(null), composer = useRef<HTMLTextAreaElement>(null), follow = useRef(true), previousLast = useRef(0), olderAnchor = useRef<{ height: number; top: number } | null>(null);
@@ -156,7 +159,7 @@ export function BotTeamChannel({ team, bots, visible, current, onUnsupported, on
       <div className="bot-room-composer-row"><button type="button" className="bot-room-add" aria-label="Team actions" aria-haspopup="dialog" disabled={sending} onClick={() => setActions(true)}><Icon name="plus" size={22}/></button><div className="bot-room-input-pill"><label className="bot-room-input"><span className="sr-only">Message team</span><textarea ref={composer} rows={1} maxLength={16000} aria-label="Message team" value={prompt} disabled={sending} onChange={event => { setPrompt(event.target.value); requestId.current = null; }} onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); void send(); } }} placeholder={team.enabled ? `Message ${team.name}…` : 'Collaboration is turned off'}/></label><button className="bot-room-send" type="submit" aria-label={sending ? 'Sending…' : 'Send'} disabled={sending || !team.enabled || !prompt.trim() || !ready}><Icon name="send" size={19}/></button></div></div>
       <div className="bot-room-composer-bottom"><p>{!team.enabled ? 'Turn on collaboration in Team settings to send.' : active.length ? 'Your team is working. You can keep the conversation going.' : recipients.length ? 'Selected teammates respond using their own models and permissions.' : 'Your coordinator brings in the right teammates.'}</p></div>
     </form>
-    {actions ? <Dialog open title="Team actions" compact className="bot-room-actions-dialog" onClose={() => setActions(false)} actions={<Btn onClick={() => setActions(false)}>Done</Btn>}><div className="bot-room-action-list"><Btn icon="experts" onClick={() => { setActions(false); setPicker(true); }}>Choose teammates</Btn><Btn icon="chat" disabled={!ready || !team.enabled} onClick={() => { setActions(false); setPrompt('Hi everyone!'); changeRecipients([...team.memberIds]); }}>Draft a greeting to everyone</Btn><Btn icon="info" onClick={() => { setActions(false); onDetails(); }}>Team details</Btn><Btn icon="activity" onClick={() => { setActions(false); onShowWork(); }}>View team work</Btn></div><p className="small muted">Drafting a message starts no work. Send it when you are ready.</p></Dialog> : null}
+    {actions ? <Dialog open title="Team actions" compact className="bot-room-actions-dialog" onClose={() => setActions(false)} actions={<Btn onClick={() => setActions(false)}>Done</Btn>}><div className="bot-room-action-list"><NotificationMuteButton destination={{ type: 'team', id: team.id }}/><Btn icon="experts" onClick={() => { setActions(false); setPicker(true); }}>Choose teammates</Btn><Btn icon="chat" disabled={!ready || !team.enabled} onClick={() => { setActions(false); setPrompt('Hi everyone!'); changeRecipients([...team.memberIds]); }}>Draft a greeting to everyone</Btn><Btn icon="info" onClick={() => { setActions(false); onDetails(); }}>Team details</Btn><Btn icon="activity" onClick={() => { setActions(false); onShowWork(); }}>View team work</Btn></div><p className="small muted">Drafting a message starts no work. Send it when you are ready.</p></Dialog> : null}
   </div>;
 }
 

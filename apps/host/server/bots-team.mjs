@@ -437,6 +437,7 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
       if (!job) return null; const run = runs.get(job.runId); return run.state === 'cleanup_pending' ? stop(job.teamId, job.runId) : stopBranch(job, run);
     },
     botInActiveRun: botId => [...jobs.values()].some(job => job.botId === botId && liveStates.has(runs.get(job.runId)?.state)),
+    notificationSources: (heads = {}) => [...teams.keys()].map(id => channels.notificationSources(id, heads[id])),
     activeCount: () => [...runs.values()].filter(run => liveStates.has(run.state)).length,
     async close() { closed = true; clearInterval(timer); await Promise.allSettled([...runs.values()].filter(run => liveStates.has(run.state)).map(run => stop(run.teamId, run.id, 'Strata is closing.'))); },
   };

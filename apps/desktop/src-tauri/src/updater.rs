@@ -170,6 +170,26 @@ fn respond(stream: &mut TcpStream, status: &str, body: &serde_json::Value) {
 fn same(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
+fn read_json_body(stream: &mut TcpStream, buf: &mut Vec<u8>) -> Option<serde_json::Value> {
+    let end = buf.windows(4).position(|w| w == b"\r\n\r\n")? + 4;
+    let head = String::from_utf8_lossy(&buf[..end]);
+    let mut length = None;
+    for line in head.lines().skip(1) {
+        if let Some((key, value)) = line.split_once(':') {
+            if key.eq_ignore_ascii_case("transfer-encoding") { return None; }
+            if key.eq_ignore_ascii_case("content-length") {
+                if length.is_some() { return None; }
+                length = Some(value.trim().parse::<usize>().ok()?);
+            }
+        }
+    }
+    let length = length.filter(|n| *n > 0 && *n <= 8192)?;
+    let mut chunk = [0u8; 1024];
+    while buf.len() < end + length {
+        match stream.read(&mut chunk) { Ok(0) | Err(_) => return None, Ok(n) => buf.extend_from_slice(&chunk[..n]) }
+    }
+    serde_json::from_slice(buf.get(end..end + length)?).ok()
+}
 
 fn handle(mut stream: TcpStream, app: &AppHandle, token: &str, progress: &Arc<Mutex<Progress>>) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
@@ -193,6 +213,31 @@ fn handle(mut stream: TcpStream, app: &AppHandle, token: &str, progress: &Arc<Mu
     }
     let mut parts = request.split_whitespace();
     let (method, path) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+    // Notification requests share the existing private shell token. Bound and
+    // parse their bodies separately; no renderer-facing Tauri command is exposed.
+    if path.starts_with("/notifications/") {
+        let value = match (method, path) {
+            ("GET", "/notifications/status") => crate::notifications::status(),
+            ("POST", "/notifications/permission") => crate::notifications::permission(),
+            ("POST", "/notifications/open") => crate::notifications::take_open(),
+            ("POST", "/notifications/test") => {
+                let Some(body) = read_json_body(&mut stream, &mut buf).filter(|body| body.as_object().is_some_and(|v| v.len() == 1) && body["sound"].is_boolean()) else { return respond(&mut stream, "400 Bad Request", &serde_json::json!({"error":"Invalid notification test."})); };
+                crate::notifications::test_notification(body["sound"].as_bool().unwrap_or(false))
+            }
+            ("POST", "/notifications/context") => {
+                let Some(body) = read_json_body(&mut stream, &mut buf).filter(crate::notifications::set_context) else { return respond(&mut stream, "400 Bad Request", &serde_json::json!({"error":"Invalid notification context."})); };
+                let _ = body;
+                serde_json::json!({"updated":true})
+            }
+            ("POST", "/notifications/deliver") => {
+                let body = read_json_body(&mut stream, &mut buf);
+                let Some(body) = body.filter(crate::notifications::valid_delivery) else { return respond(&mut stream, "400 Bad Request", &serde_json::json!({"error":"Invalid notification body."})); };
+                crate::notifications::deliver(&body)
+            }
+            _ => return respond(&mut stream, "404 Not Found", &serde_json::json!({"error":"Unknown notification route."})),
+        };
+        return respond(&mut stream, "200 OK", &value);
+    }
     match (method, path) {
         ("GET", "/app-update/check") => match tauri::async_runtime::block_on(check(app)) {
             Ok(value) => respond(&mut stream, "200 OK", &value),
@@ -242,6 +287,19 @@ pub fn apply_env(cmd: &mut std::process::Command, app: &AppHandle, bridge: Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn parse_notification_body(request: &[u8]) -> Option<serde_json::Value> {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        let _ = server.set_read_timeout(Some(Duration::from_millis(50)));
+        let mut bytes = request.to_vec();
+        let result = read_json_body(&mut server, &mut bytes); drop(client); result
+    }
+    #[test]
+    fn notification_json_bodies_are_bounded_and_unambiguous() {
+        assert_eq!(parse_notification_body(b"POST /notifications/context HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}"), Some(serde_json::json!({})));
+        for body in [b"POST / HTTP/1.1\r\nContent-Length: 9000\r\n\r\n{}".as_slice(), b"POST / HTTP/1.1\r\nContent-Length: 2\r\nContent-Length: 2\r\n\r\n{}", b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\nContent-Length: 2\r\n\r\n{}", b"POST / HTTP/1.1\r\nContent-Length: 2\r\n\r\nx!", b"POST / HTTP/1.1\r\n\r\n{}"] { assert!(parse_notification_body(body).is_none()); }
+    }
 
     #[test]
     fn token_comparison_needs_every_byte() {

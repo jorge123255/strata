@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { botWorkspaceRequest, handleBotWorkspace } from './bots-workspace.mjs';
 import { botProfileDraft, botProfileRoute, botAvatarConfig, BOT_AVATAR_SHAPES } from './bots-lifecycle.mjs';
+import { notificationRoute, notificationRequest, handleNotifications } from './notifications.mjs';
 
 const run = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -216,6 +217,7 @@ export class HostClient {
     finally { this.discovery = null; }
   }
   async request(path, { method = 'GET', body, signal, deviceId } = {}) {
+    const notification = notificationRequest(path, method, body, deviceId);
     const conversation = /^\/api\/companion\/conversations(?:\/[a-zA-Z0-9_-]{1,120}(?:\/(messages|stop|approval))?)?$/.exec(path);
     const bots = path === '/api/bots' || /^\/api\/bots\/[a-zA-Z0-9_-]{1,120}\/conversations$/.test(path);
     const avatar = /^\/api\/bots\/[a-zA-Z0-9_-]{1,120}$/.test(path) && method === 'PATCH';
@@ -230,9 +232,9 @@ export class HostClient {
       && path !== '/api/native/operations'
       && !/^\/api\/native\/instances\/[a-zA-Z0-9_-]+\/unload$/.test(path)
       && !/^\/api\/serving\/requests\/[a-zA-Z0-9_-]+\/cancel$/.test(path)
-      && !conversation && !management && !bots && !computer && !avatar && !workspace && !profile) throw fail(403, 'Unsupported host control.');
+      && !conversation && !management && !bots && !computer && !avatar && !workspace && !profile && !notification) throw fail(403, 'Unsupported host control.');
     const mutation = path.endsWith('/load') || path.endsWith('/unload') || path.endsWith('/cancel') || path === '/api/native/operations' || path === '/api/chat/stream';
-    if (workspace || profile) {
+    if (workspace || profile || notification) {
       // Fully validated narrow collaboration route; no arbitrary tool execution.
     } else if (avatar) {
       if (!body || Object.keys(body).length !== 1 || !body.avatarConfig) throw fail(403, 'Only bot appearance can be changed from iPhone.');
@@ -250,7 +252,7 @@ export class HostClient {
     if (path === '/api/native/operations' && (body?.kind !== 'load' || !safeId(body?.args?.model) || Object.keys(body).some(key => !['kind', 'args'].includes(key)) || Object.keys(body.args).some(key => !['model', 'values'].includes(key)) || Object.keys(body.args.values ?? {}).length)) throw fail(403, 'Only an installed model can be loaded from iPhone.');
     const origin = await this.origin();
     try {
-      return await this.fetcher(`${origin}${path}`, { method, redirect: 'error', headers: { 'content-type': 'application/json', ...(this.authorization ? { authorization: this.authorization } : {}), ...(management || computer || workspace && deviceId ? { 'x-strata-companion-device': deviceId } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}), signal: signal ?? AbortSignal.timeout(management ? 170_000 : computer?.action === 'start' ? 90_000 : workspace?.action === 'check' ? 30_000 : 15_000) });
+      return await this.fetcher(`${origin}${path}`, { method, redirect: 'error', headers: { 'content-type': 'application/json', ...(this.authorization ? { authorization: this.authorization } : {}), ...(management || computer || notification || workspace && deviceId ? { 'x-strata-companion-device': deviceId } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}), signal: signal ?? AbortSignal.timeout(management ? 170_000 : computer?.action === 'start' ? 90_000 : workspace?.action === 'check' ? 30_000 : 15_000) });
     } catch (error) {
       if (!this.fixed) this.cached = null;
       if (error.name === 'AbortError') throw error;
@@ -656,6 +658,7 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
     if (closing) throw fail(409, 'Enable iPhone pairing first.');
     if (typeof sessionId !== 'string' || !/^[a-f0-9]{32}$/.test(sessionId)) throw fail(400, 'Choose a paired device.');
     authority.revoke(sessionId);
+    void host.json('/api/bots/notifications/device', { method: 'DELETE', deviceId: sessionId, signal: AbortSignal.timeout(5000) }).catch(() => {});
     for (const request of active.values()) if (request.owner === sessionId) request.abort.abort();
     void releaseComputerLeases(sessionId);
     return localState();
@@ -695,7 +698,8 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
       const computerPath = /^\/v1\/bots\/([a-zA-Z0-9_-]{1,120})\/computer(?:\/(start|stop|takeover|control|release))?$/.exec(path);
       const queryEntries = [...url.searchParams];
       const workspacePath = botWorkspaceRequest((path + url.search).replace(/^\/v1\//, '/api/'), method, undefined, 405, false);
-      if (!path.startsWith('/v1/') || url.search && !workspacePath && (!computerPath || computerPath[2] || method !== 'GET' || queryEntries.length !== 1 || queryEntries[0][0] !== 'chatId' || !safeId(queryEntries[0][1]))) throw fail(404, 'Unknown companion endpoint.');
+      const notification = path === '/v1/notifications' || path.startsWith('/v1/notifications/') ? notificationRoute((path + url.search).replace(/^\/v1\/notifications/, '/api/bots/notifications'), method) : null;
+      if (!path.startsWith('/v1/') || url.search && !workspacePath && !notification && (!computerPath || computerPath[2] || method !== 'GET' || queryEntries.length !== 1 || queryEntries[0][0] !== 'chatId' || !safeId(queryEntries[0][1]))) throw fail(404, 'Unknown companion endpoint.');
       if (path === '/v1/pair' && method === 'POST') {
         const body = await readBody(req, 1_000);
         if (closing) throw fail(409, 'iPhone pairing is disabled.');
@@ -715,12 +719,17 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
         if (closing) throw fail(409, 'iPhone pairing is disabled.');
         if (!authority.sessions.some(saved => saved.id === session.id)) throw fail(401, 'This device was removed. Pair it again.');
       };
+      if (notification) {
+        await handleNotifications({ path: path + url.search, method, req, res, session, host, readBody, sendJSON, requireCurrentSession });
+        return;
+      }
       if (workspacePath) {
         await handleBotWorkspace({ path: path + url.search, method, req, res, session, host, readBody, sendJSON, requireCurrentSession });
         return;
       }
       if (path === '/v1/session' && method === 'DELETE') {
         authority.revoke(session.id);
+        await host.json('/api/bots/notifications/device', { method: 'DELETE', deviceId: session.id, signal: AbortSignal.timeout(5000) }).catch(() => {});
         for (const request of active.values()) if (request.owner === session.id) request.abort.abort();
         await releaseComputerLeases(session.id);
         return sendJSON(res, 200, { revoked: true });

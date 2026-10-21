@@ -63,8 +63,13 @@ export function createTeamChannels({ directory, now = Date.now, notify = () => {
     // bot's private chat, model checkpoint, memory or operational error detail.
     return { id: message.id, sequence: message.sequence, kind: message.kind, author: publicAuthor, content: Array.from(message.content.toWellFormed().replaceAll('\0', '')).slice(0, 280).join(''), createdAt: message.createdAt };
   }
+  function notificationSources(teamId, after) {
+    const row = channels.get(teamId), all = row?.messages ?? [];
+    const selected = after === undefined ? all.slice(-100) : all.filter(message => message.sequence > after).slice(0, 100);
+    return { id: teamId, latestSequence: row ? row.nextSequence - 1 : 0, messages: selected.map(message => ({ id: message.id, sequence: message.sequence, kind: message.kind, author: { type: message.author.type, ...(message.author.botId ? { botId: message.author.botId } : {}) }, state: message.state, createdAt: message.createdAt })) };
+  }
   return {
-    append, appendAndRemember: append, snapshot, preview,
+    append, appendAndRemember: append, snapshot, preview, notificationSources,
     find: (teamId, messageId) => copy(channels.get(teamId)?.messages.find(row => row.id === messageId)),
     recent: (teamId, limit = 30) => copy((channels.get(teamId)?.messages ?? []).slice(-limit)),
     receipt: (teamId, requestId) => copy(receipts.get(`${teamId}:${requestId}`)),

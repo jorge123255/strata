@@ -19,6 +19,7 @@ import { BotMemoryDialog, BotOutputDialog, BotRoutineDialog, BotRulesDialog, Bot
 import { BotTeamActivityView, BotTeamEditor, BotTeamPanel, TeamMark, useBotsResource } from './BotsWorkspace';
 import { BotConnectionsPanel, BotSkillsPanel } from './BotsCapabilities';
 import './Bots.css';
+import { openNotifications } from '../lib/notifications';
 
 const SETUP_STEPS = ['Name', 'Look', 'Model', 'Computer', 'Permissions'];
 const WORK_TABS: { id: BotsWorkTab; label: string; icon: 'clock' | 'shield' | 'file' }[] = [{ id: 'scheduled', label: 'Scheduled', icon: 'clock' }, { id: 'approvals', label: 'Approvals', icon: 'shield' }, { id: 'outputs', label: 'Outputs', icon: 'file' }];
@@ -168,7 +169,7 @@ export function BotsScreen() {
   const checkedComputer = computerReadiness?.key === computerKey ? computerReadiness : null;
   const readiness = selected ? botReadiness(selected, { computerMode: context?.computerMode, conversation: !!chatId, unavailableConversation: !!chatId && !chat, active: chats.some(session => session.active), needsApproval: mood(selected) === 'needsApproval', computer: checkedComputer?.computer, computerError: checkedComputer?.error, checking: !checkedComputer || checkedComputer.checking }) : null;
 
-  return <Screen title="Bots" titleDetail={route === 'new' ? 'New bot' : route === 'bot' ? selected?.name : undefined} bare actions={<IconBtn name="refresh" title="Refresh bots and shared work" disabled={loading || !!pending} onClick={() => { void refresh(true); void refreshWork(); void teams.refresh(); setReadinessRevision(value => value + 1); }}/>}>
+  return <Screen title="Bots" titleDetail={route === 'new' ? 'New bot' : route === 'bot' ? selected?.name : undefined} bare actions={<><Btn size="sm" icon="activity" onClick={() => openNotifications()}>Notifications</Btn><IconBtn name="refresh" title="Refresh bots and shared work" disabled={loading || !!pending} onClick={() => { void refresh(true); void refreshWork(); void teams.refresh(); setReadinessRevision(value => value + 1); }}/></>}>
     <div className="bots-workspace"><nav className="bots-destinations" aria-label="Bots workspace">{([{id:'team',label:'Team',icon:'experts'},{id:'activity',label:'Activity',icon:'activity'},{id:'skills',label:'Skills',icon:'skills'},{id:'connections',label:'Connections',icon:'link'}] as const).map(tab=><button key={tab.id} aria-current={destination===tab.id?'page':undefined} onClick={()=>navigate('bots',tab.id==='team'?'teams':tab.id)}><Icon name={tab.icon} size={17}/><span>{tab.label}</span>{tab.id==='activity'&&approvals?<b>{approvals}</b>:null}</button>)}</nav>
     <div className="cua-bots-shell" data-list={destination==='team'||undefined}>
       {destination==='team'?<aside className="cua-bots-sidebar" aria-label="Bots navigation"><nav>

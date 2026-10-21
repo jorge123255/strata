@@ -24,6 +24,13 @@ test('private memory and outputs persist without an independent conversation his
   assert.equal(statSync(join(f.directory,'bot-volumes',f.id,'memory/MEMORY.md')).mode&0o777,0o600);
   const restored = createBotWork(f.options); assert.equal(restored.list(f.id).memory,'Prefer concise reports.'); restored.close();
 });
+test('notification routine projection contains only saved chat identity and explicit completion preference', t => {
+  const f = fixture(t), routine = f.work.putRoutine(f.id, { title: 'PRIVATE_ROUTINE_TITLE', prompt: 'PRIVATE_PROMPT', notifyOnCompletion: true, schedule: { kind: 'every', minutes: 1 } });
+  assert.deepEqual(f.work.notificationSources(), []);
+  const result = f.work.runRoutine(f.id, routine.id);
+  assert.deepEqual(f.work.notificationSources(), [{ chatId: result.conversation.id, notifyOnCompletion: true }]);
+  assert.ok(!JSON.stringify(f.work.notificationSources()).includes('PRIVATE_'));
+});
 test('files reject traversal, outside namespaces and symlinks', t => {
   const f=fixture(t); f.work.putFile(f.id,{path:'outputs/test.txt',content:'Inside'});
   for(const path of ['../outside','outputs/../../outside','/outputs/a','outputs/../a','work.json','outputs/a\\b']) assert.throws(()=>f.work.putFile(f.id,{path,content:'Bad'}));

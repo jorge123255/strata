@@ -1,4 +1,5 @@
 import { CuaBotAvatar } from '../components/CuaBotAvatar';
+import { useNotificationDestination } from '../lib/notifications';
 import { selectedChat } from '../lib/chat-context';
 import './ChatEmbedded.css';
 import {localeTag} from '../lib/i18n';
@@ -65,6 +66,7 @@ export function ChatScreen({ embedded = false, sessionId, onComputer }: { embedd
        answered you would mark it unread. */
     const messageCount = session?.messages.length ?? 0;
     const botId = session?.preferences?.botId;
+    useNotificationDestination(session ? { type: 'chat', id: session.id } : null, !setupVisible);
     useEffect(() => {
         if (session && session.id === activeId && !streaming)
             markRead(session.id);

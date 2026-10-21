@@ -1,4 +1,5 @@
 import { BotComputer } from './BotComputer';
+import { NotificationMuteButton } from './BotNotifications';
 import { CuaBotAvatar } from './CuaBotAvatar';
 import {sessionTitle} from '../lib/session-title';
 import { tr } from '../lib/i18n';
@@ -48,7 +49,7 @@ export function ChatToolbar({ session, items, selected, onSelect, onClose, onClo
     {tr(previews ? <div className="chat-toolbar__previews"><ArtifactTabs extraTabs={extraTabs} onCloseTab={onCloseTab} items={items} selected={selected} onSelect={onSelect}/><div className="preview-window-actions"><div id="preview-file-actions" className="preview-file-actions"/><IconBtn name={expanded ? 'contract' : 'expand'} title={tr(expanded ? 'Exit full screen preview' : 'Full screen preview')} onClick={onExpand}/><IconBtn name="panel" title={tr("Collapse preview sidebar")} onClick={onClose}/></div></div> : null)}
     {tr(agents ? <Popover anchor={agentsRef.current} title={tr("Subagents")} detail={session?.agents?.length ? <>{tr(count)}{tr(" running \u00B7 ")}{tr(session.agents.filter(a => a.status === 'completed').length)}{tr(" completed \u00B7 ")}{tr(session.agents.length)}{tr(" total")}</> : undefined} width={460} onClose={() => setAgents(false)}>{tr(session?.agents?.length ? <>{tr(session.agents.map(a => <SubagentRow key={a.id} agent={a} now={now}/>))}</> : <div className="subagents-empty"><Icon name="experts" size={24}/><strong>{tr("No subagents recorded")}</strong><p className="small muted">{tr("Subagents that run in this conversation appear here, with their progress, token usage and elapsed time. Completed runs stay visible.")}</p></div>)}</Popover> : null)}
     {tr(menu ? <FloatingMenu anchor={menuRef.current} title={tr("Chat options")} onClose={() => setMenu(false)}><button role="menuitem" className="menu__item" disabled={!!remote || !!botId} title={tr(botId ? "Response settings are managed in the bot profile." : remote ? "API models use their provider’s response settings." : undefined)} onClick={() => { setMenu(false); setSettings(true); }}><Icon name="sliders"/>{tr("Response settings")}</button><button role="menuitem" className="menu__item" disabled={!session} onClick={() => { if (session)
-        downloadSessionLog(session); setMenu(false); }}><Icon name="download"/>{tr("Download session log")}</button></FloatingMenu> : null)}
+        downloadSessionLog(session); setMenu(false); }}><Icon name="download"/>{tr("Download session log")}</button>{botId && session ? <NotificationMuteButton menu destination={{type:'chat',id:session.id}}/> : null}</FloatingMenu> : null)}
     {computer && botId ? <BotComputer key={session?.id} bot={{ id: botId, name: session?.preferences?.botName ?? 'Bot', avatar: session?.preferences?.botAvatar }} chatId={session?.id} onClose={() => setComputer(false)}/> : null}
     <SamplingDrawer open={settings} onClose={() => setSettings(false)}/>
   </header>;

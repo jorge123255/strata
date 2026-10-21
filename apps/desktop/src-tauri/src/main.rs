@@ -38,6 +38,7 @@ use std::time::{Duration, Instant};
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 mod updater;
+mod notifications;
 mod desktoplog;
 #[cfg(target_os = "linux")]
 mod supervisor;
@@ -879,6 +880,7 @@ fn run_embedded() {
         .manage(HostPort(Mutex::new(None)))
         .manage(ShutdownToken(Mutex::new(None)))
         .setup(|app| {
+            notifications::init(app.handle());
             // A way to prove the safety net on a computer where the app starts fine (tests only): a panic at the place a setup error ends in.
             if std::env::var_os("STRATA_DESKTOP_TEST_PANIC").is_some() {
                 panic!("STRATA_DESKTOP_TEST_PANIC is set: the app panics on purpose");

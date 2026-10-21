@@ -5,6 +5,17 @@ task_repo="${task_desktop:h:h}"
 task_source="${STRATA_BASE_APP:-/Applications/Strata.app}"
 task_control="${STRATA_CONTROL_DONOR:-${task_source}/Contents/Resources/control}"
 task_output="${1:-${task_desktop}/build/Strata.app}"
+task_native_shell="${STRATA_NATIVE_SHELL:-}"
+if [[ -n "$task_native_shell" ]]; then
+  if [[ ! -f "$task_native_shell" || ! -x "$task_native_shell" || -L "$task_native_shell" ]]; then
+    print -u2 -- 'STRATA_NATIVE_SHELL must name a freshly built native executable, not a link.'
+    exit 1
+  fi
+  if [[ "$(/usr/bin/lipo -archs "$task_native_shell")" != "$(/usr/bin/lipo -archs "$task_source/Contents/MacOS/strata-desktop")" ]]; then
+    print -u2 -- 'The replacement native shell must match the verified carrier architecture.'
+    exit 1
+  fi
+fi
 remove_legacy_bots_app() {
   local task_resources="$1"
   # A copied carrier may contain the retired standalone app. Remove its
@@ -35,6 +46,9 @@ if [[ "$task_app_version" != "$task_carrier_version" ]]; then
 fi
 /usr/bin/codesign --verify --deep --strict "$task_source"
 /usr/bin/codesign --verify --strict "$task_control/python/bin/python3.12"
+source "$task_desktop/scripts/mac-signing.zsh"
+strata_capture_carrier_signing "$task_source"
+trap 'rm -f -- "$task_signing_entitlements"' EXIT
 node "$task_desktop/scripts/stage-companion.mjs"
 npm --prefix "$task_repo/apps/host" run build
 mkdir -p "${task_output:h}"
@@ -43,6 +57,10 @@ if ! /bin/cp -cR "$task_source" "$task_output" 2>/dev/null; then
   /usr/bin/ditto --noqtn "$task_source" "$task_output"
 fi
 task_resources="$task_output/Contents/Resources"
+if [[ -n "$task_native_shell" ]]; then
+  # Replace only the app's executable, retaining all verified carrier engines and Python.
+  /bin/cp "$task_native_shell" "$task_output/Contents/MacOS/strata-desktop"
+fi
 remove_legacy_bots_app "$task_resources"
 # Keep the carrier's native shell and engines. Use a verified Control donor for its signed Python runtime,
 # then stage ALL of this checkout's Control sources, including the shared-chat/remote lifecycle runtime guards.
@@ -155,6 +173,6 @@ npm --prefix "$task_resources/host" ci --omit=dev --omit=optional --ignore-scrip
 /usr/libexec/PlistBuddy -c 'Add NSLocalNetworkUsageDescription string Pair your iPhone with Strata on this Mac over an encrypted connection.' "$task_output/Contents/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c 'Set NSLocalNetworkUsageDescription Pair your iPhone with Strata on this Mac over an encrypted connection.' "$task_output/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Add NSScreenCaptureUsageDescription string Let your approved Strata bots see this Mac’s display.' "$task_output/Contents/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c 'Set NSScreenCaptureUsageDescription Let your approved Strata bots see this Mac’s display.' "$task_output/Contents/Info.plist"
 # Do not use --deep here: changing an engine signature would invalidate its component manifest.
-/usr/bin/codesign --force --sign - --preserve-metadata=identifier,entitlements,flags "$task_output"
+strata_sign_carrier_app "$task_output"
 /usr/bin/codesign --verify --deep --strict "$task_output"
 print -r -- "$task_output"

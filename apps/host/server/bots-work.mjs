@@ -148,6 +148,7 @@ export function createBotWork({ directory, requireBot, chats, createConversation
   }
   const timer = tickMs > 0 ? setInterval(tick, tickMs) : null; timer?.unref();
   return { list, update, putFile, getFile, putRoutine, removeRoutine, runRoutine, tick,
+    notificationSources: () => [...routines.values()].filter(row => typeof row.chatId === 'string').map(row => ({ chatId: row.chatId, notifyOnCompletion: row.notifyOnCompletion === true })),
     instructions(id) { if (!existsSync(folder(id))) return ''; const value = list(id); return [value.memory ? `Persistent memory for this bot:\n${value.memory}` : '', value.rules.length ? `Your owner’s standing action preferences (Strata’s permission mode still applies):\n${value.rules.map(rule => `${rule.behavior}: ${rule.action}`).join('\n')}` : '', 'Keep persistent notes in memory/MEMORY.md and finished text deliverables in outputs/ using the approved write_file tool. Strata retains these files in this bot’s private volume.'].filter(Boolean).join('\n\n'); },
     record(id, frame) { if (frame.type !== 'agent-tool' || frame.tool?.state !== 'done' || frame.tool?.name !== 'write_file' || typeof frame.tool.args?.content !== 'string') return; const path = frame.tool.args.path; if (path === 'memory/MEMORY.md' || typeof path === 'string' && path.startsWith('outputs/')) { try { putFile(id, { path, content: frame.tool.args.content }); } catch {} } },
     removed(id) { for (const routine of routines.values()) if (routine.botId === id) { routine.enabled = false; routine.nextRun = null; } saveRoutines(); },

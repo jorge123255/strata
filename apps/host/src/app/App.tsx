@@ -22,6 +22,8 @@ import { MonitorScreen } from '../screens/Monitor';
 import { TasksScreen } from '../screens/Tasks';
 import { SkillsScreen } from '../screens/Skills';
 import { SettingsScreen } from '../screens/Settings';
+import { BotNotificationCenter } from '../components/BotNotifications';
+import { startNotifications } from '../lib/notifications';
 function AppShell() {
     useStore(s => s.language);
     const location = useLocation();
@@ -35,6 +37,7 @@ function AppShell() {
     useEffect(() => {
         bootOnce();
     }, []);
+    useEffect(() => startNotifications(), []);
     useEffect(() => {
         window.addEventListener('keydown', handleAppShortcut);
         return () => window.removeEventListener('keydown', handleAppShortcut);
@@ -76,6 +79,7 @@ function AppShell() {
           </div>
         </div>) : null)}
       <Toasts />
+      <BotNotificationCenter />
     </div>);
 }
 /**

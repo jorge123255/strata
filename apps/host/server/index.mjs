@@ -74,6 +74,7 @@ import { createBotExtensionRoutes } from './bots-extension-store.mjs';
 import { createBotTools } from './bots-tools.mjs';
 import { createBotCUATools } from './bots-cua.mjs';
 import { createBotRuntime } from './bots-runtime/index.mjs';
+import { createBotNotifications, createBotNotificationRoutes } from './bot-notifications.mjs';
 import { createRemoteBotSSH } from './bots-ssh.mjs';
 import { createBotModelClient, createBotModelSources } from './bots-models.mjs';
 import { appVersionFrom, appVersionToShow } from './app-version.mjs';
@@ -192,6 +193,7 @@ async function pictureRefusal(connection, model) {
 }
 let conversations;
 let bots;
+let botNotifications;
 const observedAgentFrames = new WeakSet();
 const agentConversationObservers = new Map();
 const agent = createAgentBridge({
@@ -226,6 +228,7 @@ const requestQueue = new RequestQueue(n => monitor.queueWaiting(n));
 let runtimeModels;
 const rawSend = hub.send.bind(hub);
 hub.send = (event, payload) => {
+  if (event === 'conversation' || event === 'bots') botNotifications?.schedule();
   if (event === 'engine-status') rawSend('engine-status', payload);
   else if (event === 'engine-log') rawSend('log', payload);
   else if(event==='models' && runtimeModels){
@@ -560,6 +563,16 @@ conversations = createConversations({
   },
 });
 const conversationRoutes = createConversationRoutes({ conversations, port: PORT });
+botNotifications = createBotNotifications({ directory: store.DATA_DIR,
+  deviceAuthority: () => { const state = companion.state(); return { available: state.enabled === true, ids: state.enabled ? state.devices.map(device => device.id) : [] }; },
+  sources: heads => {
+    const routineChats = new Map(bots.work.notificationSources().map(row => [row.chatId, row]));
+    const chats = conversations.notificationSources().map(chat => routineChats.has(chat.id) ? { ...chat, routine: true, notifyOnCompletion: routineChats.get(chat.id).notifyOnCompletion } : chat), byId = new Map(chats.map(chat => [chat.id, chat]));
+    const approvals = [...bots.notificationApprovals(), ...agent.pendingAll().flatMap(chat => chat.pending.map(request => ({ chatId: chat.chatId, id: request.callId ?? request.id })))].map(request => ({ ...request, ...(byId.get(request.chatId)?.preferences?.teamId ? { teamId: byId.get(request.chatId).preferences.teamId } : {}) }));
+    return { conversations: chats, teams: bots.team.notificationSources(heads), approvals };
+  },
+});
+const botNotificationRoutes = createBotNotificationRoutes({ notifications: botNotifications, port: PORT });
 
 
 function saveWorkspaces() {
@@ -1037,6 +1050,7 @@ const server = http.createServer(async (req, res) => {
   if (path === '/api/remote-lifecycle' || path.startsWith('/api/remote-lifecycle/')) return remoteLifecycleRoutes(req, res, url);
   if (path === '/api/model-management' || path.startsWith('/api/model-management/')) return modelManagementRoutes(req, res, path, method);
   if (/^\/api\/bots\/(skills|connections)(?:\/|$)/.test(path)) return botExtensionRoutes(req, res, url);
+  if (path === '/api/bots/notifications' || path.startsWith('/api/bots/notifications/')) return botNotificationRoutes(req, res, url);
   if (path === '/api/bots' || path.startsWith('/api/bots/')) return botRoutes(req, res, url);
   if (path === '/api/companion/conversations' || path.startsWith('/api/companion/conversations/')) return conversationRoutes(req, res, url);
   if (path === '/api/companion' || path.startsWith('/api/companion/')) return companionRoutes(req, res, url);
@@ -1393,7 +1407,7 @@ async function api(req, res, path, method, url) {
     if (!fromShell()) return error(res, 403, 'Not allowed.');
     const body = await readBody(req);
     try {
-      if (body.bridge) appUi.setBridge(body.bridge);
+      if (body.bridge) { appUi.setBridge(body.bridge); botNotifications.setBridge(body.bridge); }
       if (body.mode === 'browser') return json(res, 200, await appUi.switchToBrowser({ url: `http://127.0.0.1:${PORT}/`, reason: body.reason, notice: typeof body.notice === 'string' ? body.notice.slice(0, 300) : '', openPage: body.open !== false }));
       if (body.open === true) return json(res, 200, { ...appUi.state(), opened: await appUi.openPage(`http://127.0.0.1:${PORT}/`) });
       return json(res, 200, appUi.state());
@@ -2312,7 +2326,7 @@ server.listen(PORT, HOST, () => {
 let stopping=false;
 const shutdown = async () => {
   if(stopping)return;stopping=true;
-  clearInterval(taskTimer);tasks.close();
+  clearInterval(taskTimer);tasks.close();botNotifications.close();
   const timeout=setTimeout(()=>process.exit(0),control?45000:10000);timeout.unref();   // stopping an engine through Control: drained (15 s), then ended; the shell's deadline is longer
   server.close();server.closeAllConnections?.();
   conversations.close();
