@@ -8,6 +8,10 @@ struct BotsView: View {
     @State private var workspace: BotWorkspaceStore?
     @State private var workspaceGeneration: UUID?
     @State private var creatingTeam = false
+    @State private var creatingBot = false
+    @State private var botQuery = ""
+    @State private var rosterFilter: BotRosterFilter = .all
+    @FocusState private var searchFocused: Bool
 
     // Adapted from Cua Bots iOS PhoneViews.swift (FSL-1.1-MIT,
     // Copyright (c) 2026 Cua AI, Inc.). Uses Strata's existing paired store.
@@ -30,15 +34,22 @@ struct BotsView: View {
                 if let catalog = store.botCatalog {
                     if let workspace { BotTeamsSection(store: store, workspace: workspace, openChat: openChat, createTeam: { creatingTeam = true }) }
                     Section {
+                        TextField("Search bots", text: $botQuery).textInputAutocapitalization(.never).autocorrectionDisabled()
+                            .focused($searchFocused).submitLabel(.search).onSubmit { searchFocused = false }
+                            .accessibilityIdentifier("botRosterSearchInput")
+                        Picker("Show bots", selection: $rosterFilter) {
+                            ForEach(BotRosterFilter.allCases) { Text($0.rawValue).tag($0) }
+                        }.pickerStyle(.segmented).accessibilityIdentifier("botRosterFilterPicker")
                         if catalog.bots.isEmpty, catalog.reason == nil { emptyBots }
-                        ForEach(catalog.bots) { bot in
+                        if !catalog.bots.isEmpty, filteredBots(catalog).isEmpty { Text("No bots match this search or filter.").foregroundStyle(StrataTheme.secondaryInk).accessibilityIdentifier("botRosterFilteredEmpty") }
+                        ForEach(filteredBots(catalog)) { bot in
                             NavigationLink {
                                 BotDetailView(store: store, botId: bot.id, openChat: openChat)
                             } label: { botCard(bot, catalog: catalog) }
                             .accessibilityIdentifier("bot-\(bot.id)")
                         }
                     } header: { Text("Your bots") } footer: {
-                        Text("Connected through \(store.connection?.macName ?? "your Mac"). Create bots and set up providers and computers in Strata on Mac. Your model connections stay separate.")
+                        Text(catalog.lifecycleSupported == true ? "Create bots here. Provider sign-in and saved-computer setup stay in Strata on your Mac. Your model connections stay separate." : "Update Strata on your Mac to create and edit bots on your iPhone. Existing shared conversations are still available.")
                     }
                 }
             }
@@ -56,9 +67,19 @@ struct BotsView: View {
         .navigationTitle("Bots").navigationBarTitleDisplayMode(.inline).toolbar(.visible, for: .navigationBar)
         .refreshable { await store.refresh(silently: true); await store.refreshBots() }
         .sheet(isPresented: $creatingTeam) { if let workspace { BotTeamEditor(store: store, workspace: workspace) } }
+        .sheet(isPresented: $creatingBot) { BotProfileEditor(store: store) }
+        .toolbar {
+            if store.isPaired, store.botCatalog?.lifecycleSupported == true {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { creatingBot = true } label: { Label("Create bot", systemImage: "plus") }
+                        .disabled(store.savingBotProfile || store.status?.hostConnected != true).accessibilityIdentifier("createBotButton")
+                }
+            }
+        }
         .task(id: store.pairingGeneration) {
             if workspaceGeneration != store.pairingGeneration || workspace == nil {
                 creatingTeam = false
+                creatingBot = false; botQuery = ""; rosterFilter = .all
                 workspace = store.isPaired ? store.botWorkspaceStore() : nil
                 workspaceGeneration = store.pairingGeneration
             }
@@ -69,7 +90,7 @@ struct BotsView: View {
     private var emptyBots: some View {
         VStack(alignment: .leading, spacing: 13) {
             Image(systemName: "sparkles.rectangle.stack").font(.system(size: 32, weight: .light)).foregroundStyle(StrataTheme.accentText)
-            Text("Your team starts on Mac").font(.title3.weight(.semibold)).foregroundStyle(StrataTheme.ink)
+            Text(store.botCatalog?.lifecycleSupported == true ? "Create your first bot" : "Your team starts on Mac").font(.title3.weight(.semibold)).foregroundStyle(StrataTheme.ink)
             Text("Create a coding bot, a computer-control bot, or one that can do both. Its conversations will appear here.")
                 .font(.subheadline).foregroundStyle(StrataTheme.secondaryInk).lineSpacing(4)
         }.frame(maxWidth: .infinity, alignment: .leading).strataCard(padding: 24)
@@ -78,9 +99,9 @@ struct BotsView: View {
 
     private func botCard(_ bot: CompanionBot, catalog: CompanionBots) -> some View {
         let conversations = store.botConversations(bot)
-        let active = conversations.contains { $0.active }
+        let active = store.botIsWorking(bot)
         return HStack(spacing: 12) {
-            KoalaAvatar(bot.face, mood: active ? .working : .idle).frame(width: 48, height: 48)
+            KoalaAvatar(bot.face, mood: store.botMood(bot), animated: false).frame(width: 48, height: 48)
                 .padding(5).background(StrataTheme.grouped, in: RoundedRectangle(cornerRadius: 18))
             VStack(alignment: .leading, spacing: 2) {
                 Text(bot.name).font(.body.weight(.semibold)).foregroundStyle(StrataTheme.ink)
@@ -90,10 +111,17 @@ struct BotsView: View {
             Spacer()
             if bot.paused == true { StrataStatusPill(title: "Paused", icon: "pause.fill", tone: .attention) }
             else if active { ProgressView().controlSize(.small) }
-            else if catalog.providers.first(where: { $0.id == bot.provider })?.available == false {
-                StrataStatusPill(title: "Setup", icon: "exclamationmark.circle", tone: .attention)
-            }
         }.padding(.vertical, 8)
+    }
+
+    private func filteredBots(_ catalog: CompanionBots) -> [CompanionBot] {
+        let query = botQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        return catalog.bots.filter { bot in
+            let matches = query.isEmpty || [bot.name, bot.provider, bot.model].contains { $0.localizedCaseInsensitiveContains(query) }
+            let mood = store.botMood(bot)
+            let attention = [.needsApproval, .paused, .error].contains(mood)
+            return matches && (rosterFilter == .all || rosterFilter == .working && store.botIsWorking(bot) || rosterFilter == .attention && attention)
+        }
     }
 
 }
@@ -104,6 +132,7 @@ private struct BotDetailView: View {
     let openChat: () -> Void
     @State private var showingSetup = false
     @State private var showingAvatar = false
+    @State private var showingEditor = false
     private var bot: CompanionBot? { store.botCatalog?.bots.first { $0.id == botId } }
 
     // Profile sections follow the actual Cua Bots PhoneProfile layout while
@@ -113,7 +142,7 @@ private struct BotDetailView: View {
             if let bot {
                 Section {
                     VStack(spacing: 6) {
-                        Button { showingAvatar = true } label: { AvatarBadge(bot.face, size: 96, editable: true) }
+                        Button { showingAvatar = true } label: { AvatarBadge(bot.face, mood: store.botMood(bot), size: 96, editable: true, animated: true, flourishToken: BotAvatarState.flourish(conversation: store.currentConversation?.botId == bot.id ? store.currentConversation : nil)) }
                             .buttonStyle(.plain).accessibilityLabel("Customize avatar").accessibilityIdentifier("customizeBotAvatarButton")
                         Text(bot.name).font(.title2.weight(.bold))
                         Text(bot.capabilityLabel).font(.subheadline).foregroundStyle(.secondary)
@@ -176,6 +205,15 @@ private struct BotDetailView: View {
         .strataList()
         .navigationTitle(bot?.name ?? "Bot").navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
+        .toolbar {
+            if let bot, store.botCatalog?.lifecycleSupported == true {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Edit") { showingEditor = true }
+                        .disabled(bot.updatedAt == nil || store.botIsWorking(bot))
+                        .accessibilityIdentifier("editBotProfileButton")
+                }
+            }
+        }
         .refreshable { await store.refresh(silently: true); await store.refreshBots() }
         .sheet(isPresented: $showingSetup) {
             if let bot { BotConversationSetupView(store: store, bot: bot, openChat: openChat) }
@@ -183,6 +221,7 @@ private struct BotDetailView: View {
         .sheet(isPresented: $showingAvatar) {
             if let bot { BotAvatarEditor(store: store, bot: bot) }
         }
+        .sheet(isPresented: $showingEditor) { if let bot { BotProfileEditor(store: store, bot: bot) } }
     }
 
     private func botDetails(_ bot: CompanionBot) -> some View {
@@ -212,7 +251,7 @@ private struct BotAvatarEditor: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 24) {
-                    AvatarBadge(avatar, size: 120)
+                    ExpressiveBotAvatar(config: avatar, size: 120, animated: true, interactive: true, flourishToken: String(describing: avatar))
                     AvatarPicker(avatar: $avatar, name: bot.name)
                     if let error = store.error { Text(error).font(.subheadline).foregroundStyle(StrataTheme.warning) }
                 }.padding(24)
@@ -234,9 +273,14 @@ struct BotAvatarView: View {
     var size: CGFloat = 40
     var config: AvatarConfig? = nil
     var name: String = "Bot"
+    var mood: BotMood = .idle
+    var animated = false
+    var interactive = false
+    var flourishToken = ""
     var body: some View {
-        KoalaAvatar(config ?? .default(for: name)).frame(width: size, height: size)
-            .accessibilityLabel("Bot avatar").accessibilityIdentifier("botAvatar")
+        ExpressiveBotAvatar(config: config ?? .default(for: name), size: size, mood: mood, animated: animated, interactive: interactive, flourishToken: flourishToken)
+            .accessibilityLabel(interactive ? "Animate bot avatar" : "Bot avatar").accessibilityValue(mood.label)
+            .accessibilityIdentifier(interactive ? "animateBotAvatarButton" : "botAvatar")
     }
 }
 
@@ -251,19 +295,24 @@ private struct BotConversationSetupView: View {
     @State private var message: String?
     @State private var supportedEfforts: [String] = []
     @State private var effortSelection = "__profile"
+    @State private var policy: BotApprovalPolicy
+    @State private var confirmingBypass = false
     @FocusState private var workspaceFocused: Bool
 
     init(store: CompanionStore, bot: CompanionBot, openChat: @escaping () -> Void) {
         self.store = store; self.initialBot = bot; self.openChat = openChat
         _workspace = State(initialValue: bot.computerMode == "cua" ? "/workspace" : bot.workspace ?? "")
         _modelId = State(initialValue: bot.modelId ?? "")
+        _policy = State(initialValue: BotApprovalPolicy(rawValue: bot.policy) ?? .manual)
     }
 
     private var bot: CompanionBot { store.botCatalog?.bots.first { $0.id == initialBot.id } ?? initialBot }
     private var supportsSelection: Bool { store.botCatalog?.selectionSupported == true }
+    private var supportsPolicy: Bool { store.botCatalog?.lifecycleSupported == true }
     private var chosenComputer: BotComputer? { store.botCatalog?.computers.first { $0.id == computerId } }
     private var chosenModel: BotConfiguredModel? { store.botCatalog?.models?.first { $0.id == modelId } }
     private var isBusy: Bool { store.creatingBotConversationId != nil }
+    private var remoteEffort: Bool { chosenComputer?.kind == "ssh" || (computerId.isEmpty && bot.execution.kind == "ssh") }
     private var effortOverride: String? {
         if !modelId.isEmpty { return bot.effort?.isEmpty == false ? "" : nil }
         return effortSelection == "__profile" ? nil : effortSelection
@@ -325,11 +374,11 @@ private struct BotConversationSetupView: View {
                         if let model = chosenModel, let detail = model.detail, !detail.isEmpty {
                             Text(detail).font(.caption).foregroundStyle(StrataTheme.secondaryInk)
                         }
-                        if modelId.isEmpty, !supportedEfforts.isEmpty {
+                        if modelId.isEmpty, !supportedEfforts.isEmpty || bot.effort?.isEmpty == false || remoteEffort {
                             Picker("Effort", selection: $effortSelection) {
-                                Text("Bot default").tag("__profile")
+                                Text(remoteEffort && bot.effort?.isEmpty == false ? "Saved · " + bot.effort! : "Bot default").tag("__profile")
                                 Text("Provider default").tag("")
-                                ForEach(supportedEfforts, id: \.self) { level in Text(level.capitalized).tag(level) }
+                                if !remoteEffort { ForEach(supportedEfforts, id: \.self) { level in Text(level.capitalized).tag(level) } }
                             }.accessibilityIdentifier("botEffortPicker")
                         }
                     } header: { Text("What powers it") } footer: {
@@ -344,7 +393,15 @@ private struct BotConversationSetupView: View {
                     }
                 }
                 Section {
-                    LabeledContent("Permissions", value: bot.policyLabel)
+                    if supportsPolicy {
+                        Picker("Approvals", selection: $policy) {
+                            ForEach(BotApprovalPolicy.allCases) { value in Text(value.label).tag(value) }
+                        }.accessibilityIdentifier("botConversationPolicyPicker")
+                        Text(policy.detail).font(.caption).foregroundStyle(policy == .bypass ? StrataTheme.warning : StrataTheme.secondaryInk)
+                    } else {
+                        LabeledContent("Permissions", value: bot.policyLabel)
+                        Text("Update Strata on your Mac to choose a different approval mode for a new conversation.").font(.caption).foregroundStyle(StrataTheme.secondaryInk)
+                    }
                     Text("Existing conversations keep their original settings. Work starts when you send a message.")
                         .font(.caption).foregroundStyle(StrataTheme.secondaryInk)
                     if let message {
@@ -353,15 +410,8 @@ private struct BotConversationSetupView: View {
                     }
                     Button {
                         workspaceFocused = false
-                        Task {
-                            message = nil
-                            let folder = bot.computerMode == "cua" ? "/workspace" : (supportsSelection && workspace != bot.workspace ? workspace : nil)
-                            if await store.newBotConversation(bot, computerId: computerId.isEmpty ? nil : computerId,
-                                                              modelId: modelId.isEmpty ? nil : modelId, workspace: folder,
-                                                              effort: effortOverride) {
-                                dismiss(); openChat()
-                            } else { message = store.error ?? "This conversation could not be created. Refresh Bots and try again."; store.error = nil }
-                        }
+                        if supportsPolicy, policy == .bypass { confirmingBypass = true }
+                        else { createConversation() }
                     } label: {
                         HStack {
                             if isBusy { ProgressView() }
@@ -383,9 +433,30 @@ private struct BotConversationSetupView: View {
                     }
                 }
             }
+            .confirmationDialog("Start with Bypass approvals?", isPresented: $confirmingBypass, titleVisibility: .visible) {
+                Button("Create with Bypass approvals", role: .destructive) { createConversation() }
+            } message: { Text("This new conversation can run actions without approval prompts. Existing conversations and queued approvals keep their settings.") }
             .interactiveDismissDisabled(isBusy)
         }
         .tint(StrataTheme.accentText)
+        .onChange(of: computerId) { _, _ in effortSelection = "" }
         .task(id: bot.provider + ":" + bot.model) { supportedEfforts = await store.supportedBotEfforts(bot) }
     }
+
+    private func createConversation() {
+        Task {
+            message = nil
+            let folder = bot.computerMode == "cua" ? "/workspace" : (supportsSelection && workspace != bot.workspace ? workspace : nil)
+            if await store.newBotConversation(bot, computerId: computerId.isEmpty ? nil : computerId,
+                                              modelId: modelId.isEmpty ? nil : modelId, workspace: folder,
+                                              effort: effortOverride, policy: supportsPolicy ? policy : nil) {
+                dismiss(); openChat()
+            } else { message = store.error ?? "This conversation could not be created. Refresh Bots and try again."; store.error = nil }
+        }
+    }
+}
+
+private enum BotRosterFilter: String, CaseIterable, Identifiable {
+    case all = "All", working = "Working", attention = "Needs attention"
+    var id: String { rawValue }
 }

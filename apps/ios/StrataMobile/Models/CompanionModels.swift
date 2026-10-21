@@ -128,6 +128,9 @@ struct CompanionBots: Decodable, Equatable {
     var computers: [BotComputer]
     var models: [BotConfiguredModel]?
     var selectionSupported: Bool?
+    var lifecycleSupported: Bool?
+    var defaultWorkspace: String?
+    var defaultPolicy: String?
     var reason: String?
 }
 
@@ -148,6 +151,10 @@ struct CompanionBot: Decodable, Identifiable, Equatable {
     var avatarConfig: AvatarConfig?
     var paused: Bool?
     var effort: String?
+    var instructions: String?
+    var updatedAt: String?
+    var computerId: String?
+    var active: Bool?
 
     var face: AvatarConfig { avatarConfig ?? .default(for: name) }
 
@@ -167,7 +174,7 @@ struct CompanionBot: Decodable, Identifiable, Equatable {
         return switch execution.kind { case "ssh": "SSH computer"; case "sandbox": "Sandbox"; default: "Your Mac" }
     }
     var policyLabel: String {
-        switch policy { case "plan": return "Plan mode"; case "bypass": return "Full access"; default: return "Ask before actions" }
+        BotApprovalPolicy(rawValue: policy)?.label ?? "Ask before actions"
     }
 }
 
@@ -194,11 +201,100 @@ struct BotProvider: Decodable, Identifiable, Equatable {
 }
 
 struct BotComputer: Decodable, Identifiable, Equatable {
+    struct Provider: Decodable, Equatable { var id: String; var available: Bool }
     var id: String
     var name: String
     var kind: String
     var available: Bool
     var detail: String
+    var providers: [Provider]?
+}
+
+enum BotApprovalPolicy: String, Codable, CaseIterable, Identifiable {
+    case manual, plan, bypass
+    var id: String { rawValue }
+    var label: String { switch self { case .manual: "Ask before actions"; case .plan: "Plan mode"; case .bypass: "Bypass approvals" } }
+    var detail: String {
+        switch self {
+        case .manual: "Ask for approval when an action requires it."
+        case .plan: "Plan and inspect with permitted read-only tools. Actions that change things stay blocked."
+        case .bypass: "Allow this bot's actions without approval prompts. Use only with computers and tools you trust."
+        }
+    }
+}
+
+struct BotProfileDraft: Encodable, Equatable {
+    var name = ""
+    var provider = ""
+    var model = ""
+    var modelId: String?
+    var computerId = ""
+    var workspace = ""
+    var instructions = ""
+    var capabilities = "code"
+    var policy: BotApprovalPolicy = .manual
+    var computerMode = "host"
+    var effort: String?
+    var avatarConfig = AvatarConfig()
+    var expectedUpdatedAt: String?
+
+    init() { }
+    init(bot: CompanionBot) {
+        name = bot.name; provider = bot.provider; model = bot.model; modelId = bot.modelId
+        computerId = bot.computerId ?? ""; workspace = bot.workspace ?? ""; instructions = bot.instructions ?? ""
+        capabilities = bot.capabilities; policy = BotApprovalPolicy(rawValue: bot.policy) ?? .manual
+        computerMode = bot.computerMode ?? "host"; effort = bot.effort; avatarConfig = bot.face
+        expectedUpdatedAt = bot.updatedAt
+    }
+
+    func validated(in catalog: CompanionBots, original: CompanionBot?) throws -> Self {
+        var result = self
+        result.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        result.workspace = workspace.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard catalog.lifecycleSupported == true else { throw CompanionError.server("Update Strata on your Mac to create or edit bots here.") }
+        guard !result.name.isEmpty, result.name.utf16.count <= 80, result.name.rangeOfCharacter(from: .controlCharacters) == nil,
+              instructions.utf16.count <= 32_000, model.utf16.count <= 250,
+              ["code", "computer", "both"].contains(capabilities), ["host", "cua"].contains(computerMode),
+              ["claude", "codex", "grok", "kimi", "ollama", "configured"].contains(provider) else {
+            throw CompanionError.server("Check the bot's name, instructions and provider.")
+        }
+        guard catalog.computers.contains(where: { $0.id == computerId }) else {
+            throw CompanionError.server("Choose a saved computer. Set up more computers on your Mac.")
+        }
+        guard result.workspace.hasPrefix("/"), result.workspace.utf16.count <= 4_000,
+              result.workspace.rangeOfCharacter(from: .controlCharacters) == nil,
+              computerMode != "cua" || result.workspace == "/workspace" else {
+            throw CompanionError.server("Enter the full workspace folder path on that computer. Isolated computers use /workspace.")
+        }
+        if provider == "configured" {
+            guard let id = modelId, let chosen = catalog.models?.first(where: { $0.id == id }) else {
+                throw CompanionError.server("Choose a saved model connection from your Mac.")
+            }
+            result.model = chosen.model; result.effort = nil
+        } else {
+            result.modelId = nil
+            if let effort, effort.range(of: "^[a-z0-9_-]{0,32}$", options: .regularExpression) == nil {
+                throw CompanionError.server("Choose an effort supported by this model.")
+            }
+        }
+        if let original {
+            guard let expectedUpdatedAt, !expectedUpdatedAt.isEmpty, expectedUpdatedAt == original.updatedAt else {
+                throw CompanionError.server("Reload the latest bot before editing it.")
+            }
+        } else { result.expectedUpdatedAt = nil }
+        return result
+    }
+}
+
+struct BotProfileSaveResult: Decodable {
+    var bot: CompanionBot
+    var catalog: CompanionBots
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        bot = try values.decode(CompanionBot.self, forKey: .bot)
+        catalog = try CompanionBots(from: decoder)
+    }
+    private enum CodingKeys: String, CodingKey { case bot }
 }
 
 struct ChatMessage: Codable, Identifiable, Equatable {
@@ -262,7 +358,7 @@ struct MacConversation: Decodable, Identifiable, Equatable {
     var permissionLabel: String {
         switch mode {
         case "plan": return "Plan mode"
-        case "bypass": return "Full access"
+        case "bypass": return "Bypass approvals"
         case "accept-edits": return "Accept edits"
         case "auto": return "Automatic permissions"
         default: return "Ask before actions"

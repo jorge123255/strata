@@ -36,6 +36,9 @@ final class CompanionStore: ObservableObject {
     @Published private(set) var isLoadingBots = false
     @Published private(set) var creatingBotConversationId: String?
     @Published private(set) var savingBotAvatarId: String?
+    @Published private(set) var savingBotProfile = false
+    @Published private(set) var botProfileError: String?
+    private var botProfileOperation: UUID?
     var isWorking: Bool { isSending || currentConversation?.active == true }
     var isLegacyConversation: Bool { currentChatId != nil }
     private var hasChosenConversation = false
@@ -90,7 +93,7 @@ final class CompanionStore: ObservableObject {
     }
 
     func supportedBotEfforts(_ bot: CompanionBot) async -> [String] {
-        guard let client, bot.provider != "configured" else { return [] }
+        guard let client, bot.provider != "configured", bot.execution.kind != "ssh" else { return [] }
         let generation = connectionGeneration
         do {
             let catalog = try await client.botProviderModels(bot.provider)
@@ -99,8 +102,48 @@ final class CompanionStore: ObservableObject {
         } catch { return [] }
     }
 
+    func botModels(provider: String) async -> BotProviderModels? {
+        guard let client else { return nil }
+        let generation = connectionGeneration
+        do {
+            let result = try await client.botProviderModels(provider)
+            guard connectionGeneration == generation, !Task.isCancelled else { return nil }
+            return result
+        } catch { return nil }
+    }
+
+    func clearBotProfileError() { botProfileError = nil }
+
+    func saveBotProfile(_ draft: BotProfileDraft, original: CompanionBot?, expectedPairingGeneration: UUID) async -> CompanionBot? {
+        guard connectionGeneration == expectedPairingGeneration, let client, let catalog = botCatalog, !savingBotProfile, savingBotAvatarId == nil,
+              status?.hostConnected == true else { return nil }
+        let generation = connectionGeneration, operation = UUID()
+        botProfileOperation = operation; savingBotProfile = true; botProfileError = nil
+        // A catalog read started before the write must not replace its result.
+        botsRequest = nil; isLoadingBots = false
+        defer {
+            if connectionGeneration == generation, botProfileOperation == operation {
+                savingBotProfile = false; botProfileOperation = nil
+            }
+        }
+        do {
+            let body = try draft.validated(in: catalog, original: original)
+            if let original, !CompanionClient.isSafeIdentifier(original.id) { throw CompanionError.server("Choose a saved bot.") }
+            let path = original.map { "/v1/bots/" + $0.id } ?? "/v1/bots"
+            let result: BotProfileSaveResult = try await client.perform(path, method: original == nil ? "POST" : "PATCH", jsonBody: body)
+            guard connectionGeneration == generation, botProfileOperation == operation else { return nil }
+            botsRequest = nil; isLoadingBots = false
+            botCatalog = result.catalog; botsMessage = result.catalog.reason
+            return result.bot
+        } catch is CancellationError { return nil }
+        catch {
+            if connectionGeneration == generation, botProfileOperation == operation { botProfileError = friendly(error) }
+            return nil
+        }
+    }
+
     func saveBotAvatar(botId: String, avatar: AvatarConfig) async -> Bool {
-        guard let client, botCatalog?.bots.contains(where: { $0.id == botId }) == true, savingBotAvatarId == nil else { return false }
+        guard let client, botCatalog?.bots.contains(where: { $0.id == botId }) == true, savingBotAvatarId == nil, !savingBotProfile else { return false }
         let generation = connectionGeneration
         savingBotAvatarId = botId; error = nil
         defer { if connectionGeneration == generation { savingBotAvatarId = nil } }
@@ -118,7 +161,7 @@ final class CompanionStore: ObservableObject {
     }
 
     func pair(url: String, code: String, fingerprint: String) async {
-        guard !isLoading, !isSending, !isSubmittingMessage, !isModelDownloadBusy, creatingBotConversationId == nil else { return }
+        guard !isLoading, !isSending, !isSubmittingMessage, !isModelDownloadBusy, creatingBotConversationId == nil, !savingBotProfile else { return }
         let operation = beginLoading()
         let generation = connectionGeneration
         error = nil
@@ -277,8 +320,9 @@ final class CompanionStore: ObservableObject {
         }
     }
 
-    func refreshBots() async {
-        guard let client, isPaired, botsRequest == nil else { return }
+    @discardableResult
+    func refreshBots() async -> Bool {
+        guard let client, isPaired, botsRequest == nil, !savingBotProfile else { return false }
         let generation = connectionGeneration
         let request = UUID()
         botsRequest = request; isLoadingBots = true
@@ -287,16 +331,18 @@ final class CompanionStore: ObservableObject {
         }
         do {
             let result: CompanionBots = try await client.perform("/v1/bots")
-            guard connectionGeneration == generation, botsRequest == request else { return }
+            guard connectionGeneration == generation, botsRequest == request else { return false }
             if botCatalog != result { botCatalog = result }
             botsMessage = result.reason
-        } catch is CancellationError { }
+            return true
+        } catch is CancellationError { return false }
         catch {
-            guard connectionGeneration == generation, botsRequest == request else { return }
+            guard connectionGeneration == generation, botsRequest == request else { return false }
             if let http = error as? CompanionHTTPError, http.isUnsupported {
                 botCatalog = nil
                 botsMessage = "Update Strata on your Mac to use Bots on your iPhone."
             } else { botsMessage = friendly(error) }
+            return false
         }
     }
 
@@ -305,12 +351,33 @@ final class CompanionStore: ObservableObject {
         return conversations.filter { $0.botId == bot.id || ids.contains($0.id) }
     }
 
+    var currentBotMood: BotMood {
+        let paused = botCatalog?.bots.first { $0.id == currentConversation?.botId }?.paused == true
+        return BotAvatarState.mood(conversation: currentConversation, pending: pendingApprovals, paused: paused)
+    }
+
+    func botMood(_ bot: CompanionBot) -> BotMood {
+        let active = botIsWorking(bot)
+        if currentConversation?.botId == bot.id, currentConversation?.active == true || !active {
+            return BotAvatarState.mood(conversation: currentConversation, pending: pendingApprovals, paused: bot.paused == true)
+        }
+        return bot.paused == true ? .paused : active ? .working : .idle
+    }
+
+    func botIsWorking(_ bot: CompanionBot) -> Bool {
+        bot.active == true || botConversations(bot).contains { $0.id != currentConversation?.id && $0.active } || (currentConversation?.botId == bot.id && currentConversation?.active == true)
+    }
+
     @discardableResult
-    func newBotConversation(_ bot: CompanionBot, computerId: String? = nil, modelId: String? = nil, workspace: String? = nil, effort: String? = nil) async -> Bool {
+    func newBotConversation(_ bot: CompanionBot, computerId: String? = nil, modelId: String? = nil, workspace: String? = nil, effort: String? = nil, policy: BotApprovalPolicy? = nil) async -> Bool {
         guard let client, let currentBot = botCatalog?.bots.first(where: { $0.id == bot.id }),
-              !isSending, !isSubmittingMessage, creatingBotConversationId == nil else { return false }
+              !isSending, !isSubmittingMessage, creatingBotConversationId == nil, !savingBotProfile else { return false }
         if currentBot.paused == true { error = "This bot is paused. Resume it in Strata on your Mac."; return false }
         var options: [String: String] = [:]
+        if let policy {
+            guard botCatalog?.lifecycleSupported == true else { error = "Update Strata on your Mac to choose approvals for a new conversation."; return false }
+            options["policy"] = policy.rawValue
+        }
         if let effort {
             guard effort.range(of: "^[A-Za-z0-9_-]{0,40}$", options: .regularExpression) != nil else { error = "Choose an effort supported by this model."; return false }
             options["effort"] = effort
@@ -369,6 +436,7 @@ final class CompanionStore: ObservableObject {
     }
 
     private func clearBots() {
+        botProfileOperation = nil; savingBotProfile = false; botProfileError = nil
         savingBotAvatarId = nil
         botsRequest = nil; isLoadingBots = false; botCatalog = nil; botsMessage = nil; creatingBotConversationId = nil
     }
@@ -658,7 +726,7 @@ final class CompanionStore: ObservableObject {
 
     func disconnect() async {
         guard let client else { return }
-        guard !isSending, !isSubmittingMessage, !isModelDownloadBusy, creatingBotConversationId == nil else { error = "Wait for the current request before disconnecting."; return }
+        guard !isSending, !isSubmittingMessage, !isModelDownloadBusy, creatingBotConversationId == nil, !savingBotProfile else { error = "Wait for the current request before disconnecting."; return }
         let generation = connectionGeneration
         do {
             // Revoke on the Mac before deleting the local credential.
@@ -670,7 +738,7 @@ final class CompanionStore: ObservableObject {
     }
 
     func forgetMac() {
-        guard !isSending, !isSubmittingMessage, !isModelDownloadBusy, creatingBotConversationId == nil else { error = "Wait for the current request before forgetting this Mac."; return }
+        guard !isSending, !isSubmittingMessage, !isModelDownloadBusy, creatingBotConversationId == nil, !savingBotProfile else { error = "Wait for the current request before forgetting this Mac."; return }
         do {
             try deleteConnection()
             clearConnection()

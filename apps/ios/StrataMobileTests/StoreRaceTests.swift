@@ -1310,3 +1310,171 @@ final class BotWorkspaceTests: XCTestCase {
         XCTAssertTrue(store.isPaired)
     }
 }
+
+
+@MainActor
+final class BotLifecycleTests: XCTestCase {
+    private static var catalog: [String: Any] {
+        ["lifecycleSupported": true, "selectionSupported": true, "defaultWorkspace": "/fixture", "bots": [bot],
+         "providers": [["id": "codex", "name": "Codex", "available": true, "detail": "Ready"], ["id": "configured", "name": "Configured", "available": true, "detail": "Saved models"]],
+         "computers": [["id": "local", "name": "Mac", "kind": "local", "available": true, "detail": "Ready"], ["id": "ssh_offline", "name": "Offline saved computer", "kind": "ssh", "available": false, "detail": "Set up on Mac"]],
+         "models": [["id": "bm_saved", "name": "Saved model", "connectionName": "Separate API", "model": "provider/exact-model", "available": true]]]
+    }
+    private static var bot: [String: Any] {
+        ["id": "bot_coder", "name": "Coder", "provider": "codex", "model": "", "computerId": "local", "workspace": "/fixture", "instructions": "Check the requested change.", "policy": "manual", "capabilities": "code", "computerMode": "host", "execution": ["kind": "local"], "updatedAt": "2026-10-21T00:00:00.000Z"]
+    }
+    private func decode<T: Decodable>(_ value: Any, as: T.Type) throws -> T { try JSONDecoder().decode(T.self, from: JSONSerialization.data(withJSONObject: value)) }
+    private func draft() -> BotProfileDraft {
+        var value = BotProfileDraft(); value.name = "Phone bot"; value.provider = "codex"; value.computerId = "local"; value.workspace = "/fixture"
+        return value
+    }
+    private func saved(_ bot: [String: Any]) -> [String: Any] { var value = Self.catalog; value["bots"] = [bot]; value["bot"] = bot; return value }
+
+    func testIdleDraftDefaultsToAskAndAcceptsSavedOfflineComputerWithoutExecutionOrCredentials() throws {
+        let catalog = try decode(Self.catalog, as: CompanionBots.self)
+        var value = draft(); value.computerId = "ssh_offline"; value.workspace = "/srv/project"
+        let checked = try value.validated(in: catalog, original: nil)
+        XCTAssertEqual(checked.policy, .manual)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(checked)) as? [String: Any])
+        XCTAssertNil(json["expectedUpdatedAt"]); XCTAssertNil(json["execution"]); XCTAssertNil(json["providerSettings"]); XCTAssertNil(json["apiKey"])
+        XCTAssertEqual(json["computerId"] as? String, "ssh_offline")
+    }
+
+    func testConfiguredDraftSendsExactSavedModelIdentity() throws {
+        var value = draft(); value.provider = "configured"; value.modelId = "bm_saved"; value.model = "old native model"; value.effort = "high"
+        let checked = try value.validated(in: decode(Self.catalog, as: CompanionBots.self), original: nil)
+        XCTAssertEqual(checked.model, "provider/exact-model"); XCTAssertEqual(checked.modelId, "bm_saved"); XCTAssertNil(checked.effort)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(checked)) as? [String: Any])
+        XCTAssertEqual(json["model"] as? String, "provider/exact-model"); XCTAssertNil(json["modelSource"])
+    }
+
+    func testMissingSavedSelectionsAndOlderMacCannotSaveDraft() throws {
+        var value = draft(); let catalog = try decode(Self.catalog, as: CompanionBots.self)
+        value.computerId = "removed"; XCTAssertThrowsError(try value.validated(in: catalog, original: nil))
+        value.computerId = "local"; value.provider = "configured"; value.modelId = "removed"; XCTAssertThrowsError(try value.validated(in: catalog, original: nil))
+        var old = catalog; old.lifecycleSupported = nil; value = draft(); XCTAssertThrowsError(try value.validated(in: old, original: nil))
+        value.computerMode = "cua"; XCTAssertThrowsError(try value.validated(in: catalog, original: nil)); value.workspace = "/workspace"; XCTAssertNoThrow(try value.validated(in: catalog, original: nil))
+    }
+
+    func testCreateProfileUsesOnlyManagementEndpointAndLeavesSelectedHistoryUntouched() async throws {
+        let transport = StoreTransport(); defer { transport.close() }
+        var created = Self.bot; created["id"] = "bot_new"; created["name"] = "Phone bot"
+        transport.respond { request in request.url!.path == "/v1/bots" ? (request.httpMethod == "POST" ? self.saved(created) : Self.catalog) : nil }
+        let store = transport.makeStore(); await store.refresh(); await store.refreshBots()
+        let result = await store.saveBotProfile(draft(), original: nil, expectedPairingGeneration: store.pairingGeneration)
+        XCTAssertEqual(result?.id, "bot_new"); XCTAssertEqual(store.botCatalog?.bots.first?.id, "bot_new"); XCTAssertNil(store.currentConversation)
+        XCTAssertEqual(transport.requests.filter { $0.method != "GET" }.map(\.path), ["/v1/bots"])
+        XCTAssertEqual(transport.requests.last?.jsonBody?["policy"] as? String, "manual")
+    }
+
+    func testStaleCatalogCannotReplaceSuccessfulProfileSave() async throws {
+        let transport = StoreTransport(); defer { transport.close() }
+        var created = Self.bot; created["name"] = "New result"
+        transport.respond { request in request.url!.path == "/v1/bots" ? (request.httpMethod == "POST" ? self.saved(created) : Self.catalog) : nil }
+        let store = transport.makeStore(); await store.refresh(); await store.refreshBots()
+        let pending = transport.hold("/v1/bots"), read = Task { await store.refreshBots() }
+        await fulfillment(of: [pending.requested], timeout: 2); transport.release("/v1/bots")
+        let result = await store.saveBotProfile(draft(), original: nil, expectedPairingGeneration: store.pairingGeneration); XCTAssertNotNil(result)
+        pending.finish(Self.catalog); await read.value
+        XCTAssertEqual(store.botCatalog?.bots.first?.name, "New result")
+    }
+
+    func testStaleEditSendsOriginalVersionOnceAndRetainsDraftForExplicitReload() async throws {
+        let transport = StoreTransport(); defer { transport.close() }
+        transport.respond { request in request.url!.path == "/v1/bots" ? Self.catalog : nil }
+        let store = transport.makeStore(); await store.refresh(); await store.refreshBots()
+        let original = try XCTUnwrap(store.botCatalog?.bots.first); var value = BotProfileDraft(bot: original); value.policy = .bypass
+        let pending = transport.hold("/v1/bots/bot_coder"), save = Task { await store.saveBotProfile(value, original: original, expectedPairingGeneration: store.pairingGeneration) }
+        await fulfillment(of: [pending.requested], timeout: 2)
+        pending.finish(["error": "Profile changed. Refresh and review."], status: 409)
+        let result = await save.value; XCTAssertNil(result)
+        let writes = transport.requests.filter { $0.method == "PATCH" }
+        XCTAssertEqual(writes.count, 1); XCTAssertEqual(writes[0].jsonBody?["expectedUpdatedAt"] as? String, original.updatedAt)
+        XCTAssertEqual(store.botCatalog?.bots.first?.policy, "manual"); XCTAssertNotNil(store.botProfileError)
+        XCTAssertFalse(transport.requests.contains { $0.path.contains("approve") || $0.path.contains("messages") })
+        var fresh = Self.bot; fresh["provider"] = "configured"; fresh["modelId"] = "bm_saved"; fresh["model"] = "provider/exact-model"; fresh["effort"] = "high"
+        let restored = BotProfileDraft(bot: try decode(fresh, as: CompanionBot.self))
+        XCTAssertEqual(restored.modelId, "bm_saved"); XCTAssertEqual(restored.model, "provider/exact-model"); XCTAssertEqual(restored.effort, "high")
+    }
+
+    func testNewConversationPolicyOverrideIsExplicitAndOldHostNeverReceivesIt() async throws {
+        let transport = StoreTransport(); defer { transport.close() }
+        var response = StoreTransport.detail(active: false); var chat = response["conversation"] as! [String: Any]; chat["mode"] = "bypass"; response["conversation"] = chat
+        transport.respond { request in request.url!.path == "/v1/bots" ? Self.catalog : request.url!.path.hasSuffix("/conversations") && request.httpMethod == "POST" ? response : nil }
+        let store = transport.makeStore(); await store.refresh(); await store.refreshBots(); let bot = try XCTUnwrap(store.botCatalog?.bots.first)
+        let created = await store.newBotConversation(bot, policy: .bypass); XCTAssertTrue(created)
+        XCTAssertEqual(transport.requests.first { $0.method == "POST" }?.body, ["policy": "bypass"]); XCTAssertEqual(store.currentConversation?.mode, "bypass")
+        var old = Self.catalog; old["lifecycleSupported"] = false
+        transport.respond { request in request.url!.path == "/v1/bots" ? old : nil }; await store.refreshBots()
+        let count = transport.requests.filter { $0.method == "POST" }.count
+        let denied = await store.newBotConversation(bot, policy: .plan); XCTAssertFalse(denied)
+        XCTAssertEqual(transport.requests.filter { $0.method == "POST" }.count, count)
+    }
+
+    func testProfileMutationCannotBeForgottenWhilePending() async throws {
+        let transport = StoreTransport(); defer { transport.close() }
+        transport.respond { request in request.url!.path == "/v1/bots" ? Self.catalog : nil }
+        let store = transport.makeStore(); await store.refresh(); await store.refreshBots(); let pending = transport.hold("/v1/bots")
+        let save = Task { await store.saveBotProfile(self.draft(), original: nil, expectedPairingGeneration: store.pairingGeneration) }; await fulfillment(of: [pending.requested], timeout: 2)
+        store.forgetMac(); XCTAssertTrue(store.isPaired); XCTAssertEqual(transport.deletedConnections, 0)
+        pending.finish(saved(Self.bot)); _ = await save.value; XCTAssertFalse(store.savingBotProfile)
+    }
+
+    func testQueuedOldPairDraftCannotPostToNewPairWithMatchingCatalogIDs() async throws {
+        let oldTransport = StoreTransport(), newTransport = StoreTransport()
+        defer { oldTransport.close(); newTransport.close() }
+        let oldStore = oldTransport.makeStore(), capturedPairing = oldStore.pairingGeneration
+        newTransport.respond { request in request.url!.path == "/v1/bots" ? Self.catalog : nil }
+        let newStore = newTransport.makeStore(); await newStore.refresh(); await newStore.refreshBots()
+        let queuedDraft = draft()
+        let queued = Task { await newStore.saveBotProfile(queuedDraft, original: nil, expectedPairingGeneration: capturedPairing) }
+        let result = await queued.value
+        XCTAssertNil(result)
+        XCTAssertTrue(newStore.isPaired); XCTAssertNotEqual(newStore.pairingGeneration, capturedPairing)
+        XCTAssertFalse(newTransport.requests.contains { $0.method != "GET" })
+    }
+
+    func testFailedFreshCatalogReadDoesNotReportReloadSuccessOrReplaceSnapshot() async throws {
+        let transport = StoreTransport(); defer { transport.close() }
+        transport.respond { request in request.url!.path == "/v1/bots" ? Self.catalog : nil }
+        let store = transport.makeStore(); await store.refresh(); await store.refreshBots()
+        let previous = store.botCatalog, pending = transport.hold("/v1/bots")
+        let refreshing = Task { await store.refreshBots() }
+        await fulfillment(of: [pending.requested], timeout: 2)
+        pending.finish(["error": "Fixture offline"], status: 503)
+        let refreshed = await refreshing.value
+        XCTAssertFalse(refreshed); XCTAssertEqual(store.botCatalog, previous)
+        XCTAssertFalse(store.botsMessage?.isEmpty ?? true)
+    }
+
+    func testAvatarStatesUseConversationApprovalAndResultsNotComputerPower() throws {
+        var value = StoreTransport.detail(active: true, toolState: "proposed")
+        let chat = try decode(value["conversation"]!, as: MacConversation.self), pending = try decode(value["pending"]!, as: [MacToolActivity].self)
+        XCTAssertEqual(BotAvatarState.mood(conversation: chat, pending: pending), .needsApproval)
+        XCTAssertEqual(BotAvatarState.mood(conversation: chat, pending: [], paused: true), .paused)
+        value = StoreTransport.detail(active: true, toolState: "running")
+        XCTAssertEqual(BotAvatarState.mood(conversation: try decode(value["conversation"]!, as: MacConversation.self), pending: []), .working)
+        value = StoreTransport.detail(active: true); var raw = value["conversation"] as! [String: Any]; raw["messages"] = [["id": "reply", "role": "assistant", "content": "", "reasoning": "Checking", "streaming": true]]
+        XCTAssertEqual(BotAvatarState.mood(conversation: try decode(raw, as: MacConversation.self), pending: []), .thinking)
+        raw["active"] = false; raw["messages"] = [["id": "reply", "role": "assistant", "content": "Ready"]]
+        XCTAssertEqual(BotAvatarState.mood(conversation: try decode(raw, as: MacConversation.self), pending: []), .done)
+        raw["messages"] = [["id": "reply", "role": "assistant", "content": "", "error": "Failed"]]
+        XCTAssertEqual(BotAvatarState.mood(conversation: try decode(raw, as: MacConversation.self), pending: []), .error)
+        XCTAssertEqual(BotAvatarState.mood(conversation: nil, pending: []), .idle)
+    }
+
+    func testDisabledMotionIsStaticAndArrivalDoesNotFlourishForEveryToken() throws {
+        for mood in BotMood.allCases {
+            XCTAssertEqual(AvatarMotionSample.sample(mood: mood, time: 123.4, enabled: false), AvatarMotionSample())
+        }
+        XCTAssertFalse(KoalaAvatar(AvatarConfig()).animated, "Roster defaults use no frame clock.")
+        XCTAssertNotEqual(AvatarMotionSample.sample(mood: .working, time: 1, enabled: true), AvatarMotionSample())
+        var first = StoreTransport.detail(active: true)["conversation"] as! [String: Any]
+        first["messages"] = [["id": "reply", "role": "assistant", "content": "A", "streaming": true]]
+        let a = BotAvatarState.flourish(conversation: try decode(first, as: MacConversation.self))
+        first["messages"] = [["id": "reply", "role": "assistant", "content": "AB", "streaming": true]]
+        XCTAssertEqual(a, BotAvatarState.flourish(conversation: try decode(first, as: MacConversation.self)))
+        first["active"] = false; first["messages"] = [["id": "reply", "role": "assistant", "content": "AB", "streaming": false]]
+        XCTAssertNotEqual(a, BotAvatarState.flourish(conversation: try decode(first, as: MacConversation.self)))
+    }
+}

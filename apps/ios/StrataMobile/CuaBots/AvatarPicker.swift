@@ -13,16 +13,20 @@ public struct AvatarBadge: View {
     public var mood: BotMood
     public var size: CGFloat
     public var editable: Bool
+    public var animated: Bool
+    public var flourishToken: String
 
-    public init(_ avatar: AvatarConfig, mood: BotMood = .idle, size: CGFloat, editable: Bool = false) {
+    public init(_ avatar: AvatarConfig, mood: BotMood = .idle, size: CGFloat, editable: Bool = false, animated: Bool = false, flourishToken: String = "") {
         self.avatar = avatar
         self.mood = mood
         self.size = size
         self.editable = editable
+        self.animated = animated
+        self.flourishToken = flourishToken
     }
 
     public var body: some View {
-        KoalaAvatar(avatar, mood: mood)
+        ExpressiveBotAvatar(config: avatar, size: size, mood: mood, animated: animated, flourishToken: flourishToken)
             .frame(width: size, height: size)
             .overlay(alignment: .bottomTrailing) {
                 if editable {

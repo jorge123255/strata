@@ -17,6 +17,7 @@
 		38FB4A58BEB38DE9CAE1651E /* BotWorkspaceViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEA3E422BC28DEAA0435D70A /* BotWorkspaceViews.swift */; };
 		3BC9A744F1A9FB886EAC7AA1 /* ModelsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81DA49FE4380C675E397AF6D /* ModelsView.swift */; };
 		4D9C963E28DB3BD3F639EA37 /* PairingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B873E16871EAA80E94A49E3F /* PairingTests.swift */; };
+		54BF8097CA8C353CA0521FF8 /* BotProfileEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 400192E91651D62BBEF69DA8 /* BotProfileEditor.swift */; };
 		57FBEF1B0FBD00F25E2F03EB /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B70947875E2884785A789C47 /* Assets.xcassets */; };
 		64A1A952A5B6D2FA1FB32286 /* QRScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2039E6C0B84C032D88C64AE /* QRScannerView.swift */; };
 		701219961DE67C41EDC4EF88 /* BotComputerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1CD333D8FB83B599C757ED90 /* BotComputerView.swift */; };
@@ -68,6 +69,7 @@
 		32556F71F05DB037CC51141D /* Components.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Components.swift; sourceTree = "<group>"; };
 		37F1F34CF3BDA01A86F47075 /* MacThinkingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacThinkingView.swift; sourceTree = "<group>"; };
 		38373B4B3DA9939161CEA1F2 /* StrataMobile.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = StrataMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		400192E91651D62BBEF69DA8 /* BotProfileEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotProfileEditor.swift; sourceTree = "<group>"; };
 		418206B836C06B84AAE0F261 /* BotComputerSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotComputerSession.swift; sourceTree = "<group>"; };
 		49C61200D469B81D7402D0E1 /* StoreRaceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoreRaceTests.swift; sourceTree = "<group>"; };
 		5851392661A0FA86A4C30E57 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -173,6 +175,7 @@
 			isa = PBXGroup;
 			children = (
 				1CD333D8FB83B599C757ED90 /* BotComputerView.swift */,
+				400192E91651D62BBEF69DA8 /* BotProfileEditor.swift */,
 				7CE64DDD0C439FA09FD1F543 /* BotsView.swift */,
 				BEA3E422BC28DEAA0435D70A /* BotWorkspaceViews.swift */,
 				C2CC74861FF7D89BCF70ADAA /* ChatView.swift */,
@@ -343,6 +346,7 @@
 				196B170CECE3E14AED2E7EF3 /* BotAvatar.swift in Sources */,
 				1444351F3208C9E1DC99F2C8 /* BotComputerSession.swift in Sources */,
 				701219961DE67C41EDC4EF88 /* BotComputerView.swift in Sources */,
+				54BF8097CA8C353CA0521FF8 /* BotProfileEditor.swift in Sources */,
 				EC729329FE30A565197A4F07 /* BotWorkspaceModels.swift in Sources */,
 				BBC970F9110CD57FAF6A5338 /* BotWorkspaceStore.swift in Sources */,
 				38FB4A58BEB38DE9CAE1651E /* BotWorkspaceViews.swift in Sources */,
@@ -412,7 +416,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 11;
+				CURRENT_PROJECT_VERSION = 12;
 				INFOPLIST_FILE = StrataMobile/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -430,7 +434,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 11;
+				CURRENT_PROJECT_VERSION = 12;
 				INFOPLIST_FILE = StrataMobile/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Cua AI, Inc.
 
 import SwiftUI
+import UIKit
 
 // MARK: - Configuration
 
@@ -205,6 +206,85 @@ public enum BotMood: String, Codable, Sendable, CaseIterable {
 
     /// Whether the avatar needs a clock (a blink, a glance or a spin).
     public var isAnimated: Bool { self == .idle || self == .thinking || self == .working }
+    public var label: String { self == .needsApproval ? "Needs approval" : self == .done ? "Reply ready" : rawValue.capitalized }
+}
+
+/// Motion belongs to a visible, focused avatar. Static roster faces use no clock.
+struct AvatarMotionSample: Equatable {
+    var lift: Double = 0
+    var scale: Double = 1
+    var tilt: Double = 0
+    static func sample(mood: BotMood, time: Double, enabled: Bool) -> Self {
+        guard enabled else { return Self() }
+        switch mood {
+        case .working: return Self(lift: sin(time * 2.4) * -1.8, scale: 1 + sin(time * 3.1) * 0.025, tilt: sin(time * 1.5) * 1.7)
+        case .thinking: return Self(lift: sin(time * 1.2) * -0.7, scale: 1, tilt: sin(time * 0.8) * 2)
+        default: return Self()
+        }
+    }
+}
+
+struct BotAvatarState {
+    static func mood(conversation: MacConversation?, pending: [MacToolActivity], paused: Bool = false) -> BotMood {
+        if !pending.isEmpty { return .needsApproval }
+        if paused { return .paused }
+        guard let conversation else { return .idle }
+        let reply = conversation.messages.last { $0.role == "assistant" }
+        if conversation.active {
+            if reply?.isThinkingInProgress == true { return .thinking }
+            if conversation.messages.contains(where: { $0.tools?.contains(where: \.isRunning) == true }) { return .working }
+            return reply?.streaming == true && reply?.content.isEmpty == false ? .working : .thinking
+        }
+        if reply?.error?.isEmpty == false { return .error }
+        return reply?.content.isEmpty == false ? .done : .idle
+    }
+
+    static func flourish(conversation: MacConversation?) -> String {
+        guard let conversation, let reply = conversation.messages.last(where: { $0.role == "assistant" }) else { return "" }
+        return conversation.id + ":" + reply.id + (conversation.active || reply.streaming == true ? ":working" : ":arrived")
+    }
+}
+
+struct ExpressiveBotAvatar: View {
+    var config: AvatarConfig
+    var size: CGFloat
+    var mood: BotMood = .idle
+    var animated = false
+    var interactive = false
+    var flourishToken = ""
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var interaction = 0
+
+    var body: some View {
+        Group {
+            if interactive {
+                Button { interaction += 1; UIImpactFeedbackGenerator(style: .soft).impactOccurred() } label: { face.frame(minWidth: 44, minHeight: 44) }
+                    .buttonStyle(.plain).accessibilityLabel("Animate bot avatar").accessibilityValue(mood.label)
+                    .accessibilityIdentifier("animateBotAvatarButton")
+            } else { face }
+        }
+    }
+
+    private var face: some View {
+        KoalaAvatar(config, mood: mood, animated: animated && scenePhase == .active)
+            .frame(width: size, height: size)
+            .modifier(AvatarFlourish(trigger: flourishToken + ":" + String(interaction), enabled: !reduceMotion && scenePhase == .active))
+    }
+}
+
+private struct AvatarFlourish: ViewModifier {
+    var trigger: String
+    var enabled: Bool
+    func body(content: Content) -> some View {
+        if enabled {
+            content.phaseAnimator([0, 1, 2], trigger: trigger) { view, phase in
+                view.scaleEffect(x: phase == 1 ? 1.10 : phase == 2 ? 0.98 : 1, y: phase == 1 ? 0.92 : phase == 2 ? 1.04 : 1)
+                    .rotationEffect(.degrees(phase == 1 ? -6 : phase == 2 ? 2 : 0))
+                    .offset(y: phase == 1 ? -2 : 0)
+            } animation: { phase in .spring(response: phase == 1 ? 0.22 : 0.34, dampingFraction: 0.68) }
+        } else { content }
+    }
 }
 
 // MARK: - Drawing
@@ -213,19 +293,20 @@ public enum BotMood: String, Codable, Sendable, CaseIterable {
 /// type-mark eyes. Flat fills only: no outline, gradient or shadow.
 public struct KoalaAvatar: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
     public var config: AvatarConfig
     public var mood: BotMood
     public var animated: Bool
 
-    public init(_ config: AvatarConfig, mood: BotMood = .idle, animated: Bool = true) {
+    public init(_ config: AvatarConfig, mood: BotMood = .idle, animated: Bool = false) {
         self.config = config
         self.mood = mood
         self.animated = animated
     }
 
     public var body: some View {
-        if animated && mood.isAnimated && !reduceMotion {
-            TimelineView(.periodic(from: .now, by: 0.1)) { context in
+        if animated && mood.isAnimated && !reduceMotion && scenePhase == .active {
+            TimelineView(.animation(minimumInterval: 1 / 18)) { context in
                 canvas(t: context.date.timeIntervalSinceReferenceDate)
             }
         } else {
@@ -234,10 +315,12 @@ public struct KoalaAvatar: View {
     }
 
     private func canvas(t: Double) -> some View {
-        Canvas { ctx, size in
+        let motion = AvatarMotionSample.sample(mood: mood, time: t, enabled: animated && !reduceMotion && scenePhase == .active)
+        return Canvas { ctx, size in
             KoalaRenderer.draw(in: &ctx, size: size, config: config, mood: mood, t: t)
         }
         .aspectRatio(1, contentMode: .fit)
+        .offset(y: motion.lift).scaleEffect(motion.scale).rotationEffect(.degrees(motion.tilt))
         .accessibilityLabel("\(config.color.name) \(config.kind.rawValue), \(mood == .needsApproval ? "needs approval" : mood.rawValue)")
     }
 }
@@ -297,9 +380,12 @@ public enum KoalaRenderer {
         // Working: the plus eyes rock between +15 and -15 degrees, a snap
         // then a hold, as in the koala design; they never pass 45 (an x).
         let spin = mood == .working ? (t.truncatingRemainder(dividingBy: 1.2) < 0.6 ? 15.0 : -15.0) : 0
-        drawEye(pair.left, at: KoalaGeometry.leftEye, in: &inner, unit: unit,
+        let gaze = mood == .thinking || mood == .idle ? sin(t * 0.72) * 0.035 : 0
+        let leftEye = (x: KoalaGeometry.leftEye.x + gaze, y: KoalaGeometry.leftEye.y, squash: KoalaGeometry.leftEye.squash)
+        let rightEye = (x: KoalaGeometry.rightEye.x + gaze, y: KoalaGeometry.rightEye.y, squash: KoalaGeometry.rightEye.squash)
+        drawEye(pair.left, at: leftEye, in: &inner, unit: unit,
                 color: config.color.eye, spin: spin)
-        drawEye(right, at: KoalaGeometry.rightEye, in: &inner, unit: unit,
+        drawEye(right, at: rightEye, in: &inner, unit: unit,
                 color: config.color.eye, spin: spin)
     }
 

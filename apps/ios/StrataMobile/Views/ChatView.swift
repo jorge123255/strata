@@ -58,7 +58,9 @@ struct ChatView: View {
         HStack(alignment: .top, spacing: 9) {
             Group {
                 if value.botId != nil {
-                    BotAvatarView(avatar: value.botAvatar ?? "🤖", size: 32, config: value.botAvatarConfig ?? conversationBot?.avatarConfig, name: conversationBotName ?? "Bot")
+                    BotAvatarView(avatar: value.botAvatar ?? "🤖", size: 36, config: value.botAvatarConfig ?? conversationBot?.avatarConfig,
+                                  name: conversationBotName ?? "Bot", mood: store.currentBotMood, animated: true, interactive: true,
+                                  flourishToken: BotAvatarState.flourish(conversation: value))
                 } else { Image(systemName: "desktopcomputer").font(.subheadline).frame(width: 32, height: 32).background(StrataTheme.grouped, in: RoundedRectangle(cornerRadius: 10)) }
             }.foregroundStyle(StrataTheme.ink)
             VStack(alignment: .leading, spacing: 3) {
