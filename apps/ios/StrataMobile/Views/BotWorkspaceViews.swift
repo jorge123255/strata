@@ -147,7 +147,7 @@ private struct BotTeamDetailView: View {
                             }
                         }.padding(.vertical, 4)
                         Button { settingsExpanded.toggle() } label: {
-                            HStack { Text("Team settings"); Spacer(); Image(systemName: settingsExpanded ? "chevron.up" : "chevron.down") }
+                            HStack { Text("Team settings"); Spacer(); Image(systemName: settingsExpanded ? "chevron.up" : "chevron.down") }.contentShape(Rectangle())
                         }.buttonStyle(.plain).accessibilityIdentifier("botTeamSettingsDisclosure")
                         if settingsExpanded { teamSettings(team) }
                     }
@@ -176,7 +176,7 @@ private struct BotTeamDetailView: View {
                     }
                     Section {
                         Button { tasksExpanded.toggle() } label: {
-                            HStack { Text("Previous tasks"); Spacer(); Image(systemName: tasksExpanded ? "chevron.up" : "chevron.down") }
+                            HStack { Text("Previous tasks"); Spacer(); Image(systemName: tasksExpanded ? "chevron.up" : "chevron.down") }.contentShape(Rectangle())
                         }.buttonStyle(.plain).accessibilityIdentifier("botTeamPreviousTasksDisclosure")
                         if tasksExpanded {
                             ForEach(runs.filter { !$0.isActive }) { run in runRow(run) }
