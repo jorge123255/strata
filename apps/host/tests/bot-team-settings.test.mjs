@@ -26,3 +26,18 @@ test('shared execution needs an explicit computer and bounded full working-folde
   for (const workspace of ['', 'relative/project', '/bad\0folder', '/' + 'x'.repeat(4096)]) assert.match(botTeamDraftError({ ...draft, execution: { mode: 'shared', computerId: 'host:local', workspace } }, bots, computers), /full working folder/);
   assert.match(botTeamDraftError({ ...draft, coordinatorId: 'iris' }, bots, computers), /coordinator from this team/);
 });
+test('public team briefings validate exact selected members and UTF-16 per-field and aggregate bounds', () => {
+  const good = { instructions: 'Ship and review together.', members: [{ botId: 'bolt', role: 'Reviewer', instructions: 'Review Ava’s changes.' }] };
+  assert.equal(botTeamDraftError({ ...draft, briefing: good }, bots), null);
+  const error = briefing => botTeamDraftError({ ...draft, briefing }, bots);
+  assert.match(error({ ...good, members: [{ ...good.members[0], botId: 'iris' }] }), /selected teammates/);
+  assert.match(error({ ...good, members: [good.members[0], good.members[0]] }), /selected teammates/);
+  assert.match(error({ ...good, instructions: '😀'.repeat(4001) }), /8,000/);
+  assert.match(error({ ...good, members: [{ ...good.members[0], role: '😀'.repeat(61) }] }), /120/);
+  assert.match(error({ ...good, members: [{ ...good.members[0], instructions: 'x'.repeat(4001) }] }), /4,000/);
+  for (const instructions of ['bad\0text', '\ud800']) assert.ok(error({ ...good, instructions }));
+  const roster = Array.from({ length: 5 }, (_, i) => ({ id: `bot${i}` }));
+  const large = { ...draft, memberIds: roster.map(bot => bot.id), coordinatorId: 'bot0', briefing: { instructions: '界'.repeat(8000), members: roster.slice(0,4).map(bot => ({ botId: bot.id, role: '', instructions: '界'.repeat(4000) })) } };
+  assert.equal(botTeamDraftError(large, roster), null);
+  assert.match(botTeamDraftError({ ...large, briefing: { ...large.briefing, members: [...large.briefing.members, { botId: 'bot4', role: 'R', instructions: '' }] } }, roster), /24,000/);
+});

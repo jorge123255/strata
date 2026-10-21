@@ -9,9 +9,34 @@ import { join } from 'node:path';
 import { createBots, createBotRoutes } from '../../host/server/bots.mjs';
 import { createConversations } from '../../host/server/conversations.mjs';
 import { createBridge, HostClient } from '../bridge.mjs';
-import { botWorkspaceRequest, publicBotWorkspace } from '../bots-workspace.mjs';
+import { botWorkspaceRequest, publicBotWorkspace, handleBotWorkspace } from '../bots-workspace.mjs';
 
 const baseTeam={id:'team_fixture',name:'Fixture',memberIds:['bot_one','bot_two'],coordinatorId:'bot_one',enabled:true,revision:4,execution:{mode:'shared',computerId:'host:local',workspace:'/fixture/folder',secret:'PRIVATE_SETTING'}};
+test('paired public briefing schema is complete, roster-bound, bounded and excludes private profile data',()=>{
+ const briefing={instructions:'Work as one team.',members:[{botId:'bot_two',role:'Reviewer',instructions:'Review the changes.'}]};
+ const good={expectedRevision:4,memberIds:baseTeam.memberIds,briefing};
+ assert.equal(botWorkspaceRequest('/api/bots/teams/team_fixture','PATCH',good).kind,'team');
+ for(const bad of [{members:[]},{instructions:''},{...briefing,privateProfile:'PRIVATE'},{...briefing,members:[{...briefing.members[0],privateProfile:'PRIVATE'}]},{...briefing,members:[briefing.members[0],briefing.members[0]]},{...briefing,members:[{...briefing.members[0],botId:'outside'}]},{...briefing,instructions:'😀'.repeat(4001)},{...briefing,instructions:'\ud800'},{...briefing,members:[{...briefing.members[0],role:'x'.repeat(121)}]},{...briefing,members:[{...briefing.members[0],instructions:'x'.repeat(4001)}]}]) assert.throws(()=>botWorkspaceRequest('/api/bots/teams/team_fixture','PATCH',{...good,briefing:bad}),{status:403});
+ const projected=publicBotWorkspace({teams:[{...baseTeam,briefing:{...briefing,privateProfile:'PRIVATE_PROFILE',members:[{...briefing.members[0],providerSecret:'PRIVATE_KEY'}]}}],runs:[],teamInstructionsSupported:true},{kind:'teams'});
+ assert.deepEqual(projected.teams[0].briefing,briefing);assert.equal(projected.teamInstructionsSupported,true);assert.ok(!JSON.stringify(projected).includes('PRIVATE_'));
+ for(const bad of [null,{...briefing,members:[{...briefing.members[0],botId:'outside'}]},{...briefing,instructions:'x'.repeat(8001)}]) assert.equal(publicBotWorkspace({team:{...baseTeam,briefing:bad}},{kind:'team'}).team.briefing,undefined);
+ assert.equal(publicBotWorkspace({teams:[baseTeam],runs:[]},{kind:'teams'}).teamInstructionsSupported,undefined);
+});
+test('paired briefing mutations check host capability and current selected roster before forwarding',async()=>{
+ const memberIds=['bot_a','bot_b','bot_c','bot_d','bot_e'];
+ const briefing={instructions:'界'.repeat(8000),members:memberIds.slice(0,4).map(botId=>({botId,role:'',instructions:'界'.repeat(4000)}))};
+ const body={name:'Team',memberIds,coordinatorId:'bot_a',briefing};
+ assert.ok(Buffer.byteLength(JSON.stringify(body))>70000);
+ botWorkspaceRequest('/api/bots/teams','POST',body);
+ assert.throws(()=>botWorkspaceRequest('/api/bots/teams','POST',{...body,briefing:{...briefing,members:[...briefing.members,{botId:'bot_e',role:'X',instructions:''}]}}),{status:403});
+ let supported=false,mutations=0,readLimit=0,result;
+ const host={async json(path,options){if(options){mutations++;return {team:{...baseTeam,...body}}}return path==='/api/bots/teams'?{teams:[baseTeam],teamInstructionsSupported:supported}:{bots:memberIds.map(id=>({id}))}}};
+ const call=()=>handleBotWorkspace({path:'/v1/bots/teams',method:'POST',req:{headers:{}},res:{},session:{id:'fixture'},host,readBody:async(_req,max)=>{readLimit=max;return body},sendJSON:(_res,_status,value)=>{result=value},requireCurrentSession(){}});
+ await assert.rejects(call(),{status:409});assert.equal(mutations,0);
+ supported=true;assert.equal(await call(),true);assert.equal(mutations,1);assert.ok(readLimit>=Buffer.byteLength(JSON.stringify(body)));assert.deepEqual(result.team.briefing,briefing);
+ body.briefing={instructions:'Team',members:[{botId:'outside',role:'Reviewer',instructions:''}]};
+ await assert.rejects(call(),{status:400});assert.equal(mutations,1);
+});
 test('paired settings admission and projections preserve typed target/revision without raw target or provider data',()=>{
  const path='/api/bots/teams/team_fixture', good={expectedRevision:4,execution:{mode:'shared',computerId:'host:local',workspace:'/fixture/project'}};
  assert.equal(botWorkspaceRequest(path,'PATCH',good).kind,'team');
@@ -33,11 +58,11 @@ test('paired phone can save roster/shared Mac folder with revision conflict and 
  t.after(async()=>{await bridge.close();server.closeAllConnections();await new Promise(r=>server.close(r));await bots.close();chats.close();rmSync(directory,{recursive:true,force:true});});
  const ca=readFileSync(join(pairing,'server-cert.pem'));
  const request=(path,method='GET',body,token)=>new Promise((resolve,reject)=>{const req=https.request({hostname:'127.0.0.1',port:bridge.port,path,method,ca,agent:false,headers:{...(body===undefined?{}:{'content-type':'application/json'}),...(token?{authorization:`Bearer ${token}`}:{})}},res=>{let raw='';res.on('data',c=>raw+=c);res.on('end',()=>resolve({status:res.statusCode,json:JSON.parse(raw),raw}));});req.on('error',reject);req.end(body===undefined?undefined:JSON.stringify(body));});
- const endpoint=`/v1/bots/teams/${team.id}`,body={expectedRevision:1,memberIds:[a.id,b.id,c.id],coordinatorId:c.id,execution:{mode:'shared',computerId:'host:local',workspace:owner}};
+ const endpoint=`/v1/bots/teams/${team.id}`,body={expectedRevision:1,memberIds:[a.id,b.id,c.id],coordinatorId:c.id,execution:{mode:'shared',computerId:'host:local',workspace:owner},briefing:{instructions:'Keep work visible in this channel.',members:[{botId:b.id,role:'Builder',instructions:'Implement the assigned work.'},{botId:c.id,role:'Reviewer',instructions:'Review and report to the coordinator.'}]}};
  assert.equal((await request(endpoint,'PATCH',body)).status,401);assert.equal(hostReads,0);
  const paired=bridge.authority.pair(bridge.authority.code,'Settings fixture');const token=paired.token;
- const catalog=await request('/v1/bots/teams','GET',undefined,token);assert.equal(catalog.json.teamSettingsSupported,true);assert.ok(catalog.json.teamComputers.some(row=>row.id==='host:local'));
- const saved=await request(endpoint,'PATCH',body,token);assert.equal(saved.status,200);assert.equal(saved.json.team.revision,2);assert.deepEqual(saved.json.team.memberIds,[a.id,b.id,c.id]);assert.deepEqual(saved.json.team.execution,body.execution);
+ const catalog=await request('/v1/bots/teams','GET',undefined,token);assert.equal(catalog.json.teamSettingsSupported,true);assert.equal(catalog.json.teamInstructionsSupported,true);assert.ok(catalog.json.teamComputers.some(row=>row.id==='host:local'));
+ const saved=await request(endpoint,'PATCH',body,token);assert.equal(saved.status,200);assert.equal(saved.json.team.revision,2);assert.deepEqual(saved.json.team.memberIds,[a.id,b.id,c.id]);assert.deepEqual(saved.json.team.execution,body.execution);assert.deepEqual(saved.json.team.briefing,{...body.briefing,members:[...body.briefing.members].sort((a,b)=>a.botId.localeCompare(b.botId))});
  const stale=await request(endpoint,'PATCH',{...body,name:'stale'},token);assert.equal(stale.status,409);assert.equal(bots.team.list().teams[0].name,'Preserved team');
  bridge.authority.revoke(paired.session.id);
  assert.equal((await request(endpoint,'PATCH',{expectedRevision:2,name:'revoked'},token)).status,401);assert.equal(modelRuns,0);assert.equal(bots.team.list().teams[0].revision,2);

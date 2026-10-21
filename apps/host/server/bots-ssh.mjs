@@ -157,7 +157,7 @@ export function createRemoteBotSSH({ sshPath = '/usr/bin/ssh', spawnProcess = sp
         ...input, onIdentity: value => { if (!/^[a-f0-9]{64}$/.test(value ?? '') || remoteIdentity && value !== remoteIdentity) throw fault('ssh_session_identity', 'The SSH execution computer or account changed. Start a new bot chat.'); remoteIdentity = value; }, onCheckpoint: checkpoint => input.onCheckpoint?.(wrap(checkpoint)),
       });
       const checkpoint = result.checkpoint ? wrap(result.checkpoint) : null;
-      input.onFrame?.({ type: 'done', tokensIn: result.tokensIn ?? 0, tokensOut: result.tokensOut ?? 0, checkpoint });
+      input.onFrame?.({ type: 'done', tokensIn: result.tokensIn ?? 0, tokensOut: result.tokensOut ?? 0, checkpoint, ...(typeof result.publicReply === 'string' ? { publicReply: result.publicReply } : {}) });
       return { ...result, checkpoint };
     },
     async close() { closed = true; const runs = [...active]; for (const owner of runs) owner.abort(); await Promise.allSettled(runs.map(owner => owner.ended)); },

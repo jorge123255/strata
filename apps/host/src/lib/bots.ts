@@ -53,11 +53,14 @@ export interface BotsSnapshot { bots: Bot[]; providers: BotProvider[]; computers
 export interface BotTeamLimits { maxParallel: number; maxDepth: number; maxHops: number; maxTurns: number; maxDurationMs: number }
 export type BotTeamExecution = { mode: 'individual' } | { mode: 'shared'; computerId: string; workspace: string };
 export interface BotTeamComputer { id: string; name: string; label: string; computerMode: 'host' | 'cua'; workspace: string; available: boolean; memberId?: string; detail?: string }
-export interface BotTeam { id: string; name: string; memberIds: string[]; coordinatorId: string; enabled: boolean; limits: BotTeamLimits; createdAt: string; updatedAt: string; revision?: number; execution?: BotTeamExecution; channelPreview?: BotTeamChannelPreview }
+export interface BotTeamMemberBriefing { botId: string; role: string; instructions: string }
+/** Public instructions for this team. Private bot profiles are separate. */
+export interface BotTeamBriefing { instructions: string; members: BotTeamMemberBriefing[] }
+export interface BotTeam { id: string; name: string; memberIds: string[]; coordinatorId: string; enabled: boolean; limits: BotTeamLimits; createdAt: string; updatedAt: string; revision?: number; execution?: BotTeamExecution; briefing?: BotTeamBriefing; channelPreview?: BotTeamChannelPreview }
 export type BotTeamRunState = 'queued'|'running'|'completed'|'error'|'cancelled'|'interrupted'|'stopping'|'cleanup_pending';
 export interface BotTeamRun { id: string; teamId: string; rootChatId: string; rootBotId: string; state: BotTeamRunState; limits: BotTeamLimits; consumedTurns: number; createdAt: string; updatedAt: string; detail?: string }
 export interface BotTeamActivity { id: string; type: 'run'|'delivery'|'subagent'; teamId: string; runId: string; botId?: string; chatId?: string; parentChatId?: string; title: string; state: string; fromBotId?: string; toBotId?: string; createdAt: string; updatedAt: string; detail?: string }
-export interface BotTeamsSnapshot { teams: BotTeam[]; runs: BotTeamRun[]; channelsSupported?: boolean; teamSettingsSupported?: boolean; teamComputers?: BotTeamComputer[] }
+export interface BotTeamsSnapshot { teams: BotTeam[]; runs: BotTeamRun[]; channelsSupported?: boolean; teamSettingsSupported?: boolean; teamInstructionsSupported?: boolean; teamComputers?: BotTeamComputer[] }
 /** Public, durable room messages are separate from each bot's private work chat. */
 export interface BotTeamChannelAuthor { type: 'user'|'bot'|'system'; botId?: string; name: string; avatarConfig?: Bot['avatarConfig'] }
 export interface BotTeamChannelMessage {
@@ -89,11 +92,24 @@ export interface BotProviderModels { provider: string; models: BotProviderModel[
 export const DEFAULT_BOT_TEAM_LIMITS: BotTeamLimits = { maxParallel: 2, maxDepth: 2, maxHops: 8, maxTurns: 24, maxDurationMs: 600000 };
 export function botTeamRunActive(state: string) { return ['queued', 'running', 'stopping', 'cleanup_pending'].includes(state); }
 export function botActivityLabel(state: string) { return ({ queued: 'Queued', running: 'Working', completed: 'Completed', error: 'Failed', cancelled: 'Stopped', interrupted: 'Interrupted', stopping: 'Stopping…', cleanup_pending: 'Checking cleanup', delivered: 'Delivered', pending: 'Waiting', accepted: 'Accepted', refused: 'Refused' } as Record<string, string>)[state] ?? state; }
-export function botTeamDraftError(draft: Pick<BotTeam, 'name'|'memberIds'|'coordinatorId'|'limits'> & { execution?: BotTeamExecution }, bots: Pick<Bot,'id'>[], computers?: BotTeamComputer[]): string | null {
+export function botTeamDraftError(draft: Pick<BotTeam, 'name'|'memberIds'|'coordinatorId'|'limits'> & { execution?: BotTeamExecution; briefing?: BotTeamBriefing }, bots: Pick<Bot,'id'>[], computers?: BotTeamComputer[]): string | null {
   if (!draft.name.trim() || draft.name.trim().length>80) return 'Give this team a name of up to 80 characters.';
   if (draft.memberIds.length<2 || draft.memberIds.length>12) return 'Choose from 2 to 12 team members.';
   if (new Set(draft.memberIds).size !== draft.memberIds.length || draft.memberIds.some(id => !bots.some(bot => bot.id === id))) return 'Choose available bots for this team.';
   if (!draft.memberIds.includes(draft.coordinatorId)) return 'Choose a coordinator from this team.';
+  if (draft.briefing) {
+    const cleanText = (value: string, max: number) => typeof value === 'string' && value.length <= max && !value.includes('\0') && !Array.from(value).some(character => { const point = character.codePointAt(0)!; return point >= 0xD800 && point <= 0xDFFF; });
+    if (!cleanText(draft.briefing.instructions, 8000) || !Array.isArray(draft.briefing.members) || draft.briefing.members.length > 12) return 'Use team instructions of up to 8,000 characters.';
+    const seen = new Set<string>();
+    let total = draft.briefing.instructions.length;
+    for (const member of draft.briefing.members) {
+      if (!draft.memberIds.includes(member.botId) || seen.has(member.botId)) return 'Assign roles only to selected teammates.';
+      seen.add(member.botId);
+      if (!cleanText(member.role, 120) || !cleanText(member.instructions, 4000)) return 'Use a role of up to 120 characters and member instructions of up to 4,000 characters.';
+      total += member.role.length + member.instructions.length;
+    }
+    if (total > 24000) return 'Keep all team instructions and roles within 24,000 characters in total.';
+  }
   if (draft.execution?.mode === 'shared') {
     const execution = draft.execution;
     if (!execution.computerId) return 'Choose a shared team computer.';

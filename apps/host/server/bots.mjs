@@ -506,7 +506,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
       if (active.get(session.id) === owner) active.delete(session.id);
       if (computerLeases.get(target) === session.id) computerLeases.delete(target);
       if (terminal) onFrame(terminal);
-      team.end(context, { cancelled: cancelledBeforeCleanup, error: owner.cleanupFailure?.message ?? (runFailure && !cancelledBeforeCleanup ? runFailure.message : undefined) });
+      team.end(context, { cancelled: cancelledBeforeCleanup, error: owner.cleanupFailure?.message ?? (runFailure && !cancelledBeforeCleanup ? runFailure.message : undefined), ...(typeof terminal?.publicReply === 'string' ? { publicReply: terminal.publicReply } : {}) });
       ended();
     }
   }

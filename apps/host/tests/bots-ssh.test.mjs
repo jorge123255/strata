@@ -89,6 +89,20 @@ test('resume rejects a different SSH target before connecting', async () => {
   let spawns = 0; const ssh = createRemoteBotSSH({ spawnProcess() { spawns++; throw Error('must not connect'); } });
   await assert.rejects(ssh.run({ bot, checkpoint: { remoteTarget: 'wrong' } }), { code: 'ssh_session_target' }); assert.equal(spawns, 0); await ssh.close();
 });
+test('SSH preserves explicit terminal team answers, silence and legacy fallback after acknowledged cleanup', async () => {
+  const program = `const readline=require('node:readline');const result=JSON.parse(process.argv[1]);readline.createInterface({input:process.stdin}).once('line',()=>{for(const value of [{type:'identity',value:'a'.repeat(64)},{type:'cleanup',confirmed:true},{type:'result',value:result}])process.stdout.write(JSON.stringify(value)+'\\n');setTimeout(()=>process.exit(0),5);});`;
+  for (const publicReply of ['Remote final answer', '', undefined]) {
+    const frames = [], value = { text: 'Progress plus full transcript', ...(publicReply === undefined ? {} : { publicReply }) };
+    const ssh = createRemoteBotSSH({ bundle: async () => fixtureBundle(), spawnProcess: (_command, _args, options) => spawn(process.execPath, ['-e', program, JSON.stringify(value)], options) });
+    try {
+      const result = await ssh.run({ bot, sessionId: 's_public_final', message: 'fixture', onFrame: frame => frames.push(frame) });
+      assert.equal(result.text, value.text);
+      assert.equal(frames.at(-1).type, 'done');
+      assert.equal(frames.at(-1).publicReply, publicReply);
+      assert.equal(Object.hasOwn(frames.at(-1), 'publicReply'), publicReply !== undefined);
+    } finally { await ssh.close(); }
+  }
+});
 test('Stop waits for cleanup ACK and ignores late approval replies', async () => {
   const controller = new AbortController(); let approve, requestSignal;
   const ssh = createRemoteBotSSH({ bundle: async () => fixtureBundle(), spawnProcess: fixtureSSH(), cleanupTimeoutMs: 1000 });
@@ -109,10 +123,11 @@ test('actual remote worker executes scoped tools in its workspace and records on
   const reader = new Reader(), sent = [], state = join(scratch, 'worker-state');
   const running = startWorker({ bot, sessionId: 's_worker', message: 'fixture' }, { reader, directory: state, leaseMs: 2000,
     send(message) { sent.push(message); if (message.type === 'permission') setTimeout(() => reader.emit('line', JSON.stringify({ type: 'reply', id: message.id, value: true })), 0); if (message.type === 'requestModel') setTimeout(() => reader.emit('line', JSON.stringify({ type: 'reply', id: message.id, value: { text: 'fixture inference', toolCalls: [] } })), 0); },
-    runtimeFactory: () => ({ async run(input) { assert.equal(input.bot.execution.kind, 'local'); await input.executeTool('write_file', { path: 'worker-marker.txt', content: 'worker wrote remotely' }, 'tool_worker'); await input.modelRequest({ messages: [], tools: [], system: 'fixture' }); input.onFrame({ type: 'reasoning', text: 'Remote thought' }); await input.onCheckpoint({ nativeSessionId: 'native_worker' }); return { text: 'done', tokensIn: 1, tokensOut: 1 }; }, async close() {} }),
+    runtimeFactory: () => ({ async run(input) { assert.equal(input.bot.execution.kind, 'local'); await input.executeTool('write_file', { path: 'worker-marker.txt', content: 'worker wrote remotely' }, 'tool_worker'); await input.modelRequest({ messages: [], tools: [], system: 'fixture' }); input.onFrame({ type: 'reasoning', text: 'Remote thought' }); await input.onCheckpoint({ nativeSessionId: 'native_worker' }); return { text: 'done', publicReply: 'Final team report', tokensIn: 1, tokensOut: 1 }; }, async close() {} }),
   });
   await running; assert.equal(await readFile(join(bot.workspace, 'worker-marker.txt'), 'utf8'), 'worker wrote remotely');
   assert.equal(sent.filter(m => m.type === 'frame' && m.value.type === 'agent-tool' && m.value.tool.state === 'done').length, 1);
+  assert.equal(sent.find(m => m.type === 'result').value.publicReply, 'Final team report');
   assert.equal(sent.some(m => m.type === 'cleanup' && m.confirmed), true); assert.equal(await activeRemoteRuns(state), 0);
 });
 test('EOF revokes pending remote tool approval so late replies cannot write files', async () => {

@@ -1,24 +1,27 @@
 import { useEffect, useRef, useState } from 'react';
 import { ApiError, api } from '../lib/client';
 import { postWithFolderFallback } from '../lib/folder-pick';
-import { botTeamDraftError, botTeamRunActive, DEFAULT_BOT_TEAM_LIMITS, type Bot, type BotTeam, type BotTeamComputer, type BotTeamExecution, type BotTeamLimits, type BotTeamsSnapshot } from '../lib/bots';
+import { botTeamDraftError, botTeamRunActive, DEFAULT_BOT_TEAM_LIMITS, type Bot, type BotTeam, type BotTeamBriefing, type BotTeamComputer, type BotTeamExecution, type BotTeamLimits, type BotTeamMemberBriefing, type BotTeamsSnapshot } from '../lib/bots';
 import { CuaBotAvatar } from '../components/CuaBotAvatar';
 import { Btn, Dialog, ErrorNotice, Icon, Select } from '../components/ui';
 import './BotTeamSettings.css';
 
 export type TeamEditorSection = 'general' | 'members' | 'computer';
-export function BotTeamEditor({ bots, team, computers = [], settingsSupported = false, activeWork = false, initialSection = 'general', onReload, onClose, onSaved }: {
-  bots: Bot[]; team?: BotTeam; computers?: BotTeamComputer[]; settingsSupported?: boolean; activeWork?: boolean; initialSection?: TeamEditorSection;
+export function BotTeamEditor({ bots, team, computers = [], settingsSupported = false, instructionsSupported = false, activeWork = false, initialSection = 'general', onReload, onClose, onSaved }: {
+  bots: Bot[]; team?: BotTeam; computers?: BotTeamComputer[]; settingsSupported?: boolean; instructionsSupported?: boolean; activeWork?: boolean; initialSection?: TeamEditorSection;
   onReload?: () => Promise<void>; onClose: () => void; onSaved: (team: BotTeam) => Promise<void>;
 }) {
   const [base, setBase] = useState(team), [name, setName] = useState(team?.name ?? '');
   const [memberIds, setMemberIds] = useState(team?.memberIds ?? []), [coordinatorId, setCoordinatorId] = useState(team?.coordinatorId ?? '');
   const [enabled, setEnabled] = useState(team?.enabled ?? true), [limits, setLimits] = useState<BotTeamLimits>({ ...(team?.limits ?? DEFAULT_BOT_TEAM_LIMITS) });
   const [execution, setExecution] = useState<BotTeamExecution>(team?.execution ?? { mode: 'individual' });
+  const [briefing, setBriefing] = useState<BotTeamBriefing>(team?.briefing ?? { instructions: '', members: [] });
   const [busy, setBusy] = useState<'save' | 'folder' | 'reload' | null>(null), [error, setError] = useState(''), [conflict, setConflict] = useState(false);
   const [refreshedComputers, setRefreshedComputers] = useState<BotTeamComputer[] | null>(null), [refreshedSupport, setRefreshedSupport] = useState<boolean | null>(null);
+  const [refreshedInstructionsSupport, setRefreshedInstructionsSupport] = useState<boolean | null>(null);
   const mounted = useRef(true), folderRevision = useRef(0), membersRef = useRef<HTMLElement>(null), computerRef = useRef<HTMLElement>(null);
   const choices = refreshedComputers ?? computers, supported = refreshedSupport ?? settingsSupported;
+  const supportsInstructions = refreshedInstructionsSupport ?? instructionsSupported;
   const target = execution.mode === 'shared' ? choices.find(item => item.id === execution.computerId) : undefined;
   const localFolder = !!target && target.computerMode === 'host' && target.id === 'host:local';
   const sharedAnchor = target?.computerMode === 'cua' ? target.memberId : undefined;
@@ -32,6 +35,9 @@ export function BotTeamEditor({ bots, team, computers = [], settingsSupported = 
   useEffect(() => { const frame = requestAnimationFrame(() => { if (initialSection === 'members') membersRef.current?.scrollIntoView({ block: 'start' }); if (initialSection === 'computer') computerRef.current?.scrollIntoView({ block: 'start' }); }); return () => cancelAnimationFrame(frame); }, [initialSection]);
   useEffect(() => { setRefreshedComputers(null); }, [computers]);
   function changeExecution(value: BotTeamExecution) { folderRevision.current++; setExecution(value); setError(''); }
+  function changeMemberBriefing(botId: string, changes: Partial<Pick<BotTeamMemberBriefing, 'role' | 'instructions'>>) {
+    setBriefing(value => ({ ...value, members: [...value.members.filter(member => member.botId !== botId), { botId, role: '', instructions: '', ...value.members.find(member => member.botId === botId), ...changes }] }));
+  }
   function toggleMember(id: string) {
     if (execution.mode === 'shared' && sharedAnchor === id && memberIds.includes(id)) return;
     const next = memberIds.includes(id) ? memberIds.filter(value => value !== id) : [...memberIds, id];
@@ -49,7 +55,8 @@ export function BotTeamEditor({ bots, team, computers = [], settingsSupported = 
   async function save() {
     if (locked || conflict || revisionUnavailable || targetUnavailable) return;
     const selectedExecution: BotTeamExecution = execution.mode === 'shared' ? { ...execution, workspace: execution.workspace.trim() } : { mode: 'individual' };
-    const draft = { name: name.trim(), memberIds, coordinatorId, enabled, limits, ...(supported ? { execution: selectedExecution } : {}) };
+    const selectedBriefing = { instructions: briefing.instructions.trim(), members: briefing.members.filter(member => memberIds.includes(member.botId) && (member.role.trim() || member.instructions.trim())).map(member => ({ ...member, role: member.role.trim(), instructions: member.instructions.trim() })) };
+    const draft = { name: name.trim(), memberIds, coordinatorId, enabled, limits, ...(supported ? { execution: selectedExecution } : {}), ...(supportsInstructions ? { briefing: selectedBriefing } : {}) };
     const validation = botTeamDraftError(draft, bots, choices); if (validation) { setError(validation); return; }
     setBusy('save'); setError('');
     try {
@@ -68,6 +75,7 @@ export function BotTeamEditor({ bots, team, computers = [], settingsSupported = 
       const latest = snapshot.teams.find(item => item.id === base.id); if (!latest) throw new Error('This team is no longer available. Close settings and refresh your teams.');
       if (snapshot.runs.some(run => run.teamId === latest.id && botTeamRunActive(run.state))) throw new Error('This team is still working. Finish or stop its active work before editing settings.');
       folderRevision.current++; setBase(latest); setName(latest.name); setMemberIds(latest.memberIds); setCoordinatorId(latest.coordinatorId); setEnabled(latest.enabled); setLimits({ ...latest.limits }); setExecution(latest.execution ?? { mode: 'individual' });
+      setBriefing(latest.briefing ?? { instructions: '', members: [] }); setRefreshedInstructionsSupport(snapshot.teamInstructionsSupported === true);
       setRefreshedComputers(snapshot.teamComputers ?? []); setRefreshedSupport(snapshot.teamSettingsSupported === true); setConflict(false); await onReload?.();
     } catch (cause) { if (mounted.current) setError(message(cause)); }
     finally { if (mounted.current) setBusy(null); }
@@ -76,9 +84,11 @@ export function BotTeamEditor({ bots, team, computers = [], settingsSupported = 
     <div className="form-stack">
       {activeWork ? <p className="bot-team-settings-notice" role="status"><Icon name="activity" size={18}/><span>Your team is working. Finish or stop its active work before changing these settings.</span></p> : null}
       <section className="bot-team-settings-section"><label className="input-field"><span>Team name</span><input className="st-input" aria-label="Team name" maxLength={80} value={name} disabled={locked} onChange={event => setName(event.target.value)}/></label><label className="row small"><input type="checkbox" checked={enabled} disabled={locked} onChange={event => setEnabled(event.target.checked)}/>Allow members to collaborate</label></section>
+      {supportsInstructions ? <section className="bot-team-settings-section"><div className="bot-team-settings-heading"><Icon name="experts" size={20}/><div><h3>Team instructions</h3><p>Shared with every teammate. Your coordinator can keep this team’s instructions and roles up to date.</p></div></div><label className="input-field"><span>Shared instructions</span><textarea className="st-input" aria-label="Team instructions" rows={5} maxLength={8000} value={briefing.instructions} disabled={locked} onChange={event => setBriefing(value => ({ ...value, instructions: event.target.value }))} placeholder="What are you working on, and how should the team collaborate?"/></label><p className="xs muted">These instructions apply in this team. Each bot’s private profile, tools and permissions are managed separately.</p></section> : null}
       <section ref={membersRef} className="bot-team-settings-section"><div className="bot-team-settings-heading"><Icon name="experts" size={20}/><div><h3>Team members</h3><p>Choose 2 to 12 bots. Each keeps its own model and permissions.</p></div></div>
         <fieldset className="bots-member-picker bot-team-member-grid"><legend>Members · {memberIds.length}/12</legend>{memberChoices.map(bot => { const anchor = execution.mode === 'shared' && sharedAnchor === bot.id; return <label key={bot.id} data-selected={memberIds.includes(bot.id) || undefined}><input type="checkbox" aria-label={bot.name} disabled={locked || anchor || memberIds.length >= 12 && !memberIds.includes(bot.id)} checked={memberIds.includes(bot.id)} onChange={() => toggleMember(bot.id)}/><CuaBotAvatar name={bot.name} config={bot.avatarConfig} size={34}/><span>{bot.name}{anchor ? <small>Hosts the shared computer</small> : bot.missing ? <small>Remove to update this team</small> : bot.paused ? <small>Paused</small> : null}</span></label>; })}</fieldset>
         <div className="input-field"><span>Coordinator</span><Select ariaLabel="Team coordinator" disabled={locked || !memberIds.length} value={coordinatorId} options={[...(!coordinatorId ? [{ value: '', label: 'Choose a coordinator', disabled: true }] : []), ...memberIds.map(id => ({ value: id, label: bots.find(bot => bot.id === id)?.name ?? 'Unavailable bot' }))]} onChange={setCoordinatorId}/></div>
+        {supportsInstructions ? <div className="bot-team-member-briefings">{memberIds.map(id => { const bot = bots.find(item => item.id === id), member = briefing.members.find(item => item.botId === id); return <details className="bot-team-member-briefing" key={id}><summary><CuaBotAvatar name={bot?.name ?? 'Unavailable bot'} config={bot?.avatarConfig} size={28}/><span>{bot?.name ?? 'Unavailable bot'}<small>{member?.role || (id === coordinatorId ? 'Coordinator' : 'Add a role & instructions')}</small></span></summary><label className="input-field"><span>Role in this team</span><input className="st-input" aria-label={`${bot?.name ?? 'Unavailable bot'} team role`} maxLength={120} value={member?.role ?? ''} disabled={locked} placeholder="e.g. Developer, reviewer, researcher" onChange={event => changeMemberBriefing(id, { role: event.target.value })}/></label><label className="input-field"><span>Instructions for this teammate</span><textarea className="st-input" aria-label={`${bot?.name ?? 'Unavailable bot'} team instructions`} rows={3} maxLength={4000} value={member?.instructions ?? ''} disabled={locked} onChange={event => changeMemberBriefing(id, { instructions: event.target.value })}/></label></details>; })}</div> : null}
         {base && (added.length || removed.length) ? <p className="bot-team-change-summary" role="status">{added.length ? `${added.length} ${added.length === 1 ? 'bot' : 'bots'} joining. ` : ''}{removed.length ? `${removed.length} ${removed.length === 1 ? 'bot' : 'bots'} leaving. ` : ''}Earlier messages and completed work stay in this team.</p> : null}
       </section>
       <section ref={computerRef} className="bot-team-settings-section"><div className="bot-team-settings-heading"><Icon name="computer" size={20}/><div><h3>Computer & working folder</h3><p>Choose where your team works together.</p></div></div>

@@ -136,6 +136,49 @@ test('Codex actual stdio protocol brokers native denial and returns dynamic tool
   assert.equal(result.text, 'Native answer'); assert.equal(approvals, 0, 'native tools cannot bypass the root ledger'); assert.equal(result.checkpoint.nativeSessionId, 'thread_fixture');
   assert.equal(events.frames.some(f => f.type === 'reasoning' && f.text === 'Plan'), true); assert.equal(plans[0].options.cwd, root); runtime.close();
 });
+test('Codex publishes only its terminal answer to a team while retaining progress and legacy phase compatibility', async () => {
+  const path = join(root, 'codex-phase-fixture.mjs');
+  await writeFile(path, `
+import readline from 'node:readline';
+let batch=null;
+const mode=process.argv[2], send=value=>{const line=JSON.stringify({jsonrpc:'2.0',...value})+'\\n';if(batch)batch.push(line);else process.stdout.write(line);};
+const ok=(id,result)=>send({id,result});
+readline.createInterface({input:process.stdin}).on('line',line=>{
+ const m=JSON.parse(line);
+ if(m.method==='initialize')ok(m.id,{});
+ if(m.method==='config/read')ok(m.id,{config:{mcp_servers:{}}});
+ if(m.method==='mcpServerStatus/list')ok(m.id,{data:[],nextCursor:null});
+ if(m.method==='thread/start'||m.method==='thread/resume'){
+  send({method:'item/completed',params:{threadId:'current',item:{type:'agentMessage',id:'old',phase:'final_answer',text:'OLD REPLAY'}}});
+  ok(m.id,{thread:{id:'current'}});
+ }
+ if(m.method==='turn/start'){
+  batch=[];
+  ok(m.id,{turn:{id:'current_turn'}});
+  const emit=(method,item,threadId='current',turnId='current_turn')=>send({method,params:{threadId,turnId,item}});
+  emit('item/completed',{type:'agentMessage',id:'foreign',phase:'final_answer',text:'WRONG THREAD'},'foreign');
+  emit('item/completed',{type:'agentMessage',id:'stale',phase:'final_answer',text:'WRONG TURN'},'current','old_turn');
+  emit('item/completed',{type:'agentMessage',id:'progress',phase:'commentary',text:'I will ask the team.'});
+  send({method:'item/agentMessage/delta',params:{threadId:'current',turnId:'current_turn',itemId:'answer',delta:'Roles saved.'}});
+  const answer={type:'agentMessage',id:'answer',text:mode==='empty'?'':'Roles saved.',...(mode==='legacy'?{}:{phase:'final_answer'})};
+  emit('item/completed',answer); emit('item/completed',answer);
+  send({method:'turn/completed',params:{threadId:'current',turn:{id:'current_turn',status:'completed'}}});
+  process.stdout.write(batch.join(''));batch=null;
+ }
+});
+`);
+  for (const mode of ['phases', 'legacy', 'empty']) {
+    const events = framesFor();
+    const runtime = createBotRuntime({ commands: { codex: '/fixture/codex' }, spawnProcess: (_command, _args, options) => spawn(process.execPath, [path, mode], options), runTimeoutMs: 4000 });
+    try {
+      const result = await runtime.run({ ...baseInput('codex'), ...events, checkpoint: { provider: 'codex', workspace: root, model: '', nativeSessionId: 'current' } });
+      assert.equal(result.text, 'I will ask the team.Roles saved.', 'linked chat retains progress but excludes prior/foreign turns and duplicate completions');
+      const done = events.frames.find(frame => frame.type === 'done');
+      if (mode === 'legacy') { assert.equal(Object.hasOwn(done, 'publicReply'), false, 'phase unknown preserves existing publication'); assert.equal(Object.hasOwn(result, 'publicReply'), false); }
+      else { assert.equal(done.publicReply, mode === 'empty' ? '' : 'Roles saved.', 'public channel receives only explicit terminal text, including deliberate silence'); assert.equal(result.publicReply, done.publicReply, 'worker transport gets the same bounded final text'); }
+    } finally { runtime.close(); }
+  }
+});
 test('Grok and Kimi actual stdio protocols use native session load and decline permissions', async () => {
   for (const provider of ['grok', 'kimi']) {
     const events = framesFor(), plans = []; const runtime = createBotRuntime({ commands: { [provider]: `/fixture/${provider}` }, spawnProcess: fixtureSpawner(provider, plans), stateDir: join(root, provider), runTimeoutMs: 4000 });

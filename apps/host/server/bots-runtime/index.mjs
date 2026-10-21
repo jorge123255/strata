@@ -173,8 +173,8 @@ export function createBotRuntime(options = {}) {
       else await runOllama(context);
       signal.throwIfAborted();
       frame({ type: 'stats', tokensIn, tokensOut, tps: Number((tokensOut / Math.max(1, (Date.now() - started) / 1000)).toFixed(1)) });
-      frame({ type: 'done', tokensIn, tokensOut, sessionId: input.sessionId, checkpoint });
-      return { text, checkpoint, tokensIn, tokensOut };
+      frame({ type: 'done', tokensIn, tokensOut, sessionId: input.sessionId, checkpoint, ...(typeof context.publicReply === 'string' ? { publicReply: context.publicReply } : {}) });
+      return { text, checkpoint, tokensIn, tokensOut, ...(typeof context.publicReply === 'string' ? { publicReply: context.publicReply } : {}) };
     } catch (error) { const safe = signal.aborted ? abortError() : new Error(redact(error, secrets)); emit({ type: 'error', message: safe.message }); throw safe; }
     finally { clearTimeout(timer); active.delete(controller); input.signal?.removeEventListener('abort', abort); }
   }
@@ -238,19 +238,40 @@ async function runClaude(c) {
 
 async function runCodex(c) {
   const command = await c.executable('codex'); if (!command) throw new Error('Install Codex and sign in on this Mac first.');
-  const completed = deferred(); let threadId, turnId, streamed = new Set();
-  const rpc = jsonRpcProcess({ command, args: ['app-server', '--listen', 'stdio://'], cwd: c.bot.workspace, env: c.env, signal: c.signal, spawnProcess: c.options.spawnProcess,
-    onNotification({ method, params: p = {} }) {
+  const completed = deferred(); let threadId, turnId, prompting = false, streamed = new Set();
+  // Keep the full progress stream in the linked conversation. Public team
+  // reports use the provider's terminal answer when its phase is available.
+  // Older models omit phase, so their existing publication path is unchanged.
+  const finalMessages = new Map();
+  const pendingNotifications = [];
+  function notification({ method, params: p = {} }) {
       if (threadId && p.threadId && p.threadId !== threadId) return;
+      if (turnId && p.turnId && p.turnId !== turnId) return;
       if (method === 'item/agentMessage/delta') { streamed.add(p.itemId); c.frame({ type: 'delta', text: p.delta ?? '' }); }
       else if (method === 'item/reasoning/summaryTextDelta' || method === 'item/reasoning/textDelta') c.frame({ type: 'reasoning', text: p.delta ?? '' });
       else if (method === 'thread/tokenUsage/updated') { const u = p.tokenUsage?.last ?? p.tokenUsage?.total ?? {}; c.frame({ type: 'stats', tokensIn: u.inputTokens ?? 0, tokensOut: u.outputTokens ?? 0 }); }
       else if (method === 'item/started' || method === 'item/completed') {
         const item = p.item ?? {}, done = method === 'item/completed';
-        if (done && item.type === 'agentMessage' && !streamed.has(item.id)) c.frame({ type: 'delta', text: item.text ?? '' });
+        if (done && item.type === 'agentMessage' && item.phase === 'final_answer' && typeof item.id === 'string' && typeof item.text === 'string') {
+          finalMessages.set(item.id, item.text);
+          c.publicReply = [...finalMessages.values()].join('\n\n');
+        }
+        if (done && item.type === 'agentMessage' && !streamed.has(item.id)) { streamed.add(item.id); c.frame({ type: 'delta', text: item.text ?? '' }); }
         else if (['commandExecution', 'fileChange', 'mcpToolCall', 'webSearch'].includes(item.type)) c.frame(toolCard(safeId(item.id), item.tool ?? item.type, item.command ? { command: item.command } : item.arguments ?? {}, done ? item.status === 'failed' ? 'error' : 'done' : 'running', done ? item.aggregatedOutput ?? item.result ?? '' : undefined));
-      } else if (method === 'turn/completed') { const turn = p.turn ?? {}; if (turnId && turn.id && turn.id !== turnId) return; turn.status === 'completed' ? completed.resolve() : completed.reject(new Error(turn.error?.message ?? `Codex turn ${turn.status ?? 'failed'}.`)); }
+      } else if (method === 'turn/completed') { const turn = p.turn ?? {}; if (turn.id && turn.id !== turnId) return; turn.status === 'completed' ? completed.resolve() : completed.reject(new Error(turn.error?.message ?? `Codex turn ${turn.status ?? 'failed'}.`)); }
       else if (method === 'error' && !p.willRetry) completed.reject(new Error(p.error?.message ?? 'Codex failed.'));
+  }
+  const rpc = jsonRpcProcess({ command, args: ['app-server', '--listen', 'stdio://'], cwd: c.bot.workspace, env: c.env, signal: c.signal, spawnProcess: c.options.spawnProcess,
+    onNotification(message) {
+      if (!prompting) return;
+      // A single stdout chunk can contain the turn/start response and several
+      // notifications before its awaiting continuation runs. Bind the turn ID
+      // before accepting any of those notifications, including final text.
+      if (!turnId) {
+        if (pendingNotifications.length >= 10000) throw new Error('Codex sent too many notifications before its turn identity was confirmed.');
+        pendingNotifications.push(message); return;
+      }
+      notification(message);
     },
     async onRequest({ id, method, params: p = {} }, process) {
       if (method === 'item/tool/call') {
@@ -282,8 +303,12 @@ async function runCodex(c) {
     threadId = session.thread?.id; if (!threadId) throw new Error('Codex returned no thread id.'); await c.save(threadId);
     const inventory = await rpc.request('mcpServerStatus/list', { threadId, detail: 'toolsAndAuthOnly' });
     if (!Array.isArray(inventory?.data) || inventory.nextCursor || inventory.data.some(server => Object.keys(server.tools ?? {}).length > 0)) throw new Error('Codex still exposes inherited MCP tools. The bot was stopped before sending your message.');
+    prompting = true;
     const turn = await rpc.request('turn/start', { threadId, input: [{ type: 'text', text: c.prompt }], model: c.bot.model || undefined, ...(c.bot.effort ? { effort: c.bot.effort } : {}) });
-    turnId = turn.turn?.id; await completed.promise;
+    turnId = turn.turn?.id;
+    if (typeof turnId !== 'string' || !turnId) throw new Error('Codex returned no turn id.');
+    for (const message of pendingNotifications.splice(0)) notification(message);
+    await completed.promise;
   } finally { await rpc.close(); }
 }
 
