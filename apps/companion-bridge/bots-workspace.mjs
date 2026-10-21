@@ -8,7 +8,9 @@ const toolId = value => typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,300}$/.
 const text = (value, max) => typeof value === 'string' ? value.slice(0, max) : '';
 const date = value => Number.isFinite(value) && value >= 0 ? value : typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T[0-9:.+-]{8,30}Z?$/.test(value) ? value : undefined;
 const states = new Set(['queued', 'running', 'completed', 'error', 'cancelled', 'interrupted', 'stopping', 'cleanup_pending']);
-const limits = { maxParallel: [1, 8], maxDepth: [1, 4], maxHops: [1, 32], maxTurns: [1, 100], maxDurationMs: [60_000, 3_600_000] };
+// Zero means all available members on capable hosts. Older positive values are
+// forwarded unchanged; the selected host remains the authority for execution.
+const limits = { maxParallel: [0, Number.MAX_SAFE_INTEGER], maxDepth: [1, 4], maxHops: [1, 32], maxTurns: [1, 100], maxDurationMs: [60_000, 3_600_000] };
 const isObject = value => value && typeof value === 'object' && !Array.isArray(value);
 function object(value, keys, status) {
   if (!isObject(value) || Object.keys(value).some(key => !keys.includes(key))) throw error(status, 'Choose only the displayed team, skill or connection settings.');
@@ -22,12 +24,13 @@ function ids(value, status, validate = id, max = 500) {
 function teamBriefing(value, memberIds, status) {
   object(value, ['instructions', 'members'], status);
   string(value.instructions, 8000, status, true);
-  if (!value.instructions.isWellFormed() || !Array.isArray(value.members) || value.members.length > 12) throw error(status, 'Review these public team instructions.');
+  if (!value.instructions.isWellFormed() || !Array.isArray(value.members)) throw error(status, 'Review these public team instructions.');
   const seen = new Set();
+  const selected = memberIds ? new Set(memberIds) : null;
   let total = value.instructions.length;
   for (const member of value.members) {
     object(member, ['botId', 'role', 'instructions'], status);
-    if (!id(member.botId) || seen.has(member.botId) || memberIds && !memberIds.includes(member.botId)) throw error(status, 'Assign roles only to selected teammates.');
+    if (!id(member.botId) || seen.has(member.botId) || selected && !selected.has(member.botId)) throw error(status, 'Assign roles only to selected teammates.');
     seen.add(member.botId);
     string(member.role, 120, status, true); string(member.instructions, 4000, status, true);
     if (!member.role.isWellFormed() || !member.instructions.isWellFormed()) throw error(status, 'Review this teammate’s public instructions.');
@@ -108,20 +111,20 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
       if (body.execution.mode === 'shared') { if (!computerId(body.execution.computerId)) throw error(status, 'Choose a saved team computer.'); string(body.execution.workspace, 4000, status); }
     }
     if (method === 'POST' || body.name !== undefined) string(body.name, 80, status);
-    if (method === 'POST' || body.memberIds !== undefined) { ids(body.memberIds, status, id, 12); if (body.memberIds.length < 2) throw error(status, 'Choose at least two bots.'); }
+    if (method === 'POST' || body.memberIds !== undefined) { ids(body.memberIds, status, id, Infinity); if (body.memberIds.length < 2) throw error(status, 'Choose at least two bots.'); }
     if (method === 'POST' || body.coordinatorId !== undefined) if (!id(body.coordinatorId)) throw error(status, 'Choose a coordinator.');
     if (body.memberIds && body.coordinatorId && !body.memberIds.includes(body.coordinatorId)) throw error(status, 'The coordinator must be a team member.');
     if (body.briefing !== undefined) teamBriefing(body.briefing, body.memberIds, status);
     if (body.enabled !== undefined && typeof body.enabled !== 'boolean') throw error(status, 'Review whether this team is enabled.');
     if (body.limits !== undefined) {
       object(body.limits, Object.keys(limits), status);
-      for (const [key, value] of Object.entries(body.limits)) if (!Number.isInteger(value) || value < limits[key][0] || value > limits[key][1]) throw error(status, 'Choose supported team limits.');
+      for (const [key, value] of Object.entries(body.limits)) if (!Number.isSafeInteger(value) || value < limits[key][0] || value > limits[key][1]) throw error(status, 'Choose supported team limits.');
     }
   } else if (route.kind === 'channelMessage') {
     object(body, ['message', 'requestId', 'recipientIds', 'replyToId'], status);
     string(body.message, 16_000, status);
     if (!id(body.requestId)) throw error(status, 'Choose a valid team message request.');
-    if (body.recipientIds !== undefined) { ids(body.recipientIds, status, id, 12); if (!body.recipientIds.length) throw error(status, 'Choose a teammate or send to the team.'); }
+    if (body.recipientIds !== undefined) { ids(body.recipientIds, status, id, Infinity); if (!body.recipientIds.length) throw error(status, 'Choose a teammate or send to the team.'); }
     if (body.replyToId !== undefined && !id(body.replyToId)) throw error(status, 'Choose a message from this team.');
   } else if (route.kind === 'run') {
     object(body, route.action ? [] : ['message', 'requestId'], status);
@@ -153,6 +156,11 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
   return route;
 }
 const safeIds = value => (Array.isArray(value) ? value : []).filter(id).slice(0, 500);
+const teamIds = value => {
+  if (!Array.isArray(value)) return [];
+  ids(value, 502, id, Infinity);
+  return [...value];
+};
 const safeTools = value => (Array.isArray(value) ? value : []).filter(toolId).slice(0, 1_000);
 function channelPreview(value) {
   // This optional caption may be absent on older hosts. Malformed captions
@@ -173,25 +181,27 @@ function teamComputer(value) {
 }
 function team(value) {
   const preview = channelPreview(value.channelPreview);
+  const memberIds = teamIds(value.memberIds);
   let briefing;
   if (value.briefing !== undefined) {
     // Keep only the public schema. Future/private profile fields cannot cross pairing.
-    try { const publicValue = { instructions: value.briefing.instructions, members: value.briefing.members?.map(member => ({ botId: member.botId, role: member.role, instructions: member.instructions })) }; briefing = teamBriefing(publicValue, safeIds(value.memberIds), 502); } catch { /* Optional newer information cannot hide an otherwise readable team. */ }
+    try { const publicValue = { instructions: value.briefing.instructions, members: value.briefing.members?.map(member => ({ botId: member.botId, role: member.role, instructions: member.instructions })) }; briefing = teamBriefing(publicValue, memberIds, 502); } catch { /* Optional newer information cannot hide an otherwise readable team. */ }
   }
-  return { id: value.id, name: text(value.name, 200), memberIds: safeIds(value.memberIds), coordinatorId: id(value.coordinatorId) ? value.coordinatorId : '', enabled: value.enabled === true, limits: Object.fromEntries(Object.entries(limits).filter(([k, [low, high]]) => Number.isInteger(value.limits?.[k]) && value.limits[k] >= low && value.limits[k] <= high).map(([k]) => [k, value.limits[k]])), createdAt: date(value.createdAt), updatedAt: date(value.updatedAt), ...(preview ? { channelPreview: preview } : {}), ...(briefing ? { briefing } : {}), ...(Number.isSafeInteger(value.revision) && value.revision > 0 ? { revision: value.revision } : {}), ...(execution(value.execution) ? { execution: execution(value.execution) } : {}) };
+  return { id: value.id, name: text(value.name, 200), memberIds, coordinatorId: id(value.coordinatorId) ? value.coordinatorId : '', enabled: value.enabled === true, limits: Object.fromEntries(Object.entries(limits).filter(([k, [low, high]]) => Number.isSafeInteger(value.limits?.[k]) && value.limits[k] >= low && value.limits[k] <= high).map(([k]) => [k, value.limits[k]])), createdAt: date(value.createdAt), updatedAt: date(value.updatedAt), ...(preview ? { channelPreview: preview } : {}), ...(briefing ? { briefing } : {}), ...(Number.isSafeInteger(value.revision) && value.revision > 0 ? { revision: value.revision } : {}), ...(execution(value.execution) ? { execution: execution(value.execution) } : {}) };
 }
 function run(value) {
-  return { id: value.id, teamId: id(value.teamId) ? value.teamId : '', rootChatId: id(value.rootChatId) ? value.rootChatId : '', rootBotId: id(value.rootBotId) ? value.rootBotId : '', state: states.has(value.state) ? value.state : 'interrupted', limits: team(value).limits, consumedTurns: Number.isInteger(value.consumedTurns) ? value.consumedTurns : 0, createdAt: date(value.createdAt), updatedAt: date(value.updatedAt), ...(typeof value.detail === 'string' ? { detail: text(value.detail, 2_000) } : {}) };
+  const fanout = Number.isSafeInteger(value.consumedTurns) && Number.isSafeInteger(value.rosterFanoutTurns) && value.rosterFanoutTurns >= 0 && value.rosterFanoutTurns <= value.consumedTurns ? { rosterFanoutTurns: value.rosterFanoutTurns } : {};
+  return { id: value.id, teamId: id(value.teamId) ? value.teamId : '', rootChatId: id(value.rootChatId) ? value.rootChatId : '', rootBotId: id(value.rootBotId) ? value.rootBotId : '', state: states.has(value.state) ? value.state : 'interrupted', limits: team(value).limits, consumedTurns: Number.isInteger(value.consumedTurns) ? value.consumedTurns : 0, ...fanout, createdAt: date(value.createdAt), updatedAt: date(value.updatedAt), ...(typeof value.detail === 'string' ? { detail: text(value.detail, 2_000) } : {}) };
 }
 function channelSnapshot(value, route) {
   const invalid = () => { throw error(502, 'Strata returned unreadable team channel information.'); };
-  if (!isObject(value) || value.teamId !== route.teamId || value.supported !== true || !Array.isArray(value.messages) || value.messages.length > 100 || !Array.isArray(value.activeRuns) || value.activeRuns.length > 200 || !Number.isSafeInteger(value.nextSequence) || value.nextSequence < 0 || typeof value.hasMore !== 'boolean' || typeof value.hasMoreBefore !== 'boolean') invalid();
+  if (!isObject(value) || value.teamId !== route.teamId || value.supported !== true || !Array.isArray(value.messages) || value.messages.length > 100 || !Array.isArray(value.activeRuns) || !Number.isSafeInteger(value.nextSequence) || value.nextSequence < 0 || typeof value.hasMore !== 'boolean' || typeof value.hasMoreBefore !== 'boolean') invalid();
   const seen = new Set(); let previous = 0;
   const messages = value.messages.map(v => {
     if (!isObject(v) || !id(v.id) || seen.has(v.id) || v.teamId !== route.teamId || !Number.isSafeInteger(v.sequence) || v.sequence <= previous || !['message', 'assignment', 'report', 'status'].includes(v.kind) || !isObject(v.author) || !['user', 'bot', 'system'].includes(v.author.type) || typeof v.author.name !== 'string' || !v.author.name.trim() || v.author.name.length > 200 || typeof v.content !== 'string' || v.content.length > 32_000 || v.content.includes('\0') || date(v.createdAt) === undefined || v.author.type === 'bot' && !id(v.author.botId)) invalid();
     seen.add(v.id); previous = v.sequence;
     for (const key of ['replyToId', 'runId', 'chatId']) if (v[key] !== undefined && !id(v[key])) invalid();
-    if (v.recipientIds !== undefined && (!Array.isArray(v.recipientIds) || v.recipientIds.length > 12 || v.recipientIds.some(x => !id(x)) || new Set(v.recipientIds).size !== v.recipientIds.length)) invalid();
+    if (v.recipientIds !== undefined && (!Array.isArray(v.recipientIds) || v.recipientIds.some(x => !id(x)) || new Set(v.recipientIds).size !== v.recipientIds.length)) invalid();
     let avatarConfig;
     if (v.author.avatarConfig !== undefined) { try { avatarConfig = botAvatarConfig(v.author.avatarConfig, 502); if (avatarConfig.shape === 'classic') delete avatarConfig.shape; } catch { /* Omit unavailable future artwork; never forward arbitrary assets or fields. */ } }
     return { id: v.id, sequence: v.sequence, teamId: v.teamId, kind: v.kind, author: { type: v.author.type, name: v.author.name, ...(v.author.type === 'bot' ? { botId: v.author.botId } : {}), ...(avatarConfig ? { avatarConfig } : {}) }, content: v.content, createdAt: date(v.createdAt), ...Object.fromEntries(['replyToId', 'runId', 'chatId'].filter(key => v[key] !== undefined).map(key => [key, v[key]])), ...(v.recipientIds ? { recipientIds: v.recipientIds } : {}), ...(['queued', 'working', 'done', 'error', 'interrupted', 'cancelled'].includes(v.state) ? { state: v.state } : {}) };
@@ -231,13 +241,13 @@ function connection(value) {
 }
 export function publicBotWorkspace(body, route) {
   if (!isObject(body)) throw error(502, 'Strata returned unreadable workspace information.');
-  const rows = (key, project, valid = id) => {
+  const rows = (key, project, valid = id, max = 1_000) => {
     if (!Array.isArray(body[key])) throw error(502, 'Strata returned unreadable workspace information.');
-    return body[key].filter(v => v && valid(v.id)).slice(0, 1_000).map(project);
+    return body[key].filter(v => v && valid(v.id)).slice(0, max).map(project);
   };
   if (route.kind === 'channel') return channelSnapshot(body, route);
   if (route.kind === 'channelMessage') return { channel: channelSnapshot(body.channel, route), ...(body.run && id(body.run.id) && body.run.teamId === route.teamId ? { run: run(body.run) } : {}) };
-  if (route.kind === 'teams' && Array.isArray(body.teams)) return { teams: rows('teams', team), runs: rows('runs', run), ...(body.channelsSupported === true ? { channelsSupported: true } : {}), ...(body.teamInstructionsSupported === true ? { teamInstructionsSupported: true } : {}), ...(body.teamSettingsSupported === true ? { teamSettingsSupported: true, teamComputers: (Array.isArray(body.teamComputers) ? body.teamComputers : []).slice(0, 1000).map(teamComputer).filter(Boolean) } : {}) };
+  if (route.kind === 'teams' && Array.isArray(body.teams)) return { teams: rows('teams', team), runs: rows('runs', run, id, Infinity), ...(body.teamUnrestrictedSupported === true ? { teamUnrestrictedSupported: true } : {}), ...(body.channelsSupported === true ? { channelsSupported: true } : {}), ...(body.teamInstructionsSupported === true ? { teamInstructionsSupported: true } : {}), ...(body.teamSettingsSupported === true ? { teamSettingsSupported: true, teamComputers: (Array.isArray(body.teamComputers) ? body.teamComputers : []).slice(0, 1000).map(teamComputer).filter(Boolean) } : {}) };
   if (body.team && id(body.team.id)) return { team: team(body.team) };
   if (body.run && id(body.run.id)) return { run: run(body.run) };
   if (route.kind === 'activity') return { activity: rows('activity', v => ({ id: v.id, type: ['run', 'delivery', 'subagent'].includes(v.type) ? v.type : 'run', teamId: id(v.teamId) ? v.teamId : '', runId: id(v.runId) ? v.runId : '', title: text(v.title, 300), state: text(v.state, 60), ...Object.fromEntries(['botId', 'chatId', 'parentChatId', 'fromBotId', 'toBotId'].filter(k => id(v[k])).map(k => [k, v[k]])), createdAt: date(v.createdAt), updatedAt: date(v.updatedAt), ...(typeof v.detail === 'string' ? { detail: text(v.detail, 2_000) } : {}) })) };
@@ -273,7 +283,8 @@ export async function handleBotWorkspace({ path, method, req, res, session, host
     if (route.kind === 'channelMessage') {
       const catalog = await host.json('/api/bots/teams'); requireCurrentSession();
       const selected = (catalog.teams ?? []).find(team => team.id === route.teamId);
-      if (!selected || !selected.enabled || body.recipientIds?.some(botId => !selected.memberIds?.includes(botId))) throw error(409, 'Refresh this team and choose its available members.');
+      const members = new Set(Array.isArray(selected?.memberIds) ? selected.memberIds : []);
+      if (!selected || !selected.enabled || body.recipientIds?.some(botId => !members.has(botId))) throw error(409, 'Refresh this team and choose its available members.');
     }
     if (['teams', 'team'].includes(route.kind) && body?.briefing !== undefined) {
       const catalog = await host.json('/api/bots/teams'); requireCurrentSession();

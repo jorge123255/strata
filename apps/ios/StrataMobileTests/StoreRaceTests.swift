@@ -2587,3 +2587,136 @@ extension StoreRaceTests {
         XCTAssertFalse(workspace.loading.contains("supervision"))
     }
 }
+
+extension BotWorkspaceTests {
+    func testUnrestrictedTeamCapabilityDecodesZeroAndKeepsLegacyOptional() throws {
+        var team = managedTeam(); var all = limits; all["maxParallel"] = 0; team["limits"] = all
+        let modern = try decode(["teams": [team], "runs": [], "teamUnrestrictedSupported": true], as: BotTeamsSnapshot.self)
+        XCTAssertTrue(modern.teamUnrestrictedSupported == true)
+        XCTAssertEqual(modern.teams.first?.limits.maxParallel, 0)
+        XCTAssertEqual(modern.teams.first?.limits.parallelLabel(), "All available teammates")
+        let legacy = try decode(["teams": [managedTeam()], "runs": []], as: BotTeamsSnapshot.self)
+        XCTAssertNil(legacy.teamUnrestrictedSupported)
+        XCTAssertEqual(legacy.teams.first?.limits.maxParallel, 2)
+        var positive = BotTeamLimits(); positive.maxParallel = 7
+        XCTAssertEqual(positive.forHost(unrestrictedTeams: true).maxParallel, 0)
+        XCTAssertEqual(positive.parallelLabel(unrestrictedTeams: true), "All available teammates")
+        XCTAssertEqual(positive.forHost(unrestrictedTeams: false).maxParallel, 7)
+        var zero = positive; zero.maxParallel = 0
+        XCTAssertEqual(zero.forHost(unrestrictedTeams: false).maxParallel, 2)
+    }
+    func testUnrestrictedTeamsValidateLargeCurrentRosterAndBriefingWithoutRemovingBudgets() {
+        let ids = (0..<15).map { "bot_\($0)" }
+        var draft = BotTeamDraft(name: "Large team", memberIds: ids, coordinatorId: ids[0])
+        draft.limits.maxParallel = 0
+        draft.briefing = BotTeamBriefing(instructions: "Work together.", members: ids.map { BotTeamMemberBriefing(botId: $0, role: "Teammate") })
+        XCTAssertTrue(BotWorkspaceStore.validTeamDraft(draft, unrestrictedTeams: true, availableMemberIds: Set(ids)))
+        XCTAssertFalse(BotWorkspaceStore.validTeamDraft(draft), "Older hosts keep the legacy membership and parallel bounds.")
+        XCTAssertFalse(BotWorkspaceStore.validTeamDraft(draft, unrestrictedTeams: true, availableMemberIds: Set(ids.dropLast())))
+        draft.memberIds.append(ids[0]); XCTAssertFalse(BotWorkspaceStore.validTeamDraft(draft, unrestrictedTeams: true))
+        draft.memberIds = ids; draft.briefing?.members.append(BotTeamMemberBriefing(botId: ids[0])); XCTAssertFalse(BotWorkspaceStore.validTeamDraft(draft, unrestrictedTeams: true))
+        draft.briefing?.members.removeLast(); draft.limits.maxParallel = 64
+        XCTAssertTrue(BotWorkspaceStore.validTeamDraft(draft, unrestrictedTeams: true), "A legacy positive value is accepted then canonicalized to all available.")
+        draft.limits.maxParallel = -1; XCTAssertFalse(BotWorkspaceStore.validTeamDraft(draft, unrestrictedTeams: true))
+        draft.limits.maxParallel = 0; draft.limits.maxTurns = 101; XCTAssertFalse(BotWorkspaceStore.validTeamDraft(draft, unrestrictedTeams: true))
+        draft.limits.maxTurns = 24; draft.limits.maxHops = 33; XCTAssertFalse(BotWorkspaceStore.validTeamDraft(draft, unrestrictedTeams: true))
+        draft.limits.maxHops = 8; draft.limits.maxDepth = 5; XCTAssertFalse(BotWorkspaceStore.validTeamDraft(draft, unrestrictedTeams: true))
+        draft.limits.maxDepth = 2; draft.limits.maxDurationMs = 3_600_001; XCTAssertFalse(BotWorkspaceStore.validTeamDraft(draft, unrestrictedTeams: true))
+    }
+    func testLegacyTeamValidationRetainsTwelveAndPositiveParallelBounds() {
+        var draft = sharedDraft(); draft.limits.maxParallel = 0
+        XCTAssertFalse(BotWorkspaceStore.validTeamDraft(draft))
+        draft.limits.maxParallel = 8; XCTAssertTrue(BotWorkspaceStore.validTeamDraft(draft))
+        draft.limits.maxParallel = 9; XCTAssertFalse(BotWorkspaceStore.validTeamDraft(draft))
+        draft.limits.maxParallel = 2; draft.memberIds = (0..<13).map { "bot_\($0)" }; draft.coordinatorId = "bot_0"
+        XCTAssertFalse(BotWorkspaceStore.validTeamDraft(draft))
+        draft.memberIds.removeLast(); XCTAssertTrue(BotWorkspaceStore.validTeamDraft(draft))
+    }
+    func testLargeTeamCreationRequiresCapabilityAndSendsEveryMemberWithCanonicalZero() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }; var supported = false
+        let ids = (0..<15).map { "bot_\($0)" }
+        var row = managedTeam(); row["memberIds"] = ids; row["coordinatorId"] = ids[0]
+        fixture.respond { request in
+            if request.httpMethod == "POST" { return ["team": row] }
+            return ["teams": [], "runs": [], "teamUnrestrictedSupported": supported]
+        }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(); await workspace.refreshTeams()
+        let draft = BotTeamDraft(name: "Large team", memberIds: ids, coordinatorId: ids[0])
+        let legacyRejected = await workspace.createTeam(draft); XCTAssertFalse(legacyRejected)
+        XCTAssertFalse(fixture.requests.contains { $0.method == "POST" })
+        supported = true; await workspace.refreshTeams()
+        let created = await workspace.createTeam(draft); XCTAssertTrue(created)
+        let post = try XCTUnwrap(fixture.requests.first { $0.method == "POST" })
+        XCTAssertEqual(post.jsonBody?["memberIds"] as? [String], ids)
+        XCTAssertEqual((post.jsonBody?["limits"] as? [String: Int])?["maxParallel"], 0)
+        XCTAssertFalse(fixture.requests.contains { $0.path.contains("/runs") || $0.path.contains("/computer") || $0.path.contains("/models") })
+    }
+    func testUnrestrictedTeamUpdateCanonicalizesLegacyPositiveAndRetainsOtherLimits() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let ids = ["bot_coder", "bot_reviewer"] + (0..<13).map { "bot_extra_\($0)" }
+        fixture.respond { request in
+            var row = self.managedTeam(revision: request.httpMethod == "PATCH" ? 2 : 1); row["memberIds"] = ids
+            if request.httpMethod == "PATCH" { return ["team": row] }
+            var value = self.settingsSnapshot(); value["teams"] = [row]; value["teamUnrestrictedSupported"] = true; return value
+        }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(); await workspace.refreshTeams()
+        let original = try XCTUnwrap(workspace.teams?.teams.first)
+        var draft = sharedDraft(); draft.memberIds = ids; draft.limits.maxParallel = 8; draft.limits.maxTurns = 40
+        let saved = await workspace.updateTeam(original, draft: draft); XCTAssertTrue(saved)
+        let patch = try XCTUnwrap(fixture.requests.first { $0.method == "PATCH" })
+        XCTAssertEqual(patch.jsonBody?["memberIds"] as? [String], ids)
+        XCTAssertEqual(workspace.teams?.teams.first?.memberIds, ids)
+        XCTAssertEqual((patch.jsonBody?["limits"] as? [String: Int])?["maxParallel"], 0)
+        XCTAssertEqual((patch.jsonBody?["limits"] as? [String: Int])?["maxTurns"], 40)
+        XCTAssertEqual(patch.jsonBody?["expectedRevision"] as? Int, 1)
+    }
+}
+
+extension BotWorkspaceTests {
+    func testUnrestrictedChannelPreservesEveryExplicitRecipientAndRejectsNonmembers() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let ids = (0..<15).map { "bot_\($0)" }
+        var row = managedTeam(); row["memberIds"] = ids; row["coordinatorId"] = ids[0]
+        fixture.respond { request in
+            if request.url!.path.hasSuffix("/channel") { return self.channelSnapshot([]) }
+            if request.url!.path.hasSuffix("/messages") { return ["channel": self.channelSnapshot([self.channelEntry(1)])] }
+            return ["teams": [row], "runs": [], "teamUnrestrictedSupported": true]
+        }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(); await workspace.refreshTeams(); await workspace.refreshChannel("team_fixture")
+        let selected = try decode(row, as: BotTeam.self)
+        let sent = await workspace.postTeamMessage(selected, draft: BotTeamChannelPost(message: "Hi everyone", requestId: "large_room", recipientIds: ids))
+        XCTAssertTrue(sent)
+        let post = try XCTUnwrap(fixture.requests.first { $0.method == "POST" })
+        XCTAssertEqual(post.jsonBody?["recipientIds"] as? [String], ids)
+        let outside = await workspace.postTeamMessage(selected, draft: BotTeamChannelPost(message: "Hello", requestId: "invalid_room", recipientIds: ["outside"]))
+        XCTAssertFalse(outside); XCTAssertEqual(fixture.requests.filter { $0.method == "POST" }.count, 1)
+    }
+    func testTeamCreationRechecksCurrentSavedProfilesBeforeSending() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { request in
+            if request.url!.path == "/v1/bots" {
+                return ["bots": [["id": "bot_coder", "name": "Coder", "provider": "codex", "model": "fixture", "capabilities": "code", "policy": "manual", "execution": ["kind": "local"]]], "providers": [], "computers": []]
+            }
+            return ["teams": [], "runs": [], "teamUnrestrictedSupported": true]
+        }
+        let store = fixture.makeStore(); await store.refreshBots()
+        let workspace = store.botWorkspaceStore(); await workspace.refreshTeams()
+        let created = await workspace.createTeam(BotTeamDraft(name: "Missing profile", memberIds: ["bot_coder", "bot_removed"], coordinatorId: "bot_coder"))
+        XCTAssertFalse(created); XCTAssertFalse(fixture.requests.contains { $0.method == "POST" })
+    }
+}
+
+extension BotWorkspaceTests {
+    func testLargeRosterOpeningRepliesAreSeparateFromWorkTurnCount() throws {
+        var value = runRecord(); value["consumedTurns"] = 51; value["rosterFanoutTurns"] = 27
+        let run = try decode(value, as: BotTeamRun.self)
+        XCTAssertEqual(run.rosterFanoutTurns, 27); XCTAssertEqual(run.workTurns, 24)
+        XCTAssertEqual(run.turnLabel(unrestrictedTeams: true), "24 work turns")
+        XCTAssertEqual(run.turnLabel(unrestrictedTeams: false), "51 turns")
+        let legacy = try decode(runRecord(), as: BotTeamRun.self)
+        XCTAssertNil(legacy.rosterFanoutTurns); XCTAssertEqual(legacy.workTurns, legacy.consumedTurns)
+        value["rosterFanoutTurns"] = 100; XCTAssertEqual(try decode(value, as: BotTeamRun.self).workTurns, 0)
+        value["consumedTurns"] = Int.min; value["rosterFanoutTurns"] = Int.max
+        XCTAssertEqual(try decode(value, as: BotTeamRun.self).workTurns, 0)
+    }
+}

@@ -122,7 +122,7 @@ test('old hosts return explicit upgrade reasons for all four read-only destinati
 
 test('team limits and skill size boundaries match host validation', () => {
   const valid = { name: 'Team', memberIds: team.memberIds, coordinatorId: team.coordinatorId, limits };
-  for (const body of [{ ...valid, memberIds: ['bot_coder'] }, { ...valid, name: 'x'.repeat(81) }, { ...valid, limits: { maxParallel: 9 } }, { ...valid, limits: { maxDepth: 0 } }]) assert.throws(() => botWorkspaceRequest('/api/bots/teams', 'POST', body), { status: 403 });
+  for (const body of [{ ...valid, memberIds: ['bot_coder'] }, { ...valid, name: 'x'.repeat(81) }, { ...valid, limits: { maxParallel: Number.MAX_SAFE_INTEGER + 1 } }, { ...valid, limits: { maxDepth: 0 } }]) assert.throws(() => botWorkspaceRequest('/api/bots/teams', 'POST', body), { status: 403 });
   assert.throws(() => botWorkspaceRequest('/api/bots/skills', 'POST', { name: 'x'.repeat(121), description: '', body: 'x' }), { status: 403 });
   assert.throws(() => botWorkspaceRequest('/api/bots/skills', 'POST', { name: 'x', description: '', body: 'x', triggers: ['x'.repeat(161)] }), { status: 403 });
 });

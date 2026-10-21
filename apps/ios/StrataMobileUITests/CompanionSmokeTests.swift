@@ -1190,6 +1190,41 @@ final class CompanionSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testLargeTeamCreationUsesAllAvailableTeammates() async throws {
+        let control = try pairWorkspaceFixture(), initial = try await fixtureControl(control, action: "state")
+        let members = try XCTUnwrap(initial["roomMembers"] as? [[String: Any]])
+        XCTAssertEqual(members.count, 15)
+        let ids = try members.prefix(14).map { try XCTUnwrap($0["id"] as? String) }
+        try openCreateMenu()
+        try tapWorkspace(app.buttons["createBotTeamButton"])
+        let name = app.textFields["botTeamNameInput"]; try require(name); name.tap(); name.typeText("Studio fourteen")
+        if app.keyboards.firstMatch.exists { app.buttons["dismissBotTeamNameKeyboardButton"].tap() }
+        for id in ids { try tapSwitch(app.switches["teamMember-" + id]) }
+        try tapWorkspace(app.buttons["Work limits"])
+        let unlimited = app.descendants(matching: .any).matching(identifier: "teamParallelAvailableLabel").firstMatch
+        try tapWorkspace(unlimited, performTap: false)
+        XCTAssertFalse(app.steppers["teamParallelLimitStepper"].exists)
+        attachScreenshot("Team creation — fourteen members and all available parallel work")
+        let save = app.buttons["confirmBotTeamButton"]; try waitEnabled(save); save.tap()
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: name)
+        XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 15), .completed)
+        let state = try await fixtureControl(control, action: "state")
+        let calls = try XCTUnwrap(state["calls"] as? [[String: Any]])
+        let posts = calls.filter { $0["path"] as? String == "/api/bots/teams" && $0["method"] as? String == "POST" }
+        XCTAssertEqual(posts.count, 1)
+        let body = try XCTUnwrap(posts.first?["body"] as? [String: Any])
+        let sent = try XCTUnwrap(body["memberIds"] as? [String])
+        XCTAssertEqual(sent.count, 14); XCTAssertEqual(Set(sent), Set(ids))
+        XCTAssertEqual((body["limits"] as? [String: Int])?["maxParallel"], 0)
+        let teams = try XCTUnwrap((state["teamSettings"] as? [String: Any])?["teams"] as? [[String: Any]])
+        let created = try XCTUnwrap(teams.first { $0["name"] as? String == "Studio fourteen" })
+        XCTAssertEqual(Set(created["memberIds"] as? [String] ?? []), Set(ids))
+        XCTAssertEqual((created["limits"] as? [String: Int])?["maxParallel"], 0)
+        XCTAssertTrue((state["roomTurns"] as? [Any])?.isEmpty == true)
+        XCTAssertFalse(calls.contains { ($0["path"] as? String)?.hasSuffix("/runs") == true || ($0["path"] as? String)?.hasSuffix("/messages") == true || ($0["path"] as? String)?.contains("/computer/") == true })
+    }
+
+    @MainActor
     func testTeamMembershipSharedComputerFoldersConflictAndPersistence() async throws {
         let control = try pairWorkspaceFixture(), initial = try await fixtureControl(control, action: "state")
         let team = try XCTUnwrap(initial["roomTeam"] as? [String: Any]), id = try XCTUnwrap(team["id"] as? String)

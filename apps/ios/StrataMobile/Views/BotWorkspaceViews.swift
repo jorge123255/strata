@@ -75,7 +75,7 @@ struct BotTeamEditor: View {
         _name = State(initialValue: team?.name ?? "")
         _selected = State(initialValue: Set(team?.memberIds ?? []))
         _coordinator = State(initialValue: team?.coordinatorId ?? "")
-        _limits = State(initialValue: team?.limits ?? BotTeamLimits())
+        _limits = State(initialValue: (team?.limits ?? BotTeamLimits()).forHost(unrestrictedTeams: workspace.unrestrictedTeams))
         _executionMode = State(initialValue: team?.execution?.mode ?? "individual")
         _computerId = State(initialValue: team?.execution?.computerId ?? "")
         _folder = State(initialValue: team?.execution?.workspace ?? "")
@@ -83,18 +83,19 @@ struct BotTeamEditor: View {
     }
     private var supportsSettings: Bool { workspace.teams?.teamSettingsSupported == true }
     private var supportsInstructions: Bool { workspace.teams?.teamInstructionsSupported == true }
+    private var unrestrictedTeams: Bool { workspace.unrestrictedTeams }
     private var current: BotTeam? { baseline.flatMap { old in workspace.teams?.teams.first { $0.id == old.id } } }
     private var hasActiveWork: Bool { baseline.map { old in workspace.teams?.runs.contains { $0.teamId == old.id && $0.isActive } == true } ?? false }
     private var changed: Bool { baseline != nil && (current == nil || current?.revision != baseline?.revision) }
     private var computers: [BotTeamComputer] { (workspace.teams?.teamComputers ?? []).filter { $0.memberId == nil || selected.contains($0.memberId!) } }
     private var chosenComputer: BotTeamComputer? { computers.first { $0.id == computerId } }
     private var draft: BotTeamDraft {
-        BotTeamDraft(name: name.trimmingCharacters(in: .whitespacesAndNewlines), memberIds: selected.sorted(), coordinatorId: coordinator, limits: limits,
+        BotTeamDraft(name: name.trimmingCharacters(in: .whitespacesAndNewlines), memberIds: selected.sorted(), coordinatorId: coordinator, limits: limits.forHost(unrestrictedTeams: unrestrictedTeams),
                      execution: supportsSettings ? (executionMode == "shared" ? BotTeamExecution(mode: "shared", computerId: computerId, workspace: folder.trimmingCharacters(in: .whitespacesAndNewlines)) : .individual) : nil,
                      briefing: supportsInstructions ? BotTeamBriefing(instructions: briefing.instructions.trimmingCharacters(in: .whitespacesAndNewlines), members: briefing.members.filter { selected.contains($0.botId) }.map { BotTeamMemberBriefing(botId: $0.botId, role: $0.role.trimmingCharacters(in: .whitespacesAndNewlines), instructions: $0.instructions.trimmingCharacters(in: .whitespacesAndNewlines)) }.filter { !$0.role.isEmpty || !$0.instructions.isEmpty }.sorted { $0.botId < $1.botId }) : nil)
     }
     private var canSave: Bool {
-        BotWorkspaceStore.validTeamDraft(draft) && workspace.mutation == nil && !hasActiveWork && !changed &&
+        BotWorkspaceStore.validTeamDraft(draft, unrestrictedTeams: unrestrictedTeams, availableMemberIds: Set(store.botCatalog?.bots.map(\.id) ?? [])) && workspace.mutation == nil && !hasActiveWork && !changed &&
         (baseline == nil || (supportsSettings && baseline?.revision != nil)) &&
         (executionMode != "shared" || (chosenComputer?.available == true && chosenComputer?.allowsFolder(folder.trimmingCharacters(in: .whitespacesAndNewlines)) == true))
     }
@@ -123,7 +124,7 @@ struct BotTeamEditor: View {
                         if coordinator.isEmpty { Text("Choose a coordinator").tag("") }
                         ForEach((store.botCatalog?.bots ?? []).filter { selected.contains($0.id) }) { bot in Text(bot.name).tag(bot.id) }
                     }.accessibilityIdentifier("teamCoordinatorPicker")
-                    Text("The coordinator assigns work and brings results together. Choose 2–12 teammates.").font(.caption).foregroundStyle(.secondary)
+                    Text(unrestrictedTeams ? "The coordinator assigns work and brings results together. Choose at least two teammates." : "The coordinator assigns work and brings results together. Choose 2–12 teammates.").font(.caption).foregroundStyle(.secondary)
                 } header: { Text("Team members") }
                 if supportsInstructions {
                     Section {
@@ -190,10 +191,17 @@ struct BotTeamEditor: View {
                 }
                 Section {
                     DisclosureGroup("Work limits") {
-                        Stepper("Parallel bots: \(limits.maxParallel)", value: $limits.maxParallel, in: 1...8)
+                        if unrestrictedTeams {
+                            LabeledContent("Parallel work", value: "All available teammates").accessibilityIdentifier("teamParallelAvailableLabel")
+                        } else {
+                            Stepper("Parallel bots: \(limits.maxParallel)", value: $limits.maxParallel, in: 1...8).accessibilityIdentifier("teamParallelLimitStepper")
+                        }
                         Stepper("Delegation depth: \(limits.maxDepth)", value: $limits.maxDepth, in: 1...4)
                         Stepper("Message hops: \(limits.maxHops)", value: $limits.maxHops, in: 1...32)
-                        Stepper("Conversation turns: \(limits.maxTurns)", value: $limits.maxTurns, in: 1...100)
+                        Stepper("\(unrestrictedTeams ? "Work turns" : "Conversation turns"): \(limits.maxTurns)", value: $limits.maxTurns, in: 1...100)
+                        if unrestrictedTeams && selected.count > 24 && limits.maxTurns >= 24 {
+                            Text("Large teams can answer the opening invitation once each; work and follow-up turns use this budget.").font(.caption).foregroundStyle(.secondary)
+                        }
                         Stepper("Time limit: \(limits.maxDurationMs / 60_000) minutes", value: Binding(get: { limits.maxDurationMs / 60_000 }, set: { limits.maxDurationMs = $0 * 60_000 }), in: 1...60)
                     }
                     if baseline == nil { Text("Review and enable the saved team before sending its first task.").font(.caption).foregroundStyle(.secondary) }
@@ -238,10 +246,10 @@ struct BotTeamEditor: View {
                     if anchor { Text("Hosts the shared computer. Choose another before removing.").font(.caption).foregroundStyle(.secondary) }
                 }
             }
-        }.disabled(anchor).accessibilityIdentifier("teamMember-\(id)")
+        }.disabled(anchor || !unrestrictedTeams && selected.count >= 12 && !selected.contains(id)).accessibilityIdentifier("teamMember-\(id)")
     }
     private func reload(_ team: BotTeam) {
-        baseline = team; name = team.name; selected = Set(team.memberIds); coordinator = team.coordinatorId; limits = team.limits
+        baseline = team; name = team.name; selected = Set(team.memberIds); coordinator = team.coordinatorId; limits = team.limits.forHost(unrestrictedTeams: unrestrictedTeams)
         executionMode = team.execution?.mode ?? "individual"; computerId = team.execution?.computerId ?? ""; folder = team.execution?.workspace ?? ""
         briefing = team.briefing ?? BotTeamBriefing()
     }
@@ -378,7 +386,7 @@ struct BotTeamDetailView: View {
                 } else if activeRuns.count > 1 {
                     Menu {
                         ForEach(activeRuns) { run in
-                            Button("Stop \(run.stateLabel.lowercased()) task · \(run.consumedTurns) turns", role: .destructive) { confirmingStop = run }
+                            Button("Stop \(run.stateLabel.lowercased()) task · \(run.turnLabel(unrestrictedTeams: workspace.unrestrictedTeams))", role: .destructive) { confirmingStop = run }
                                 .accessibilityIdentifier("stopBotTeamRun-\(run.id)")
                         }
                     } label: { Label("Team work", systemImage: "stop.circle") }.disabled(workspace.mutation != nil)
@@ -493,7 +501,7 @@ struct BotTeamDetailView: View {
                     .accessibilityIdentifier("openTeamComputerButton")
             }
         } else { LabeledContent("Execution", value: "Each bot’s computer") }
-        LabeledContent("Limits", value: "\(team.limits.maxParallel) parallel · \(team.limits.maxTurns) turns · \(team.limits.maxDurationMs / 60_000)m")
+        LabeledContent("Limits", value: "\(team.limits.parallelLabel(unrestrictedTeams: workspace.unrestrictedTeams)) · \(team.limits.maxTurns) \(workspace.unrestrictedTeams ? "work turns" : "turns") · \(team.limits.maxDurationMs / 60_000)m")
         Text("Everyone can join the conversation. The coordinator assigns work and brings results together. Each bot keeps its own model and permissions.").font(.caption).foregroundStyle(.secondary)
         Button(team.enabled ? "Disable team" : "Enable reviewed team") { Task { await workspace.setTeamEnabled(team, enabled: !team.enabled) } }
             .disabled(workspace.mutation != nil || !activeRuns.isEmpty)
@@ -558,7 +566,7 @@ struct BotTeamDetailView: View {
     }
     private func runRow(_ run: BotTeamRun) -> some View {
         VStack(alignment: .leading, spacing: 9) {
-            HStack { Text(run.stateLabel).font(.subheadline.weight(.semibold)); Spacer(); Text("\(run.consumedTurns) turns").font(.caption).foregroundStyle(.secondary) }
+            HStack { Text(run.stateLabel).font(.subheadline.weight(.semibold)); Spacer(); Text(run.turnLabel(unrestrictedTeams: workspace.unrestrictedTeams)).font(.caption).foregroundStyle(.secondary) }
             if let detail = run.detail { Text(detail).font(.caption).foregroundStyle(.secondary) }
             BotSharedConversationButton(store: store, chatId: run.rootChatId, title: "Open task conversation", openChat: { showingDetails = false; openChat() })
             if run.isActive { Button("Stop team task", role: .destructive) { confirmingStop = run }.buttonStyle(.borderless).disabled(workspace.mutation != nil).accessibilityIdentifier("stopBotTeamRunDetails-\(run.id)") }

@@ -1,7 +1,7 @@
 /** Public team roles are separate from each bot's private profile and permissions. */
 
 const fault = message => Object.assign(new Error(message), { status: 400 });
-export const TEAM_BRIEFING_LIMITS = Object.freeze({ instructions: 8000, role: 120, memberInstructions: 4000, members: 12, total: 24000 });
+export const TEAM_BRIEFING_LIMITS = Object.freeze({ instructions: 8000, role: 120, memberInstructions: 4000, total: 24000 });
 const ownObject = value => value !== null && typeof value === 'object' && !Array.isArray(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value));
 const invalidControl = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
 
@@ -14,7 +14,7 @@ function text(value, maximum, label) {
   return value.replace(/\r\n?/g, '\n').trim();
 }
 function roster(memberIds) {
-  if (!Array.isArray(memberIds) || memberIds.length > TEAM_BRIEFING_LIMITS.members || new Set(memberIds).size !== memberIds.length || memberIds.some(id => typeof id !== 'string' || !/^[A-Za-z0-9_.:-]{1,100}$/.test(id))) throw fault('Choose the current team members before setting their instructions.');
+  if (!Array.isArray(memberIds) || memberIds.length < 2 || new Set(memberIds).size !== memberIds.length || memberIds.some(id => typeof id !== 'string' || !/^[A-Za-z0-9_.:-]{1,100}$/.test(id))) throw fault('Choose the current team members before setting their instructions.');
   return new Set(memberIds);
 }
 
@@ -25,7 +25,7 @@ export function normalizeTeamBriefing(input, memberIds) {
   keys(input, ['instructions', 'members']);
   const instructions = text(input.instructions, TEAM_BRIEFING_LIMITS.instructions, 'team instruction');
   const rows = input.members === undefined ? [] : input.members;
-  if (!Array.isArray(rows) || rows.length > TEAM_BRIEFING_LIMITS.members) throw fault('Give instructions to at most 12 team members.');
+  if (!Array.isArray(rows)) throw fault('Give each current team member one set of public instructions.');
   const seen = new Set(), members = [];
   let total = instructions.length;
   for (const row of rows) {

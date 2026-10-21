@@ -35,3 +35,17 @@ Pairing invitations expire after five minutes and work once. Start a fresh fixtu
 
 
 `--test-computer "platform=iOS Simulator,id=<dedicated-scratch-simulator>"` runs the actual sample avatar and isolated-computer workflow. Its separately generated `computer-fixture.png` is an explicit synthetic screen, never a captured Mac/VM screen. The scenario checks enum-only avatar saving, the locked CUA `/workspace` folder, read-only opening, explicit Start, confirmed takeover, aspect-fit tap mapping, text/key input, release on leaving/background, and confirmed Stop. The fixture does not prepare CUA, start any VM, open SSH, or send provider/model prompts. `--test-bots` uses a host-mode bot to retain coverage for a selected remote workspace; `--test-computer` uses CUA mode.
+
+
+For capability-aware team creation with fourteen selected members from fifteen saved bots:
+
+```sh
+node apps/ios/test-support/companion-fixture.mjs --test-unrestricted-teams \
+  'platform=iOS Simulator,id=<dedicated-scratch-simulator>'
+```
+
+This opt-in fixture runs `CompanionSmokeTests/testLargeTeamCreationUsesAllAvailableTeammates`.
+It verifies the actual native picker, all selected IDs in the authenticated bridge request,
+and canonical `maxParallel: 0` (“All available teammates”). It creates only an inert saved
+team. It starts no model turn, SSH request, browser or CUA guest. Default fixture modes
+continue advertising the legacy twelve-member/positive-parallel contract.

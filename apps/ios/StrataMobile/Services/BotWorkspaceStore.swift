@@ -20,10 +20,14 @@ final class BotWorkspaceStore: ObservableObject {
     @Published private(set) var isPreparingAssignment = false
     private let client: CompanionClient?
     private let isCurrent: () -> Bool
+    private let currentBotIds: () -> Set<String>?
     private var requests: [String: UUID] = [:]
     private var channelCursors: [String: Int] = [:]
 
-    init(client: CompanionClient?, isCurrent: @escaping () -> Bool) { self.client = client; self.isCurrent = isCurrent }
+    init(client: CompanionClient?, isCurrent: @escaping () -> Bool, currentBotIds: @escaping () -> Set<String>? = { nil }) {
+        self.client = client; self.isCurrent = isCurrent; self.currentBotIds = currentBotIds
+    }
+    var unrestrictedTeams: Bool { teams?.teamUnrestrictedSupported == true }
 
     func refreshTeams() async {
         await load("teams", path: "/v1/bots/teams") { (value: BotTeamsSnapshot) in self.teams = value; self.messages["teams"] = value.reason }
@@ -81,9 +85,10 @@ final class BotWorkspaceStore: ObservableObject {
     }
 
     func createTeam(_ draft: BotTeamDraft) async -> Bool {
-        guard Self.validTeamDraft(draft), validTeamExecution(draft), draft.briefing == nil || teams?.teamInstructionsSupported == true else { return false }
+        guard Self.validTeamDraft(draft, unrestrictedTeams: unrestrictedTeams, availableMemberIds: currentBotIds()), validTeamExecution(draft), draft.briefing == nil || teams?.teamInstructionsSupported == true else { return false }
         struct Result: Decodable { var team: BotTeam }
-        let value: Result? = await change("teams", path: "/v1/bots/teams", body: draft)
+        var body = draft; body.limits = draft.limits.forHost(unrestrictedTeams: unrestrictedTeams)
+        let value: Result? = await change("teams", path: "/v1/bots/teams", body: body)
         if value != nil { await refreshTeams() }
         return value != nil && isCurrent()
     }
@@ -92,10 +97,10 @@ final class BotWorkspaceStore: ObservableObject {
               let revision = team.revision, revision > 0,
               teams?.teams.first(where: { $0.id == team.id })?.revision == revision,
               teams?.runs.contains(where: { $0.teamId == team.id && $0.isActive }) != true,
-              Self.validTeamDraft(draft), validTeamExecution(draft), draft.briefing == nil || teams?.teamInstructionsSupported == true else { return false }
+              Self.validTeamDraft(draft, unrestrictedTeams: unrestrictedTeams, availableMemberIds: currentBotIds()), validTeamExecution(draft), draft.briefing == nil || teams?.teamInstructionsSupported == true else { return false }
         struct Result: Decodable { var team: BotTeam }
         let body = BotTeamUpdate(expectedRevision: revision, name: draft.name, memberIds: draft.memberIds,
-                                 coordinatorId: draft.coordinatorId, limits: draft.limits, execution: draft.execution ?? .individual, briefing: draft.briefing)
+                                 coordinatorId: draft.coordinatorId, limits: draft.limits.forHost(unrestrictedTeams: unrestrictedTeams), execution: draft.execution ?? .individual, briefing: draft.briefing)
         let value: Result? = await change("teams", path: "/v1/bots/teams/\(team.id)", method: "PATCH", body: body)
         if value != nil { await refreshTeams() }
         return value != nil && isCurrent()
@@ -106,13 +111,18 @@ final class BotWorkspaceStore: ObservableObject {
             $0.id == execution.computerId && $0.available && ($0.memberId == nil || draft.memberIds.contains($0.memberId!)) && $0.allowsFolder(execution.workspace ?? "")
         } == true
     }
-    static func validTeamDraft(_ draft: BotTeamDraft) -> Bool {
+    static func validTeamDraft(_ draft: BotTeamDraft, unrestrictedTeams: Bool = false, availableMemberIds: Set<String>? = nil) -> Bool {
         guard !draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, draft.name.count <= 80,
-              (2...12).contains(draft.memberIds.count), Set(draft.memberIds).count == draft.memberIds.count,
-              draft.memberIds.allSatisfy(CompanionClient.isSafeIdentifier), draft.memberIds.contains(draft.coordinatorId) else { return false }
+              draft.memberIds.count >= 2, unrestrictedTeams || draft.memberIds.count <= 12,
+              Set(draft.memberIds).count == draft.memberIds.count,
+              draft.memberIds.allSatisfy(CompanionClient.isSafeIdentifier), draft.memberIds.contains(draft.coordinatorId),
+              availableMemberIds.map({ Set(draft.memberIds).isSubset(of: $0) }) != false,
+              unrestrictedTeams ? draft.limits.maxParallel >= 0 : (1...8).contains(draft.limits.maxParallel),
+              (1...4).contains(draft.limits.maxDepth), (1...32).contains(draft.limits.maxHops),
+              (1...100).contains(draft.limits.maxTurns), (60_000...3_600_000).contains(draft.limits.maxDurationMs) else { return false }
         if let briefing = draft.briefing {
             func validText(_ value: String, max: Int) -> Bool { value.utf16.count <= max && !value.contains("\0") }
-            guard validText(briefing.instructions, max: 8_000), briefing.members.count <= 12,
+            guard validText(briefing.instructions, max: 8_000), briefing.members.count <= draft.memberIds.count,
                   Set(briefing.members.map(\.botId)).count == briefing.members.count,
                   briefing.members.allSatisfy({ draft.memberIds.contains($0.botId) && validText($0.role, max: 120) && validText($0.instructions, max: 4_000) }),
                   briefing.instructions.utf16.count + briefing.members.reduce(0, { $0 + $1.role.utf16.count + $1.instructions.utf16.count }) <= 24_000 else { return false }

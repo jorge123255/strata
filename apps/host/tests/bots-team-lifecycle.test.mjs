@@ -125,18 +125,22 @@ test('pending admission tokens reject wrong jobs, stale generations, duplicates 
 test('durable finalization failure resolves an awaiting Stop, revokes the run and never starts queued children', async t => {
   let f, entered = false;
   f = fixture(t, async input => {
-    if (input.bot.id !== f.coordinator.id) assert.fail('Queued child cannot start after journal failure');
-    await input.executeTool('spawn_subagent', { botId: f.worker.id, message: 'Queued child' }, 'child'); entered = true;
+    if (input.bot.id !== f.coordinator.id) {
+      assert.ok(!input.message.includes('Queued second child'), 'The queued sibling cannot start after journal failure');
+    } else {
+      await input.executeTool('spawn_subagent', { botId: f.worker.id, message: 'Running child' }, 'child');
+      await input.executeTool('spawn_subagent', { botId: f.worker.id, message: 'Queued second child' }, 'queued-child'); entered = true;
+    }
     await new Promise(resolve => { input.signal.addEventListener('abort', resolve, { once: true }); if (input.signal.aborted) resolve(); });
   });
-  const run = f.bots.team.start(f.team.id, { message: 'Delegate and wait' }).run; await until(() => entered);
+  const run = f.bots.team.start(f.team.id, { message: 'Delegate and wait' }).run; await until(() => entered && f.seen.length === 2);
   const file = join(f.directory, 'bot-teams.json'), backup = join(f.directory, 'saved-teams.json'); renameSync(file, backup); mkdirSync(file);
   try {
     const stopped = await Promise.race([f.bots.stop(run.rootChatId, { team: false }), new Promise((_, reject) => setTimeout(() => reject(new Error('Stop waited forever for finalization')), 1500))]);
     assert.equal(stopped.stopped, true); await until(() => !f.chats.detail(run.rootChatId).conversation.active);
     assert.equal(f.bots.team.detail(f.team.id, run.id).run.state, 'cleanup_pending');
     assert.equal(f.bots.team.activity().activity.some(row => row.runId === run.id && row.state === 'queued'), false);
-    f.bots.team.tick(); assert.equal(f.seen.length, 1);
+    f.bots.team.tick(); assert.equal(f.seen.length, 2);
   } finally { rmSync(file, { recursive: true }); renameSync(backup, file); }
   await f.bots.team.stop(f.team.id, run.id);
   assert.equal(f.bots.team.detail(f.team.id, run.id).run.state, 'cancelled');

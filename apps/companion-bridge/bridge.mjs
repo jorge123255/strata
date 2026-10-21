@@ -504,7 +504,7 @@ export function publicBots(body) {
     hostFolderSupported: body.hostFolderSupported === true,
     ...(Array.isArray(body.avatarShapes) ? { avatarShapes: BOT_AVATAR_SHAPES.filter(shape => body.avatarShapes.includes(shape)) } : {}),
     ...(body.lifecycleSupported === true && typeof body.defaultWorkspace === 'string' ? { defaultWorkspace: shortText(body.defaultWorkspace, 4_000) } : {}),
-    bots: body.bots.slice(0, 500).filter(bot => bot && safeId(bot.id) && providers.has(bot.provider)).map(bot => ({
+    bots: body.bots.filter(bot => bot && safeId(bot.id) && providers.has(bot.provider)).map(bot => ({
       ...(body.lifecycleSupported === true ? { instructions: shortText(bot.instructions, 32_000), updatedAt: shortText(bot.updatedAt, 60), ...(safeId(bot.computerId) ? { computerId: bot.computerId } : {}) } : {}),
       active: bot.active === true,
       id: bot.id, name: shortText(bot.name, 200) || 'Bot', provider: bot.provider, model: shortText(bot.model, 300),

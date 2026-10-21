@@ -35,7 +35,7 @@ test('full replacement is deterministic, detached, trims text and omits empty me
 test('only current member IDs and public briefing fields are accepted', () => {
   const rejected = [null, [], 'instructions', new Date(), { policy: 'bypass' }, { provider: 'devin' }, { execution: { kind: 'ssh' } }, { members: null }, { members: {} }, { members: [null] }, { members: [{ botId: 'bot_outside', role: 'Builder' }] }, { members: [{ botId: ids[1], role: 'Builder', policy: 'bypass' }] }, { members: [{ botId: ids[1] }, { botId: ids[1] }] }, { members: [{ botId: ids[1], instructions: 3 }] }, { instructions: true }];
   for (const input of rejected) assert.throws(() => normalizeTeamBriefing(input, ids), { status: 400 });
-  for (const roster of [null, {}, [ids[0], ids[0]], [null], ['../private'], Array.from({ length: 13 }, (_, i) => `bot_${i}`)]) assert.throws(() => normalizeTeamBriefing(undefined, roster), { status: 400 });
+  for (const roster of [null, {}, [ids[0], ids[0]], [null], ['../private'], [], [ids[0]]]) assert.throws(() => normalizeTeamBriefing(undefined, roster), { status: 400 });
   // Empty rows cannot smuggle nonexistent or repeated identities through omission.
   assert.throws(() => normalizeTeamBriefing({ members: [{ botId: 'bot_outside' }] }, ids), { status: 400 });
 });

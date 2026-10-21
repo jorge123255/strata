@@ -69,6 +69,15 @@ struct BotTeamLimits: Codable, Equatable {
     var maxHops = 8
     var maxTurns = 24
     var maxDurationMs = 600_000
+    func forHost(unrestrictedTeams: Bool) -> Self {
+        var value = self
+        if unrestrictedTeams { value.maxParallel = 0 }
+        else if value.maxParallel == 0 { value.maxParallel = 2 }
+        return value
+    }
+    func parallelLabel(unrestrictedTeams: Bool = false) -> String {
+        unrestrictedTeams || maxParallel == 0 ? "All available teammates" : "\(maxParallel) parallel"
+    }
 }
 
 struct BotTeam: Decodable, Identifiable, Equatable {
@@ -140,6 +149,14 @@ struct BotTeamRun: Decodable, Identifiable, Equatable {
     var rootBotId: String
     var state: String
     var consumedTurns: Int
+    var rosterFanoutTurns: Int?
+    var workTurns: Int {
+        let total = max(0, consumedTurns)
+        return total - min(total, max(0, rosterFanoutTurns ?? 0))
+    }
+    func turnLabel(unrestrictedTeams: Bool) -> String {
+        unrestrictedTeams ? "\(workTurns) work turns" : "\(consumedTurns) turns"
+    }
     var detail: String?
     var isActive: Bool { ["queued", "running", "stopping", "cleanup_pending"].contains(state) }
     var stateLabel: String { state.replacingOccurrences(of: "_", with: " ").capitalized }
@@ -151,6 +168,7 @@ struct BotTeamsSnapshot: Decodable, Equatable {
     var reason: String?
     var teamSettingsSupported: Bool?
     var teamInstructionsSupported: Bool?
+    var teamUnrestrictedSupported: Bool?
     var teamComputers: [BotTeamComputer]?
 }
 

@@ -4,6 +4,19 @@ import { readFile } from 'node:fs/promises';
 import { transform } from 'esbuild';
 async function source(path) { const {code}=await transform(await readFile(new URL(path,import.meta.url),'utf8'),{loader:'ts',format:'esm'});return import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`); }
 const bots=await source('../src/lib/bots.ts'),connections=await source('../src/lib/bot-connections.ts');
+test('capable hosts allow full team rosters and all available teammates while older hosts keep their protocol',()=>{
+  const roster=Array.from({length:42},(_,i)=>({id:`member_${i}`}));
+  const draft={name:'Whole studio',memberIds:roster.map(bot=>bot.id),coordinatorId:roster[0].id,limits:{...bots.DEFAULT_BOT_TEAM_LIMITS,maxParallel:0},briefing:{instructions:'Work together',members:roster.map(bot=>({botId:bot.id,role:'Teammate',instructions:''}))}};
+  assert.equal(bots.botTeamDraftError(draft,roster,undefined,true),null);
+  assert.ok(bots.botTeamDraftError(draft,roster,undefined,false));
+  assert.equal(bots.botTeamDraftError({...draft,limits:{...draft.limits,maxParallel:42}},roster,undefined,true),null);
+  for(const value of [-1,1.5,Infinity,Number.MAX_SAFE_INTEGER+1]) assert.ok(bots.botTeamDraftError({...draft,limits:{...draft.limits,maxParallel:value}},roster,undefined,true));
+  assert.ok(bots.botTeamDraftError({...draft,memberIds:[...draft.memberIds,roster[0].id]},roster,undefined,true));
+  assert.ok(bots.botTeamDraftError({...draft,briefing:{...draft.briefing,members:[...draft.briefing.members,{botId:'outside',role:'',instructions:''}]}},roster,undefined,true));
+  assert.equal(bots.botTeamParallelLabel(draft.limits),'All available teammates');
+  assert.equal(bots.botTeamParallelLabel({...draft.limits,maxParallel:2},true),'All available teammates');
+  assert.equal(bots.botTeamParallelLabel({...draft.limits,maxParallel:2}),'2 parallel tasks');
+});
 test('team validation rejects missing members, stale bot identity, foreign coordinators and unbounded work',()=>{
   const draft={name:'Crew',memberIds:['a','b'],coordinatorId:'a',limits:{...bots.DEFAULT_BOT_TEAM_LIMITS}},roster=[{id:'a'},{id:'b'}];
   assert.equal(bots.botTeamDraftError(draft,roster),null);

@@ -93,7 +93,7 @@ final class CompanionStore: ObservableObject {
         let generation = connectionGeneration
         return BotWorkspaceStore(client: client, isCurrent: { [weak self] in
             self?.connectionGeneration == generation && self?.isPaired == true
-        })
+        }, currentBotIds: { [weak self] in self?.botCatalog.map { Set($0.bots.map(\.id)) } })
     }
 
     func supportedBotEfforts(_ bot: CompanionBot) async -> [String] {

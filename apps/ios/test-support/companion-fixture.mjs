@@ -50,9 +50,10 @@ const directBotsMode = process.argv[2] === '--test-direct-bots';
 const connectorAccountsMode = process.argv[2] === '--test-connector-accounts';
 const connectorMode = connectorAccountsMode || process.argv[2] === '--test-connectors';
 const supervisionMode = process.argv[2] === '--test-supervision';
+const unrestrictedTeamsMode = process.argv[2] === '--test-unrestricted-teams';
 const hostFolderMode = process.argv[2] === '--test-host-folder';
 let sharedHostFolder, folderVersion = '2026-10-21T00:00:00.000Z';
-const workspaceFlags = ['--test-host-folder', '--test-supervision', '--test-connector-accounts', '--test-connectors', '--test-devin-provider', '--test-direct-bots', '--test-team-settings', '--test-team-instructions', '--test-notifications', '--test-group-chat-layout', '--test-team-channel-layout', '--test-team-channel', '--test-bot-photos', '--test-bot-lifecycle', '--test-bot-avatar-states', '--test-workspace-skills', '--test-workspace-connections', '--test-workspace-teams', '--test-facelift'];
+const workspaceFlags = ['--test-unrestricted-teams', '--test-host-folder', '--test-supervision', '--test-connector-accounts', '--test-connectors', '--test-devin-provider', '--test-direct-bots', '--test-team-settings', '--test-team-instructions', '--test-notifications', '--test-group-chat-layout', '--test-team-channel-layout', '--test-team-channel', '--test-bot-photos', '--test-bot-lifecycle', '--test-bot-avatar-states', '--test-workspace-skills', '--test-workspace-connections', '--test-workspace-teams', '--test-facelift'];
 const workspaceMode = workspaceFlags.includes(process.argv[2]);
 let teamConversation, savedTeam, teamRun;
 const teamLimits = { maxParallel: 2, maxDepth: 2, maxHops: 8, maxTurns: 24, maxDurationMs: 600000 };
@@ -140,7 +141,7 @@ if (lifecycleMode) {
 // The new room acceptance uses the real durable bot/team/conversation services.
 // Only model output is scripted. No provider, shell, SSH, browser or VM exists.
 const teamSettingsMode = ['--test-team-settings', '--test-team-instructions'].includes(process.argv[2]);
-const teamChannelMode = ['--test-team-settings', '--test-team-instructions', '--test-team-channel', '--test-team-channel-layout', '--test-group-chat-layout'].includes(process.argv[2]);
+const teamChannelMode = ['--test-unrestricted-teams', '--test-team-settings', '--test-team-instructions', '--test-team-channel', '--test-team-channel-layout', '--test-group-chat-layout'].includes(process.argv[2]);
 let roomBots, roomChats, roomTeam, roomEmptyTeam, roomExtraMember, roomMembers = [], roomTurns = [];
 let settingsHold;
 const teamSettingsActions = [];
@@ -198,6 +199,9 @@ if (teamChannelMode) {
   });
   roomChats = createConversations({ directory, enabled: () => true, pending: id => roomBots.pending(id), stop: id => roomBots.stop(id), approve: input => roomBots.approve(input), validateSelection: selection => roomBots.validateSelection(selection), execute: input => roomBots.run(input) });
   roomMembers = ['Coordinator', 'Builder', 'Reviewer'].map((name, index) => roomBots.create({ name, provider: 'codex', model: 'Fixture model', workspace: teamSettingsMode ? '/workspace' : directory, ...(teamSettingsMode ? { computerMode: 'cua' } : {}), policy: 'bypass', avatarConfig: { color: ['sky', 'orange', 'violet'][index], eyes: 'round', ears: 'round', shape: ['orb', 'tile', 'spark'][index] } }).bot);
+  if (unrestrictedTeamsMode) {
+    for (let index = 4; index <= 15; index++) roomMembers.push(roomBots.create({ name: `Teammate ${String(index).padStart(2, '0')}`, provider: 'codex', model: 'Fixture model', workspace: directory, policy: 'manual' }).bot);
+  }
   roomTeam = roomBots.team.create({ name: 'Engineering', memberIds: roomMembers.map(bot => bot.id), coordinatorId: roomMembers[0].id, enabled: true }).team;
   if (teamSettingsMode) roomExtraMember = roomBots.create({ name: 'Remote helper', provider: 'codex', model: 'Fixture model', workspace: '/srv/fixture-project', execution: { kind: 'ssh', host: 'fixture.invalid', user: 'fixture', name: 'Fixture SSH computer' }, policy: 'manual' }).bot;
   if (['--test-team-settings', '--test-team-instructions', '--test-team-channel-layout', '--test-group-chat-layout'].includes(process.argv[2])) {
@@ -282,7 +286,15 @@ const host = {
       const route = new URL(path, 'http://fixture.invalid');
       const sharedComputer = /^\/api\/bots\/(bot_[a-f0-9-]+)\/computer$/.exec(route.pathname);
       if (teamSettingsMode && sharedComputer && roomMembers.some(member => member.id === sharedComputer[1]) && (options.method ?? 'GET') === 'GET') return computerState();
-      if (route.pathname === '/api/bots/teams') return options.method === 'POST' ? roomBots.team.create(options.body) : roomBots.team.list();
+      if (route.pathname === '/api/bots/teams') {
+        if (options.method === 'POST') return roomBots.team.create(options.body);
+        const snapshot = structuredClone(roomBots.team.list());
+        if (!unrestrictedTeamsMode) {
+          delete snapshot.teamUnrestrictedSupported;
+          for (const team of snapshot.teams) if (team.limits.maxParallel === 0) team.limits.maxParallel = 2;
+        }
+        return snapshot;
+      }
       const settings = /^\/api\/bots\/teams\/([^/]+)$/.exec(route.pathname);
       if (settings && options.method === 'PATCH') return roomBots.team.update(settings[1], options.body);
       const room = /^\/api\/bots\/teams\/([^/]+)\/(channel|messages)(?:\/([^/]+)\/(stop))?$/.exec(route.pathname);
@@ -601,7 +613,7 @@ try {
         response.writeHead(404).end(); return;
       }
       response.setHeader('Content-Type', 'application/json');
-      response.end(JSON.stringify({ ...(connectorService ? { connectors: connectorService.list(), connectorChecks, connectorToolCalls } : {}), conversation, createdBotConversation, pending, calls, ...(roomBots ? { teamChannel: roomBots.team.channel(roomTeam.id), roomTurns, roomTeam, roomEmptyTeam, ...(teamSettingsMode ? { teamSettings: roomBots.team.list(), roomMembers, roomExtraMember, teamSettingsFolder, teamSettingsOtherFolder, teamSettingsActions } : {}) } : {}), ...(lifecycleProfiles ? { lifecycle: await lifecycleProfiles.list() } : {}), computerRunning, computerControlled: !!computerControl, botFace, downloadJobs: Object.fromEntries(downloadJobs), planCount: nextPlan, downloadCount: nextDownload }));
+      response.end(JSON.stringify({ ...(connectorService ? { connectors: connectorService.list(), connectorChecks, connectorToolCalls } : {}), conversation, createdBotConversation, pending, calls, ...(roomBots ? { teamChannel: roomBots.team.channel(roomTeam.id), roomTurns, roomTeam, roomEmptyTeam, ...((teamSettingsMode || unrestrictedTeamsMode) ? { teamSettings: roomBots.team.list(), roomMembers, roomExtraMember, teamSettingsFolder, teamSettingsOtherFolder, teamSettingsActions } : {}) } : {}), ...(lifecycleProfiles ? { lifecycle: await lifecycleProfiles.list() } : {}), computerRunning, computerControlled: !!computerControl, botFace, downloadJobs: Object.fromEntries(downloadJobs), planCount: nextPlan, downloadCount: nextDownload }));
     } catch (error) {
       response.writeHead(500, { 'Content-Type': 'application/json' });
       response.end(JSON.stringify({ error: error.message }));
@@ -623,7 +635,7 @@ try {
         '-project', project, '-scheme', 'StrataMobile', '-destination', destination,
         '-derivedDataPath', derivedData,
         ...(process.env.STRATA_TEST_RESULT_BUNDLE ? ['-resultBundlePath', process.env.STRATA_TEST_RESULT_BUNDLE] : []),
-        '-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test-host-folder': 'testScopedHostFolderSettingsGrantAndRevokeWithoutStartingWork', '--test-supervision': 'testLiveBotSupervisionFiltersExactConversationAndLargeType', '--test-connector-accounts': 'testConnectorAccountsDiscoverBearerSetupAndMacSignInFallback', '--test-connectors': 'testConnectorsHTTPSetupTeamAccessToolsAndPersistence', '--test-devin-provider': 'testPhoneCreatesDevinBotWithHostModelsAndNoImplicitRun', '--test-direct-bots': 'testDirectBotRosterChatProfileNewConversationAndRelaunch', '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation', '--test-computer': 'testActualSampleAvatarAndIsolatedComputerControl', '--test-bot-photos': 'testPhotoLedBotsCreationAppearanceAndWorkspaceNavigation', '--test-bot-lifecycle': 'testPhoneBotCreationEditingCASAndApprovalModes', '--test-bot-avatar-states': 'testBotAvatarStatesInteractionAndRosterFilters', '--test-facelift': 'testFaceliftPrincipalScreensAndSharedHistory', '--test-workspace-skills': 'testReviewedSkillAssignmentAndWorkspaceNavigation', '--test-workspace-connections': 'testSavedConnectionCheckAndReviewedAccess', '--test-workspace-teams': 'testTeamExplicitTaskSharedThinkingStopAndActivity', '--test-team-channel': 'testNaturalTeamChannelPeersAssignmentsThinkingAndStop', '--test-team-channel-layout': 'testTeamChannelNormalDarkAndLargeTypeLayout', '--test-group-chat-layout': 'testGroupRosterAndRoomPhotoLayoutWithRealMenus', '--test-team-settings': 'testTeamMembershipSharedComputerFoldersConflictAndPersistence', '--test-team-instructions': 'testTeamPublicInstructionsRolesPersistenceAndConflict', '--test-notifications': 'testNotificationPreferencesPrivateInboxRoutingMuteAndRelaunch' })[process.argv[2]],
+        '-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test-unrestricted-teams': 'testLargeTeamCreationUsesAllAvailableTeammates', '--test-host-folder': 'testScopedHostFolderSettingsGrantAndRevokeWithoutStartingWork', '--test-supervision': 'testLiveBotSupervisionFiltersExactConversationAndLargeType', '--test-connector-accounts': 'testConnectorAccountsDiscoverBearerSetupAndMacSignInFallback', '--test-connectors': 'testConnectorsHTTPSetupTeamAccessToolsAndPersistence', '--test-devin-provider': 'testPhoneCreatesDevinBotWithHostModelsAndNoImplicitRun', '--test-direct-bots': 'testDirectBotRosterChatProfileNewConversationAndRelaunch', '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation', '--test-computer': 'testActualSampleAvatarAndIsolatedComputerControl', '--test-bot-photos': 'testPhotoLedBotsCreationAppearanceAndWorkspaceNavigation', '--test-bot-lifecycle': 'testPhoneBotCreationEditingCASAndApprovalModes', '--test-bot-avatar-states': 'testBotAvatarStatesInteractionAndRosterFilters', '--test-facelift': 'testFaceliftPrincipalScreensAndSharedHistory', '--test-workspace-skills': 'testReviewedSkillAssignmentAndWorkspaceNavigation', '--test-workspace-connections': 'testSavedConnectionCheckAndReviewedAccess', '--test-workspace-teams': 'testTeamExplicitTaskSharedThinkingStopAndActivity', '--test-team-channel': 'testNaturalTeamChannelPeersAssignmentsThinkingAndStop', '--test-team-channel-layout': 'testTeamChannelNormalDarkAndLargeTypeLayout', '--test-group-chat-layout': 'testGroupRosterAndRoomPhotoLayoutWithRealMenus', '--test-team-settings': 'testTeamMembershipSharedComputerFoldersConflictAndPersistence', '--test-team-instructions': 'testTeamPublicInstructionsRolesPersistenceAndConflict', '--test-notifications': 'testNotificationPreferencesPrivateInboxRoutingMuteAndRelaunch' })[process.argv[2]],
         '-parallel-testing-enabled', 'NO', 'test',
       ], { stdio: 'inherit', env: { ...process.env,
         TEST_RUNNER_STRATA_TEST_INVITATION: connection.invitation,

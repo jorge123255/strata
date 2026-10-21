@@ -62,7 +62,7 @@ export interface BotTeam { id: string; name: string; memberIds: string[]; coordi
 export type BotTeamRunState = 'queued'|'running'|'completed'|'error'|'cancelled'|'interrupted'|'stopping'|'cleanup_pending';
 export interface BotTeamRun { id: string; teamId: string; rootChatId: string; rootBotId: string; state: BotTeamRunState; limits: BotTeamLimits; consumedTurns: number; createdAt: string; updatedAt: string; detail?: string }
 export interface BotTeamActivity { id: string; type: 'run'|'delivery'|'subagent'; teamId: string; runId: string; botId?: string; chatId?: string; parentChatId?: string; title: string; state: string; fromBotId?: string; toBotId?: string; createdAt: string; updatedAt: string; detail?: string }
-export interface BotTeamsSnapshot { teams: BotTeam[]; runs: BotTeamRun[]; channelsSupported?: boolean; teamSettingsSupported?: boolean; teamInstructionsSupported?: boolean; teamComputers?: BotTeamComputer[] }
+export interface BotTeamsSnapshot { teams: BotTeam[]; runs: BotTeamRun[]; channelsSupported?: boolean; teamSettingsSupported?: boolean; teamInstructionsSupported?: boolean; teamUnrestrictedSupported?: boolean; teamComputers?: BotTeamComputer[] }
 /** Public, durable room messages are separate from each bot's private work chat. */
 export interface BotTeamChannelAuthor { type: 'user'|'bot'|'system'; botId?: string; name: string; avatarConfig?: Bot['avatarConfig'] }
 export interface BotTeamChannelMessage {
@@ -96,16 +96,17 @@ export interface BotConnectionsSnapshot { connections: BotConnection[]; connecto
 export interface BotProviderModel { id: string; name: string; efforts: string[]; defaultEffort?: string }
 export interface BotProviderModels { provider: string; models: BotProviderModel[]; detail?: string }
 export const DEFAULT_BOT_TEAM_LIMITS: BotTeamLimits = { maxParallel: 2, maxDepth: 2, maxHops: 8, maxTurns: 24, maxDurationMs: 600000 };
+export function botTeamParallelLabel(limits: BotTeamLimits, unrestricted = false) { return unrestricted || limits.maxParallel === 0 ? 'All available teammates' : `${limits.maxParallel} parallel tasks`; }
 export function botTeamRunActive(state: string) { return ['queued', 'running', 'stopping', 'cleanup_pending'].includes(state); }
 export function botActivityLabel(state: string) { return ({ queued: 'Queued', running: 'Working', completed: 'Completed', error: 'Failed', cancelled: 'Stopped', interrupted: 'Interrupted', stopping: 'Stopping…', cleanup_pending: 'Checking cleanup', delivered: 'Delivered', pending: 'Waiting', accepted: 'Accepted', refused: 'Refused' } as Record<string, string>)[state] ?? state; }
-export function botTeamDraftError(draft: Pick<BotTeam, 'name'|'memberIds'|'coordinatorId'|'limits'> & { execution?: BotTeamExecution; briefing?: BotTeamBriefing }, bots: Pick<Bot,'id'>[], computers?: BotTeamComputer[]): string | null {
+export function botTeamDraftError(draft: Pick<BotTeam, 'name'|'memberIds'|'coordinatorId'|'limits'> & { execution?: BotTeamExecution; briefing?: BotTeamBriefing }, bots: Pick<Bot,'id'>[], computers?: BotTeamComputer[], unrestricted = false): string | null {
   if (!draft.name.trim() || draft.name.trim().length>80) return 'Give this team a name of up to 80 characters.';
-  if (draft.memberIds.length<2 || draft.memberIds.length>12) return 'Choose from 2 to 12 team members.';
+  if (draft.memberIds.length < 2 || !unrestricted && draft.memberIds.length > 12) return unrestricted ? 'Choose at least two team members.' : 'Choose from 2 to 12 team members.';
   if (new Set(draft.memberIds).size !== draft.memberIds.length || draft.memberIds.some(id => !bots.some(bot => bot.id === id))) return 'Choose available bots for this team.';
   if (!draft.memberIds.includes(draft.coordinatorId)) return 'Choose a coordinator from this team.';
   if (draft.briefing) {
     const cleanText = (value: string, max: number) => typeof value === 'string' && value.length <= max && !value.includes('\0') && !Array.from(value).some(character => { const point = character.codePointAt(0)!; return point >= 0xD800 && point <= 0xDFFF; });
-    if (!cleanText(draft.briefing.instructions, 8000) || !Array.isArray(draft.briefing.members) || draft.briefing.members.length > 12) return 'Use team instructions of up to 8,000 characters.';
+    if (!cleanText(draft.briefing.instructions, 8000) || !Array.isArray(draft.briefing.members) || draft.briefing.members.length > (unrestricted ? draft.memberIds.length : 12)) return 'Use team instructions of up to 8,000 characters.';
     const seen = new Set<string>();
     let total = draft.briefing.instructions.length;
     for (const member of draft.briefing.members) {
@@ -125,7 +126,8 @@ export function botTeamDraftError(draft: Pick<BotTeam, 'name'|'memberIds'|'coord
     if (!path || path.length > 4096 || path.includes('\0') || !/^(?:\/|[A-Za-z]:[\\/]|\\\\)/.test(path)) return 'Use the full working folder path on the shared computer.';
     if (computer?.computerMode === 'cua' && !(path === '/workspace' || path.startsWith('/workspace/') && !path.split('/').includes('..'))) return 'Use /workspace or a folder inside /workspace on the shared CUA computer.';
   }
-  for (const [key, maximum] of [['maxParallel', 8], ['maxDepth', 4], ['maxHops', 32], ['maxTurns', 100], ['maxDurationMs', 3600000]] as const) {
+  if (!Number.isSafeInteger(draft.limits.maxParallel) || draft.limits.maxParallel < (unrestricted ? 0 : 1) || !unrestricted && draft.limits.maxParallel > 8) return 'Choose valid parallel work settings.';
+  for (const [key, maximum] of [['maxDepth', 4], ['maxHops', 32], ['maxTurns', 100], ['maxDurationMs', 3600000]] as const) {
     if (!Number.isInteger(draft.limits[key]) || draft.limits[key] < (key === 'maxDurationMs' ? 60000 : 1) || draft.limits[key] > maximum) return 'Choose bounded team work limits.';
   }
   return null;
