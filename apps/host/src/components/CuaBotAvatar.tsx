@@ -277,8 +277,8 @@ export function CuaBotAvatarPicker({ value, onChange, name = '', className = '',
   const choices = CUA_BOT_SHAPES.filter(shape => shapes.includes(shape) || shape === config.shape)
   const chooseAnimal = (kind: typeof CUA_BOT_KINDS[number]) => {
     const { kind: _, shape: __, ...face } = config
-    // Explicitly clear a saved shape, including one introduced by a future host.
-    onChange({ ...face, ...(value.shape ? { shape: 'classic' as const } : {}), ...(kind !== 'koala' ? { kind } : {}) })
+    // An explicit animal choice also clears a future shape dropped by a decoder.
+    onChange({ ...face, shape: 'classic', ...(kind !== 'koala' ? { kind } : {}) })
   }
   return <div className={`cua-bot-avatar-picker ${className}`.trim()}>
     <fieldset><legend>Character</legend><div className="cua-avatar-characters">

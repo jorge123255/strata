@@ -127,7 +127,7 @@ test('four character families render distinct faces and preserve legacy koala co
   }
   find(tree, 'Fox').props.onClick()
   find(tree, 'Koala').props.onClick()
-  assert.deepEqual(changes, [{ ...legacy, kind: 'fox' }, legacy])
+  assert.deepEqual(changes, [{ ...legacy, shape: 'classic', kind: 'fox' }, { ...legacy, shape: 'classic' }])
 })
 
 test('shipped public assets retain the full original license and pinned source attribution', async () => {
@@ -183,5 +183,8 @@ test('geometric character selection is capability gated and animal selection exp
   assert.equal(unavailable.find(row=>row.props['aria-label']==='Orb').props.disabled, true)
   assert.equal(unavailable.some(row=>row.props['aria-label']==='Tile'), false)
   assert.equal(unavailable.some(row=>row.props['aria-label']==='Classic'), false)
-  assert.deepEqual(normalizeCuaBotAvatarConfig({...face,shape:'untrusted'}),face)
+  const decodedFuture = normalizeCuaBotAvatarConfig({...face,shape:'untrusted'})
+  assert.deepEqual(decodedFuture,face)
+  buttons(decodedFuture, CUA_BOT_SHAPES).find(row=>row.props['aria-label']==='Koala').props.onClick()
+  assert.deepEqual(changes.at(-1),{...face,shape:'classic'},'An explicit animal choice clears future geometry even after its unknown field was dropped during normalization.')
 })

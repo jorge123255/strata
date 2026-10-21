@@ -308,6 +308,19 @@ test('embedded CUA Bots preserves profile, shared conversation, configured model
   assert.equal(clearedForOldHost.body.avatarConfig.kind,'fox');
   assert.equal(Object.hasOwn(clearedForOldHost.body.avatarConfig,'shape'),false,'Old hosts never receive the new classic sentinel.');
   assert.equal(conversations.find(chat=>chat.id==='fox-shared-chat').preferences.botAvatarConfig.shape,'orb','Old conversation keeps its original geometric face.');
+  // A capable host receives the explicit clear even if the current decoded face has no shape.
+  shapesSupported=true;
+  await page.getByRole('button',{name:'Refresh bots and shared work',exact:true}).click();
+  await page.getByRole('complementary',{name:'Remote developer profile',exact:true}).getByRole('button',{name:'Bot settings',exact:true}).click();
+  const capableEditor=page.getByRole('dialog',{name:'Remote developer’s settings',exact:true});
+  await capableEditor.getByText('Edit look',{exact:true}).click();
+  await capableEditor.getByRole('button',{name:'Koala',exact:true}).click();
+  await capableEditor.getByRole('button',{name:'Save settings',exact:true}).click();
+  await capableEditor.waitFor({state:'hidden'});
+  const clearedForCapableHost=calls.filter(call=>call.path==='/api/bots/created'&&call.method==='PATCH').at(-1);
+  assert.equal(clearedForCapableHost.body.avatarConfig.shape,'classic','A capable host always receives an explicit animal selection.');
+  assert.equal(clearedForCapableHost.body.avatarConfig.kind,undefined);
+
   assert.equal(calls.some(call => ['/messages', '/model-providers', '/native', '/desktop'].some(segment => call.path.includes(segment)) || call.path.includes('/computer/') && ['start', 'takeover', 'control', 'stop'].some(action => call.path.endsWith('/' + action))), false, 'No provider prompt, serving change, app launch or VM was started.');
   assert.deepEqual(errors, []); assert.deepEqual(blocked, []); assert.deepEqual(unexpected, []);
   const directory = process.env.STRATA_BOTS_UI_EVIDENCE_DIR;
