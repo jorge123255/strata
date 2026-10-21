@@ -83,6 +83,19 @@ export function createConversations({ directory, enabled = () => true, notify = 
   function notificationSources() {
     return [...entries.values()].map(({ session }) => ({ id: session.id, createdAt: session.createdAt, preferences: Object.fromEntries(['botId', 'teamId'].filter(key => session.preferences?.[key] !== undefined).map(key => [key, session.preferences[key]])), messages: session.messages.filter(message => message.role === 'assistant' && !message.local && !message.timeSkipId).map(message => ({ id: message.id, role: message.role, streaming: message.streaming === true, hasContent: !!message.content?.trim(), ...(message.cancelled ? { cancelled: true } : {}), ...(message.error ? { error: true } : {}), at: message.at })) }));
   }
+  // Supervision polls need only a compact last-turn status. Do not deep-copy
+  // transcripts, reasoning, command arguments or output on every activity poll.
+  function supervisionSources() {
+    return [...entries.values()].filter(({ session }) => session.preferences?.botId).map(({ session }) => {
+      const last = session.messages.at(-1);
+      const tools = last?.role === 'assistant' ? last.tools ?? [] : [];
+      const currentTool = tools.findLast(tool => tool.live === true && ['running', 'approved'].includes(tool.state));
+      return { id: session.id, title: session.title, updatedAt: session.updatedAt, active: turns.has(session.id),
+        preferences: Object.fromEntries(['botId', 'botName', 'botComputer', 'teamId', 'parentChatId'].filter(key => session.preferences?.[key] !== undefined).map(key => [key, session.preferences[key]])),
+        messages: last ? [{ role: last.role, hasContent: !!last.content?.trim(), hasCompletedTool: tools.some(tool => tool.state === 'done'), error: !!last.error, cancelled: !!last.cancelled, streaming: !!last.streaming,
+          tools: currentTool ? [{ name: currentTool.name, state: currentTool.state, live: true }] : [] }] : [] };
+    });
+  }
   function sync(items) {
     if (!available()) return { results: [], ...list() };
     if (!Array.isArray(items)) throw fault(400, 'A conversation list is required.');
@@ -259,6 +272,6 @@ export function createConversations({ directory, enabled = () => true, notify = 
     requireRecord(id); if (turns.has(id)) throw fault(409, 'Stop this conversation before deleting it.');
     entries.delete(id); deleted.add(id); touch(id, true); return { deleted: id };
   }
-  return { list, detail, notificationSources, sync, create, createForBot: bot => create({}, bot), begin, record, finish, send, stop: stopTurn, approval, preferences, remove,
+  return { list, detail, notificationSources, supervisionSources, sync, create, createForBot: bot => create({}, bot), begin, record, finish, send, stop: stopTurn, approval, preferences, remove,
     available, capture, has: id => entries.has(id), botId: id => entries.get(id)?.session.preferences?.botId ?? null, isRunning: id => turns.has(id), close() { for (const turn of turns.values()) turn.controller.abort(); flush(); publish(); } };
 }

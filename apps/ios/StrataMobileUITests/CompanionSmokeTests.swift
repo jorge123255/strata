@@ -649,6 +649,49 @@ final class CompanionSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testLiveBotSupervisionFiltersExactConversationAndLargeType() async throws {
+        let control = try pairWorkspaceFixture()
+        try require(app.buttons["botsActivityButton"]); app.buttons["botsActivityButton"].tap()
+        try require(app.descendants(matching: .any).matching(identifier: "botSupervisionSummary").firstMatch)
+        try tapWorkspace(app.buttons["botSupervisionFilter-Needs you"])
+        try require(app.staticTexts["1 approval waiting"])
+        XCTAssertFalse(app.staticTexts["Review in the shared computer"].exists)
+        attachScreenshot("Bot supervision — approval attention")
+        try tapWorkspace(app.buttons["Review approval"])
+        try require(app.staticTexts["macConversationTitle"])
+        XCTAssertEqual(app.staticTexts["macConversationTitle"].label, "Mac browser research")
+        XCTAssertFalse(app.staticTexts["Review in the shared computer"].exists)
+        attachScreenshot("Bot supervision — exact approval conversation")
+        tapTab("Bots"); try require(app.buttons["botsActivityButton"]); app.buttons["botsActivityButton"].tap()
+        try tapWorkspace(app.buttons["botSupervisionFilter-Working"])
+        try require(app.staticTexts["Review in the shared computer"])
+        XCTAssertTrue(app.staticTexts["Subagent · Remote fixture computer"].exists)
+        attachScreenshot("Bot supervision — live subagent")
+        _ = try await fixtureControl(control, action: "supervision-complete")
+        try tapWorkspace(app.buttons["botSupervisionFilter-Needs you"])
+        try require(app.descendants(matching: .any).matching(identifier: "botSupervisionEmpty").firstMatch)
+        XCTAssertFalse(app.buttons["Review approval"].exists)
+        attachScreenshot("Bot supervision — cleared approval")
+        app.terminate()
+        _ = try await fixtureControl(control, action: "appearance-dark")
+        app.launchArguments = ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
+        app.launch(); tapTab("Bots")
+        // The bottom menu exists before the cold-load catalog has finished.
+        // Wait for the roster to settle before opening its native menu.
+        try require(app.buttons["featuredBotButton"])
+        try require(app.buttons["botsActivityButton"]); app.buttons["botsActivityButton"].tap()
+        try tapWorkspace(app.buttons["botSupervisionFilter-Recently finished"])
+        try tapWorkspace(app.staticTexts["Mac browser research"], performTap: false)
+        try tapWorkspace(app.buttons["Open conversation"].firstMatch, performTap: false)
+        attachScreenshot("Bot supervision — accessibility type in dark appearance")
+        let state = try await fixtureControl(control, action: "state")
+        let calls = try XCTUnwrap(state["calls"] as? [[String: Any]])
+        XCTAssertTrue(calls.allSatisfy { ($0["method"] as? String) == "GET" }, "Supervision and review navigation must never send a prompt, approval, task or computer command.")
+        XCTAssertGreaterThan(calls.filter { $0["path"] as? String == "/api/bots/supervision" }.count, 2)
+        XCTAssertTrue(calls.contains { $0["path"] as? String == "/api/companion/conversations/fixture-mac-research" })
+    }
+
+    @MainActor
     private func pairWorkspaceFixture() throws -> URL {
         guard let raw = ProcessInfo.processInfo.environment["STRATA_TEST_INVITATION"],
               let invitation = URLComponents(string: raw),

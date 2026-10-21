@@ -632,9 +632,53 @@ private struct BotActivityView: View {
     @ObservedObject var workspace: BotWorkspaceStore
     let openChat: () -> Void
     @State private var visible = false
+    @State private var supervisionFilter: BotSupervisionFilter = .all
+    @State private var supervisionLimit = 12
     @Environment(\.scenePhase) private var scenePhase
     var body: some View {
         List {
+            if let snapshot = workspace.supervision, snapshot.supported {
+                Section {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(workspace.messages["supervision"] == nil ? "YOUR BOTS, AT A GLANCE" : "LAST KNOWN ACTIVITY")
+                            .font(.caption2.weight(.semibold)).tracking(1).foregroundStyle(StrataTheme.accentText)
+                        Text(snapshot.headline).font(.title2.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+                        Text("Approvals first. Follow the exact conversation to review tools, thinking and results.")
+                            .font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 124), spacing: 10)], spacing: 10) {
+                            ForEach(BotSupervisionFilter.allCases) { filter in
+                                Button { supervisionFilter = filter; supervisionLimit = 12 } label: {
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        Text("\(filter.count(snapshot.counts))").font(.title3.weight(.semibold))
+                                        Text(filter.rawValue).font(.caption.weight(.medium)).fixedSize(horizontal: false, vertical: true)
+                                    }.frame(maxWidth: .infinity, alignment: .leading).padding(12)
+                                        .background(supervisionFilter == filter ? StrataTheme.accentTint : StrataTheme.grouped, in: RoundedRectangle(cornerRadius: 14))
+                                        .foregroundStyle(supervisionFilter == filter ? StrataTheme.accentText : StrataTheme.ink)
+                                }.buttonStyle(.plain).accessibilityAddTraits(supervisionFilter == filter ? [.isSelected] : [])
+                                    .accessibilityIdentifier("botSupervisionFilter-" + filter.id)
+                            }
+                        }
+                    }.padding(.vertical, 8).accessibilityIdentifier("botSupervisionSummary")
+                }.listRowBackground(Color.clear)
+                Section {
+                    let sessions = snapshot.sessions.filter(supervisionFilter.includes)
+                    ForEach(Array(sessions.prefix(supervisionLimit))) { session in
+                        supervisionRow(session)
+                    }
+                    if sessions.isEmpty {
+                        Label(supervisionFilter == .attention ? "Nothing waiting on you" : "No conversations in this view", systemImage: "checkmark.circle")
+                            .foregroundStyle(.secondary).padding(.vertical, 12).accessibilityIdentifier("botSupervisionEmpty")
+                    }
+                    if sessions.count > supervisionLimit { Button("Show more conversations") { supervisionLimit += 12 } }
+                    if snapshot.hasMore { Text("Showing the 200 most urgent or recent conversations. Open a bot to browse its full history.").font(.caption).foregroundStyle(.secondary) }
+                } header: { Text("Live conversations") } footer: { Text("Finished and failed conversations stay here for 24 hours. Your complete history stays with each bot.") }
+            }
+            if workspace.loading.contains("supervision"), workspace.supervision == nil {
+                Section { ProgressView("Checking your bots…") }
+            }
+            if workspace.messages["supervision"] != nil {
+                Section { BotWorkspaceMessage(workspace: workspace, key: "supervision") }
+            }
             Section {
                 if workspace.activity.isEmpty, !workspace.loading.contains("activity"), workspace.messages["activity"] == nil { Text("Team tasks, bot messages and subagents will appear here.").foregroundStyle(.secondary) }
                 ForEach(workspace.activity) { item in
@@ -664,19 +708,43 @@ private struct BotActivityView: View {
                 Text("Open a conversation to review its current approval requests or stop that exact task.").font(.caption).foregroundStyle(.secondary)
             }
         }.strataList()
-            .refreshable { await workspace.refreshActivity(); await workspace.refreshTeams(); await store.refresh(silently: true) }
+            .refreshable { await workspace.refreshSupervision(); await workspace.refreshActivity(); await workspace.refreshTeams(); await store.refresh(silently: true) }
             .onAppear { visible = true }
             .onDisappear { visible = false }
             .task(id: visible && scenePhase == .active) {
                 guard visible, scenePhase == .active else { return }
                 repeat {
                     if workspace.mutation == nil {
+                        if !workspace.loading.contains("supervision") { await workspace.refreshSupervision() }
                         if !workspace.loading.contains("activity") { await workspace.refreshActivity() }
                         if !workspace.loading.contains("teams") { await workspace.refreshTeams() }
                     }
                     do { try await Task.sleep(for: .seconds(3)) } catch { break }
                 } while !Task.isCancelled && visible && scenePhase == .active
             }
+    }
+    private func supervisionRow(_ session: BotSupervisionSession) -> some View {
+        let bot = store.botCatalog?.bots.first { $0.id == session.botId }
+        let stale = workspace.messages["supervision"] != nil
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                ExpressiveBotAvatar(config: bot?.face ?? .default(for: session.name), size: 44,
+                    mood: stale ? .idle : session.state == .approval ? .needsApproval : session.state == .error ? .error : session.isWorking ? .working : .idle, animated: !stale)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(session.name).font(.headline)
+                    Text(session.context).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Text(session.title).font(.body.weight(.medium)).fixedSize(horizontal: false, vertical: true)
+            StrataStatusPill(title: (stale ? "Last known: " : "") + session.statusLabel,
+                tone: stale ? .neutral : session.needsAttention ? .attention : session.isWorking ? .accent : .success)
+            if session.state == .working, let tool = session.toolName {
+                Text(tool.replacingOccurrences(of: "_", with: " ")).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            BotSharedConversationButton(store: store, chatId: session.id,
+                title: session.state == .approval ? "Review approval" : "Open conversation", openChat: openChat)
+        }.padding(.vertical, 10).accessibilityIdentifier("botSupervision-" + session.id)
     }
     private func botName(_ id: String) -> String { store.botCatalog?.bots.first { $0.id == id }?.name ?? "Bot" }
 }

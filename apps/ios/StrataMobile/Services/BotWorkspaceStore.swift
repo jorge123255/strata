@@ -10,6 +10,7 @@ final class BotWorkspaceStore: ObservableObject {
     @Published private(set) var teams: BotTeamsSnapshot?
     @Published private(set) var channels: [String: BotTeamChannel] = [:]
     @Published private(set) var activity: [BotWorkspaceActivity] = []
+    @Published private(set) var supervision: BotSupervisionSnapshot?
     @Published private(set) var skills: BotSkillsSnapshot?
     @Published private(set) var connections: BotConnectionsSnapshot?
     @Published private(set) var connectorCatalog: BotConnectorCatalog?
@@ -30,6 +31,9 @@ final class BotWorkspaceStore: ObservableObject {
     func refreshActivity() async {
         struct Snapshot: Decodable { var activity: [BotWorkspaceActivity]; var reason: String? }
         await load("activity", path: "/v1/bots/activity") { (value: Snapshot) in self.activity = value.activity; self.messages["activity"] = value.reason }
+    }
+    func refreshSupervision() async {
+        await load("supervision", path: "/v1/bots/supervision") { (value: BotSupervisionSnapshot) in self.supervision = value; self.messages["supervision"] = value.reason }
     }
     func refreshSkills() async {
         await load("skills", path: "/v1/bots/skills") { (value: BotSkillsSnapshot) in self.skills = value; self.messages["skills"] = value.reason }

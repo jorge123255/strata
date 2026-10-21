@@ -16,7 +16,7 @@ const root = mkdtempSync(join(tmpdir(), 'strata-ios-ui-'));
 chmodSync(root, 0o700);
 
 const calls = [];
-const photoSimulator = ['--test-direct-bots', '--test-team-settings', '--test-team-instructions', '--test-bot-photos', '--test-team-channel-layout', '--test-group-chat-layout'].includes(process.argv[2]) ? /(?:^|,)id=([A-Fa-f0-9-]{36})(?:,|$)/.exec(process.argv[3] ?? '')?.[1] : undefined;
+const photoSimulator = ['--test-supervision', '--test-direct-bots', '--test-team-settings', '--test-team-instructions', '--test-bot-photos', '--test-team-channel-layout', '--test-group-chat-layout'].includes(process.argv[2]) ? /(?:^|,)id=([A-Fa-f0-9-]{36})(?:,|$)/.exec(process.argv[3] ?? '')?.[1] : undefined;
 let originalSimulatorAppearance;
 if (photoSimulator) {
   const appearance = execFileSync('/usr/bin/xcrun', ['simctl', 'ui', photoSimulator, 'appearance'], { encoding: 'utf8' }).trim().toLowerCase();
@@ -49,7 +49,8 @@ const lifecycleMode = ['--test-devin-provider', '--test-bot-lifecycle', '--test-
 const directBotsMode = process.argv[2] === '--test-direct-bots';
 const connectorAccountsMode = process.argv[2] === '--test-connector-accounts';
 const connectorMode = connectorAccountsMode || process.argv[2] === '--test-connectors';
-const workspaceFlags = ['--test-connector-accounts', '--test-connectors', '--test-devin-provider', '--test-direct-bots', '--test-team-settings', '--test-team-instructions', '--test-notifications', '--test-group-chat-layout', '--test-team-channel-layout', '--test-team-channel', '--test-bot-photos', '--test-bot-lifecycle', '--test-bot-avatar-states', '--test-workspace-skills', '--test-workspace-connections', '--test-workspace-teams', '--test-facelift'];
+const supervisionMode = process.argv[2] === '--test-supervision';
+const workspaceFlags = ['--test-supervision', '--test-connector-accounts', '--test-connectors', '--test-devin-provider', '--test-direct-bots', '--test-team-settings', '--test-team-instructions', '--test-notifications', '--test-group-chat-layout', '--test-team-channel-layout', '--test-team-channel', '--test-bot-photos', '--test-bot-lifecycle', '--test-bot-avatar-states', '--test-workspace-skills', '--test-workspace-connections', '--test-workspace-teams', '--test-facelift'];
 const workspaceMode = workspaceFlags.includes(process.argv[2]);
 let teamConversation, savedTeam, teamRun;
 const teamLimits = { maxParallel: 2, maxDepth: 2, maxHops: 8, maxTurns: 24, maxDurationMs: 600000 };
@@ -251,9 +252,22 @@ if (notificationMode) {
   });
   notificationService.reconcile();
 }
+const supervisionChats = [];
+if (supervisionMode) {
+  conversation.active = true;
+  conversation.preferences = { botId: 'fixture-bot', botName: 'Workspace companion', botComputer: 'Fixture Mac' };
+  pending.push(tool('supervision-approval', 'proposed'));
+  assistant.tools = [...pending];
+  supervisionChats.push({ id: 'fixture-supervision-working', title: 'Review in the shared computer', active: true, updatedAt: new Date().toISOString(), preferences: { botId: 'fixture-reviewer', botName: 'Review companion', teamId: 'team_fixture', parentChatId: conversation.id, botComputer: 'Remote fixture computer' }, messages: [{ id: 'working-answer', role: 'assistant', content: '', streaming: true, tools: [tool('supervision-running', 'running')] }] });
+  supervisionChats.push({ id: 'fixture-supervision-done', title: 'Finished personal conversation', active: false, updatedAt: new Date().toISOString(), preferences: { botId: 'fixture-reviewer', botName: 'Review companion', botComputer: 'Fixture Mac' }, messages: [{ id: 'done-answer', role: 'assistant', content: 'Completed synthetic work.', streaming: false }] });
+}
+const { botSupervisionSnapshot } = await import('../../host/server/bots-supervision.mjs');
 const host = {
   async json(path, options = {}) {
     calls.push({ path, method: options.method ?? 'GET', body: options.body ?? null });
+    if (supervisionMode && path === '/api/bots/supervision') return botSupervisionSnapshot({ bots: botsCatalog().bots, conversations: [conversation, ...supervisionChats].map(chat => ({ ...chat, messages: chat.messages.map(message => ({ ...message, hasContent: !!message.content?.trim() })) })), pendingCount: id => id === conversation.id ? pending.length : 0 });
+    if (supervisionMode && path === '/api/companion/conversations') return { conversations: [conversation, ...supervisionChats], activeChatId: conversation.id };
+    if (supervisionMode && supervisionChats.some(chat => path === '/api/companion/conversations/' + chat.id)) return { conversation: supervisionChats.find(chat => path.endsWith(chat.id)), pending: [] };
     if (notificationService) {
       const route = new URL(path, 'http://fixture.invalid');
       if (route.pathname === '/api/bots/notifications') return notificationService.feed(options.deviceId, { after: route.searchParams.has('after') ? Number(route.searchParams.get('after')) : undefined, journalId: route.searchParams.get('journalId') ?? undefined });
@@ -464,6 +478,11 @@ try {
       const action = request.url;
       if (request.method === 'POST') {
         switch (action) {
+        case '/supervision-complete':
+          if (!supervisionMode) throw new Error('Supervision fixture required');
+          pending.length = 0; conversation.active = false; assistant.streaming = false;
+          assistant.tools = assistant.tools.map(tool => ({ ...tool, state: 'done' }));
+          break;
         case '/notification-reply':
           if (!notificationService) throw new Error('Notification fixture required');
           conversation.messages.push({ id: 'notification-reply-' + conversation.messages.length, role: 'assistant', content: 'PRIVATE_NOTIFICATION_PREVIEW must remain inside the chat.', reasoning: 'PRIVATE_THINKING', streaming: false, at: new Date().toISOString() });
@@ -594,7 +613,7 @@ try {
         '-project', project, '-scheme', 'StrataMobile', '-destination', destination,
         '-derivedDataPath', derivedData,
         ...(process.env.STRATA_TEST_RESULT_BUNDLE ? ['-resultBundlePath', process.env.STRATA_TEST_RESULT_BUNDLE] : []),
-        '-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test-connector-accounts': 'testConnectorAccountsDiscoverBearerSetupAndMacSignInFallback', '--test-connectors': 'testConnectorsHTTPSetupTeamAccessToolsAndPersistence', '--test-devin-provider': 'testPhoneCreatesDevinBotWithHostModelsAndNoImplicitRun', '--test-direct-bots': 'testDirectBotRosterChatProfileNewConversationAndRelaunch', '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation', '--test-computer': 'testActualSampleAvatarAndIsolatedComputerControl', '--test-bot-photos': 'testPhotoLedBotsCreationAppearanceAndWorkspaceNavigation', '--test-bot-lifecycle': 'testPhoneBotCreationEditingCASAndApprovalModes', '--test-bot-avatar-states': 'testBotAvatarStatesInteractionAndRosterFilters', '--test-facelift': 'testFaceliftPrincipalScreensAndSharedHistory', '--test-workspace-skills': 'testReviewedSkillAssignmentAndWorkspaceNavigation', '--test-workspace-connections': 'testSavedConnectionCheckAndReviewedAccess', '--test-workspace-teams': 'testTeamExplicitTaskSharedThinkingStopAndActivity', '--test-team-channel': 'testNaturalTeamChannelPeersAssignmentsThinkingAndStop', '--test-team-channel-layout': 'testTeamChannelNormalDarkAndLargeTypeLayout', '--test-group-chat-layout': 'testGroupRosterAndRoomPhotoLayoutWithRealMenus', '--test-team-settings': 'testTeamMembershipSharedComputerFoldersConflictAndPersistence', '--test-team-instructions': 'testTeamPublicInstructionsRolesPersistenceAndConflict', '--test-notifications': 'testNotificationPreferencesPrivateInboxRoutingMuteAndRelaunch' })[process.argv[2]],
+        '-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test-supervision': 'testLiveBotSupervisionFiltersExactConversationAndLargeType', '--test-connector-accounts': 'testConnectorAccountsDiscoverBearerSetupAndMacSignInFallback', '--test-connectors': 'testConnectorsHTTPSetupTeamAccessToolsAndPersistence', '--test-devin-provider': 'testPhoneCreatesDevinBotWithHostModelsAndNoImplicitRun', '--test-direct-bots': 'testDirectBotRosterChatProfileNewConversationAndRelaunch', '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation', '--test-computer': 'testActualSampleAvatarAndIsolatedComputerControl', '--test-bot-photos': 'testPhotoLedBotsCreationAppearanceAndWorkspaceNavigation', '--test-bot-lifecycle': 'testPhoneBotCreationEditingCASAndApprovalModes', '--test-bot-avatar-states': 'testBotAvatarStatesInteractionAndRosterFilters', '--test-facelift': 'testFaceliftPrincipalScreensAndSharedHistory', '--test-workspace-skills': 'testReviewedSkillAssignmentAndWorkspaceNavigation', '--test-workspace-connections': 'testSavedConnectionCheckAndReviewedAccess', '--test-workspace-teams': 'testTeamExplicitTaskSharedThinkingStopAndActivity', '--test-team-channel': 'testNaturalTeamChannelPeersAssignmentsThinkingAndStop', '--test-team-channel-layout': 'testTeamChannelNormalDarkAndLargeTypeLayout', '--test-group-chat-layout': 'testGroupRosterAndRoomPhotoLayoutWithRealMenus', '--test-team-settings': 'testTeamMembershipSharedComputerFoldersConflictAndPersistence', '--test-team-instructions': 'testTeamPublicInstructionsRolesPersistenceAndConflict', '--test-notifications': 'testNotificationPreferencesPrivateInboxRoutingMuteAndRelaunch' })[process.argv[2]],
         '-parallel-testing-enabled', 'NO', 'test',
       ], { stdio: 'inherit', env: { ...process.env,
         TEST_RUNNER_STRATA_TEST_INVITATION: connection.invitation,

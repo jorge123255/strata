@@ -72,6 +72,11 @@ struct BotsView: View {
         }
         .toolbar {
             if store.isPaired {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { destination = .activity; searchFocused = false } label: {
+                        Image(systemName: "waveform.path").frame(width: 44, height: 44)
+                    }.accessibilityLabel("Bot activity").accessibilityIdentifier("botsActivityButton")
+                }
                 ToolbarItem(placement: .topBarTrailing) { NotificationInboxButton(notifications: store.notifications) }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {

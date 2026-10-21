@@ -2500,3 +2500,59 @@ final class BotConnectorTests: XCTestCase {
     }
 
 }
+
+
+extension StoreRaceTests {
+    private func supervisionJSON(name: String = "Builder", state: String = "approval") -> [String: Any] {
+        ["supported": true, "sessions": [["id": "s_supervision", "botId": "bot_fixture", "name": name, "title": "Review exact work", "state": state, "approvalCount": 1, "teamId": "team_fixture", "parentChatId": "s_parent", "computerName": "Saved Mac"]], "counts": ["waiting": 1, "working": 0, "completed": 0, "errors": 0], "hasMore": false]
+    }
+    func testSupervisionStatesKeepExactContextAndFilterCounts() throws {
+        let snapshot = try JSONDecoder().decode(BotSupervisionSnapshot.self, from: JSONSerialization.data(withJSONObject: supervisionJSON()))
+        let row = try XCTUnwrap(snapshot.sessions.first)
+        XCTAssertEqual(row.id, "s_supervision"); XCTAssertEqual(row.botId, "bot_fixture")
+        XCTAssertEqual(row.context, "Subagent · Saved Mac"); XCTAssertEqual(row.statusLabel, "1 approval waiting")
+        XCTAssertTrue(BotSupervisionFilter.attention.includes(row)); XCTAssertFalse(BotSupervisionFilter.working.includes(row))
+        XCTAssertEqual(BotSupervisionFilter.attention.count(snapshot.counts), 1)
+        XCTAssertEqual(snapshot.headline, "1 conversation waiting for you")
+        var personal = row; personal.parentChatId = nil; personal.teamId = nil; personal.computerName = nil
+        XCTAssertEqual(personal.context, "Personal conversation")
+        personal.teamId = "team_fixture"; XCTAssertEqual(personal.context, "Team conversation")
+    }
+    func testUnknownSupervisionStateCannotBecomeAnApprovalOrWorkingCard() throws {
+        XCTAssertThrowsError(try JSONDecoder().decode(BotSupervisionSnapshot.self, from: JSONSerialization.data(withJSONObject: supervisionJSON(state: "future-state"))))
+        for state in ["working", "thinking", "completed", "error"] {
+            let value = try JSONDecoder().decode(BotSupervisionSnapshot.self, from: JSONSerialization.data(withJSONObject: supervisionJSON(state: state)))
+            let row = try XCTUnwrap(value.sessions.first)
+            XCTAssertEqual(row.isWorking, ["working", "thinking"].contains(state))
+            XCTAssertEqual(row.needsAttention, state == "error")
+            XCTAssertEqual(BotSupervisionFilter.completed.includes(row), state == "completed")
+        }
+    }
+    func testSupervisionRefreshAfterPairingRevocationCannotPublishOldMacActivity() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let owner = fixture.makeStore(), workspace = owner.botWorkspaceStore()
+        let held = fixture.hold("/v1/bots/supervision")
+        let refreshing = Task { await workspace.refreshSupervision() }
+        await fulfillment(of: [held.requested], timeout: 2)
+        owner.forgetMac(); held.finish(supervisionJSON())
+        await refreshing.value
+        XCTAssertNil(workspace.supervision); XCTAssertNil(workspace.messages["supervision"])
+        XCTAssertFalse(workspace.loading.contains("supervision"))
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+    }
+    func testOlderSupervisionPollCannotRestoreAnAlreadyClearedApproval() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let owner = fixture.makeStore(), workspace = owner.botWorkspaceStore()
+        let older = fixture.hold("/v1/bots/supervision")
+        let first = Task { await workspace.refreshSupervision() }
+        await fulfillment(of: [older.requested], timeout: 2)
+        let newer = fixture.hold("/v1/bots/supervision")
+        let second = Task { await workspace.refreshSupervision() }
+        await fulfillment(of: [newer.requested], timeout: 2)
+        newer.finish(supervisionJSON(name: "Current", state: "completed")); await second.value
+        older.finish(supervisionJSON(name: "Old", state: "approval")); await first.value
+        XCTAssertEqual(workspace.supervision?.sessions.first?.name, "Current")
+        XCTAssertEqual(workspace.supervision?.sessions.first?.state, .completed)
+        XCTAssertFalse(workspace.loading.contains("supervision"))
+    }
+}

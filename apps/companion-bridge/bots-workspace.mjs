@@ -67,6 +67,7 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
   let route;
   if (p === '/api/bots/provider-models') route = { kind: 'providerModels' };
   else if (p === '/api/bots/activity') route = { kind: 'activity' };
+  else if (p === '/api/bots/supervision') route = { kind: 'supervision' };
   else if (p === '/api/bots/teams') route = { kind: 'teams' };
   else if (p === '/api/bots/skills') route = { kind: 'skills' };
   else if (p === '/api/bots/skills/assign') route = { kind: 'assignment' };
@@ -91,7 +92,7 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
     else if (route.kind === 'channel' && ['after', 'before'].includes(key) && /^(0|[1-9][0-9]{0,15})$/.test(value) && Number.isSafeInteger(Number(value))) route[key] = Number(value);
     else throw error(status, 'Choose a saved bot or provider.');
   } else if (route.kind === 'providerModels') throw error(status, 'Choose a provider.');
-  const allowed = { teams: ['GET', 'POST'], team: ['PATCH'], channel: ['GET'], channelMessage: ['POST'], run: route.action === 'stop' ? ['POST'] : route.runId ? ['GET'] : ['POST'], activity: ['GET'], skills: ['GET', 'POST'], skill: ['PATCH', 'DELETE'], assignment: ['POST'], connections: ['GET', 'POST'], connection: route.action ? ['POST'] : ['PATCH', 'DELETE'], connectionAuth: ['auth/complete', 'auth/cancel'].includes(route.action) ? ['POST'] : ['GET', 'POST', 'DELETE'], connectorCatalog: ['GET'], providerModels: ['GET'] };
+  const allowed = { teams: ['GET', 'POST'], team: ['PATCH'], channel: ['GET'], channelMessage: ['POST'], run: route.action === 'stop' ? ['POST'] : route.runId ? ['GET'] : ['POST'], activity: ['GET'], supervision: ['GET'], skills: ['GET', 'POST'], skill: ['PATCH', 'DELETE'], assignment: ['POST'], connections: ['GET', 'POST'], connection: route.action ? ['POST'] : ['PATCH', 'DELETE'], connectionAuth: ['auth/complete', 'auth/cancel'].includes(route.action) ? ['POST'] : ['GET', 'POST', 'DELETE'], connectorCatalog: ['GET'], providerModels: ['GET'] };
   if (!allowed[route.kind].includes(method)) throw error(status, 'This workspace action is unavailable from iPhone.');
   if (!validateBody) return route;
   if (method === 'GET' || method === 'DELETE') {
@@ -240,6 +241,14 @@ export function publicBotWorkspace(body, route) {
   if (body.team && id(body.team.id)) return { team: team(body.team) };
   if (body.run && id(body.run.id)) return { run: run(body.run) };
   if (route.kind === 'activity') return { activity: rows('activity', v => ({ id: v.id, type: ['run', 'delivery', 'subagent'].includes(v.type) ? v.type : 'run', teamId: id(v.teamId) ? v.teamId : '', runId: id(v.runId) ? v.runId : '', title: text(v.title, 300), state: text(v.state, 60), ...Object.fromEntries(['botId', 'chatId', 'parentChatId', 'fromBotId', 'toBotId'].filter(k => id(v[k])).map(k => [k, v[k]])), createdAt: date(v.createdAt), updatedAt: date(v.updatedAt), ...(typeof v.detail === 'string' ? { detail: text(v.detail, 2_000) } : {}) })) };
+  if (route.kind === 'supervision') {
+    const count = value => Number.isSafeInteger(value) && value >= 0 ? Math.min(value, 1_000_000) : 0;
+    const sessions = rows('sessions', v => ({ id: v.id, botId: v.botId, name: text(v.name, 120), title: text(v.title, 300), state: v.state, approvalCount: count(v.approvalCount),
+      ...(typeof v.toolName === 'string' ? { toolName: text(v.toolName, 120) } : {}), ...(typeof v.computerName === 'string' ? { computerName: text(v.computerName, 120) } : {}),
+      ...Object.fromEntries(['teamId', 'parentChatId'].filter(k => id(v[k])).map(k => [k, v[k]])), updatedAt: date(v.updatedAt) }))
+      .filter(v => id(v.botId) && ['approval', 'error', 'working', 'thinking', 'completed'].includes(v.state) && (v.state !== 'approval' || v.approvalCount > 0)).slice(0, 200);
+    return { supported: body.supported === true, sessions: body.supported === true ? sessions : [], counts: Object.fromEntries(['waiting', 'working', 'completed', 'errors'].map(key => [key, count(body.counts?.[key])])), hasMore: body.hasMore === true, updatedAt: date(body.updatedAt) };
+  }
   if (route.kind === 'skills' && Array.isArray(body.skills)) return { skills: rows('skills', skill, toolId), assignments: (Array.isArray(body.assignments) ? body.assignments : []).filter(v => id(v?.botId)).slice(0, 500).map(v => ({ botId: v.botId, skillIds: safeTools(v.skillIds) })) };
   if (body.skill && id(body.skill.id)) return { skill: skill(body.skill) };
   if (route.kind === 'assignment') return { saved: true };
@@ -329,7 +338,7 @@ export async function handleBotWorkspace({ path, method, req, res, session, host
   } catch (failure) {
     requireCurrentSession();
     if ([404, 405, 501].includes(failure.status) && method === 'GET') {
-      const empty = { teams: { teams: [], runs: [] }, channel: { teamId: route.teamId, supported: false, messages: [], activeRuns: [], nextSequence: 0, hasMore: false, hasMoreBefore: false }, activity: { activity: [] }, skills: { skills: [], assignments: [] }, connections: { connections: [] }, providerModels: { provider: route.provider, models: [] } }[route.kind];
+      const empty = { teams: { teams: [], runs: [] }, channel: { teamId: route.teamId, supported: false, messages: [], activeRuns: [], nextSequence: 0, hasMore: false, hasMoreBefore: false }, activity: { activity: [] }, supervision: { supported: false, sessions: [], counts: { waiting: 0, working: 0, completed: 0, errors: 0 }, hasMore: false }, skills: { skills: [], assignments: [] }, connections: { connections: [] }, providerModels: { provider: route.provider, models: [] } }[route.kind];
       if (empty) { sendJSON(res, 200, { ...empty, reason: 'Update Strata on your Mac to use this Bots feature.' }); return true; }
     }
     const status = [400, 404, 409, 413, 501].includes(failure.status) ? failure.status : 503;

@@ -9,6 +9,7 @@ import { botModelDestination } from './bots-models.mjs';
 import { createBotComputers } from './bots-computers.mjs';
 import { createBotWork } from './bots-work.mjs';
 import { createBotTeams } from './bots-team.mjs';
+import { botSupervisionSnapshot } from './bots-supervision.mjs';
 
 const fault = (status, message) => Object.assign(new Error(message), { status });
 const ids = new Set(['claude', 'codex', 'grok', 'kimi', 'ollama', 'devin', 'configured']);
@@ -511,6 +512,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     }
   }
   return { list, create, update, saveProfile, remove, pause, createConversation, computer, work, team, hasBot: id => profiles.has(id), hasTeam: id => team.hasTeam(id), teamConnectorAccess: (teamId, botId, teamRunId) => team.connectorAccess(teamId, botId, teamRunId), providerModels: id => runtime.models?.(id) ?? Promise.resolve({ provider: id, models: [], detail: 'This provider has no verified effort catalog. Use Provider default.' }), prepareCUA, checkComputer: (input, options) => computerAction(input, false, options), prepareComputer: (input, options) => computerAction(input, true, options), validateSelection, run, pending, approve, stop,
+    supervision: () => botSupervisionSnapshot({ bots: [...profiles.values()], conversations: conversations()?.supervisionSources?.() ?? [], pendingCount: id => active.get(id)?.pending.size ?? 0, now: Date.parse(now()) }),
     notificationApprovals: () => [...active].flatMap(([chatId, run]) => [...run.pending.keys()].map(id => ({ chatId, id, botId: run.botId }))),
     hasProfiles: () => profiles.size > 0, isBotConversation: id => !!owned(id), workspace: id => chatProfiles.get(id)?.execution?.kind === 'local' ? chatProfiles.get(id).workspace : null, isRemoteConversation: id => !!chatProfiles.get(id) && (chatProfiles.get(id).execution?.kind !== 'local' || chatProfiles.get(id).computerMode === 'cua'), activeCount: () => active.size + team.activeCount(),
     async close() { work.close(); await team.close(); await computer.close(); for (const run of active.values()) run.controller.abort(); await Promise.allSettled([...active.values()].map(run => run.ended)); await tools.close?.(); await runtime.close?.(); } };
@@ -528,6 +530,11 @@ export function createBotRoutes({ bots, port }) {
       if (profile && req.method === 'PATCH') return json(res, 200, await bots.saveProfile(await readBody(req), profile[1]));
       if (url.pathname === '/api/bots/provider-models' && req.method === 'GET') return json(res, 200, await bots.providerModels(url.searchParams.get('provider')));
       if (url.pathname === '/api/bots/activity' && req.method === 'GET') return json(res, 200, bots.team.activity());
+      if (url.pathname === '/api/bots/supervision') {
+        if (req.method !== 'GET') return error(res, 405, 'Supervision is read-only.');
+        if ([...url.searchParams].length || req.headers['transfer-encoding'] || Number(req.headers['content-length'] ?? 0) > 0) return error(res, 400, 'Supervision reads take no settings.');
+        return json(res, 200, bots.supervision());
+      }
       if (url.pathname === '/api/bots/teams') {
         if (req.method === 'GET') return json(res, 200, bots.team.list());
         if (req.method === 'POST') return json(res, 201, bots.team.create(await readBody(req)));

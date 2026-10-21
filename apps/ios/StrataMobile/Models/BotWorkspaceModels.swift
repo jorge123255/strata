@@ -1,5 +1,68 @@
 import Foundation
 
+/// A compact, read-only view of actual bot turns. Opening the exact conversation
+/// revalidates its current approvals; these display records grant no authority.
+struct BotSupervisionSnapshot: Decodable, Equatable {
+    struct Counts: Decodable, Equatable {
+        var waiting: Int
+        var working: Int
+        var completed: Int
+        var errors: Int
+    }
+    var supported: Bool
+    var sessions: [BotSupervisionSession]
+    var counts: Counts
+    var hasMore: Bool
+    var reason: String?
+    var headline: String {
+        if counts.waiting > 0 { return "\(counts.waiting) conversation\(counts.waiting == 1 ? "" : "s") waiting for you" }
+        if counts.working > 0 { return "\(counts.working) conversation\(counts.working == 1 ? "" : "s") in motion" }
+        if counts.errors > 0 { return "A bot needs your attention" }
+        return "Your conversations,\ntogether."
+    }
+}
+
+struct BotSupervisionSession: Decodable, Identifiable, Equatable {
+    enum State: String, Decodable { case approval, error, working, thinking, completed }
+    var id: String
+    var botId: String
+    var name: String
+    var title: String
+    var state: State
+    var approvalCount: Int
+    var toolName: String?
+    var computerName: String?
+    var teamId: String?
+    var parentChatId: String?
+    var updatedAt: String?
+    var needsAttention: Bool { state == .approval || state == .error }
+    var isWorking: Bool { state == .working || state == .thinking }
+    var context: String {
+        let kind = parentChatId != nil ? "Subagent" : teamId != nil ? "Team conversation" : "Personal conversation"
+        return computerName.map { kind + " · " + $0 } ?? kind
+    }
+    var statusLabel: String {
+        switch state {
+        case .approval: "\(approvalCount) approval\(approvalCount == 1 ? "" : "s") waiting"
+        case .error: "Needs attention"
+        case .working: "Using a tool"
+        case .thinking: "Thinking"
+        case .completed: "Finished"
+        }
+    }
+}
+
+enum BotSupervisionFilter: String, CaseIterable, Identifiable {
+    case all = "All", attention = "Needs you", working = "Working", completed = "Recently finished"
+    var id: String { rawValue }
+    func includes(_ session: BotSupervisionSession) -> Bool {
+        switch self { case .all: true; case .attention: session.needsAttention; case .working: session.isWorking; case .completed: session.state == .completed }
+    }
+    func count(_ counts: BotSupervisionSnapshot.Counts) -> Int {
+        switch self { case .all: counts.waiting + counts.working + counts.completed + counts.errors; case .attention: counts.waiting + counts.errors; case .working: counts.working; case .completed: counts.completed }
+    }
+}
+
 struct BotTeamLimits: Codable, Equatable {
     var maxParallel = 2
     var maxDepth = 2
