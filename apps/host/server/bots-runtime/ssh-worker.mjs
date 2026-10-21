@@ -84,12 +84,16 @@ export async function startWorker(input, options = {}) {
 }
 async function startWorkerTurn(input, { reader, send, directory, leaseMs = 12000, toolFactory = createBotTools, cuaFactory, runtimeFactory = createBotRuntime } = {}) {
   if (!input?.bot || !input?.sessionId || input.bot.execution?.kind !== 'ssh') throw new Error('A remote bot and conversation are required.');
+  if (input.bot.teamConversationOnly !== undefined && typeof input.bot.teamConversationOnly !== 'boolean') throw new Error('The team conversation mode is invalid.');
+  // This flag is frozen by the owning host job. A conversation invitation must
+  // not reconstruct local tools or acquire/clean up an unrelated CUA desktop.
+  const conversationOnly = input.bot.teamConversationOnly === true;
   if (input.bot.providerSettings?.apiKey) throw new Error('Provider credentials cannot be transferred to a remote Bots worker.');
   const remoteIdentity = identity();
   if (input.expectedIdentity && input.expectedIdentity !== remoteIdentity) throw new Error('The SSH alias now reaches a different computer or account. Start a new bot chat.');
   await mkdir(directory, { recursive: true, mode: 0o700 });
-  const release = input.bot.computerMode === 'cua' ? await acquireComputerLease(directory, { key: cuaKey(input.bot) }) : input.bot.capabilities === 'code' ? null : await acquireComputerLease(directory);
-  if (input.bot.computerMode === 'cua') { try { await requireCUACleanup(directory, input.bot); } catch (error) { await release(); throw error; } }
+  const release = conversationOnly ? null : input.bot.computerMode === 'cua' ? await acquireComputerLease(directory, { key: cuaKey(input.bot) }) : input.bot.capabilities === 'code' ? null : await acquireComputerLease(directory);
+  if (!conversationOnly && input.bot.computerMode === 'cua') { try { await requireCUACleanup(directory, input.bot); } catch (error) { await release(); throw error; } }
   const runs = join(directory, 'runs'); await mkdir(runs, { recursive: true, mode: 0o700 });
   const nonce = randomUUID(), record = join(runs, `${process.pid}-${nonce}.json`);
   await writeFile(record, JSON.stringify({ pid: process.pid, nonce, startedAt: new Date().toISOString() }), { mode: 0o600, flag: 'wx' });
@@ -120,31 +124,34 @@ async function startWorkerTurn(input, { reader, send, directory, leaseMs = 12000
   const emit = frame => write({ type: 'frame', value: frame });
   let failure, result;
   try {
-    const browser = await browserInfo();
-    const createTools = bot.computerMode === 'cua' ? cuaFactory ?? (await import('../bots-cua.mjs')).createBotCUATools : toolFactory;
-    tools = createTools({ directory, browserProbe: () => browser, browserHeadless: process.platform === 'linux' || !process.env.DISPLAY && process.platform !== 'darwin' });
+    if (!conversationOnly) {
+      const browser = await browserInfo();
+      const createTools = bot.computerMode === 'cua' ? cuaFactory ?? (await import('../bots-cua.mjs')).createBotCUATools : toolFactory;
+      tools = createTools({ directory, browserProbe: () => browser, browserHeadless: process.platform === 'linux' || !process.env.DISPLAY && process.platform !== 'darwin' });
+    }
     runtime = runtimeFactory({ stateDir: join(directory, 'runtime') });
     signal.throwIfAborted();
-    const allow = async request => { signal.throwIfAborted(); const approved = await ask('permission', request); signal.throwIfAborted(); return approved === true; };
+    const allow = async request => { signal.throwIfAborted(); if (conversationOnly) return false; const approved = await ask('permission', request); signal.throwIfAborted(); return approved === true; };
     const hostTools = normalizeTools(input.hostTools ?? []);
-    const localDefinitions = tools.definitions(bot).filter(tool => bot.computerMode === 'cua' || process.platform === 'darwin' || !tool.name.startsWith('computer_'));
+    const localDefinitions = conversationOnly ? [] : tools.definitions(bot).filter(tool => bot.computerMode === 'cua' || process.platform === 'darwin' || !tool.name.startsWith('computer_'));
     if (hostTools.length > 32 || hostTools.some(tool => localDefinitions.some(local => local.name === tool.name))) throw new Error('The host tool catalog is invalid.');
     const hostNames = new Set(hostTools.map(tool => tool.name));
     const execute = (name, args, toolCallId) => {
       signal.throwIfAborted();
+      if (conversationOnly && !hostNames.has(name)) return Promise.reject(new Error('A team conversation cannot use local or computer tools.'));
       const promise = hostNames.has(name) ? ask('requestHostTool', { name, args, toolCallId }) : tools.execute({ bot, chatId: input.sessionId, name, args, toolCallId, signal, onFrame: emit, requestPermission: allow });
       inFlight.add(promise); promise.finally(() => inFlight.delete(promise)).catch(() => {}); return promise;
     };
-    result = await runtime.run({ bot, sessionId: input.sessionId, message: input.message, history: input.history ?? [], checkpoint: input.checkpoint, signal, onFrame: frame => { if (frame.type !== 'done' && frame.type !== 'error') emit(frame); },
+    result = await runtime.run({ bot, sessionId: input.sessionId, message: input.message, history: input.history ?? [], checkpoint: conversationOnly ? null : input.checkpoint, signal, onFrame: frame => { if (frame.type !== 'done' && frame.type !== 'error') emit(frame); },
       tools: [...localDefinitions, ...hostTools], executeTool: execute, requestPermission: allow,
-      modelRequest: payload => ask('requestModel', payload), onCheckpoint: checkpoint => write({ type: 'checkpoint', value: checkpoint }) });
+      modelRequest: payload => ask('requestModel', payload), onCheckpoint: checkpoint => { if (!conversationOnly) write({ type: 'checkpoint', value: checkpoint }); } });
   } catch (error) { failure = error; }
   finally {
     const wasCancelled = signal.aborted;
     abort();
     const cleanup = await cleanupSteps([
       () => runtime?.close(), () => Promise.allSettled([...inFlight]), () => tools?.finish?.(input.sessionId), () => tools?.close(),
-    ], bot.computerMode === 'cua', failure);
+    ], !conversationOnly && bot.computerMode === 'cua', failure);
     cleanupConfirmed = cleanup.confirmed; failure = cleanup.failure;
     if (!cleanup.guestConfirmed) { try { await markCUAUncertain(directory, bot); } catch { cleanupConfirmed = false; } }
     const released = await cleanupSteps([() => release?.(), async () => { if (JSON.parse(await readFile(record, 'utf8')).nonce === nonce) await unlink(record); }], false);

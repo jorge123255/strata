@@ -54,7 +54,26 @@ export interface BotTeam { id: string; name: string; memberIds: string[]; coordi
 export type BotTeamRunState = 'queued'|'running'|'completed'|'error'|'cancelled'|'interrupted'|'stopping'|'cleanup_pending';
 export interface BotTeamRun { id: string; teamId: string; rootChatId: string; rootBotId: string; state: BotTeamRunState; limits: BotTeamLimits; consumedTurns: number; createdAt: string; updatedAt: string; detail?: string }
 export interface BotTeamActivity { id: string; type: 'run'|'delivery'|'subagent'; teamId: string; runId: string; botId?: string; chatId?: string; parentChatId?: string; title: string; state: string; fromBotId?: string; toBotId?: string; createdAt: string; updatedAt: string; detail?: string }
-export interface BotTeamsSnapshot { teams: BotTeam[]; runs: BotTeamRun[] }
+export interface BotTeamsSnapshot { teams: BotTeam[]; runs: BotTeamRun[]; channelsSupported?: boolean }
+/** Public, durable room messages are separate from each bot's private work chat. */
+export interface BotTeamChannelAuthor { type: 'user'|'bot'|'system'; botId?: string; name: string; avatarConfig?: Bot['avatarConfig'] }
+export interface BotTeamChannelMessage {
+  id: string; sequence: number; teamId: string; kind: 'message'|'assignment'|'report'|'status';
+  author: BotTeamChannelAuthor; content: string; createdAt: string; replyToId?: string;
+  recipientIds?: string[]; runId?: string; chatId?: string; state?: string;
+}
+export interface BotTeamChannelSnapshot { teamId: string; supported: boolean; messages: BotTeamChannelMessage[]; activeRuns: BotTeamRun[]; nextSequence: number; hasMore?: boolean; hasMoreBefore?: boolean; firstSequence?: number }
+/** Cursor pages may overlap; keep stable identities, order and only this room's rows. */
+export function mergeBotTeamChannelMessages(previous: BotTeamChannelMessage[], incoming: BotTeamChannelMessage[], teamId: string): BotTeamChannelMessage[] {
+  const rows = new Map(previous.filter(row => row.teamId === teamId).map(row => [row.id, row]));
+  const sequences = new Map([...rows.values()].map(row => [row.sequence, row.id]));
+  for (const row of incoming) if (row.teamId === teamId && Number.isSafeInteger(row.sequence) && row.sequence > 0 && row.id) {
+    if (rows.has(row.id) && rows.get(row.id)!.sequence !== row.sequence || sequences.has(row.sequence) && sequences.get(row.sequence) !== row.id) throw new Error('The team channel changed a saved message sequence. Refresh before sending.');
+    sequences.set(row.sequence, row.id); rows.set(row.id, row);
+  }
+  return [...rows.values()].sort((a, b) => a.sequence - b.sequence || a.id.localeCompare(b.id));
+}
+
 export interface BotSkill { id: string; name: string; description: string; body: string; triggers: string[]; source: 'library'|'draft'; status: 'draft'|'enabled'; revision: number|string; digest: string; botIds: string[]; onlyIn?:string|null; mainChatEnabled?:boolean; provenance?: unknown }
 export interface BotSkillAssignment { botId: string; skillIds: string[] }
 export interface BotSkillsSnapshot { skills: BotSkill[]; assignments: BotSkillAssignment[] }

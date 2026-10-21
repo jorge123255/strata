@@ -1,0 +1,61 @@
+/** Public team conversation has its own journal; private bot transcripts are never copied into it. */
+import { randomUUID } from 'node:crypto';
+import { privateExtensionStore } from './bots-extension-store.mjs';
+
+const fault = (status, message) => Object.assign(new Error(message), { status });
+const copy = value => structuredClone(value);
+const id = value => typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,160}$/.test(value);
+const states = new Set(['queued', 'working', 'done', 'error', 'interrupted']);
+const kinds = new Set(['message', 'assignment', 'report', 'status']);
+const cursor = value => Number.isSafeInteger(value) && value >= 0;
+
+export function createTeamChannels({ directory, now = Date.now, notify = () => {} }) {
+  const storage = privateExtensionStore(directory, 'bot-team-channels.json', { version: 1, channels: [], receipts: [] });
+  const channels = new Map(), receipts = new Map();
+  const saved = storage.value;
+  if (!Array.isArray(saved.channels) || saved.channels.length > 50 || !Array.isArray(saved.receipts) || saved.receipts.length > 20000) throw fault(503, 'Saved team channels could not be read. They were left unchanged.');
+  for (const row of saved.channels) {
+    if (!id(row?.teamId) || channels.has(row.teamId) || !Array.isArray(row.messages) || !cursor(row.nextSequence) || row.nextSequence < 1) throw fault(503, 'A saved team channel is invalid.');
+    let previous = 0; const seen = new Set();
+    for (const message of row.messages) {
+      if (!id(message?.id) || seen.has(message.id) || message.teamId !== row.teamId || !cursor(message.sequence) || message.sequence <= previous || message.sequence >= row.nextSequence || !kinds.has(message.kind) || typeof message.content !== 'string' || message.content.length > 16000 || !['user', 'bot', 'system'].includes(message.author?.type) || typeof message.author.name !== 'string' || typeof message.createdAt !== 'string' || message.state && !states.has(message.state)) throw fault(503, 'A saved team message is invalid.');
+      previous = message.sequence; seen.add(message.id);
+    }
+    channels.set(row.teamId, copy(row));
+  }
+  for (const receipt of saved.receipts) {
+    if (!id(receipt?.teamId) || !id(receipt.requestId) || typeof receipt.digest !== 'string' || !id(receipt.messageId) || !id(receipt.runId)) throw fault(503, 'A saved team delivery receipt is invalid.');
+    const key = `${receipt.teamId}:${receipt.requestId}`; if (receipts.has(key)) throw fault(503, 'A saved team delivery receipt is duplicated.'); receipts.set(key, copy(receipt));
+  }
+  const value = () => ({ version: 1, channels: [...channels.values()], receipts: [...receipts.values()] });
+  function save() {
+    if (Buffer.byteLength(JSON.stringify(value())) > 28 * 1024 * 1024) throw fault(503, 'The team channel journal reached its size limit. Existing history was retained.');
+    storage.save(value());
+  }
+  function append(teamId, input, receipt) {
+    const old = channels.get(teamId), row = old ?? { teamId, nextSequence: 1, messages: [] };
+    if (row.messages.length >= 50000) throw fault(503, 'This team channel reached its history limit. Existing history was retained.');
+    const message = { id: input.id ?? `tm_${randomUUID()}`, sequence: row.nextSequence, teamId, kind: input.kind ?? 'message', author: copy(input.author), content: String(input.content).slice(0, 16000), createdAt: new Date(now()).toISOString(), ...Object.fromEntries(['replyToId', 'recipientIds', 'runId', 'chatId', 'state'].filter(key => input[key] !== undefined).map(key => [key, copy(input[key])])) };
+    if (row.messages.some(item => item.id === message.id)) return copy(row.messages.find(item => item.id === message.id));
+    const receiptKey = receipt ? `${teamId}:${receipt.requestId}` : undefined;
+    if (receipt && (receipts.has(receiptKey) || receipts.size >= 20000)) throw fault(503, 'The team channel receipt is unavailable. Existing history was retained.');
+    const next = { ...row, nextSequence: row.nextSequence + 1, messages: [...row.messages, message] }; channels.set(teamId, next);
+    if (receipt) receipts.set(receiptKey, { ...copy(receipt), teamId, messageId: message.id });
+    try { save(); } catch (error) { old ? channels.set(teamId, old) : channels.delete(teamId); if (receipt) receipts.delete(receiptKey); throw error; }
+    notify('bots', { teamsChanged: true, teamChannelChanged: teamId }); return copy(message);
+  }
+  function snapshot(teamId, options = {}) {
+    if (!options || typeof options !== 'object' || Array.isArray(options) || Object.keys(options).some(key => !['after', 'before'].includes(key)) || options.after !== undefined && !cursor(options.after) || options.before !== undefined && !cursor(options.before) || options.after !== undefined && options.before !== undefined) throw fault(400, 'Choose one valid team channel cursor.');
+    const all = channels.get(teamId)?.messages ?? [];
+    const filtered = all.filter(row => options.after === undefined || row.sequence > options.after).filter(row => options.before === undefined || row.sequence < options.before);
+    const rows = options.after !== undefined ? filtered.slice(0, 100) : filtered.slice(-100);
+    const hasMoreBefore = rows.length ? all.some(row => row.sequence < rows[0].sequence) : options.after !== undefined && all.some(row => row.sequence <= options.after);
+    return { teamId, supported: true, messages: copy(rows), nextSequence: rows.at(-1)?.sequence ?? options.after ?? 0, hasMore: options.after !== undefined && filtered.length > rows.length, hasMoreBefore, ...(rows.length ? { firstSequence: rows[0].sequence } : {}) };
+  }
+  return {
+    append, appendAndRemember: append, snapshot,
+    find: (teamId, messageId) => copy(channels.get(teamId)?.messages.find(row => row.id === messageId)),
+    recent: (teamId, limit = 30) => copy((channels.get(teamId)?.messages ?? []).slice(-limit)),
+    receipt: (teamId, requestId) => copy(receipts.get(`${teamId}:${requestId}`)),
+  };
+}

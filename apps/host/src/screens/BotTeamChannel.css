@@ -1,0 +1,98 @@
+/* One shared room inside the existing Bots workspace. Colors follow Strata tokens. */
+.bots-team-room-page { display: flex; flex-direction: column; overflow: hidden; padding-bottom: 20px; }
+.bots-team-room-page > .bots-page-heading { flex: none; margin-bottom: 18px; }
+.bot-room-tabs { display: flex; gap: 22px; flex: none; border-bottom: 1px solid var(--st-line-soft); }
+.bot-room-tabs > button { position: relative; display: inline-flex; align-items: center; gap: 8px; border: 0; border-bottom: 2px solid transparent; padding: 11px 1px; background: none; color: var(--st-ink-muted); font: 500 13px var(--st-font); cursor: pointer; }
+.bot-room-tabs > button[aria-selected='true'] { border-color: var(--st-accent); color: var(--st-ink); }
+.bot-room-tab-dot, .bot-room-working-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--st-accent); }
+.bot-room-panel { display: flex; flex: 1; min-height: 0; min-width: 0; }
+.bot-room-panel[hidden], .bot-room[hidden], .bot-room-work[hidden] { display: none; }
+.bot-room-work { overflow: auto; padding-top: 22px; min-height: 0; }
+.bot-room { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; position: relative; }
+.bot-room-members { display: flex; gap: 5px; flex: none; padding: 12px 0; overflow-x: auto; scrollbar-width: thin; }
+.bot-room-members > button { display: flex; align-items: center; gap: 7px; flex: none; padding: 6px 10px 6px 5px; border: 1px solid transparent; border-radius: 12px; background: transparent; color: var(--st-ink); text-align: left; cursor: pointer; }
+.bot-room-members > button:hover, .bot-room-members > button[aria-pressed='true'] { background: var(--st-surface-2); border-color: var(--st-line-soft); }
+.bot-room-members strong { display: block; max-width: 160px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 11px; font-weight: 500; }
+.bot-room-members small { display: block; color: var(--st-ink-muted); font-size: 9px; margin-top: 2px; }
+.bot-room-feed { flex: 1; min-height: 120px; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 18px max(0px,calc((100% - 860px)/2)) 30px; }
+.bot-room-loading { color: var(--st-ink-muted); font-size: 12px; padding: 30px 10px; }
+.bot-room-earlier { text-align: center; margin: 0 0 24px; }
+.bot-room-welcome { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 300px; max-width: 480px; margin: 0 auto; padding: 24px 20px; text-align: center; }
+.bot-room-welcome-faces { display: flex; align-items: center; gap: 1px; margin-bottom: 21px; }
+.bot-room-welcome h3 { font-size: 21px; font-weight: 500; letter-spacing: -.035em; margin: 0 0 12px; }
+.bot-room-welcome p { color: var(--st-ink-muted); font-size: 12px; line-height: 1.7; margin: 0; }
+.bot-room-welcome > div:last-child { display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; margin-top: 25px; }
+.bot-room-welcome button, .bot-room-recipient-picker > div > button { color: var(--st-ink); background: var(--st-surface-2); border: 1px solid var(--st-line-soft); border-radius: 11px; padding: 10px 12px; font: 11px var(--st-font); cursor: pointer; }
+.bot-room-message { display: flex; gap: 12px; padding: 14px 8px; min-width: 0; }
+.bot-room-message + .bot-room-message { margin-top: 7px; }
+.bot-room-message-face { width: 38px; flex: none; padding-top: 1px; }
+.bot-room-person { display: flex; width: 34px; height: 34px; align-items: center; justify-content: center; border: 1px solid var(--st-line-soft); border-radius: 50%; color: var(--st-ink-muted); background: var(--st-surface-2); margin: 2px; }
+.bot-room-message-main { min-width: 0; flex: 1; }
+.bot-room-message header { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 8px; margin-bottom: 7px; }
+.bot-room-message header > strong { font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.bot-room-message time { color: var(--st-ink-muted); font-size: 10px; font-weight: 400; margin-left: 3px; }
+.bot-room-role { color: var(--st-ink-muted); font-size: 9px; padding: 2px 5px; border: 1px solid var(--st-line-soft); border-radius: 5px; }
+.bot-room-kind { color: var(--st-accent-text); font-size: 10px; }
+.bot-room-addressed { color: var(--st-ink-muted); font-size: 10px; margin: 0 0 8px; overflow-wrap: anywhere; }
+.bot-room-message-body { font-size: 13px; line-height: 1.7; color: var(--st-ink); overflow-wrap: anywhere; }
+.bot-room-message-body > :first-child { margin-top: 0; }
+.bot-room-message-body > :last-child { margin-bottom: 0; }
+.bot-room-message-body p { margin: 0 0 11px; white-space: pre-wrap; }
+.bot-room-message-body h2 { font-size: 17px; margin: 18px 0 10px; }
+.bot-room-message-body h3, .bot-room-message-body h4 { font-size: 14px; margin: 16px 0 10px; }
+.bot-room-message-body .st-code, .bot-room-message-body .md-table-wrap { max-width: 100%; overflow: auto; }
+.bot-room-message footer { display: flex; flex-wrap: wrap; gap: 13px; align-items: center; min-height: 25px; margin-top: 7px; }
+.bot-room-message footer > button { display: inline-flex; gap: 4px; align-items: center; color: var(--st-ink-muted); background: transparent; border: 0; font: 10px var(--st-font); cursor: pointer; padding: 3px 0; }
+.bot-room-message footer > button:hover { color: var(--st-ink); text-decoration: underline; }
+.bot-room-message footer > span { color: var(--st-ink-muted); font-size: 10px; }
+.bot-room-message[data-kind='assignment'] .bot-room-message-main, .bot-room-message[data-kind='status'] .bot-room-message-main { border-left: 2px solid var(--st-line); padding-left: 13px; }
+.bot-room-reply-context { display: flex; flex-direction: column; gap: 3px; margin: 0 0 11px; padding: 7px 12px; border-left: 2px solid var(--st-line); color: var(--st-ink-muted); font-size: 10px; overflow-wrap: anywhere; }
+.bot-room-reply-context strong { font-weight: 500; }
+.bot-room-reply-context span { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; white-space: pre-wrap; line-height: 1.55; }
+.bot-room-working { display: flex; align-items: center; gap: 11px; margin: 24px 8px 0 58px; padding: 13px 15px; border: 1px solid var(--st-line-soft); border-radius: 14px; background: var(--st-surface-2); }
+.bot-room-working > span:nth-child(2) { flex: 1; min-width: 0; }
+.bot-room-working strong { display: block; color: var(--st-ink); font-size: 11px; font-weight: 500; }
+.bot-room-working small { display: block; color: var(--st-ink-muted); font-size: 10px; margin-top: 4px; }
+.bot-room-new { position: absolute; bottom: 205px; align-self: center; z-index: 2; }
+.bot-room-new > button { display: flex; align-items: center; gap: 8px; border: 1px solid var(--st-line); border-radius: 20px; background: var(--st-surface); box-shadow: 0 3px 14px #0002; color: var(--st-ink); padding: 8px 13px; font: 11px var(--st-font); cursor: pointer; }
+.bot-room-composer { flex: none; width: min(100%,880px); align-self: center; padding: 13px 16px 12px; border: 1px solid var(--st-line); border-radius: 20px; background: var(--st-surface); box-shadow: 0 3px 20px #00000008; }
+.bot-room-composer-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.bot-room-to { display: inline-flex; min-width: 0; max-width: 100%; align-items: center; gap: 6px; color: var(--st-ink-muted); background: transparent; border: 0; padding: 3px 0; font: 11px var(--st-font); cursor: pointer; }
+.bot-room-to > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bot-room-to strong { color: var(--st-ink); font-weight: 500; }
+.bot-room-device-note { flex: none; color: var(--st-ink-muted); font-size: 9px; }
+.bot-room-input { display: block; }
+.bot-room-input textarea { appearance: none; display: block; width: 100%; padding: 14px 0 8px; border: 0; background: transparent; resize: none; color: var(--st-ink); font: 13px/1.65 var(--st-font); outline-offset: 2px; min-height: 72px; max-height: 170px; }
+.bot-room-input textarea::placeholder { color: var(--st-ink-muted); }
+.bot-room-composer-bottom { display: flex; align-items: center; justify-content: space-between; gap: 15px; }
+.bot-room-composer-bottom p { color: var(--st-ink-muted); font-size: 10px; line-height: 1.5; margin: 0; }
+.bot-room-composer-bottom .st-btn { min-height: 34px; border-radius: 12px; flex: none; }
+.bot-room-recipient-picker { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 10px 0 0; padding: 12px; border: 1px solid var(--st-line-soft); border-radius: 12px; background: var(--st-surface-2); min-width: 0; }
+.bot-room-recipient-picker legend { color: var(--st-ink-muted); font-size: 10px; padding: 0 4px; }
+.bot-room-recipient-picker > div { display: flex; gap: 8px; flex-wrap: wrap; width: 100%; }
+.bot-room-recipient-picker > div > button { padding: 7px 9px; }
+.bot-room-recipient-picker > div > button[aria-pressed='true'] { color: var(--st-accent-text); border-color: var(--st-accent); }
+.bot-room-recipient-picker label { display: flex; align-items: center; gap: 6px; color: var(--st-ink); font-size: 11px; cursor: pointer; }
+.bot-room-replying { display: flex; align-items: center; gap: 8px; padding: 0 0 11px; margin-bottom: 8px; border-bottom: 1px solid var(--st-line-soft); color: var(--st-ink-muted); font-size: 10px; }
+.bot-room-replying > span { flex: 1; min-width: 0; }
+.bot-room-replying small { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 10px; margin-top: 4px; }
+.bot-room button:focus-visible, .bot-room-tabs button:focus-visible { outline: 2px solid var(--st-accent); outline-offset: 3px; }
+@media (max-width: 700px) {
+  .bots-team-room-page { padding: 18px 14px 14px; }
+  .bots-team-room-page > .bots-page-heading { gap: 10px; margin-bottom: 9px; align-items: flex-start; }
+  .bots-team-room-page .bots-team-heading { gap: 9px; min-width: 0; }
+  .bots-team-room-page .bots-page-heading h2 { font-size: 20px; overflow-wrap: anywhere; }
+  .bots-team-room-page .bots-page-heading p { font-size: 10px; }
+  .bots-team-room-page .bots-team-heading > .bot-team-mark { display: none; }
+  .bot-room-device-note { display: none; }
+  .bot-room-members { padding: 8px 0; }
+  .bot-room-feed { padding-top: 8px; padding-bottom: 15px; }
+  .bot-room-message { gap: 8px; padding: 12px 0; }
+  .bot-room-message-face { width: 32px; }
+  .bot-room-message-face > .cua-bot-avatar { transform: scale(.84); transform-origin: top left; }
+  .bot-room-message-body { font-size: 12px; }
+  .bot-room-working { margin-left: 0; flex-wrap: wrap; }
+  .bot-room-composer { padding: 11px 12px; border-radius: 17px; }
+  .bot-room-composer-bottom p { font-size: 9px; }
+  .bot-room-new { bottom: 190px; }
+}

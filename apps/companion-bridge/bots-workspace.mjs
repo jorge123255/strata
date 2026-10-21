@@ -1,5 +1,6 @@
 // Narrow paired-phone surface for durable teams, reviewed skills and saved MCP
 // connections. Program paths, connection secrets and arbitrary tools stay on Mac.
+import { botAvatarConfig } from './bots-lifecycle.mjs';
 const error = (status, message) => Object.assign(new Error(message), { status });
 const id = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,120}$/.test(value);
 const toolId = value => typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,300}$/.test(value);
@@ -30,10 +31,12 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
   else if (p === '/api/bots/skills/assign') route = { kind: 'assignment' };
   else if (p === '/api/bots/connections') route = { kind: 'connections' };
   else {
+    const channel = /^\/api\/bots\/teams\/([A-Za-z0-9_-]{1,120})\/(channel|messages)$/.exec(p);
     const team = /^\/api\/bots\/teams\/([A-Za-z0-9_-]{1,120})(?:\/runs(?:\/([A-Za-z0-9_-]{1,120})(?:\/(stop))?)?)?$/.exec(p);
     const skill = /^\/api\/bots\/skills\/([A-Za-z0-9_-]{1,120})$/.exec(p);
     const connection = /^\/api\/bots\/connections\/([A-Za-z0-9_-]{1,120})(?:\/(check))?$/.exec(p);
-    if (team) route = { kind: p.includes('/runs') ? 'run' : 'team', teamId: team[1], runId: team[2], action: team[3] };
+    if (channel) route = { kind: channel[2] === 'channel' ? 'channel' : 'channelMessage', teamId: channel[1] };
+    else if (team) route = { kind: p.includes('/runs') ? 'run' : 'team', teamId: team[1], runId: team[2], action: team[3] };
     else if (skill) route = { kind: 'skill', skillId: skill[1] };
     else if (connection) route = { kind: 'connection', connectionId: connection[1], action: connection[2] };
     else return null;
@@ -43,9 +46,10 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
     const [key, value] = query[0];
     if (route.kind === 'skills' && key === 'botId' && id(value)) route.botId = value;
     else if (route.kind === 'providerModels' && key === 'provider' && ['claude', 'codex', 'grok', 'kimi', 'ollama', 'configured'].includes(value)) route.provider = value;
+    else if (route.kind === 'channel' && ['after', 'before'].includes(key) && /^(0|[1-9][0-9]{0,15})$/.test(value) && Number.isSafeInteger(Number(value))) route[key] = Number(value);
     else throw error(status, 'Choose a saved bot or provider.');
   } else if (route.kind === 'providerModels') throw error(status, 'Choose a provider.');
-  const allowed = { teams: ['GET', 'POST'], team: ['PATCH'], run: route.action === 'stop' ? ['POST'] : route.runId ? ['GET'] : ['POST'], activity: ['GET'], skills: ['GET', 'POST'], skill: ['PATCH', 'DELETE'], assignment: ['POST'], connections: ['GET'], connection: route.action ? ['POST'] : ['PATCH', 'DELETE'], providerModels: ['GET'] };
+  const allowed = { teams: ['GET', 'POST'], team: ['PATCH'], channel: ['GET'], channelMessage: ['POST'], run: route.action === 'stop' ? ['POST'] : route.runId ? ['GET'] : ['POST'], activity: ['GET'], skills: ['GET', 'POST'], skill: ['PATCH', 'DELETE'], assignment: ['POST'], connections: ['GET'], connection: route.action ? ['POST'] : ['PATCH', 'DELETE'], providerModels: ['GET'] };
   if (!allowed[route.kind].includes(method)) throw error(status, 'This workspace action is unavailable from iPhone.');
   if (!validateBody) return route;
   if (method === 'GET' || method === 'DELETE') {
@@ -63,6 +67,12 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
       object(body.limits, Object.keys(limits), status);
       for (const [key, value] of Object.entries(body.limits)) if (!Number.isInteger(value) || value < limits[key][0] || value > limits[key][1]) throw error(status, 'Choose supported team limits.');
     }
+  } else if (route.kind === 'channelMessage') {
+    object(body, ['message', 'requestId', 'recipientIds', 'replyToId'], status);
+    string(body.message, 16_000, status);
+    if (!id(body.requestId)) throw error(status, 'Choose a valid team message request.');
+    if (body.recipientIds !== undefined) { ids(body.recipientIds, status, id, 12); if (!body.recipientIds.length) throw error(status, 'Choose a teammate or send to the team.'); }
+    if (body.replyToId !== undefined && !id(body.replyToId)) throw error(status, 'Choose a message from this team.');
   } else if (route.kind === 'run') {
     object(body, route.action ? [] : ['message', 'requestId'], status);
     if (!route.action) { string(body.message, 16_000, status); if (body.requestId !== undefined && !id(body.requestId)) throw error(status, 'Choose a valid task request.'); }
@@ -93,6 +103,22 @@ function team(value) {
 function run(value) {
   return { id: value.id, teamId: id(value.teamId) ? value.teamId : '', rootChatId: id(value.rootChatId) ? value.rootChatId : '', rootBotId: id(value.rootBotId) ? value.rootBotId : '', state: states.has(value.state) ? value.state : 'interrupted', limits: team(value).limits, consumedTurns: Number.isInteger(value.consumedTurns) ? value.consumedTurns : 0, createdAt: date(value.createdAt), updatedAt: date(value.updatedAt), ...(typeof value.detail === 'string' ? { detail: text(value.detail, 2_000) } : {}) };
 }
+function channelSnapshot(value, route) {
+  const invalid = () => { throw error(502, 'Strata returned unreadable team channel information.'); };
+  if (!isObject(value) || value.teamId !== route.teamId || value.supported !== true || !Array.isArray(value.messages) || value.messages.length > 100 || !Array.isArray(value.activeRuns) || value.activeRuns.length > 200 || !Number.isSafeInteger(value.nextSequence) || value.nextSequence < 0 || typeof value.hasMore !== 'boolean' || typeof value.hasMoreBefore !== 'boolean') invalid();
+  const seen = new Set(); let previous = 0;
+  const messages = value.messages.map(v => {
+    if (!isObject(v) || !id(v.id) || seen.has(v.id) || v.teamId !== route.teamId || !Number.isSafeInteger(v.sequence) || v.sequence <= previous || !['message', 'assignment', 'report', 'status'].includes(v.kind) || !isObject(v.author) || !['user', 'bot', 'system'].includes(v.author.type) || typeof v.author.name !== 'string' || !v.author.name.trim() || v.author.name.length > 200 || typeof v.content !== 'string' || v.content.length > 32_000 || v.content.includes('\0') || date(v.createdAt) === undefined || v.author.type === 'bot' && !id(v.author.botId)) invalid();
+    seen.add(v.id); previous = v.sequence;
+    for (const key of ['replyToId', 'runId', 'chatId']) if (v[key] !== undefined && !id(v[key])) invalid();
+    if (v.recipientIds !== undefined && (!Array.isArray(v.recipientIds) || v.recipientIds.length > 12 || v.recipientIds.some(x => !id(x)) || new Set(v.recipientIds).size !== v.recipientIds.length)) invalid();
+    let avatarConfig;
+    if (v.author.avatarConfig !== undefined) { try { avatarConfig = botAvatarConfig(v.author.avatarConfig, 502); if (avatarConfig.shape === 'classic') delete avatarConfig.shape; } catch { /* Omit unavailable future artwork; never forward arbitrary assets or fields. */ } }
+    return { id: v.id, sequence: v.sequence, teamId: v.teamId, kind: v.kind, author: { type: v.author.type, name: v.author.name, ...(v.author.type === 'bot' ? { botId: v.author.botId } : {}), ...(avatarConfig ? { avatarConfig } : {}) }, content: v.content, createdAt: date(v.createdAt), ...Object.fromEntries(['replyToId', 'runId', 'chatId'].filter(key => v[key] !== undefined).map(key => [key, v[key]])), ...(v.recipientIds ? { recipientIds: v.recipientIds } : {}), ...(['queued', 'working', 'done', 'error', 'interrupted', 'cancelled'].includes(v.state) ? { state: v.state } : {}) };
+  });
+  if (messages.length && value.nextSequence !== messages.at(-1).sequence || value.activeRuns.some(v => !isObject(v) || !id(v.id) || v.teamId !== route.teamId)) invalid();
+  return { teamId: value.teamId, supported: true, messages, activeRuns: value.activeRuns.map(run), nextSequence: value.nextSequence, hasMore: value.hasMore, hasMoreBefore: value.hasMoreBefore, ...(messages.length ? { firstSequence: messages[0].sequence } : {}) };
+}
 function skill(value) {
   return { id: value.id, name: text(value.name, 200), description: text(value.description, 2_000), body: text(value.body, 64_000), triggers: (Array.isArray(value.triggers) ? value.triggers : []).filter(t => typeof t === 'string').slice(0, 50).map(t => text(t, 200)), source: value.source === 'library' ? 'library' : 'draft', status: value.status === 'enabled' ? 'enabled' : 'draft', revision: Number.isInteger(value.revision) ? value.revision : text(value.revision, 128), digest: text(value.digest, 128), botIds: safeIds(value.botIds) };
 }
@@ -105,7 +131,9 @@ export function publicBotWorkspace(body, route) {
     if (!Array.isArray(body[key])) throw error(502, 'Strata returned unreadable workspace information.');
     return body[key].filter(v => v && valid(v.id)).slice(0, 1_000).map(project);
   };
-  if (route.kind === 'teams' && Array.isArray(body.teams)) return { teams: rows('teams', team), runs: rows('runs', run) };
+  if (route.kind === 'channel') return channelSnapshot(body, route);
+  if (route.kind === 'channelMessage') return { channel: channelSnapshot(body.channel, route), ...(body.run && id(body.run.id) && body.run.teamId === route.teamId ? { run: run(body.run) } : {}) };
+  if (route.kind === 'teams' && Array.isArray(body.teams)) return { teams: rows('teams', team), runs: rows('runs', run), ...(body.channelsSupported === true ? { channelsSupported: true } : {}) };
   if (body.team && id(body.team.id)) return { team: team(body.team) };
   if (body.run && id(body.run.id)) return { run: run(body.run) };
   if (route.kind === 'activity') return { activity: rows('activity', v => ({ id: v.id, type: ['run', 'delivery', 'subagent'].includes(v.type) ? v.type : 'run', teamId: id(v.teamId) ? v.teamId : '', runId: id(v.runId) ? v.runId : '', title: text(v.title, 300), state: text(v.state, 60), ...Object.fromEntries(['botId', 'chatId', 'parentChatId', 'fromBotId', 'toBotId'].filter(k => id(v[k])).map(k => [k, v[k]])), createdAt: date(v.createdAt), updatedAt: date(v.updatedAt), ...(typeof v.detail === 'string' ? { detail: text(v.detail, 2_000) } : {}) })) };
@@ -129,6 +157,11 @@ export async function handleBotWorkspace({ path, method, req, res, session, host
   botWorkspaceRequest(upstreamPath, method, body, 400);
   requireCurrentSession();
   try {
+    if (route.kind === 'channelMessage') {
+      const catalog = await host.json('/api/bots/teams'); requireCurrentSession();
+      const selected = (catalog.teams ?? []).find(team => team.id === route.teamId);
+      if (!selected || !selected.enabled || body.recipientIds?.some(botId => !selected.memberIds?.includes(botId))) throw error(409, 'Refresh this team and choose its available members.');
+    }
     if ((route.kind === 'teams' || route.kind === 'team') && (body?.memberIds || body?.coordinatorId) || route.kind === 'assignment' || route.kind === 'connection' && body?.botIds) {
       const catalog = await host.json('/api/bots'); requireCurrentSession();
       const botIds = new Set((catalog.bots ?? []).map(bot => bot.id));
@@ -165,7 +198,7 @@ export async function handleBotWorkspace({ path, method, req, res, session, host
   } catch (failure) {
     requireCurrentSession();
     if ([404, 405, 501].includes(failure.status) && method === 'GET') {
-      const empty = { teams: { teams: [], runs: [] }, activity: { activity: [] }, skills: { skills: [], assignments: [] }, connections: { connections: [] }, providerModels: { provider: route.provider, models: [] } }[route.kind];
+      const empty = { teams: { teams: [], runs: [] }, channel: { teamId: route.teamId, supported: false, messages: [], activeRuns: [], nextSequence: 0, hasMore: false, hasMoreBefore: false }, activity: { activity: [] }, skills: { skills: [], assignments: [] }, connections: { connections: [] }, providerModels: { provider: route.provider, models: [] } }[route.kind];
       if (empty) { sendJSON(res, 200, { ...empty, reason: 'Update Strata on your Mac to use this Bots feature.' }); return true; }
     }
     const status = [400, 404, 409, 413, 501].includes(failure.status) ? failure.status : 503;

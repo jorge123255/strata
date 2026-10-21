@@ -113,7 +113,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     return status;
   }
   const work = createBotWork({ directory, requireBot, chats: conversations, createConversation, notify });
-  const team = createBotTeams({ directory, requireBot, conversations, createConversation: (id, teamContext) => createConversation(id, {}, teamContext), notify,
+  const team = createBotTeams({ directory, requireBot, conversations, createConversation: (id, teamContext) => createConversation(id, {}, teamContext), discardConversation: id => { conversations().remove(id); chatProfiles.delete(id); checkpoints.delete(id); save(); }, notify,
     isBotBusy: id => [...active.values()].some(run => run.botId === id), stopDirect: id => stop(id, { team: false }) });
   const hasOwnedComputer = id => [...ownedComputers, ...uncertainTargets.keys()].some(key => key.startsWith(`cua:${id}:`));
   const markOwned = bot => { ownedComputers.add(cuaResource(bot)); save(); };
@@ -289,8 +289,9 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     if (!selection?.botId) return;
     const current = requireBot(selection.botId), bot = chatProfiles.get(selection.chatId) ?? current;
     if (current.paused) throw fault(409, 'This bot is paused. Resume it before starting another turn.');
-    computer.checkRun(bot);
-    if (bot.computerMode === 'cua' && uncertainTargets.has(cuaResource(bot))) throw fault(409, 'CUA command cleanup is unconfirmed. Stop this isolated computer from its Computer view before continuing.');
+    const conversationOnly = ['routing', 'conversation', 'bid'].includes(bot.teamContext?.channelMode);
+    if (!conversationOnly) computer.checkRun(bot);
+    if (!conversationOnly && bot.computerMode === 'cua' && uncertainTargets.has(cuaResource(bot))) throw fault(409, 'CUA command cleanup is unconfirmed. Stop this isolated computer from its Computer view before continuing.');
     if (uncertainTargets.has(executionKey(bot.execution))) throw fault(409, uncertainTargets.get(executionKey(bot.execution)));
     if (bot.execution.kind === 'sandbox') throw fault(409, 'This bot’s sandbox execution adapter is not configured.');
     if (bot.execution.kind === 'ssh' && !remoteSSH) throw fault(409, 'This bot’s SSH execution adapter is not configured.');
@@ -352,15 +353,19 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     const current = requireBot(session.preferences?.botId);
     const bot = copy(chatProfiles.get(session.id) ?? current);
     validateSelection({ botId: bot.id, chatId: session.id });
+    const roomMode = team.modeForChat(session.id, bot);
+    // This internal frozen flag comes only from the team scheduler, never a profile/client patch.
+    const conversationOnly = ['routing', 'conversation', 'bid'].includes(roomMode);
+    if (conversationOnly) bot.teamConversationOnly = true;
     if (active.has(session.id)) throw fault(409, 'This bot conversation is already running.');
     const controller = new AbortController();
     const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
     let ended;
     const target = executionKey(bot.execution);
-    if (bot.execution.kind === 'ssh' && bot.capabilities !== 'code' && computerLeases.has(target)) throw fault(409, 'Another bot conversation is using this computer. Wait for it to finish.');
+    if (!conversationOnly && bot.execution.kind === 'ssh' && bot.capabilities !== 'code' && computerLeases.has(target)) throw fault(409, 'Another bot conversation is using this computer. Wait for it to finish.');
     const owner = { botId: bot.id, target, controller, pending: new Map(), ended: new Promise(resolve => { ended = resolve; }) };
     active.set(session.id, owner);
-    if (bot.execution.kind === 'ssh' && bot.capabilities !== 'code') computerLeases.set(target, session.id);
+    if (!conversationOnly && bot.execution.kind === 'ssh' && bot.capabilities !== 'code') computerLeases.set(target, session.id);
     let terminal = null;
     const emit = frame => {
       if (active.get(session.id) !== owner) return;
@@ -371,7 +376,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     };
     const fingerprint = createHash('sha256').update(JSON.stringify([bot.id, bot.provider, bot.model, bot.effort, bot.workspace, bot.instructions, bot.policy, bot.capabilities, bot.providerSettings?.baseURL, bot.execution, bot.modelSource, bot.modelDestination, bot.computerMode, bot.extensionSnapshots])).digest('hex');
     const oldCheckpoint = checkpoints.get(session.id);
-    const requestPermission = async ({ id, name, args = {}, reason = 'Allow this bot action?' }) => {
+    const requestPolicyPermission = async ({ id, name, args = {}, reason = 'Allow this bot action?' }) => {
       if (combined.aborted || bot.policy === 'plan') return false;
       if (bot.policy === 'bypass') return true;
       const callId = typeof id === 'string' && /^[A-Za-z0-9_.:-]{1,160}$/.test(id) ? id : `bt_${createHash('sha256').update(String(id ?? randomUUID())).digest('hex').slice(0, 32)}`;
@@ -391,12 +396,14 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     };
     const turnId = `turn_${randomUUID()}`;
     const assertLive = () => { combined.throwIfAborted(); if (active.get(session.id) !== owner || !team.isLive(turnId)) throw fault(409, 'This bot turn has ended.'); };
-    const context = { bot, chatId: session.id, turnId, signal: combined, requestPermission, assertLive, onFrame: emit };
-    const extensions = [team, skills, mcp].filter(Boolean);
+    const requestPermission = request => conversationOnly ? Promise.resolve(false) : requestPolicyPermission(request);
+    const context = { bot, chatId: session.id, turnId, signal: combined, requestPermission, requestTeamPermission: requestPolicyPermission, roomMode, assertLive, onFrame: emit };
+    const extensions = (conversationOnly ? [team] : [team, skills, mcp]).filter(Boolean);
+    const localTools = conversationOnly ? [] : tools.definitions(bot);
     let hostTools;
     try {
       hostTools = extensions.flatMap(extension => extension.tools(bot, context));
-      if (new Set(hostTools.map(tool => tool.name)).size !== hostTools.length || hostTools.some(tool => tools.definitions(bot).some(local => local.name === tool.name))) throw fault(503, 'Bot tool names overlap.');
+      if (new Set(hostTools.map(tool => tool.name)).size !== hostTools.length || hostTools.some(tool => localTools.some(local => local.name === tool.name))) throw fault(503, 'Bot tool names overlap.');
     } catch (error) { controller.abort(); active.delete(session.id); if (computerLeases.get(target) === session.id) computerLeases.delete(target); ended(); throw error; }
     const hostNames = new Set(hostTools.map(tool => tool.name)), calls = new Map();
     const executeHostTool = (name, args = {}, toolCallId) => {
@@ -420,22 +427,25 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     let runFailure;
     try {
       team.begin(context);
-      const instructions = [bot.instructions, work.instructions(bot.id), bot.extensionSnapshots?.skills?.instructions, bot.extensionSnapshots?.mcp?.instructions, team.instructions(context)].filter(Boolean).join('\n\n');
+      const instructions = (conversationOnly ? [team.instructions(context)] : [bot.instructions, work.instructions(bot.id), bot.extensionSnapshots?.skills?.instructions, bot.extensionSnapshots?.mcp?.instructions, team.instructions(context)]).filter(Boolean).join('\n\n');
+      const runtimeBot = { ...bot, instructions };
+      if (conversationOnly) delete runtimeBot.extensionSnapshots;
       emit({ type: 'start', agent: true, model: bot.model || bot.provider });
-      await runtime.run({ bot: { ...bot, instructions }, sessionId: session.id, message, history: session.messages, signal: combined, onFrame: emit, requestPermission, hostTools, executeHostTool,
+      await runtime.run({ bot: runtimeBot, sessionId: session.id, message, history: session.messages, signal: combined, onFrame: emit, requestPermission, hostTools, executeHostTool,
         modelRequest: (payload, botOrSignal, signal) => {
           const transportSignal = signal ?? (botOrSignal && typeof botOrSignal.addEventListener === 'function' && typeof botOrSignal.aborted === 'boolean' ? botOrSignal : null);
           if (active.get(session.id) !== owner || combined.aborted || bot.provider !== 'configured') throw fault(409, 'This bot turn has ended or has no configured model.');
           if (typeof modelRequest !== 'function') throw fault(503, 'Configured model inference is unavailable.');
-          return modelRequest({ ...payload, tools: [...tools.definitions(bot), ...hostTools].filter(tool => Array.isArray(payload?.tools) && payload.tools.some(requested => requested?.name === tool.name)), system: instructions || 'You are a Strata bot. Use the provided tools for coding and computer tasks.' }, bot, transportSignal ? AbortSignal.any([combined, transportSignal]) : combined, emit);
+          return modelRequest({ ...payload, tools: [...localTools, ...hostTools].filter(tool => Array.isArray(payload?.tools) && payload.tools.some(requested => requested?.name === tool.name)), system: instructions || 'You are a Strata bot. Use the provided tools for coding and computer tasks.' }, bot, transportSignal ? AbortSignal.any([combined, transportSignal]) : combined, emit);
         },
-        tools: [...tools.definitions(bot), ...hostTools], executeTool: (name, args, toolCallId) => {
+        tools: [...localTools, ...hostTools], executeTool: (name, args, toolCallId) => {
           if (active.get(session.id) !== owner || combined.aborted) throw fault(409, 'This bot turn has ended.');
           if (hostNames.has(name)) return executeHostTool(name, args, toolCallId);
+          if (conversationOnly) throw fault(403, 'This team conversation turn cannot execute computer, file, browser or external tools.');
           return tools.execute({ bot, chatId: session.id, name, args, toolCallId, signal: combined, onFrame: emit, requestPermission });
         },
-        checkpoint: oldCheckpoint?.fingerprint === fingerprint ? oldCheckpoint.value : null,
-        onCheckpoint: value => { if (active.get(session.id) === owner) { checkpoints.set(session.id, { fingerprint, value }); save(); } } });
+        checkpoint: !conversationOnly && oldCheckpoint?.fingerprint === fingerprint ? oldCheckpoint.value : null,
+        onCheckpoint: value => { if (!conversationOnly && active.get(session.id) === owner) { checkpoints.set(session.id, { fingerprint, value }); save(); } } });
     } catch (failure) {
       runFailure = failure;
       if (failure.code === 'ssh_cleanup_unconfirmed' || failure.cleanupUnconfirmed) { uncertainTargets.set(failure.code === 'cua_cleanup_unconfirmed' || failure.cleanupUnconfirmed && failure.code !== 'ssh_cleanup_unconfirmed' ? cuaResource(bot) : target, 'Remote cleanup could not be confirmed. Use Check SSH computer on the Mac before starting another turn.'); save(); owner.cleanupFailure = failure; terminal = { type: 'error', message: failure.message }; throw failure; }
@@ -477,6 +487,25 @@ export function createBotRoutes({ bots, port }) {
         if (req.method === 'GET') return json(res, 200, bots.team.list());
         if (req.method === 'POST') return json(res, 201, bots.team.create(await readBody(req)));
         return error(res, 405, 'This team action is unavailable.');
+      }
+      const channelRoute = /^\/api\/bots\/teams\/(team_[a-f0-9-]+)\/(channel|messages)$/.exec(url.pathname);
+      if (channelRoute) {
+        const [, teamId, action] = channelRoute;
+        if (action === 'messages' && req.method === 'POST') {
+          if ([...url.searchParams].length) throw fault(400, 'Send team message settings in the request body.');
+          return json(res, 201, bots.team.message(teamId, await readBody(req)));
+        }
+        if (action === 'channel' && req.method === 'GET') {
+          if (req.headers['transfer-encoding'] || Number(req.headers['content-length'] ?? 0) > 0) throw fault(400, 'Team channel reads take no request body.');
+          const options = {};
+          for (const [key, value] of url.searchParams) {
+            if (!['after', 'before'].includes(key) || Object.hasOwn(options, key) || !/^(0|[1-9][0-9]*)$/.test(value) || !Number.isSafeInteger(Number(value))) throw fault(400, 'Choose one valid team channel cursor.');
+            options[key] = Number(value);
+          }
+          if (Object.keys(options).length > 1) throw fault(400, 'Choose either earlier or newer team channel messages.');
+          return json(res, 200, bots.team.channel(teamId, options));
+        }
+        return error(res, 405, 'This team channel action is unavailable.');
       }
       const teamRoute = /^\/api\/bots\/teams\/(team_[a-f0-9-]+)(?:\/runs(?:\/(tr_[a-f0-9-]+)(?:\/(stop))?)?)?$/.exec(url.pathname);
       if (teamRoute) {
