@@ -769,7 +769,17 @@ final class CompanionSmokeTests: XCTestCase {
         let control = try pairWorkspaceFixture()
         tapTab("Connectors")
         try tapWorkspace(app.buttons["connectorAdvancedOptions"])
-        try tapWorkspace(app.buttons["createBotConnectorButton"])
+        attachScreenshot("Connectors — expanded Advanced controls")
+        // SwiftUI inherits the disclosure's test identifier onto its children.
+        // Use the visible action's unique public label, as a person does.
+        let customConnector = app.buttons.matching(NSPredicate(format: "label == %@", "Custom HTTP connector")).firstMatch
+        if !customConnector.exists {
+            let hierarchy = XCTAttachment(string: app.debugDescription)
+            hierarchy.name = "Advanced connector accessibility hierarchy"
+            hierarchy.lifetime = .keepAlways
+            add(hierarchy)
+        }
+        try tapWorkspace(customConnector)
         let name = app.textFields["connectorNameInput"], url = app.textFields["connectorURLInput"]
         try require(name); name.tap(); name.typeText("Project service")
         let account = app.textFields["connectorAccountInput"]
