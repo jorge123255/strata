@@ -75,6 +75,7 @@ import { createBotTools } from './bots-tools.mjs';
 import { createBotCUATools } from './bots-cua.mjs';
 import { createBotRuntime } from './bots-runtime/index.mjs';
 import { createBotNotifications, createBotNotificationRoutes } from './bot-notifications.mjs';
+import { createBotCompanionRoutes } from './bot-companion.mjs';
 import { createRemoteBotSSH } from './bots-ssh.mjs';
 import { createBotModelClient, createBotModelSources } from './bots-models.mjs';
 import { appVersionFrom, appVersionToShow } from './app-version.mjs';
@@ -573,6 +574,7 @@ botNotifications = createBotNotifications({ directory: store.DATA_DIR,
   },
 });
 const botNotificationRoutes = createBotNotificationRoutes({ notifications: botNotifications, port: PORT });
+const botCompanionRoutes = createBotCompanionRoutes({ bots, port: PORT });
 
 
 function saveWorkspaces() {
@@ -1051,6 +1053,7 @@ const server = http.createServer(async (req, res) => {
   if (path === '/api/model-management' || path.startsWith('/api/model-management/')) return modelManagementRoutes(req, res, path, method);
   if (/^\/api\/bots\/(skills|connections|connectors)(?:\/|$)/.test(path)) return botExtensionRoutes(req, res, url);
   if (path === '/api/bots/notifications' || path.startsWith('/api/bots/notifications/')) return botNotificationRoutes(req, res, url);
+  if (path === '/api/bots/companion' || path.startsWith('/api/bots/companion/')) return botCompanionRoutes(req, res, url);
   if (path === '/api/bots' || path.startsWith('/api/bots/')) return botRoutes(req, res, url);
   if (path === '/api/companion/conversations' || path.startsWith('/api/companion/conversations/')) return conversationRoutes(req, res, url);
   if (path === '/api/companion' || path.startsWith('/api/companion/')) return companionRoutes(req, res, url);

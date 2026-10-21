@@ -13,6 +13,10 @@ test('notification destinations cannot navigate to arbitrary URLs or execute act
  assert.equal(policy.isNotificationSettingsDestination({type:'notifications',id:'elsewhere'}),false);
  assert.equal(policy.isNotificationSettingsDestination({type:'notifications',id:'settings',command:'approve'}),false);
  assert.equal(policy.notificationDestination({type:'notifications',id:'settings'}),null);
+ assert.equal(policy.isBotCompanionActivityDestination({type:'bots',id:'activity'}),true);
+ for(const destination of [{type:'bots',id:'activity',approve:true},{type:'bots',id:'settings'},{type:'approval',id:'activity'},null])assert.equal(policy.isBotCompanionActivityDestination(destination),false);
+ assert.equal(policy.notificationDestination({type:'bots',id:'activity'}),null);
+ assert.equal(policy.validNotification({...event(),destination:{type:'bots',id:'activity'}}),false,'Internal companion navigation does not expand notification authority.');
 });
 test('opt in, exact room, mute and each category are independent',()=>{
  const prefs={...policy.DEFAULT_NOTIFICATION_PREFERENCES,enabled:true};

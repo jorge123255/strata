@@ -1,6 +1,6 @@
 import { useEffect, useSyncExternalStore } from 'react';
 import { api } from './client';
-import { DEFAULT_NOTIFICATION_PREFERENCES, destinationKey, isNotificationSettingsDestination, mergeNotificationInbox, notificationDestination, notificationHref, validNotification, type BotNotification, type NotificationDestination, type NotificationPreferences } from './notification-policy';
+import { DEFAULT_NOTIFICATION_PREFERENCES, destinationKey, isBotCompanionActivityDestination, isNotificationSettingsDestination, mergeNotificationInbox, notificationDestination, notificationHref, validNotification, type BotNotification, type NotificationDestination, type NotificationPreferences } from './notification-policy';
 
 interface DesktopStatus { available: boolean; authorization?: string; detail?: string }
 interface NotificationFeed { supported: boolean; journalId: string; cursor: number; nextCursor: number; hasMore: boolean; baseline?: boolean; events: BotNotification[]; settings: NotificationPreferences; desktop?: DesktopStatus; push?: { configured: boolean; detail: string } }
@@ -39,6 +39,7 @@ function scheduleContext() {
 }
 export function openNotificationDestination(value: unknown) {
   if (isNotificationSettingsDestination(value)) { openNotifications(); return; }
+  if (isBotCompanionActivityDestination(value)) { update({ open: false }); window.location.hash = '#/bots/activity'; return; }
   const href = notificationHref(value); if (!href) return;
   update({ open: false }); window.location.hash = href;
 }
@@ -98,7 +99,7 @@ export function startNotifications() {
 async function consumeNativeOpen(selected: number) {
   try {
     const result = await api.post<{ destination: unknown }>('/api/bots/notifications/open', {});
-    if (running && selected === generation && (notificationDestination(result.destination) || isNotificationSettingsDestination(result.destination))) openNotificationDestination(result.destination);
+    if (running && selected === generation && (notificationDestination(result.destination) || isNotificationSettingsDestination(result.destination) || isBotCompanionActivityDestination(result.destination))) openNotificationDestination(result.destination);
   } catch { /* Older carriers have no native click route. */ }
 }
 export async function refreshNotifications() { if (pendingPoll) await pendingPoll; await poll(); }

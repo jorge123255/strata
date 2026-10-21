@@ -1,10 +1,16 @@
 //! Native notifications share Strata's process and bundle identity. Only the private host bridge calls this module.
 use serde_json::{json, Value};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 // Keep an early/cold-start click until the renderer has mounted. A wake event
 // and the periodic check race safely: only one consumes the destination.
-static PENDING_OPEN: Mutex<Option<Value>> = Mutex::new(None);
-pub fn take_open() -> Value { json!({"destination": PENDING_OPEN.lock().ok().and_then(|mut value| value.take())}) }
+struct PendingOpen { destination: Value, expires: Option<Instant> }
+static PENDING_OPEN: Mutex<Option<PendingOpen>> = Mutex::new(None);
+fn pending_destination(value: Option<PendingOpen>, now: Instant) -> Option<Value> {
+    value.filter(|pending| pending.expires.map_or(true, |expires| now < expires)).map(|pending| pending.destination)
+}
+pub fn take_open() -> Value { json!({"destination": pending_destination(PENDING_OPEN.lock().ok().and_then(|mut value| value.take()), Instant::now())}) }
+pub fn clear_companion_open() { if let Ok(mut pending) = PENDING_OPEN.lock() { if pending.as_ref().is_some_and(|value| value.expires.is_some()) { *pending = None; } } }
 static CONTEXT: Mutex<Option<Value>> = Mutex::new(None);
 pub fn set_context(value: &Value) -> bool {
     if !value.as_object().is_some_and(|v| v.len() == 2) || !value["hash"].as_str().is_some_and(|s| s.starts_with("#/") && s.len() <= 4096 && !s.contains('\0')) || !(value["destination"].is_null() || valid_destination(&value["destination"])) { return false; }
@@ -24,8 +30,15 @@ fn valid_destination(value: &Value) -> bool {
         && value["id"].as_str().is_some_and(valid_id)
 }
 fn valid_open_destination(value: &Value) -> bool {
-    valid_destination(value) || value == &json!({"type":"notifications","id":"settings"})
+    valid_destination(value) || value == &json!({"type":"notifications","id":"settings"}) || value == &json!({"type":"bots","id":"activity"})
 }
+/// The companion can only open an exact chat or the fixed Activity page.
+/// This does not expand the general notification delivery destinations.
+pub fn open_companion_destination(value: &Value) -> bool {
+    if !valid_companion_destination(value) { return false; }
+    platform::open(value.clone(), true); true
+}
+fn valid_companion_destination(value: &Value) -> bool { valid_destination(value) && value["type"] == "chat" || value == &json!({"type":"bots","id":"activity"}) }
 pub fn test_notification(sound: bool) -> Value {
     // A narrow diagnostic, not a journal message or a model turn. Text and
     // destination are fixed here instead of being supplied by an HTTP caller.
@@ -57,7 +70,10 @@ mod platform {
         if raw.is_null() { return; }
         let Ok(value) = serde_json::from_slice::<Value>(unsafe { CStr::from_ptr(raw).to_bytes() }) else { return; };
         if !valid_open_destination(&value) { return; }
-        if let Ok(mut pending) = PENDING_OPEN.lock() { *pending = Some(value); }
+        open(value, false);
+    }
+    pub fn open(value: Value, companion: bool) {
+        if let Ok(mut pending) = PENDING_OPEN.lock() { *pending = Some(PendingOpen { destination: value, expires: companion.then(|| Instant::now() + Duration::from_secs(15)) }); }
         if let Some(app) = APP.get() {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.unminimize(); let _ = window.show(); let _ = window.set_focus();
@@ -88,6 +104,7 @@ mod platform {
 mod platform {
     use super::*;
     pub fn init(_: &tauri::AppHandle) {}
+    pub fn open(value: Value, companion: bool) { if let Ok(mut pending) = PENDING_OPEN.lock() { *pending = Some(PendingOpen { destination: value, expires: companion.then(|| Instant::now() + Duration::from_secs(15)) }); } }
     pub fn status() -> Value { json!({"available":false,"authorization":"unavailable","detail":"Native notifications are available in the Strata Mac app."}) }
     pub fn permission() -> Value { status() }
     pub fn deliver(_: &Value) -> Value { json!({"delivered":false}) }
@@ -113,7 +130,7 @@ mod tests {
     }
     #[test] fn early_click_waits_for_renderer_and_is_consumed_once() {
         let destination = json!({"type":"chat","id":"retained-chat"});
-        *PENDING_OPEN.lock().unwrap() = Some(destination.clone());
+        *PENDING_OPEN.lock().unwrap() = Some(PendingOpen { destination: destination.clone(), expires: None });
         assert_eq!(take_open()["destination"], destination);
         assert!(take_open()["destination"].is_null());
     }
@@ -130,5 +147,17 @@ mod tests {
         assert!(set_context(&json!({"destination":null,"hash":"#/bots/teams"})));
         assert!(!set_context(&json!({"destination":{"type":"chat","id":"x"},"hash":"javascript:alert(1)"})));
         assert!(!set_context(&json!({"destination":{"type":"chat","id":"x"},"hash":"#/chat/x","approve":true})));
+    }
+    #[test] fn companion_navigation_has_no_approval_or_arbitrary_page_authority() {
+        assert!(valid_companion_destination(&json!({"type":"chat","id":"s_exact-worker"})));
+        assert!(valid_companion_destination(&json!({"type":"bots","id":"activity"})));
+        for value in [json!({"type":"approval","id":"x"}), json!({"type":"team","id":"x"}), json!({"type":"bots","id":"settings"}), json!({"type":"chat","id":"https://example.test"}), json!({"type":"chat","id":"x","approve":true})] { assert!(!valid_companion_destination(&value)); }
+        assert!(!valid_delivery(&json!({"id":"n1","title":"x","body":"x","destination":{"type":"bots","id":"activity"},"sound":false})));
+    }
+    #[test] fn companion_clicks_expire_without_expiring_existing_notification_clicks() {
+        let now = Instant::now(); let chat = json!({"type":"chat","id":"s_exact"});
+        assert_eq!(pending_destination(Some(PendingOpen { destination: chat.clone(), expires: Some(now + Duration::from_secs(1)) }), now), Some(chat.clone()));
+        assert!(pending_destination(Some(PendingOpen { destination: chat.clone(), expires: Some(now) }), now).is_none());
+        assert_eq!(pending_destination(Some(PendingOpen { destination: chat.clone(), expires: None }), now + Duration::from_secs(60)), Some(chat));
     }
 }

@@ -213,6 +213,17 @@ fn handle(mut stream: TcpStream, app: &AppHandle, token: &str, progress: &Arc<Mu
     }
     let mut parts = request.split_whitespace();
     let (method, path) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+    if path.starts_with("/companion/") {
+        let value = match (method, path) {
+            ("GET", "/companion/status") => crate::companion::status(),
+            ("POST", "/companion/settings") => {
+                let Some(body) = read_json_body(&mut stream, &mut buf).filter(crate::companion::valid_settings) else { return respond(&mut stream, "400 Bad Request", &serde_json::json!({"error":"Invalid companion settings."})); };
+                crate::companion::settings(&body)
+            }
+            _ => return respond(&mut stream, "404 Not Found", &serde_json::json!({"error":"Unknown companion route."})),
+        };
+        return respond(&mut stream, "200 OK", &value);
+    }
     // Notification requests share the existing private shell token. Bound and
     // parse their bodies separately; no renderer-facing Tauri command is exposed.
     if path.starts_with("/notifications/") {

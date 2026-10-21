@@ -14,6 +14,12 @@ export function isNotificationSettingsDestination(value: unknown): boolean {
   const row = value as Record<string, unknown>;
   return Object.keys(row).length === 2 && row.type === 'notifications' && row.id === 'settings';
 }
+/** Internal native-panel navigation only. Never a notification or permission destination. */
+export function isBotCompanionActivityDestination(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  return Object.keys(row).length === 2 && row.type === 'bots' && row.id === 'activity';
+}
 export function destinationKey(value: NotificationDestination): string { return `${value.type}:${value.id}`; }
 export function notificationHref(value: unknown): string | null {
   const destination = notificationDestination(value); if (!destination) return null;

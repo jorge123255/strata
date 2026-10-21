@@ -62,13 +62,20 @@ The character pass adds original soft cheek marks, small mood-aware mouths, curv
 
 Motion follows Reduce Motion, app/document visibility and viewport clipping. Small idle list avatars stay still. The presentation sends no tools, prompts, approvals or provider requests, and adds no sounds, remote artwork or new permissions. Coucou’s Mochi artwork, character design, poses and animation sequences are not used. See [the personality validation](../STRATA-PERSONALITY-VALIDATION.md) for the measured scope and activation status.
 
+## Native Mac companion
+
+The next slice adds an optional SwiftUI panel inside the existing Strata executable. Settings → Appearance → Bot companion controls visibility and the display. It starts off, remembers an unavailable display, and falls back to the main display. Compact presentation highlights the most urgent real bot conversation; expansion lists up to six conversations and opens their exact existing chats or Bots → Activity. Hiding the panel leaves Strata running. Closing Strata's main window keeps its existing Quit behavior.
+
+The focused character has original Strata motion: an arrival and settle, natural blinks and glances, a curious thinking pose, working sway, attentive approval and concerned error reactions, and a brief completion response only after the same observed conversation finishes working. A local hello is cosmetic. Compact/expanded panel transitions respect Reduce Motion. Dense list avatars stay still. Motion and requests stop when the panel is hidden, the session is locked or inactive, or the display sleeps; stale activity uses a still last-known expression.
+
+A separate per-launch, read-only loopback credential carries an eight-kilobyte status projection. No transcript, approval identifiers, tool arguments, results or profile credentials enter this feed. The panel can navigate, but cannot submit work or approve tools. Native settings, activity and ephemeral UI fixtures are checked separately from the signed application and its activation. See [native companion validation](../STRATA-NATIVE-COMPANION-VALIDATION.md).
+
 ## Next imports in order
 
-1. **Same-process Mac companion:** optional native compact panel with Strata's avatar, one urgent conversation and the other active bots; expand to review, jump to the existing Bots workspace, explicit screen choice and no-notch fallback. Keep approvals visible until resolved; do not steal text-entry focus.
-2. **Compact last-turn detail:** real emitted steps and bounded diffs, paired with the existing Thinking and tool timeline; no synthetic percentages.
-3. **Apple system surfaces:** provision our own widget extension/App Group and ActivityKit targets; read-only widgets and status Shortcuts first, then authenticated Live Activity delivery with an independently reviewed APNs path and physical iPhone tests.
-4. **Account dashboards:** GitHub PR/CI/reviews and Vercel deployment states using explicitly selected Connectors accounts, with staleness, visibility-based polling and account-generation cancellation.
-5. **Optional voice:** local dictation and explicit Parakeet download after native permissions/model provenance work. Meeting recording is a separate feature with clear recording and retention controls.
+1. **Compact last-turn detail:** real emitted steps and bounded diffs, paired with the existing Thinking and tool timeline; no synthetic percentages.
+2. **Apple system surfaces:** provision our own widget extension/App Group and ActivityKit targets; read-only widgets and status Shortcuts first, then authenticated Live Activity delivery with an independently reviewed APNs path and physical iPhone tests.
+3. **Account dashboards:** GitHub PR/CI/reviews and Vercel deployment states using explicitly selected Connectors accounts, with staleness, visibility-based polling and account-generation cancellation.
+4. **Optional voice:** local dictation and explicit Parakeet download after native permissions/model provenance work. Meeting recording is a separate feature with clear recording and retention controls.
 
 ## Validation of the first slice
 

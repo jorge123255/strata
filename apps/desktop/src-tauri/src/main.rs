@@ -39,6 +39,7 @@ use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 mod updater;
 mod notifications;
+mod companion;
 mod desktoplog;
 #[cfg(target_os = "linux")]
 mod supervisor;
@@ -485,6 +486,10 @@ fn start_host(app: &tauri::AppHandle) -> Result<u16, String> {
     let port = pick_stable_port()?;
     let token = random_token();
     let mut cmd = host_command(&res, port, &token)?;
+    // A separate, per-launch read credential for the optional native panel.
+    // It grants no shutdown, settings, approval or execution authority.
+    let companion_feed_token = random_token();
+    cmd.env("STRATA_COMPANION_FEED_TOKEN", &companion_feed_token);
     // The signed app updater (Tauri) is reached by the host through a token-protected loopback bridge.
     let bridge = updater::start(app, random_token());
     updater::apply_env(&mut cmd, app, bridge.as_ref());
@@ -520,6 +525,7 @@ fn start_host(app: &tauri::AppHandle) -> Result<u16, String> {
             _ => None,
         }
     })?;
+    companion::configure(port, &companion_feed_token);
     Ok(port)
 }
 
@@ -881,6 +887,7 @@ fn run_embedded() {
         .manage(ShutdownToken(Mutex::new(None)))
         .setup(|app| {
             notifications::init(app.handle());
+            companion::init(app.handle());
             // A way to prove the safety net on a computer where the app starts fine (tests only): a panic at the place a setup error ends in.
             if std::env::var_os("STRATA_DESKTOP_TEST_PANIC").is_some() {
                 panic!("STRATA_DESKTOP_TEST_PANIC is set: the app panics on purpose");
@@ -903,7 +910,7 @@ fn run_embedded() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::Destroyed = event {
+            if window.label() == "main" && matches!(event, tauri::WindowEvent::Destroyed) {
                 stop_host(&window.app_handle().clone());
             }
         })
@@ -911,6 +918,8 @@ fn run_embedded() {
         .unwrap_or_else(|e| desktoplog::startup_failed(&format!("the Strata application could not be built: {e}")))
         .run(|app, event| {
             if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = event {
+                notifications::clear_companion_open();
+                companion::shutdown();
                 stop_host(app);
             }
         });

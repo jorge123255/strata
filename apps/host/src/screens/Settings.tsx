@@ -4,6 +4,7 @@ import { useRef, type ReactNode } from 'react';
 import { Btn, Field, Icon, Select, type IconName } from '../components/ui';
 import { Brand } from '../components/Brand';
 import { BotNotificationSettings } from '../components/BotNotifications';
+import { SettingsBotCompanion } from '../components/SettingsBotCompanion';
 import { SettingsModels } from '../components/SettingsModels';
 import { SettingsTools } from '../components/SettingsTools';
 import { SettingsCompanion } from '../components/SettingsCompanion';
@@ -57,7 +58,7 @@ export function SettingsScreen() {
     <div className="settings-pane" ref={scrollRef}>
       {tr(PANELS.map(panel => <div key={panel.name} role="tabpanel" tabIndex={0} id={`settings-panel-${panel.name}`} aria-labelledby={`settings-tab-${panel.name}`} hidden={active !== panel.name}>
         {tr(panel.name === 'Models' ? <SettingsModels /> : panel.name === 'Tools' ? (active === panel.name ? <SettingsTools /> : null) : panel.name === 'iPhone' ? (active === panel.name ? <SettingsCompanion /> : null) : panel.name === 'Engine' && active === panel.name ? <NativeOperations /> : active === panel.name ? <div className="stack stack--lg settings-body">
-          {panel.name === 'Appearance' ? <BotNotificationSettings/> : null}
+          {panel.name === 'Appearance' ? <><SettingsBotCompanion/><BotNotificationSettings/></> : null}
           {tr(panel.sections.map(section => <section className="settings-section" key={section}>
             <h2 className="h3" style={{ marginBottom: 14 }}>{tr(section)}</h2>
             <div className="st-card st-card--flush">
