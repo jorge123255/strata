@@ -118,6 +118,31 @@ final class CompanionStore: ObservableObject {
 
     func clearBotProfileError() { botProfileError = nil }
 
+    func saveBotHostFolder(_ bot: CompanionBot, folder: BotHostFolder?, expectedPairingGeneration: UUID) async -> Bool {
+        guard connectionGeneration == expectedPairingGeneration, let client, botCatalog?.hostFolderSupported == true,
+              CompanionClient.isSafeIdentifier(bot.id), let version = bot.updatedAt,
+              bot.computerMode == "cua", !savingBotProfile, savingBotAvatarId == nil, status?.hostConnected == true else { return false }
+        if let folder {
+            guard folder.path.hasPrefix("/"), folder.path.utf16.count <= 4_000,
+                  !folder.path.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }),
+                  ["read", "read-write"].contains(folder.access) else {
+                botProfileError = "Choose a full host folder path and its access."; return false
+            }
+        }
+        let generation = connectionGeneration, operation = UUID()
+        botProfileOperation = operation; savingBotProfile = true; botProfileError = nil
+        botsRequest = nil; isLoadingBots = false
+        defer { if connectionGeneration == generation, botProfileOperation == operation { savingBotProfile = false; botProfileOperation = nil } }
+        do {
+            let result: BotProfileSaveResult = try await client.perform("/v1/bots/\(bot.id)/host-folder", method: "PUT", jsonBody: BotHostFolderUpdate(expectedUpdatedAt: version, hostFolder: folder))
+            guard connectionGeneration == generation, botProfileOperation == operation, !Task.isCancelled else { return false }
+            botCatalog = result.catalog; botsMessage = result.catalog.reason; return true
+        } catch {
+            if connectionGeneration == generation, botProfileOperation == operation { botProfileError = friendly(error) }
+            return false
+        }
+    }
+
     func saveBotProfile(_ draft: BotProfileDraft, original: CompanionBot?, expectedPairingGeneration: UUID) async -> CompanionBot? {
         guard connectionGeneration == expectedPairingGeneration, let client, let catalog = botCatalog, !savingBotProfile, savingBotAvatarId == nil,
               status?.hostConnected == true else { return nil }

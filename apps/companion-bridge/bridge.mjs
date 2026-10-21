@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { botWorkspaceRequest, handleBotWorkspace } from './bots-workspace.mjs';
 import { botProfileDraft, botProfileRoute, botAvatarConfig, BOT_AVATAR_SHAPES } from './bots-lifecycle.mjs';
+import { hostFolderUpdate, hostFolderRequest } from './bots-host-folder.mjs';
 import { notificationRoute, notificationRequest, handleNotifications } from './notifications.mjs';
 
 const run = promisify(execFile);
@@ -223,6 +224,7 @@ export class HostClient {
     const avatar = /^\/api\/bots\/[a-zA-Z0-9_-]{1,120}$/.test(path) && method === 'PATCH';
     const workspace = botWorkspaceRequest(path, method, body);
     const profile = botProfileRoute(path, method, body);
+    const folder = hostFolderRequest(path, method, body);
     const computer = path.includes('/computer') ? computerRequest(path, method, body, deviceId) : null;
     const management = path.startsWith('/api/model-management/') ? managementRequest(path, method, body, deviceId) : null;
     // Callers cannot supply full URLs, query strings, arbitrary files, settings or operations.
@@ -232,9 +234,9 @@ export class HostClient {
       && path !== '/api/native/operations'
       && !/^\/api\/native\/instances\/[a-zA-Z0-9_-]+\/unload$/.test(path)
       && !/^\/api\/serving\/requests\/[a-zA-Z0-9_-]+\/cancel$/.test(path)
-      && !conversation && !management && !bots && !computer && !avatar && !workspace && !profile && !notification) throw fail(403, 'Unsupported host control.');
+      && !conversation && !management && !bots && !computer && !avatar && !workspace && !profile && !folder && !notification) throw fail(403, 'Unsupported host control.');
     const mutation = path.endsWith('/load') || path.endsWith('/unload') || path.endsWith('/cancel') || path === '/api/native/operations' || path === '/api/chat/stream';
-    if (workspace || profile || notification) {
+    if (workspace || profile || folder || notification) {
       // Fully validated narrow collaboration route; no arbitrary tool execution.
     } else if (avatar) {
       if (!body || Object.keys(body).length !== 1 || !body.avatarConfig) throw fail(403, 'Only bot appearance can be changed from iPhone.');
@@ -499,6 +501,7 @@ export function publicBots(body) {
   return {
     selectionSupported: Array.isArray(body.models),
     lifecycleSupported: body.lifecycleSupported === true,
+    hostFolderSupported: body.hostFolderSupported === true,
     ...(Array.isArray(body.avatarShapes) ? { avatarShapes: BOT_AVATAR_SHAPES.filter(shape => body.avatarShapes.includes(shape)) } : {}),
     ...(body.lifecycleSupported === true && typeof body.defaultWorkspace === 'string' ? { defaultWorkspace: shortText(body.defaultWorkspace, 4_000) } : {}),
     bots: body.bots.slice(0, 500).filter(bot => bot && safeId(bot.id) && providers.has(bot.provider)).map(bot => ({
@@ -509,6 +512,7 @@ export function publicBots(body) {
       avatar: botAvatars.has(bot.avatar) ? bot.avatar : '🤖',
       ...(() => { try { return { avatarConfig: avatarConfig(bot.avatarConfig) }; } catch { return {}; } })(),
       computerMode: bot.computerMode === 'cua' ? 'cua' : 'host',
+      ...(body.hostFolderSupported === true && bot.computerMode === 'cua' && typeof bot.hostFolder?.path === 'string' && bot.hostFolder.path.startsWith('/') && ['read', 'read-write'].includes(bot.hostFolder.access) ? { hostFolder: { path: shortText(bot.hostFolder.path, 4_000), access: bot.hostFolder.access } } : {}),
       paused: bot.paused === true,
       ...(typeof bot.workspace === 'string' ? { workspace: shortText(bot.workspace, 4_000) } : {}),
       ...(() => {
@@ -593,6 +597,7 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
   if (!Array.isArray(chats)) throw new Error('Invalid bridge chats file.');
   if (existsSync(chatFile)) chmodSync(chatFile, 0o600);
   const active = new Map();
+  const folderRequests = new Set();
   // Tokens stay in memory and belong to this paired device and frozen chat target.
   const computerLeases = new Map();
   const computerRequests = new Set();
@@ -657,9 +662,12 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
   function revokeSession(sessionId) {
     if (closing) throw fail(409, 'Enable iPhone pairing first.');
     if (typeof sessionId !== 'string' || !/^[a-f0-9]{32}$/.test(sessionId)) throw fail(400, 'Choose a paired device.');
-    authority.revoke(sessionId);
+    try { authority.revoke(sessionId); }
+    finally {
+      for (const request of active.values()) if (request.owner === sessionId) request.abort.abort();
+      for (const request of folderRequests) if (request.owner === sessionId) request.abort.abort();
+    }
     void host.json('/api/bots/notifications/device', { method: 'DELETE', deviceId: sessionId, signal: AbortSignal.timeout(5000) }).catch(() => {});
-    for (const request of active.values()) if (request.owner === sessionId) request.abort.abort();
     void releaseComputerLeases(sessionId);
     return localState();
   }
@@ -728,9 +736,12 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
         return;
       }
       if (path === '/v1/session' && method === 'DELETE') {
-        authority.revoke(session.id);
+        try { authority.revoke(session.id); }
+        finally {
+          for (const request of active.values()) if (request.owner === session.id) request.abort.abort();
+          for (const request of folderRequests) if (request.owner === session.id) request.abort.abort();
+        }
         await host.json('/api/bots/notifications/device', { method: 'DELETE', deviceId: session.id, signal: AbortSignal.timeout(5000) }).catch(() => {});
-        for (const request of active.values()) if (request.owner === session.id) request.abort.abort();
         await releaseComputerLeases(session.id);
         return sendJSON(res, 200, { revoked: true });
       }
@@ -808,6 +819,39 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
         const projected = publicBots(result), bot = projected.bots.find(bot => bot.id === result.bot?.id);
         if (!bot) throw fail(502, 'Refresh Bots to see the saved profile.');
         return sendJSON(res, botProfile[1] ? 200 : 201, { ...projected, bot });
+      }
+      const botFolder = /^\/v1\/bots\/([a-zA-Z0-9_-]{1,120})\/host-folder$/.exec(path);
+      if (botFolder) {
+        if (method !== 'PUT') throw fail(405, 'This folder action is unavailable.');
+        const input = hostFolderUpdate(await readBody(req, 20_000));
+        requireCurrentSession();
+        if (folderRequests.size >= 8 || [...folderRequests].filter(request => request.owner === session.id).length >= 2) throw fail(429, 'Finish a pending folder access request before starting another.');
+        const abort = new AbortController();
+        const signal = AbortSignal.any([abort.signal, AbortSignal.timeout(45_000)]);
+        let finish;
+        const request = { owner: session.id, abort, finished: new Promise(resolve => { finish = resolve; }) };
+        folderRequests.add(request);
+        const disconnected = () => { if (!res.writableEnded) abort.abort(); };
+        req.once('aborted', disconnected); res.once('close', disconnected);
+        const assertCurrent = () => { requireCurrentSession(); signal.throwIfAborted(); };
+        try {
+          assertCurrent();
+          const catalog = publicBots(await host.json('/api/bots', { signal })); assertCurrent();
+          const selected = catalog.bots.find(bot => bot.id === botFolder[1]);
+          if (!catalog.hostFolderSupported) throw fail(409, 'Update Strata on your Mac to share a host folder.');
+          if (!selected || selected.computerMode !== 'cua') throw fail(409, 'Choose a saved isolated bot.');
+          if (selected.updatedAt !== input.expectedUpdatedAt) throw fail(409, 'This bot changed. Refresh its settings.');
+          let result;
+          try { result = await host.json(`/api/bots/${encode(selected.id)}/host-folder`, { method: 'PUT', body: input, signal }); }
+          catch (error) { requireCurrentSession(); throw fail([400, 404, 409].includes(error.status) ? error.status : 503, 'Folder access could not be saved. Check that the folder exists on the execution computer, finish active bot work, and refresh the bot.'); }
+          assertCurrent();
+          const projected = publicBots(result), bot = projected.bots.find(row => row.id === selected.id);
+          if (!bot) throw fail(502, 'Refresh Bots to see the saved folder access.');
+          return sendJSON(res, 200, { ...projected, bot });
+        } finally {
+          req.removeListener('aborted', disconnected); res.removeListener('close', disconnected);
+          folderRequests.delete(request); finish();
+        }
       }
       const botAvatar = /^\/v1\/bots\/([a-zA-Z0-9_-]{1,120})\/avatar$/.exec(path);
       if (botAvatar) {
@@ -1157,7 +1201,7 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
       if (closing) return closed;
       closing = true;
       const releases = releaseComputerLeases();
-      const running = [...active.values()];
+      const running = [...active.values(), ...folderRequests];
       for (const request of running) request.abort.abort();
       // Disabling access also ends held requests; a client cannot delay shutdown
       // by leaving a request body or TLS connection unfinished.

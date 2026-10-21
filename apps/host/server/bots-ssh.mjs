@@ -18,7 +18,7 @@ export function botSSHArguments(execution) {
   const { host, user, port } = normalizeBotSSH(execution);
   return ['-T', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=12', '-o', 'ConnectionAttempts=1', '-o', 'ClearAllForwardings=yes', '-o', 'ForwardAgent=no', '-o', 'PermitLocalCommand=no', '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=2', ...(port ? ['-p', String(port)] : []), ...(user ? ['-l', user] : []), '--', host, SSH_BOTS_COMMAND];
 }
-const assetNames = ['bots-runtime/index.mjs', 'bots-runtime/devin.mjs', 'bots-runtime/grok.mjs', 'bots-runtime/process.mjs', 'bots-runtime/tool-bridge.mjs', 'bots-runtime/mcp-stdio.mjs', 'bots-runtime/ssh-worker.mjs', 'bots-runtime/cua-qemu-prepare.py', 'bots-tools.mjs', 'bots-models.mjs', 'bots-cua.mjs', 'bots-cua.py', 'bots-computer.swift', 'agent/browser-probe.mjs', 'agent/harness-runtime.mjs', 'external-env.mjs', 'powershell-utf8.mjs'];
+const assetNames = ['bots-runtime/index.mjs', 'bots-runtime/devin.mjs', 'bots-runtime/grok.mjs', 'bots-runtime/process.mjs', 'bots-runtime/tool-bridge.mjs', 'bots-runtime/mcp-stdio.mjs', 'bots-runtime/ssh-worker.mjs', 'bots-runtime/cua-qemu-prepare.py', 'bots-tools.mjs', 'bots-models.mjs', 'bots-cua.mjs', 'bots-cua.py', 'bots-host-folder.mjs', 'bots-host-folder.py', 'bots-host-folder-worker.mjs', 'bots-computer.swift', 'agent/browser-probe.mjs', 'agent/harness-runtime.mjs', 'external-env.mjs', 'powershell-utf8.mjs'];
 export async function botSSHBundle({ readAsset = name => readFile(new URL(name, import.meta.url)) } = {}) {
   const assets = {};
   for (const name of assetNames) assets[`server/${name}`] = Buffer.from(await readAsset(name));
@@ -67,6 +67,8 @@ export function createRemoteBotSSH({ sshPath = '/usr/bin/ssh', spawnProcess = sp
           if (message.type === 'permission') {
             if (typeof options.requestPermission !== 'function') value = false;
             else value = await options.requestPermission({ ...message.value, reason: `${message.value?.reason ?? 'Allow this bot action?'}\nSSH computer: ${execution.host}${execution.user ? ` (${execution.user})` : ''}` }, requestController.signal);
+          } else if (message.type === 'folder-authorize') {
+            value = typeof options.authorize === 'function' && await options.authorize() === true;
           } else if (message.type === 'requestModel') {
             if (typeof options.modelRequest !== 'function') throw new Error('This configured model is unavailable from the Mac host.');
             value = await options.modelRequest(message.value, requestController.signal);
@@ -99,14 +101,14 @@ export function createRemoteBotSSH({ sshPath = '/usr/bin/ssh', spawnProcess = sp
             if (message.type === 'frame') result = options.onFrame?.(message.value);
             else if (message.type === 'identity') result = options.onIdentity?.(message.value);
             else if (message.type === 'checkpoint') result = options.onCheckpoint?.(message.value);
-            else if (message.type === 'permission' || message.type === 'requestModel' || message.type === 'requestHostTool') requestFromWorker(message);
+            else if (message.type === 'permission' || message.type === 'requestModel' || message.type === 'requestHostTool' || message.type === 'folder-authorize') requestFromWorker(message);
             if (result && typeof result.then === 'function') result.catch(error => { failure = fault('ssh_projection', redact(error)); cancel(); });
           } catch (error) { failure = fault(error.code ?? 'ssh_projection', redact(error)); cancel(); }
         }
       }
     });
     timer = setTimeout(() => { failure = fault('ssh_timeout', 'The remote Bots request exceeded its time limit.'); cancel(); }, action === 'run' ? runTimeoutMs : managementTimeoutMs);
-    if (action === 'run' || action === 'computer') heartbeat = setInterval(() => { if (!stopping) { try { send({ type: 'heartbeat' }); } catch { cancel(); } } }, heartbeatMs);
+    if (action === 'run' || action === 'computer' || action === 'host-folder') heartbeat = setInterval(() => { if (!stopping) { try { send({ type: 'heartbeat' }); } catch { cancel(); } } }, heartbeatMs);
     try {
       send(request);
       // EOF is a cancellation signal for the turn worker. Management requests consume one JSON line.
@@ -114,7 +116,7 @@ export function createRemoteBotSSH({ sshPath = '/usr/bin/ssh', spawnProcess = sp
       if (options.signal?.aborted) cancel();
       const exitCode = await transportEnded;
       done = true; requestController.abort();
-      if ((action === 'run' || action === 'computer') && !cleanupConfirmed && !beforeStartFailure && terminal?.available !== false) {
+      if ((action === 'run' || action === 'computer' || action === 'host-folder') && !cleanupConfirmed && !beforeStartFailure && terminal?.available !== false) {
         // A severed channel cannot deliver an ACK. Wait through the worker's lease and cleanup bound;
         // retain an explicit unconfirmed error rather than reporting a successful Stop.
         if (!stopping) await new Promise(resolve => setTimeout(resolve, leaseMs + leaseCleanupGraceMs));
@@ -140,6 +142,10 @@ export function createRemoteBotSSH({ sshPath = '/usr/bin/ssh', spawnProcess = sp
       if (!['probe', 'prepare', 'start', 'state', 'control', 'stop'].includes(operation)) throw fault('ssh_cua_action', 'Choose a supported isolated computer action.');
       const safe = structuredClone(payload); if (safe.bot) { delete safe.bot.providerSettings; delete safe.bot.modelSource; }
       return call('computer', execution, { input: { ...safe, operation } }, options);
+    },
+    hostFolder(execution, payload, options = {}) {
+      if (!payload || !['validate', 'host_list_files', 'host_read_file', 'host_write_file'].includes(payload.operation)) throw fault('ssh_host_folder_action', 'Choose a supported host folder action.');
+      return call('host-folder', execution, { input: structuredClone(payload) }, options);
     },
     async run(input) {
       const execution = normalizeBotSSH(input.bot.execution), target = botSSHTarget(execution);

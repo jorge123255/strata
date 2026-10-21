@@ -92,7 +92,10 @@ async function startWorkerTurn(input, { reader, send, directory, leaseMs = 12000
   const remoteIdentity = identity();
   if (input.expectedIdentity && input.expectedIdentity !== remoteIdentity) throw new Error('The SSH alias now reaches a different computer or account. Start a new bot chat.');
   await mkdir(directory, { recursive: true, mode: 0o700 });
-  const release = conversationOnly ? null : input.bot.computerMode === 'cua' ? await acquireComputerLease(directory, { key: cuaKey(input.bot) }) : input.bot.capabilities === 'code' && !input.bot.sharedComputer ? null : await acquireComputerLease(directory);
+  // Guests are exclusive for their turn. Direct host work acquires the physical
+  // desktop only if it actually uses a computer tool; code and each bot's
+  // browser remain independent, including shared-team work on this account.
+  const release = !conversationOnly && input.bot.computerMode === 'cua' ? await acquireComputerLease(directory, { key: cuaKey(input.bot) }) : null;
   if (!conversationOnly && input.bot.computerMode === 'cua') { try { await requireCUACleanup(directory, input.bot); } catch (error) { await release(); throw error; } }
   const runs = join(directory, 'runs'); await mkdir(runs, { recursive: true, mode: 0o700 });
   const nonce = randomUUID(), record = join(runs, `${process.pid}-${nonce}.json`);
@@ -127,7 +130,7 @@ async function startWorkerTurn(input, { reader, send, directory, leaseMs = 12000
     if (!conversationOnly) {
       const browser = await browserInfo();
       const createTools = bot.computerMode === 'cua' ? cuaFactory ?? (await import('../bots-cua.mjs')).createBotCUATools : toolFactory;
-      tools = createTools({ directory, browserProbe: () => browser, browserHeadless: process.platform === 'linux' || !process.env.DISPLAY && process.platform !== 'darwin' });
+      tools = createTools({ directory, browserProbe: () => browser, browserHeadless: process.platform === 'linux' || !process.env.DISPLAY && process.platform !== 'darwin', ...(bot.computerMode === 'cua' ? {} : { acquireDesktopLease: () => acquireComputerLease(directory) }) });
     }
     runtime = runtimeFactory({ stateDir: join(directory, 'runtime') });
     signal.throwIfAborted();

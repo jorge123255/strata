@@ -1951,6 +1951,37 @@ final class BotLifecycleTests: XCTestCase {
     }
     private func saved(_ bot: [String: Any]) -> [String: Any] { var value = Self.catalog; value["bots"] = [bot]; value["bot"] = bot; return value }
 
+    func testHostFolderRequestEncodesExplicitRevocationAndNoPrivateBindings() throws {
+        let value = BotHostFolderUpdate(expectedUpdatedAt: "version", hostFolder: nil)
+        let removed = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(value)) as? [String: Any])
+        XCTAssertTrue(removed["hostFolder"] is NSNull)
+        XCTAssertEqual(Set(removed.keys), ["expectedUpdatedAt", "hostFolder"])
+        let grant = BotHostFolderUpdate(expectedUpdatedAt: "version", hostFolder: BotHostFolder(path: "/srv/project", access: "read"))
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(grant)) as? [String: Any])
+        XCTAssertEqual(body["hostFolder"] as? [String: String], ["path": "/srv/project", "access": "read"])
+    }
+
+    func testHostFolderSaveUsesExactBotAndPairingGenerationWithoutStartingWork() async throws {
+        let transport = StoreTransport(); defer { transport.close() }
+        var isolated = Self.bot; isolated["computerMode"] = "cua"; isolated["workspace"] = "/workspace"
+        var catalog = Self.catalog; catalog["hostFolderSupported"] = true; catalog["bots"] = [isolated]
+        var savedBot = isolated; savedBot["hostFolder"] = ["path": "/srv/👩‍💻 Project", "access": "read"]
+        var result = catalog; result["bots"] = [savedBot]; result["bot"] = savedBot
+        transport.respond { request in
+            if request.url!.path == "/v1/bots/bot_coder/host-folder" { return result }
+            return request.url!.path == "/v1/bots" ? catalog : nil
+        }
+        let store = transport.makeStore(); await store.refresh(); await store.refreshBots()
+        let bot = try XCTUnwrap(store.botCatalog?.bots.first)
+        let stale = await store.saveBotHostFolder(bot, folder: nil, expectedPairingGeneration: UUID()); XCTAssertFalse(stale)
+        let saved = await store.saveBotHostFolder(bot, folder: BotHostFolder(path: "/srv/👩‍💻 Project", access: "read"), expectedPairingGeneration: store.pairingGeneration)
+        XCTAssertTrue(saved); XCTAssertEqual(store.botCatalog?.bots.first?.hostFolder?.access, "read")
+        let writes = transport.requests.filter { $0.method != "GET" }
+        XCTAssertEqual(writes.count, 1); XCTAssertEqual(writes.first?.path, "/v1/bots/bot_coder/host-folder")
+        XCTAssertEqual(writes.first?.method, "PUT"); XCTAssertNil(store.currentConversation)
+        XCTAssertEqual((writes.first?.jsonBody?["hostFolder"] as? [String: String])?["path"], "/srv/👩‍💻 Project")
+    }
+
     func testIdleDraftDefaultsToAskAndAcceptsSavedOfflineComputerWithoutExecutionOrCredentials() throws {
         let catalog = try decode(Self.catalog, as: CompanionBots.self)
         var value = draft(); value.computerId = "ssh_offline"; value.workspace = "/srv/project"

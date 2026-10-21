@@ -345,6 +345,11 @@ struct BotDetailView: View {
                 Section("Computers") {
                     LabeledContent("Execution", value: bot.executionLabel)
                         .accessibilityElement(children: .combine).accessibilityIdentifier("botComputerDetail")
+                    if bot.computerMode == "cua", store.botCatalog?.hostFolderSupported == true {
+                        NavigationLink { BotHostFolderView(store: store, bot: bot) } label: {
+                            profileAction("Shared host folder", detail: bot.hostFolder?.path ?? "No host folder shared", icon: "folder.badge.gearshape")
+                        }.accessibilityIdentifier("botHostFolderButton")
+                    }
                 }
                 Section("Provider") { botDetails(bot) }
                 Section("Conversations") {
@@ -651,4 +656,51 @@ struct BotConversationSetupView: View {
 private enum BotRosterFilter: String, CaseIterable, Identifiable {
     case all = "All", working = "Working", attention = "Needs attention"
     var id: String { rawValue }
+}
+
+private struct BotHostFolderView: View {
+    @ObservedObject var store: CompanionStore
+    let bot: CompanionBot
+    @Environment(\.dismiss) private var dismiss
+    @State private var enabled: Bool
+    @State private var path: String
+    @State private var access: String
+    @State private var saved = false
+    init(store: CompanionStore, bot: CompanionBot) {
+        self.store = store; self.bot = bot
+        _enabled = State(initialValue: bot.hostFolder != nil)
+        _path = State(initialValue: bot.hostFolder?.path ?? "")
+        _access = State(initialValue: bot.hostFolder?.access ?? "read")
+    }
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Share a host folder", isOn: $enabled).accessibilityIdentifier("hostFolderEnabled")
+                if enabled {
+                    TextField("Full path on the execution computer", text: $path)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .accessibilityIdentifier("hostFolderPath")
+                    Picker("Access", selection: $access) {
+                        Text("Read only").tag("read"); Text("Read and write").tag("read-write")
+                    }.accessibilityIdentifier("hostFolderAccess")
+                }
+            } footer: {
+                Text("Choose one folder on the bot’s execution computer. Dedicated tools read text files and, when allowed, write them. Commands and browser tools stay isolated. This does not share an iPhone folder.")
+            }
+            Section {
+                Text("Teams using this bot’s isolated computer inherit the share. Changes apply to new chats and runs; removing or changing access revokes it from older chats too.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                if access == "read-write", enabled { Text("The bot’s approval mode still applies to file changes.").font(.footnote).foregroundStyle(.secondary) }
+                Button(enabled ? "Save folder access" : "Remove folder access") {
+                    let generation = store.pairingGeneration
+                    let folder = enabled ? BotHostFolder(path: path.trimmingCharacters(in: .whitespacesAndNewlines), access: access) : nil
+                    Task { if await store.saveBotHostFolder(bot, folder: folder, expectedPairingGeneration: generation) { saved = true; dismiss() } }
+                }.disabled(store.savingBotProfile || enabled && !path.hasPrefix("/"))
+                    .accessibilityIdentifier("saveHostFolderButton")
+                if store.savingBotProfile { ProgressView("Saving…") }
+                if let error = store.botProfileError { Text(error).foregroundStyle(StrataTheme.warning).accessibilityIdentifier("hostFolderError") }
+            } footer: { Text("Saving starts no computer or model. Finish active work before changing access.") }
+        }.strataList().navigationTitle("Shared host folder")
+            .onAppear { store.clearBotProfileError() }
+    }
 }

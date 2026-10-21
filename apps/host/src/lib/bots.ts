@@ -20,12 +20,14 @@ export type BotCapability = 'code' | 'computer' | 'both';
 export type BotPolicy = 'manual' | 'plan' | 'bypass';
 export interface BotExecution { kind: 'local' | 'ssh' | 'sandbox'; host?: string; user?: string; port?: number; name?: string }
 export interface BotModelSource { connectionId: string; model: string }
+export interface BotHostFolder { path: string; access: 'read' | 'read-write' }
 export interface Bot {
   id: string;
   name: string;
   avatar?: string;
   avatarConfig?: { kind?: 'koala'|'fox'|'cat'|'robot'; shape?: 'orb'|'pebble'|'tile'|'diamond'|'spark'|'hexagon'|'classic'; color: 'cloud'|'violet'|'orange'|'sky'|'graphite'|'slate'; eyes: 'star'|'round'|'happy'|'calm'|'plus'|'delight'; ears: 'scalloped'|'round'|'small' };
   computerMode?: 'host' | 'cua';
+  hostFolder?: BotHostFolder;
   paused?: boolean;
   instructions: string;
   provider: BotProviderId;
@@ -47,7 +49,7 @@ export interface BotProvider { id: BotProviderId; name: string; available: boole
 export interface BotComputer { id: string; name: string; kind: BotExecution['kind']; available: boolean; detail: string; execution?: BotExecution }
 export interface BotConfiguredModel { id: string; connectionId: string; connectionName: string; model: string; name: string; available: boolean; detail?: string }
 export interface BotComputerCheck { available: boolean; detail: string; prepared?: boolean; providers?: unknown }
-export interface BotsSnapshot { bots: Bot[]; providers: BotProvider[]; computers: BotComputer[]; models?: BotConfiguredModel[]; avatarShapes?: string[] }
+export interface BotsSnapshot { bots: Bot[]; providers: BotProvider[]; computers: BotComputer[]; models?: BotConfiguredModel[]; avatarShapes?: string[]; hostFolderSupported?: boolean }
 
 /** Collaboration records contain public identities and task links, never credentials. */
 export interface BotTeamLimits { maxParallel: number; maxDepth: number; maxHops: number; maxTurns: number; maxDurationMs: number }

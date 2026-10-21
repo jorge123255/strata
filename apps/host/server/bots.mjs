@@ -10,6 +10,7 @@ import { createBotComputers } from './bots-computers.mjs';
 import { createBotWork } from './bots-work.mjs';
 import { createBotTeams } from './bots-team.mjs';
 import { botSupervisionSnapshot } from './bots-supervision.mjs';
+import { createBotHostFolderTools, botHostFolderAuthority } from './bots-host-folder.mjs';
 
 const fault = (status, message) => Object.assign(new Error(message), { status });
 const ids = new Set(['claude', 'codex', 'grok', 'kimi', 'ollama', 'devin', 'configured']);
@@ -58,9 +59,15 @@ function endpoint(value) {
   return url.href.replace(/\/$/, '');
 }
 
-export function createBots({ directory, runtime, tools, conversations = () => null, defaultWorkspace = () => homedir(), notify = () => {}, now = () => new Date().toISOString(), remoteSSH, modelProviders, modelRequest, cuaTools, skills, mcp }) {
-  const file = join(directory, 'bots.json'), profiles = new Map(), checkpoints = new Map(), chatProfiles = new Map(), active = new Map(), targets = new Map(), computerLeases = new Map(), uncertainTargets = new Map(), ownedComputers = new Set();
+export function createBots({ directory, runtime, tools, conversations = () => null, defaultWorkspace = () => homedir(), notify = () => {}, now = () => new Date().toISOString(), remoteSSH, modelProviders, modelRequest, cuaTools, skills, mcp, python = 'python3' }) {
+  const file = join(directory, 'bots.json'), profiles = new Map(), checkpoints = new Map(), chatProfiles = new Map(), active = new Map(), targets = new Map(), uncertainTargets = new Map(), ownedComputers = new Set();
   const owned = id => conversations()?.botId(id) ?? null;
+  const folderKeys = ['hostFolder', 'hostFolderBinding', 'hostFolderRevision', 'hostFolderOwnerId', 'hostFolderRemoteIdentity'];
+  const folderSnapshot = bot => Object.fromEntries(folderKeys.filter(key => Object.hasOwn(bot, key)).map(key => [key, copy(bot[key])]));
+  const hostFolders = createBotHostFolderTools({ python, remoteSSH, currentGrant: snapshot => {
+    const owner = profiles.get(snapshot.hostFolderOwnerId ?? snapshot.computerOwnerId ?? snapshot.id);
+    return owner?.computerMode === 'cua' ? botHostFolderAuthority(owner) : null;
+  } });
   function save() {
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
@@ -124,15 +131,19 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     const workspace = computerMode === 'cua' ? guestWorkspace(raw) : execution.kind === 'local' ? resolve(raw.replace(/^~(?=\/|$)/, homedir())) : raw;
     if (!isAbsolute(computerMode === 'cua' ? workspace : execution.kind === 'local' ? raw.replace(/^~(?=\/|$)/, homedir()) : raw)) throw fault(400, 'Enter the full working-folder path on the selected team computer.');
     if (execution.kind === 'local' && computerMode === 'host') { try { if (!statSync(workspace).isDirectory()) throw new Error(); } catch { throw fault(400, 'Choose an existing working folder on this Mac.'); } }
-    return { execution: copy(execution), computerMode, workspace, sharedComputer: true, ...(computerOwnerId ? { computerOwnerId } : {}) };
+    return { execution: copy(execution), computerMode, workspace, sharedComputer: true, ...(computerOwnerId ? { computerOwnerId, ...folderSnapshot(requireBot(computerOwnerId)) } : {}) };
   }
   function resourceBusy(bot, chatId) {
-    const resource = bot.computerMode === 'cua' ? cuaResource(bot) : `host:${executionKey(bot.execution)}`;
-    if ([...active.entries()].some(([id, run]) => id !== chatId && !run.conversationOnly && run.resource === resource && (bot.computerMode === 'cua' || bot.sharedComputer || run.sharedComputer))) return true;
+    // An isolated guest has one shared desktop and must be reserved for the
+    // turn. Host code, files and separate browsers do not own the host desktop;
+    // native computer tools acquire that narrower lease only when used.
+    if (bot.computerMode !== 'cua') return false;
+    const resource = cuaResource(bot);
+    if ([...active.entries()].some(([id, run]) => id !== chatId && !run.conversationOnly && run.resource === resource)) return true;
     // send() reserves a conversation before its provider microtask begins. Include
     // that durable turn reservation so one scheduler tick cannot dispatch two
     // members into the same guest and turn the second assignment into an error.
-    return [...chatProfiles.entries()].some(([id, other]) => id !== chatId && conversations()?.isRunning?.(id) && !['routing', 'conversation', 'bid'].includes(other.teamContext?.channelMode) && (other.computerMode === 'cua' ? cuaResource(other) : `host:${executionKey(other.execution)}`) === resource && (bot.computerMode === 'cua' || bot.sharedComputer || other.sharedComputer));
+    return [...chatProfiles.entries()].some(([id, other]) => id !== chatId && other.computerMode === 'cua' && conversations()?.isRunning?.(id) && !['routing', 'conversation', 'bid'].includes(other.teamContext?.channelMode) && cuaResource(other) === resource);
   }
   function chatBusy(id) {
     const bot = chatProfiles.get(id); if (!bot || ['routing', 'conversation', 'bid'].includes(bot.teamContext?.channelMode)) return false;
@@ -144,12 +155,16 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !['execution', 'computerId'].includes(key))) throw fault(400, 'Choose a saved or custom SSH computer.');
     const execution = input.computerId ? computerRows().find(c => c.id === input.computerId)?.execution : normalizeBotExecution(input.execution);
     if (!execution) throw fault(404, 'This execution computer is no longer configured.');
-    if (execution.kind === 'local') return { available: true, prepared: true, detail: 'This Mac is ready.', providers: await runtime.providers() };
+    if (execution.kind === 'local') {
+      hostFolders.recover(execution, { available: true, prepared: true });
+      if (uncertainTargets.has('local')) throw fault(503, 'Local tool cleanup remains unconfirmed. Inspect the failed conversation and its owned processes before starting more work; checking provider availability cannot clear it.');
+      return { available: true, prepared: true, detail: 'This Mac is ready.', providers: await runtime.providers() };
+    }
     if (execution.kind !== 'ssh' || !remoteSSH) throw fault(409, 'This execution adapter is unavailable.');
     const id = executionKey(execution);
     if (prepare && [...active.values()].some(run => run.target === id)) throw fault(409, 'Wait for work on this computer to finish before preparing its worker.');
     const status = await (prepare ? remoteSSH.prepare(execution, options) : remoteSSH.probe(execution, options));
-    if (status.available === true && status.prepared === true && status.activeRuns === 0) uncertainTargets.delete(id);
+    if (status.available === true && status.prepared === true && status.activeRuns === 0) { hostFolders.recover(execution, status); uncertainTargets.delete(id); }
     targets.set(id, { execution, status }); save(); notify('bots', { computer: id });
     return status;
   }
@@ -180,12 +195,13 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     return bot;
   }
   function publicBot(bot) {
-    const { providerSettings, modelDestination, extensionSnapshots, computerOwnerId, sharedComputer, ...safe } = copy(bot);
+    const { providerSettings, modelDestination, extensionSnapshots, computerOwnerId, sharedComputer, hostFolderBinding, hostFolderRevision, hostFolderOwnerId, hostFolderRemoteIdentity, ...safe } = copy(bot);
     return { ...safe, avatar: BOT_AVATARS.includes(bot.avatar) ? bot.avatar : '🤖', ...(providerSettings ? { providerSettings: { ...(providerSettings.baseURL ? { baseURL: providerSettings.baseURL } : {}), apiKeySet: !!providerSettings.apiKey } } : {}),
       conversations: (conversations()?.list().conversations ?? []).filter(chat => chat.preferences?.botId === bot.id).map(chat => chat.id),
       active: [...active.values()].some(run => run.botId === bot.id) };
   }
   function validate(input, old = {}) {
+    if (folderKeys.some(key => Object.hasOwn(input, key))) throw fault(400, 'Use Shared host folder settings to grant or remove folder access.');
     const name = cleanText(input.name ?? old.name ?? '', 80, 'bot name', true);
     const provider = input.provider ?? old.provider;
     if (!ids.has(provider)) throw fault(400, 'Choose a native provider or a configured model.');
@@ -228,7 +244,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
       if (settings.clearKey === true) delete providerSettings.apiKey;
       if (settings.apiKey !== undefined && settings.apiKey !== '') providerSettings.apiKey = cleanText(settings.apiKey, 8192, 'provider API key', true);
     }
-    return { name, avatar, ...(avatarConfig ? { avatarConfig: copy(avatarConfig) } : {}), paused: old.paused === true, computerMode, provider, capabilities, policy, execution, workspace, ...(modelSource ? { modelSource, modelDestination, modelLabel } : {}),
+    return { name, avatar, ...(avatarConfig ? { avatarConfig: copy(avatarConfig) } : {}), paused: old.paused === true, computerMode, provider, capabilities, policy, execution, workspace, ...(computerMode === 'cua' && executionKey(execution) === executionKey(old.execution) ? folderSnapshot(old) : {}), ...(modelSource ? { modelSource, modelDestination, modelLabel } : {}),
       instructions: cleanText(input.instructions ?? old.instructions ?? '', 32000, 'bot instructions'),
       model: modelSource?.model ?? cleanText(input.model ?? old.model ?? '', 250, 'model name'), effort, ...(Object.keys(providerSettings).length ? { providerSettings } : {}) };
   }
@@ -239,6 +255,28 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
   function nextUpdatedAt(old) {
     const value = now();
     return Date.parse(value) <= Date.parse(old.updatedAt) ? new Date(Date.parse(old.updatedAt) + 1).toISOString() : value;
+  }
+  async function setHostFolder(id, input, options = {}) {
+    if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== 2 || !Object.hasOwn(input, 'hostFolder') || input.hostFolder === undefined || !Object.hasOwn(input, 'expectedUpdatedAt')) throw fault(400, 'Choose a folder and refresh the bot before saving.');
+    const old = requireBot(id);
+    const check = () => {
+      if (requireBot(id) !== old || input.expectedUpdatedAt !== old.updatedAt) throw fault(409, 'This bot changed. Refresh its settings before saving.');
+      if (old.computerMode !== 'cua') throw fault(409, 'Choose an isolated bot before sharing a host folder.');
+      if (input.hostFolder !== null && (team.botInActiveRun(id) || [...chatProfiles].some(([chatId, bot]) => (bot.hostFolderOwnerId ?? bot.computerOwnerId ?? bot.id) === id && (active.has(chatId) || conversations()?.isRunning?.(chatId))))) throw fault(409, 'Finish this computer’s bot and team work before changing its folder grant. Removing access remains available.');
+      options.signal?.throwIfAborted();
+    };
+    check();
+    const validated = await hostFolders.validate(input.hostFolder, { execution: old.execution, ...(old.hostFolderRemoteIdentity ? { expectedIdentity: old.hostFolderRemoteIdentity } : {}), signal: options.signal });
+    check();
+    const bot = { ...old, hostFolderRevision: randomUUID(), updatedAt: nextUpdatedAt(old) };
+    for (const key of folderKeys.filter(key => key !== 'hostFolderRevision')) delete bot[key];
+    if (validated) Object.assign(bot, { hostFolder: { path: validated.path, access: validated.access }, hostFolderBinding: validated.binding, hostFolderOwnerId: id, ...(validated.remoteIdentity ? { hostFolderRemoteIdentity: validated.remoteIdentity } : {}) });
+    profiles.set(id, bot);
+    try { save(); } catch (error) { profiles.set(id, old); throw error; }
+    try { await hostFolders.revoke(id); }
+    catch (failure) { uncertainTargets.set(executionKey(old.execution), 'Host folder cleanup could not be confirmed. Check this execution computer before starting new work.'); save(); throw failure; }
+    notify('bots', { changed: id });
+    return { ...await list(), bot: publicBot(bot) };
   }
   function update(id, input) {
     const old = requireBot(id);
@@ -278,7 +316,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
       detail: provider.detail ?? [provider.transport, provider.version, provider.auth?.help].filter(Boolean).join(' · ') }));
     providers.push({ id: 'configured', name: 'Configured Models', available: modelRows().length > 0, detail: 'Choose a saved model API or a currently serving local model from Models.' });
     const computers = computerRows();
-    return { lifecycleSupported: true, avatarShapes: [...BOT_AVATAR_SHAPES], defaultWorkspace: defaultWorkspace(), bots: [...profiles.values()].map(bot => {
+    return { lifecycleSupported: true, hostFolderSupported: true, avatarShapes: [...BOT_AVATAR_SHAPES], defaultWorkspace: defaultWorkspace(), bots: [...profiles.values()].map(bot => {
       const provider = providers.find(p => p.id === bot.provider), computer = computers.find(c => c.id === executionKey(bot.execution));
       const ownKey = bot.provider === 'ollama' && !!bot.providerSettings?.apiKey;
       const configured = bot.provider === 'configured' && modelRows().some(row => row.connectionId === bot.modelSource?.connectionId && row.model === bot.modelSource?.model);
@@ -365,7 +403,8 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     }
     const shared = teamContext ? team.executionForRun(teamContext.teamRunId) : undefined;
     if (shared) Object.assign(patch, { execution: shared.execution, computerMode: shared.computerMode, workspace: shared.workspace });
-    const bot = { ...current, ...validate(patch, current), ...(shared ? copy(shared) : {}) };
+    const bot = { id: current.id, createdAt: current.createdAt, updatedAt: current.updatedAt, ...validate(patch, current) };
+    if (shared) { for (const key of folderKeys) delete bot[key]; Object.assign(bot, copy(shared)); }
     if (teamContext) bot.teamContext = copy(teamContext);
     // Extension assignments and selected instructions are immutable for this chat.
     // Secrets never belong in these snapshots or in the public conversation preferences.
@@ -387,13 +426,27 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
   async function stop(chatId, options = {}) {
     if (options.team !== false) { const result = await team.stopForChat(chatId); if (result) { if (result.run.state === 'cleanup_pending') throw fault(503, result.run.detail); return { stopped: true }; } }
     const run = active.get(chatId);
-    if (!run) { await Promise.all([skills?.finish?.(chatId), mcp?.finish?.(chatId)]); return { stopped: false, pending: false }; }
+    if (!run) {
+      const results = await Promise.allSettled([skills, mcp, hostFolders].filter(Boolean).map(extension => Promise.resolve().then(() => extension.finish?.(chatId))));
+      const failure = results.find(result => result.status === 'rejected'); if (failure) throw failure.reason;
+      return { stopped: false, pending: false };
+    }
     run.controller.abort();
     await run.ended;
     if (run.cleanupFailure) throw run.cleanupFailure;
     return { stopped: true };
   }
-  async function run({ session, message, signal, onFrame }) {
+  async function run(input) {
+    const admission = team.pendingStart(input.session.id);
+    try { return await runOwned(input); }
+    catch (error) {
+      // A scheduler job can fail selection/resource checks before begin binds
+      // its turn. Only the exact still-pending job may be settled here.
+      try { team.rejectPendingStart(input.session.id, admission, error); } catch {}
+      throw error;
+    }
+  }
+  async function runOwned({ session, message, signal, onFrame }) {
     const current = requireBot(session.preferences?.botId);
     const bot = copy(chatProfiles.get(session.id) ?? current);
     validateSelection({ botId: bot.id, chatId: session.id });
@@ -406,11 +459,9 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
     let ended;
     const target = executionKey(bot.execution);
-    if (!conversationOnly && bot.execution.kind === 'ssh' && bot.capabilities !== 'code' && computerLeases.has(target)) throw fault(409, 'Another bot conversation is using this computer. Wait for it to finish.');
     if (!conversationOnly && resourceBusy(bot, session.id)) throw fault(409, 'Another teammate is using this shared computer. Wait for it to finish.');
     const owner = { botId: bot.id, target, resource: bot.computerMode === 'cua' ? cuaResource(bot) : `host:${target}`, sharedComputer: bot.sharedComputer === true, conversationOnly, controller, pending: new Map(), ended: new Promise(resolve => { ended = resolve; }) };
     active.set(session.id, owner);
-    if (!conversationOnly && bot.execution.kind === 'ssh' && bot.capabilities !== 'code') computerLeases.set(target, session.id);
     let terminal = null;
     const emit = frame => {
       if (active.get(session.id) !== owner) return;
@@ -419,7 +470,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
       work.record(bot.id, frame);
       onFrame(frame);
     };
-    const fingerprint = createHash('sha256').update(JSON.stringify([bot.id, bot.provider, bot.model, bot.effort, bot.workspace, bot.instructions, bot.policy, bot.capabilities, bot.providerSettings?.baseURL, bot.execution, bot.modelSource, bot.modelDestination, bot.computerMode, bot.extensionSnapshots, ...(bot.sharedComputer ? [{ computerOwnerId: bot.computerOwnerId, sharedComputer: true }] : [])])).digest('hex');
+    const fingerprint = createHash('sha256').update(JSON.stringify([bot.id, bot.provider, bot.model, bot.effort, bot.workspace, bot.instructions, bot.policy, bot.capabilities, bot.providerSettings?.baseURL, bot.execution, bot.modelSource, bot.modelDestination, bot.computerMode, bot.extensionSnapshots, folderSnapshot(bot), ...(bot.sharedComputer ? [{ computerOwnerId: bot.computerOwnerId, sharedComputer: true }] : [])])).digest('hex');
     const oldCheckpoint = checkpoints.get(session.id);
     const requestPolicyPermission = async ({ id, name, args = {}, reason = 'Allow this bot action?' }) => {
       if (combined.aborted || bot.policy === 'plan') return false;
@@ -443,13 +494,13 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     const assertLive = () => { combined.throwIfAborted(); if (active.get(session.id) !== owner || !team.isLive(turnId)) throw fault(409, 'This bot turn has ended.'); };
     const requestPermission = request => conversationOnly ? Promise.resolve(false) : requestPolicyPermission(request);
     const context = { bot, chatId: session.id, turnId, signal: combined, requestPermission, requestTeamPermission: requestPolicyPermission, roomMode, assertLive, onFrame: emit };
-    const extensions = (conversationOnly ? [team] : [team, skills, mcp]).filter(Boolean);
+    const extensions = (conversationOnly ? [team] : [team, skills, mcp, hostFolders]).filter(Boolean);
     const localTools = conversationOnly ? [] : tools.definitions(bot);
     let hostTools;
     try {
       hostTools = extensions.flatMap(extension => extension.tools(bot, context));
       if (new Set(hostTools.map(tool => tool.name)).size !== hostTools.length || hostTools.some(tool => localTools.some(local => local.name === tool.name))) throw fault(503, 'Bot tool names overlap.');
-    } catch (error) { controller.abort(); active.delete(session.id); if (computerLeases.get(target) === session.id) computerLeases.delete(target); ended(); throw error; }
+    } catch (error) { controller.abort(); active.delete(session.id); ended(); throw error; }
     const hostNames = new Set(hostTools.map(tool => tool.name)), calls = new Map();
     const executeHostTool = (name, args = {}, toolCallId) => {
       assertLive();
@@ -472,7 +523,8 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     let runFailure;
     try {
       team.begin(context);
-      const instructions = (conversationOnly ? [team.instructions(context)] : [bot.instructions, work.instructions(bot.id), bot.extensionSnapshots?.skills?.instructions, bot.extensionSnapshots?.mcp?.instructions, team.instructions(context)]).filter(Boolean).join('\n\n');
+      const folderInstructions = hostFolders.tools(bot).length ? `An explicit ${bot.hostFolder.access === 'read' ? 'read-only' : 'read/write'} host-folder share is available at ${JSON.stringify(bot.hostFolder.path)}. Use host_list_files, host_read_file${bot.hostFolder.access === 'read-write' && bot.policy !== 'plan' ? ' and host_write_file' : ''} with paths relative to that folder. Normal file, command and browser tools stay inside the isolated computer. This share is file access, not a mounted folder or host shell.` : '';
+      const instructions = (conversationOnly ? [team.instructions(context)] : [bot.instructions, work.instructions(bot.id), bot.extensionSnapshots?.skills?.instructions, bot.extensionSnapshots?.mcp?.instructions, team.instructions(context), folderInstructions]).filter(Boolean).join('\n\n');
       const runtimeBot = { ...bot, instructions };
       if (conversationOnly) delete runtimeBot.extensionSnapshots;
       emit({ type: 'start', agent: true, model: bot.model || bot.provider });
@@ -498,25 +550,44 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
       else throw failure;
     } finally {
       const cancelledBeforeCleanup = combined.aborted;
-      controller.abort(); // Revoke tool authority before awaiting asynchronous cleanup.
-      for (const request of [...owner.pending.values()]) request.resolve(false);
-      try { await tools.finish?.(session.id); }
-      catch (failure) { owner.cleanupFailure = Object.assign(failure, { status: 503 }); uncertainTargets.set(bot.computerMode === 'cua' ? cuaResource(bot) : target, 'Bot cleanup could not be confirmed. Check this computer on the Mac before continuing.'); save(); terminal = { type: 'error', message: failure.message }; }
-      try { await Promise.all(extensions.map(extension => extension.finish?.(session.id))); }
-      catch (failure) { owner.cleanupFailure = Object.assign(failure, { status: 503 }); terminal = { type: 'error', message: failure.message ?? 'External bot integration cleanup could not be confirmed.' }; }
-      if (active.get(session.id) === owner) active.delete(session.id);
-      if (computerLeases.get(target) === session.id) computerLeases.delete(target);
-      if (terminal) onFrame(terminal);
-      team.end(context, { cancelled: cancelledBeforeCleanup, error: owner.cleanupFailure?.message ?? (runFailure && !cancelledBeforeCleanup ? runFailure.message : undefined), ...(typeof terminal?.publicReply === 'string' ? { publicReply: terminal.publicReply } : {}) });
-      ended();
+      try {
+        controller.abort(); // Revoke tool authority before awaiting every owned cleanup.
+        for (const request of [...owner.pending.values()]) { try { request.resolve(false); } catch (failure) { owner.cleanupFailure ??= failure; } }
+        const cleanups = [tools, ...extensions];
+        const results = await Promise.allSettled(cleanups.map(extension => Promise.resolve().then(() => extension.finish?.(session.id))));
+        for (const [index, result] of results.entries()) {
+          if (result.status !== 'rejected') continue;
+          const failure = result.reason;
+          owner.cleanupFailure = Object.assign(failure, { status: 503 });
+          const resource = index === 0 && bot.computerMode === 'cua' ? cuaResource(bot) : target;
+          if (index === 0 || failure.code === 'ssh_cleanup_unconfirmed' || failure.cleanupUnconfirmed) {
+            uncertainTargets.set(resource, 'Bot tool cleanup could not be confirmed. Check this execution computer before starting new work.');
+            try { save(); } catch { owner.cleanupFailure = fault(503, 'Bot cleanup failed and its recovery state could not be saved. Inspect the failed conversation before continuing.'); }
+          }
+          terminal = { type: 'error', message: owner.cleanupFailure.message ?? 'External bot integration cleanup could not be confirmed.' };
+        }
+        if (active.get(session.id) === owner) active.delete(session.id);
+        if (terminal) onFrame(terminal);
+        team.end(context, { cancelled: cancelledBeforeCleanup, error: owner.cleanupFailure?.message ?? (runFailure && !cancelledBeforeCleanup ? runFailure.message : undefined), ...(typeof terminal?.publicReply === 'string' ? { publicReply: terminal.publicReply } : {}) });
+      } finally { if (active.get(session.id) === owner) active.delete(session.id); ended(); }
     }
   }
-  return { list, create, update, saveProfile, remove, pause, createConversation, computer, work, team, hasBot: id => profiles.has(id), hasTeam: id => team.hasTeam(id), teamConnectorAccess: (teamId, botId, teamRunId) => team.connectorAccess(teamId, botId, teamRunId), providerModels: id => runtime.models?.(id) ?? Promise.resolve({ provider: id, models: [], detail: 'This provider has no verified effort catalog. Use Provider default.' }), prepareCUA, checkComputer: (input, options) => computerAction(input, false, options), prepareComputer: (input, options) => computerAction(input, true, options), validateSelection, run, pending, approve, stop,
+  return { list, create, update, saveProfile, setHostFolder, remove, pause, createConversation, computer, work, team, hasBot: id => profiles.has(id), hasTeam: id => team.hasTeam(id), teamConnectorAccess: (teamId, botId, teamRunId) => team.connectorAccess(teamId, botId, teamRunId), providerModels: id => runtime.models?.(id) ?? Promise.resolve({ provider: id, models: [], detail: 'This provider has no verified effort catalog. Use Provider default.' }), prepareCUA, checkComputer: (input, options) => computerAction(input, false, options), prepareComputer: (input, options) => computerAction(input, true, options), validateSelection, run, pending, approve, stop,
     supervision: () => botSupervisionSnapshot({ bots: [...profiles.values()], conversations: conversations()?.supervisionSources?.() ?? [], pendingCount: id => active.get(id)?.pending.size ?? 0, now: Date.parse(now()) }),
     supervisionProfiles: () => [...profiles.values()].map(({ id, name, avatarConfig }) => ({ id, name, ...(avatarConfig ? { avatarConfig: copy(avatarConfig) } : {}) })),
     notificationApprovals: () => [...active].flatMap(([chatId, run]) => [...run.pending.keys()].map(id => ({ chatId, id, botId: run.botId }))),
     hasProfiles: () => profiles.size > 0, isBotConversation: id => !!owned(id), workspace: id => chatProfiles.get(id)?.execution?.kind === 'local' ? chatProfiles.get(id).workspace : null, isRemoteConversation: id => !!chatProfiles.get(id) && (chatProfiles.get(id).execution?.kind !== 'local' || chatProfiles.get(id).computerMode === 'cua'), activeCount: () => active.size + team.activeCount(),
-    async close() { work.close(); await team.close(); await computer.close(); for (const run of active.values()) run.controller.abort(); await Promise.allSettled([...active.values()].map(run => run.ended)); await tools.close?.(); await runtime.close?.(); } };
+    async close() {
+      const failures = [];
+      try { work.close(); } catch (failure) { failures.push(failure); }
+      try { await team.close(); } catch (failure) { failures.push(failure); }
+      try { await computer.close(); } catch (failure) { failures.push(failure); }
+      for (const run of active.values()) run.controller.abort();
+      await Promise.allSettled([...active.values()].map(run => run.ended));
+      const results = await Promise.allSettled([hostFolders, tools, runtime].map(owner => Promise.resolve().then(() => owner.close?.())));
+      failures.push(...results.filter(result => result.status === 'rejected').map(result => result.reason));
+      if (failures.length) throw failures[0];
+    } };
 }
 
 export function createBotRoutes({ bots, port }) {
@@ -527,6 +598,15 @@ export function createBotRoutes({ bots, port }) {
       if (url.pathname === '/api/bots' && req.method === 'GET') return json(res, 200, await bots.list());
       if (url.pathname === '/api/bots' && req.method === 'POST') return json(res, 201, bots.create(await readBody(req)));
       if (url.pathname === '/api/bots/profile' && req.method === 'POST') return json(res, 201, await bots.saveProfile(await readBody(req)));
+      const folder = /^\/api\/bots\/(bot_[a-f0-9-]+)\/host-folder$/.exec(url.pathname);
+      if (folder) {
+        if (req.method !== 'PUT' || [...url.searchParams].length) throw fault(405, 'This folder action is unavailable.');
+        const input = await readBody(req), controller = new AbortController();
+        const abort = () => { if (!res.writableEnded) controller.abort(); };
+        res.once('close', abort);
+        try { return json(res, 200, await bots.setHostFolder(folder[1], input, { signal: controller.signal })); }
+        finally { res.off('close', abort); }
+      }
       const profile = /^\/api\/bots\/(bot_[a-f0-9-]+)\/profile$/.exec(url.pathname);
       if (profile && req.method === 'PATCH') return json(res, 200, await bots.saveProfile(await readBody(req), profile[1]));
       if (url.pathname === '/api/bots/provider-models' && req.method === 'GET') return json(res, 200, await bots.providerModels(url.searchParams.get('provider')));

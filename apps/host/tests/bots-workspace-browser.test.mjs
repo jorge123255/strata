@@ -12,6 +12,7 @@ import { build } from 'esbuild';
 import { chromium } from 'playwright-core';
 import { createBotSkills } from '../server/bots-skills.mjs';
 import { createBotMcp } from '../server/bots-mcp.mjs';
+import { botSupervisionSnapshot } from '../server/bots-supervision.mjs';
 const root=fileURLToPath(new URL('..',import.meta.url));
 const executablePath=[process.env.STRATA_UI_BROWSER,'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome','/usr/bin/chromium','/usr/bin/chromium-browser'].find(value=>value&&existsSync(value));
 test('Bots workspace teams, effort, draft skills and MCP inventory use explicit controls and real isolated service validation', {skip:executablePath?false:'Installed Chromium required.',timeout:120000},async t=>{
@@ -70,6 +71,7 @@ test('Bots workspace teams, effort, draft skills and MCP inventory use explicit 
       if(path.startsWith('/api/bots/connections')||path.startsWith('/api/bots/connectors/'))return respond(res,await mcp.handle(req.method,url,body));
       if(path==='/api/bots/provider-models')return respond(res,{provider:url.searchParams.get('provider'),models:[{id:'fixture-model',name:'Fixture model',efforts:['low','high'],defaultEffort:'low'}]});
       if(path==='/api/bots'&&req.method==='GET')return respond(res,{bots:profiles,providers,computers:[{id:'local',name:'This Mac',kind:'local',available:true,detail:'Fixture only.'}],models:[]});
+      if(path==='/api/bots/supervision'&&req.method==='GET')return respond(res,botSupervisionSnapshot({bots:profiles,conversations:[],pendingCount:()=>0}));
       if(path==='/api/bots/existing'&&req.method==='PATCH'){Object.assign(profiles[0],body);return respond(res,{bot:profiles[0]});}
       if(/^\/api\/bots\/(existing|reviewer)\/work$/.test(path))return respond(res,{memory:'',rules:[],routines:[],outputs:[],files:[]});
       if(path==='/api/companion/conversations')return respond(res,{available:true,conversations});

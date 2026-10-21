@@ -68,6 +68,61 @@ test('browser denial neither opens page nor starts a browser', async t => {
   assert.equal(launches, 0);
 });
 
+test('physical desktop lease is lazy, approved, turn-owned and independent of files and bot browsers', async t => {
+  let acquired = 0, released = 0, actions = 0;
+  const page = { goto: async () => {}, url: () => 'https://example.test', screenshot: async () => Buffer.from('image'), locator: () => ({ innerText: async () => 'Fixture' }) };
+  const { execute, tools, bot, workspace } = fixture(t, {
+    platform: 'darwin', browserProbe: () => ({ found: true }), browserFactory: async () => ({ page, close: async () => {} }),
+    acquireDesktopLease: async () => { acquired++; return async () => { released++; }; },
+    processRunner: async command => { if (command !== '/usr/bin/swiftc') actions++; return { code: 0, stdout: 'fixture', stderr: '' }; },
+  });
+  await execute('write_file', { path: 'independent.txt', content: 'files do not own a desktop' });
+  await execute('browser_open', { url: 'https://example.test' });
+  await execute('computer_click', { x: 1, y: 1 }, { requestPermission: async () => false });
+  assert.equal(acquired, 0);
+  await execute('computer_click', { x: 1, y: 1 });
+  await execute('computer_key', { key: 'Return' });
+  assert.equal(acquired, 1); assert.equal(actions, 2); assert.equal(released, 0);
+  await assert.rejects(execute('computer_click', { x: 2, y: 2 }, { chatId: 'chat-b' }), /Another bot/);
+  await execute('write_file', { path: 'other.txt', content: 'still independent' }, { chatId: 'chat-b' });
+  await execute('browser_open', { url: 'https://example.test' }, { chatId: 'chat-b', bot: { ...bot, id: 'another-bot' } });
+  assert.equal(readFileSync(join(workspace, 'other.txt'), 'utf8'), 'still independent');
+  await Promise.all([tools.finish('chat-a'), tools.finish('chat-a')]);
+  assert.equal(released, 1);
+  await execute('computer_click', { x: 2, y: 2 }, { chatId: 'chat-b' });
+  assert.equal(acquired, 2); assert.equal(actions, 3);
+  await tools.finish('chat-b'); assert.equal(released, 2);
+});
+
+test('Stop during desktop admission never runs the action and still releases its eventual claim', async t => {
+  let admit, admitted, releases = 0, processes = 0;
+  const started = new Promise(resolve => { admitted = resolve; }), controller = new AbortController();
+  const { execute, tools } = fixture(t, {
+    platform: 'darwin', acquireDesktopLease: () => { admitted(); return new Promise(resolve => { admit = resolve; }); },
+    processRunner: async () => { processes++; return { code: 0, stdout: '', stderr: '' }; },
+  });
+  const action = execute('computer_click', { x: 1, y: 1 }, { signal: controller.signal });
+  await started; controller.abort();
+  const finishing = tools.finish('chat-a');
+  admit(async () => { releases++; });
+  await assert.rejects(action, /stopped/); await finishing;
+  assert.equal(processes, 0); assert.equal(releases, 1);
+});
+
+test('failed desktop admission does not poison a turn and failed release remains exclusive until cleanup succeeds', async t => {
+  let attempts = 0, releases = 0, failRelease = true;
+  const { execute, tools } = fixture(t, {
+    platform: 'darwin', acquireDesktopLease: async () => { if (++attempts === 1) throw Error('fixture desktop busy'); return async () => { releases++; if (failRelease) throw Error('fixture release uncertain'); }; },
+    processRunner: async () => ({ code: 0, stdout: 'fixture', stderr: '' }),
+  });
+  await assert.rejects(execute('computer_click', { x: 1, y: 1 }), /fixture desktop busy/);
+  await execute('computer_click', { x: 1, y: 1 });
+  await assert.rejects(tools.finish('chat-a'), /release uncertain/);
+  await assert.rejects(execute('computer_click', { x: 1, y: 1 }, { chatId: 'chat-b' }), /Another bot/);
+  failRelease = false; await tools.finish('chat-a'); assert.equal(releases, 2);
+  await execute('computer_click', { x: 1, y: 1 }, { chatId: 'chat-b' }); await tools.finish('chat-b');
+});
+
 test('Stop closes the owned browser and waits for pending input to be cancelled', async t => {
   let rejectClick, clicked = false, closed = false;
   const controller = new AbortController();

@@ -83,8 +83,8 @@ export function runBotProcess(command, args, { cwd, signal, timeout = 30_000, ma
   });
 }
 
-export function createBotTools({ directory, browserProbe = findBrowser, processRunner = runBotProcess, browserFactory, platform = process.platform, browserHeadless = false } = {}) {
-  const browsers = new Map(), leases = new Map(), inFlight = new Map();
+export function createBotTools({ directory, browserProbe = findBrowser, processRunner = runBotProcess, browserFactory, platform = process.platform, browserHeadless = false, acquireDesktopLease } = {}) {
+  const browsers = new Map(), leases = new Map(), inFlight = new Map(), desktopClaims = new Map(), finishing = new Map();
   let helperPromise = null;
   function definitions(bot) {
     const chosen = [...(bot.capabilities !== 'computer' ? coding : []), ...(bot.capabilities !== 'code' ? computer : [])];
@@ -145,6 +145,22 @@ export function createBotTools({ directory, browserProbe = findBrowser, processR
     if (resource) leases.set(resource, chatId);
     emit('running');
     try {
+      if (resource === 'desktop' && acquireDesktopLease) {
+        // A remote worker needs a cross-process desktop lease. Acquire it only
+        // after approval and share the claim across this turn's desktop calls.
+        let claim = desktopClaims.get(chatId);
+        if (!claim) {
+          claim = Promise.resolve().then(() => acquireDesktopLease({ bot, chatId, signal }));
+          desktopClaims.set(chatId, claim);
+        }
+        try { await claim; }
+        catch (error) {
+          if (desktopClaims.get(chatId) === claim) desktopClaims.delete(chatId);
+          if (leases.get(resource) === chatId) leases.delete(resource);
+          throw error;
+        }
+        requireRunning();
+      }
       let result;
       if (name === 'read_file') {
         const file = await botWorkspacePath(bot.workspace, args.path);
@@ -190,6 +206,7 @@ export function createBotTools({ directory, browserProbe = findBrowser, processR
         } finally { signal?.removeEventListener('abort', abort); await closing; }
       } else if (name.startsWith('computer_')) {
         const executable = await helper(signal);
+        requireRunning();
         const operation = name.slice('computer_'.length);
         const folder = await mkdtemp(join(tmpdir(), 'strata-bot-screen-'));
         try {
@@ -215,5 +232,29 @@ export function createBotTools({ directory, browserProbe = findBrowser, processR
     pending.finally(() => { calls.delete(pending); if (!calls.size) inFlight.delete(args.chatId); }).catch(() => {});
     return pending;
   }
-  return { definitions, execute, async finish(chatId) { await Promise.allSettled([...(inFlight.get(chatId) ?? [])]); for (const [resource, owner] of leases) if (owner === chatId) leases.delete(resource); }, async close() { await Promise.allSettled([...browsers.values()].map(async pending => (await pending).close())); await Promise.allSettled([...inFlight.values()].flatMap(calls => [...calls])); browsers.clear(); leases.clear(); } };
+  function finish(chatId) {
+    if (finishing.has(chatId)) return finishing.get(chatId);
+    const pending = (async () => {
+      await Promise.allSettled([...(inFlight.get(chatId) ?? [])]);
+      const claim = desktopClaims.get(chatId);
+      if (claim) {
+        const release = await claim;
+        await release(); // Failed release keeps ownership and is surfaced to cleanup quarantine.
+        if (desktopClaims.get(chatId) === claim) desktopClaims.delete(chatId);
+      }
+      for (const [resource, owner] of leases) if (owner === chatId) leases.delete(resource);
+    })();
+    finishing.set(chatId, pending);
+    pending.finally(() => { if (finishing.get(chatId) === pending) finishing.delete(chatId); }).catch(() => {});
+    return pending;
+  }
+  return { definitions, execute, finish, async close() {
+    await Promise.allSettled([...browsers.values()].map(async pending => (await pending).close()));
+    await Promise.allSettled([...inFlight.values()].flatMap(calls => [...calls]));
+    const released = await Promise.allSettled([...new Set([...desktopClaims.keys(), ...leases.values()])].map(finish));
+    browsers.clear();
+    const failed = released.find(result => result.status === 'rejected');
+    if (failed) throw failed.reason;
+    leases.clear();
+  } };
 }

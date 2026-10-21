@@ -34,9 +34,10 @@ async function command(command,args,cwd,timeout){if(managementCancelled)throw Er
   }
   if(request.installBrowser===true){await command(process.execPath,[path.join(target,'node_modules','playwright-core','cli.js'),'install','chromium'],target,240000);}
  }
- if(!['run','probe','prepare','computer'].includes(request.action))throw Error('Unsupported remote Bots action.');
+ if(!['run','probe','prepare','computer','host-folder'].includes(request.action))throw Error('Unsupported remote Bots action.');
  if(!await installed(base,request))throw Error('Prepare this exact version of Bots on the SSH computer first.');
  process.env.PLAYWRIGHT_BROWSERS_PATH=path.join(base,request.hash,'browsers');
+ if(request.action==='host-folder'){workerStarted=true;send({type:'worker-ready'});const folder=await import(require('node:url').pathToFileURL(path.join(base,request.hash,'server','bots-host-folder-worker.mjs')).href);await folder.hostFolderOperation(request.input,{reader,send,directory:path.join(base,'state'),leaseMs:12000});return;}
  const worker=await import(require('node:url').pathToFileURL(path.join(base,request.hash,'server','bots-runtime','ssh-worker.mjs')).href);
  if(request.action==='run'||request.action==='computer'){workerStarted=true;send({type:'worker-ready'});await worker[request.action==='run'?'startWorker':'computerOperation'](request.input,{reader,send,directory:path.join(base,'state'),bundleRoot:path.join(base,request.hash),leaseMs:12000});}
  else{const value=await worker.probeWorker({directory:path.join(base,'state'),bundleRoot:path.join(base,request.hash)});managementDone=true;send({type:'result',value:{...value,available:true,prepared:true,workerVersion:request.hash}});reader.close();}

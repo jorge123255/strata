@@ -368,6 +368,35 @@ final class CompanionSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testScopedHostFolderSettingsGrantAndRevokeWithoutStartingWork() async throws {
+        let control = try pairWorkspaceFixture()
+        try tapWorkspace(app.buttons["botProfile-fixture-bot"])
+        try tapWorkspace(app.buttons["botHostFolderButton"])
+        try require(app.switches["hostFolderEnabled"])
+        let initial = try await fixtureControl(control, action: "state")
+        XCTAssertTrue(try XCTUnwrap(initial["calls"] as? [[String: Any]]).allSatisfy { $0["method"] as? String == "GET" })
+        app.switches["hostFolderEnabled"].coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.5)).tap()
+        let path = app.textFields["hostFolderPath"]; try require(path); path.tap(); path.typeText("/srv/synthetic-project")
+        app.swipeUp()
+        attachScreenshot("Shared host folder — opt-in read-only directory")
+        try tapWorkspace(app.buttons["saveHostFolderButton"])
+        try require(app.buttons["botHostFolderButton"])
+        try tapWorkspace(app.buttons["botHostFolderButton"])
+        try require(app.textFields["hostFolderPath"])
+        XCTAssertEqual(app.textFields["hostFolderPath"].value as? String, "/srv/synthetic-project")
+        app.switches["hostFolderEnabled"].coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.5)).tap()
+        try tapWorkspace(app.buttons["saveHostFolderButton"])
+        try require(app.buttons["botHostFolderButton"])
+        let state = try await fixtureControl(control, action: "state")
+        let writes = try XCTUnwrap(state["calls"] as? [[String: Any]]).filter { $0["method"] as? String != "GET" }
+        XCTAssertEqual(writes.count, 2)
+        XCTAssertTrue(writes.allSatisfy { $0["path"] as? String == "/api/bots/fixture-bot/host-folder" && $0["method"] as? String == "PUT" })
+        XCTAssertEqual(((writes[0]["body"] as? [String: Any])?["hostFolder"] as? [String: String])?["access"], "read")
+        XCTAssertTrue((writes[1]["body"] as? [String: Any])?["hostFolder"] is NSNull)
+        attachScreenshot("Shared host folder — access removed without starting a bot")
+    }
+
+    @MainActor
     func testDirectBotRosterChatProfileNewConversationAndRelaunch() async throws {
         let control = try pairWorkspaceFixture()
         try tapWorkspace(app.buttons["bot-fixture-bot"])

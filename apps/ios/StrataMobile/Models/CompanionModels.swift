@@ -130,9 +130,27 @@ struct CompanionBots: Decodable, Equatable {
     var selectionSupported: Bool?
     var avatarShapes: [String]?
     var lifecycleSupported: Bool?
+    var hostFolderSupported: Bool?
     var defaultWorkspace: String?
     var defaultPolicy: String?
     var reason: String?
+}
+
+struct BotHostFolder: Codable, Equatable {
+    var path: String
+    var access: String
+}
+
+struct BotHostFolderUpdate: Encodable {
+    var expectedUpdatedAt: String
+    var hostFolder: BotHostFolder?
+    enum CodingKeys: String, CodingKey { case expectedUpdatedAt, hostFolder }
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(expectedUpdatedAt, forKey: .expectedUpdatedAt)
+        if let hostFolder { try values.encode(hostFolder, forKey: .hostFolder) }
+        else { try values.encodeNil(forKey: .hostFolder) }
+    }
 }
 
 struct CompanionBot: Decodable, Identifiable, Equatable {
@@ -149,6 +167,7 @@ struct CompanionBot: Decodable, Identifiable, Equatable {
     var workspace: String?
     var modelId: String?
     var computerMode: String?
+    var hostFolder: BotHostFolder?
     var avatarConfig: AvatarConfig?
     var paused: Bool?
     var effort: String?
