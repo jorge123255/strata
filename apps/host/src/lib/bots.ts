@@ -92,6 +92,15 @@ export function mergeBotTeamChannelMessages(previous: BotTeamChannelMessage[], i
 export interface BotSkill { id: string; name: string; description: string; body: string; triggers: string[]; source: 'library'|'draft'; status: 'draft'|'enabled'; revision: number|string; digest: string; botIds: string[]; onlyIn?:string|null; mainChatEnabled?:boolean; provenance?: unknown }
 export interface BotSkillAssignment { botId: string; skillIds: string[] }
 export interface BotSkillsSnapshot { skills: BotSkill[]; assignments: BotSkillAssignment[] }
+/** Owner-reviewed commands. Saved drafts and access changes never execute them. */
+export interface BotCreatedTool {
+  id: string; name: string; description: string; command: string; inputSchema: Record<string, unknown>;
+  timeoutSeconds: number; status: 'draft'|'enabled'; revision: number; digest: string;
+  botIds: string[]; teamIds: string[]; createdAt: string; updatedAt: string;
+  provenance?: { botId: string; chatId: string; turnId: string };
+}
+export interface BotCreatedToolsSnapshot { tools: BotCreatedTool[]; createdToolsSupported?: boolean; reason?: string }
+export interface BotCreatedToolDraft { name: string; description: string; command: string; inputSchema: Record<string, unknown>; timeoutSeconds: number }
 export interface BotConnectionTool { id: string; name: string; description: string; inputSchema: unknown; readOnly: boolean }
 export interface BotConnectorFeatures { catalog?: boolean; httpCreation?: boolean; teamAccess?: boolean; oauth?: boolean; iphoneOAuth?: boolean }
 export interface BotConnectorCatalogEntry { id: string; name: string; description: string; category: string; transport: 'http'; url?: string; authTypes: Array<'none'|'bearer'|'oauth'>; documentationURL?: string; setupNote?: string; setupState?: 'ready'|'configuration'|'managed'|'unavailable'; sourceURL?: string; phoneSignIn?: boolean; aliases?: string[] }

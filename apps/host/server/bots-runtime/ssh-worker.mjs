@@ -7,6 +7,7 @@ import { createBotRuntime, normalizeTools } from './index.mjs';
 import { createBotTools } from '../bots-tools.mjs';
 import { findBrowser } from '../agent/browser-probe.mjs';
 import { redact } from './process.mjs';
+import { createCreatedCommandTools } from './created-tools.mjs';
 
 const text = message => ({ content: [{ type: 'text', text: message }], isError: true });
 const identity = () => createHash('sha256').update(JSON.stringify([hostname(), process.getuid?.(), homedir()])).digest('hex');
@@ -131,6 +132,7 @@ async function startWorkerTurn(input, { reader, send, directory, leaseMs = 12000
       const browser = await browserInfo();
       const createTools = bot.computerMode === 'cua' ? cuaFactory ?? (await import('../bots-cua.mjs')).createBotCUATools : toolFactory;
       tools = createTools({ directory, browserProbe: () => browser, browserHeadless: process.platform === 'linux' || !process.env.DISPLAY && process.platform !== 'darwin', ...(bot.computerMode === 'cua' ? {} : { acquireDesktopLease: () => acquireComputerLease(directory) }) });
+      if ((input.hostTools ?? []).some(tool => tool.name === 'authorize_created_tool')) tools = createCreatedCommandTools(tools, { authorize: (args, options) => ask('requestHostTool', { name: 'authorize_created_tool', args, toolCallId: options.toolCallId }) });
     }
     runtime = runtimeFactory({ stateDir: join(directory, 'runtime') });
     signal.throwIfAborted();

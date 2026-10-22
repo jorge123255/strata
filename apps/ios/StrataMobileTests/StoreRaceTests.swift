@@ -2052,6 +2052,202 @@ final class BotWorkspaceTests: XCTestCase {
 
 
 @MainActor
+final class BotCreatedToolsTests: XCTestCase {
+    private let path = "/v1/bots/tools"
+    private func row(revision: Int = 1, digest: String = String(repeating: "a", count: 64), status: String = "draft", botIds: [String] = [], teamIds: [String] = []) -> [String: Any] {
+        ["id": "tool_fixture", "name": "Workspace summary", "description": "Summarize the current workspace", "command": "python3 summary.py", "inputSchema": ["type": "object", "properties": ["format": ["type": "string", "enum": ["short", "full"]]], "required": ["format"], "additionalProperties": false], "timeoutSeconds": 30, "status": status, "revision": revision, "digest": digest, "botIds": botIds, "teamIds": teamIds, "provenance": ["botId": "bot_coder", "chatId": "s_fixture", "turnId": "turn_fixture"]]
+    }
+    private func snapshot(_ tool: [String: Any]? = nil) -> [String: Any] { ["tools": tool.map { [$0] } ?? [], "createdToolsSupported": true] }
+    private func decode<T: Decodable>(_ value: Any, as: T.Type) throws -> T { try JSONDecoder().decode(T.self, from: JSONSerialization.data(withJSONObject: value)) }
+
+    func testSchemaRoundTripRetainsBooleanNumericEnumsAndRejectsUnsupportedOrNestedInputs() throws {
+        let schema: [String: Any] = ["type": "object", "properties": ["flag": ["type": "boolean", "enum": [true, false]], "limit": ["type": "integer", "minimum": 1, "maximum": 3, "enum": [1, 2, 3]], "title": ["type": "string", "maxLength": 120]], "required": ["flag"], "additionalProperties": false]
+        let parsed = try decode(schema, as: BotToolJSON.self)
+        XCTAssertTrue(BotCreatedToolDraft.isSupportedSchema(parsed))
+        XCTAssertEqual(try decode(JSONSerialization.jsonObject(with: JSONEncoder().encode(parsed)), as: BotToolJSON.self), parsed)
+        XCTAssertEqual(try decode(JSONSerialization.jsonObject(with: JSONEncoder().encode(parsed)), as: BotToolJSON.self).formatted, parsed.formatted)
+        for invalid: [String: Any] in [
+            ["type": "object", "properties": ["nested": ["type": "object"]], "required": [], "additionalProperties": false],
+            ["type": "object", "properties": [:], "required": ["missing"], "additionalProperties": false],
+            ["type": "object", "properties": [:], "required": [], "additionalProperties": true],
+            ["type": "object", "properties": ["__proto__": ["type": "string"]], "required": [], "additionalProperties": false],
+            ["type": "object", "properties": ["n": ["type": "integer", "enum": [1.5]]], "required": [], "additionalProperties": false],
+            ["type": "object", "properties": [:], "required": [], "additionalProperties": false, "$ref": "elsewhere"]
+        ] { XCTAssertFalse(BotCreatedToolDraft.isSupportedSchema(try decode(invalid, as: BotToolJSON.self))) }
+    }
+
+    func testDraftValidationRejectsOversizeFieldsInvalidTimeoutAndNulls() throws {
+        var draft = BotCreatedToolDraft(tool: try decode(row(), as: BotCreatedTool.self))
+        XCTAssertTrue(draft.isValid)
+        draft.timeoutSeconds = 121; XCTAssertFalse(draft.isValid); draft.timeoutSeconds = 0; XCTAssertFalse(draft.isValid); draft.timeoutSeconds = 30
+        draft.command = "bad\0command"; XCTAssertFalse(draft.isValid)
+        draft.command = String(repeating: "x", count: 32_001); XCTAssertFalse(draft.isValid)
+        draft.command = "echo ok"; draft.description = String(repeating: "😀", count: 1_001); XCTAssertFalse(draft.isValid)
+    }
+
+    func testSchemaValidationMatchesServerSafeIntegerTextAndEnumBoundaries() throws {
+        func schema(_ property: [String: Any]) throws -> BotToolJSON {
+            try decode(["type": "object", "properties": ["value": property], "required": [], "additionalProperties": false], as: BotToolJSON.self)
+        }
+        for invalid in [
+            ["type": "integer", "minimum": 0.5], ["type": "integer", "maximum": -0.5],
+            ["type": "integer", "minimum": -9_007_199_254_740_992], ["type": "integer", "maximum": 9_007_199_254_740_992],
+            ["type": "integer", "enum": [9_007_199_254_740_992]], ["type": "integer", "enum": [-9_007_199_254_740_992]],
+            ["type": "string", "maxLength": 64_001], ["type": "string", "maxLength": 0.5],
+            ["type": "string", "enum": ["ok", "bad\0value"]]
+        ] as [[String: Any]] { XCTAssertFalse(BotCreatedToolDraft.isSupportedSchema(try schema(invalid)), "\(invalid)") }
+        for valid in [
+            ["type": "integer", "minimum": -9_007_199_254_740_991, "maximum": 9_007_199_254_740_991, "enum": [-9_007_199_254_740_991, 0, 9_007_199_254_740_991]],
+            ["type": "number", "minimum": -0.5, "maximum": 0.5, "enum": [0.25]],
+            ["type": "string", "maxLength": 64_000, "enum": ["", "ok"]], ["type": "string", "maxLength": 0]
+        ] as [[String: Any]] { XCTAssertTrue(BotCreatedToolDraft.isSupportedSchema(try schema(valid)), "\(valid)") }
+    }
+
+    func testReadOnlyCatalogReusesUnchangedStateAndDoesNotRunOrEnableTools() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }; let response = snapshot(row())
+        fixture.respond { _ in response }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore()
+        await workspace.refreshCreatedTools()
+        var publications = 0; let observer = workspace.$createdTools.dropFirst().sink { _ in publications += 1 }; defer { observer.cancel() }
+        await workspace.refreshCreatedTools()
+        XCTAssertEqual(publications, 0); XCTAssertEqual(workspace.createdTools?.tools.first?.provenance?.botId, "bot_coder")
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" && $0.path == path })
+    }
+
+    func testCreatingDraftSendsDefinitionOnlyAndNeverAddsAccessOrRunsIt() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }; let tool = row()
+        fixture.respond { request in request.httpMethod == "POST" ? ["tool": tool] : self.snapshot(tool) }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(); await workspace.refreshCreatedTools()
+        let saved = await workspace.saveCreatedTool(BotCreatedToolDraft(tool: try decode(tool, as: BotCreatedTool.self)))
+        XCTAssertTrue(saved)
+        let writes = fixture.requests.filter { $0.method != "GET" }; XCTAssertEqual(writes.count, 1); XCTAssertEqual(writes.first?.path, path)
+        XCTAssertEqual(Set(writes.first?.jsonBody?.keys.map { $0 } ?? []), ["name", "description", "command", "inputSchema", "timeoutSeconds"])
+        XCTAssertEqual((writes.first?.jsonBody?["inputSchema"] as? [String: Any])?["additionalProperties"] as? Bool, false)
+        XCTAssertNil(store.currentConversation)
+    }
+
+    func testEditAlwaysDraftsExactReviewedRevisionWithoutStatusEscalationOrExecution() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }; let tool = row(status: "enabled")
+        fixture.respond { request in request.httpMethod == "PATCH" ? ["tool": tool] : self.snapshot(tool) }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(); await workspace.refreshCreatedTools()
+        let reviewed = try XCTUnwrap(workspace.createdTools?.tools.first)
+        var draft = BotCreatedToolDraft(tool: reviewed); draft.command = "python3 changed.py"
+        let saved = await workspace.saveCreatedTool(draft, reviewing: reviewed); XCTAssertTrue(saved)
+        let body = try XCTUnwrap(fixture.requests.first { $0.method == "PATCH" }?.jsonBody)
+        XCTAssertEqual(body["status"] as? String, "draft"); XCTAssertEqual(body["expectedRevision"] as? Int, 1); XCTAssertEqual(body["expectedDigest"] as? String, reviewed.digest)
+        XCTAssertNil(body["botIds"]); XCTAssertNil(body["teamIds"])
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.path == path || $0.path == path + "/tool_fixture" })
+    }
+
+    func testEnableConflictRefreshesCurrentVersionWithoutReplayingOrRunning() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }; var tool = row()
+        fixture.respond { _ in self.snapshot(tool) }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(); await workspace.refreshCreatedTools()
+        let reviewed = try XCTUnwrap(workspace.createdTools?.tools.first), pending = fixture.hold(path + "/tool_fixture")
+        let enabling = Task { await workspace.setCreatedToolEnabled(reviewed, enabled: true) }
+        await fulfillment(of: [pending.requested], timeout: 2)
+        let body = try XCTUnwrap(fixture.requests.first { $0.method == "PATCH" }?.jsonBody)
+        XCTAssertEqual(Set(body.keys), ["status", "expectedRevision", "expectedDigest"]); XCTAssertEqual(body["status"] as? String, "enabled")
+        tool = row(revision: 2, digest: String(repeating: "b", count: 64)); pending.finish(["error": "Tool changed. Review again."], status: 409)
+        let enabled = await enabling.value; XCTAssertFalse(enabled); XCTAssertEqual(workspace.createdTools?.tools.first?.revision, 2)
+        XCTAssertNotNil(workspace.messages["createdTools"]); XCTAssertEqual(fixture.requests.filter { $0.method != "GET" }.count, 1)
+        let staleEnable = await workspace.setCreatedToolEnabled(reviewed, enabled: true); XCTAssertFalse(staleEnable)
+        XCTAssertEqual(fixture.requests.filter { $0.method != "GET" }.count, 1)
+    }
+
+    func testBotAndTeamAssignmentMergePreservesOtherAccessAndHasExactReviewProof() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }; let tool = row(status: "enabled", botIds: ["bot_existing"], teamIds: ["team_existing"])
+        fixture.respond { request in request.httpMethod == "PATCH" ? ["tool": tool] : self.snapshot(tool) }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(); await workspace.refreshCreatedTools()
+        let reviewed = try XCTUnwrap(workspace.createdTools?.tools.first)
+        let assigned = await workspace.assignCreatedTool(reviewed, botId: "bot_new", assigned: true); XCTAssertTrue(assigned)
+        let body = try XCTUnwrap(fixture.requests.first { $0.method == "PATCH" }?.jsonBody)
+        XCTAssertEqual(body["botIds"] as? [String], ["bot_existing", "bot_new"]); XCTAssertEqual(body["teamIds"] as? [String], ["team_existing"])
+        XCTAssertEqual(body["expectedRevision"] as? Int, 1); XCTAssertEqual(body["expectedDigest"] as? String, reviewed.digest)
+        let teamAssigned = await workspace.assignCreatedTool(reviewed, teamId: "team_new", assigned: true); XCTAssertTrue(teamAssigned)
+        let teamBody = try XCTUnwrap(fixture.requests.last { $0.method == "PATCH" }?.jsonBody)
+        XCTAssertEqual(teamBody["botIds"] as? [String], ["bot_existing"]); XCTAssertEqual(teamBody["teamIds"] as? [String], ["team_existing", "team_new"])
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.path == path || $0.path == path + "/tool_fixture" })
+    }
+
+    func testAssignmentRechecksDefinitionAndRefusesConcurrentEditWithoutWrite() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }; var response = snapshot(row(status: "enabled"))
+        fixture.respond { _ in response }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(); await workspace.refreshCreatedTools()
+        let reviewed = try XCTUnwrap(workspace.createdTools?.tools.first)
+        response = snapshot(row(revision: 2, digest: String(repeating: "c", count: 64)))
+        let assigned = await workspace.assignCreatedTool(reviewed, teamId: "team_fixture", assigned: true)
+        XCTAssertFalse(assigned); XCTAssertEqual(workspace.createdTools?.tools.first?.revision, 2); XCTAssertNotNil(workspace.messages["createdTools"])
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+    }
+
+    func testDraftAccessCanBeRevokedWithoutEnablingButNewGrantIsRejected() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }; let tool = row(botIds: ["bot_existing"])
+        fixture.respond { request in request.httpMethod == "PATCH" ? ["tool": tool] : self.snapshot(tool) }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(); await workspace.refreshCreatedTools()
+        let reviewed = try XCTUnwrap(workspace.createdTools?.tools.first)
+        let removed = await workspace.assignCreatedTool(reviewed, botId: "bot_existing", assigned: false); XCTAssertTrue(removed)
+        let body = try XCTUnwrap(fixture.requests.first { $0.method == "PATCH" }?.jsonBody)
+        XCTAssertEqual(body["botIds"] as? [String], []); XCTAssertNil(body["status"])
+        let added = await workspace.assignCreatedTool(reviewed, botId: "bot_new", assigned: true); XCTAssertFalse(added)
+        XCTAssertEqual(fixture.requests.filter { $0.method != "GET" }.count, 1)
+    }
+
+    func testRevokedPairingRejectsLateToolCreationAndDoesNotRefreshOrNavigate() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }; let tool = row()
+        fixture.respond { _ in self.snapshot(tool) }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(); await workspace.refreshCreatedTools()
+        let original = workspace.createdTools, pending = fixture.hold(path)
+        let saving = Task { await workspace.saveCreatedTool(BotCreatedToolDraft(tool: try self.decode(tool, as: BotCreatedTool.self))) }
+        await fulfillment(of: [pending.requested], timeout: 2)
+        store.forgetMac(); pending.finish(["tool": row(revision: 2)]); let saved = try await saving.value
+        XCTAssertFalse(saved); XCTAssertEqual(workspace.createdTools, original); XCTAssertFalse(store.isPaired); XCTAssertNil(store.currentConversation)
+        XCTAssertEqual(fixture.requests.filter { $0.method == "GET" }.count, 1)
+    }
+
+    func testDeleteCarriesExactProofAndConflictRefreshesWithoutRetry() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }; var response = snapshot(row())
+        fixture.respond { _ in response }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(); await workspace.refreshCreatedTools()
+        let tool = try XCTUnwrap(workspace.createdTools?.tools.first), pending = fixture.hold(path + "/tool_fixture")
+        let removing = Task { await workspace.deleteCreatedTool(tool) }
+        await fulfillment(of: [pending.requested], timeout: 2)
+        let body = try XCTUnwrap(fixture.requests.first { $0.method == "DELETE" }?.jsonBody)
+        XCTAssertEqual(Set(body.keys), ["expectedRevision", "expectedDigest"])
+        XCTAssertEqual(body["expectedRevision"] as? Int, 1); XCTAssertEqual(body["expectedDigest"] as? String, tool.digest)
+        response = snapshot(row(revision: 2)); pending.finish(["error": "Tool changed; review it again."], status: 409)
+        let deleted = await removing.value; XCTAssertFalse(deleted); XCTAssertEqual(workspace.createdTools?.tools.first?.revision, 2)
+        XCTAssertEqual(fixture.requests.filter { $0.method != "GET" }.count, 1)
+        let stale = await workspace.deleteCreatedTool(tool); XCTAssertFalse(stale)
+        XCTAssertEqual(fixture.requests.filter { $0.method != "GET" }.count, 1)
+    }
+
+    func testSuccessfulDeleteRefreshesCatalogWithoutSendingPrompt() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }; var removed = false
+        fixture.respond { request in
+            if request.httpMethod == "DELETE" { removed = true; return ["deleted": true] }
+            return self.snapshot(removed ? nil : self.row())
+        }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(); await workspace.refreshCreatedTools()
+        let tool = try XCTUnwrap(workspace.createdTools?.tools.first)
+        let deleted = await workspace.deleteCreatedTool(tool); XCTAssertTrue(deleted); XCTAssertTrue(workspace.createdTools?.tools.isEmpty == true)
+        XCTAssertEqual(fixture.requests.filter { $0.method != "GET" }.map(\.path), [path + "/tool_fixture"])
+        XCTAssertNil(store.currentConversation)
+    }
+
+    func testInvalidOrUnsupportedToolMutationsCannotSendPrograms() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { _ in ["tools": [], "createdToolsSupported": false, "reason": "Update Strata on Mac"] }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(); await workspace.refreshCreatedTools()
+        let reviewed = try decode(row(), as: BotCreatedTool.self)
+        let created = await workspace.saveCreatedTool(BotCreatedToolDraft(tool: reviewed))
+        let enabled = await workspace.setCreatedToolEnabled(reviewed, enabled: true)
+        let invalid = await workspace.assignCreatedTool(reviewed, botId: "../bot", assigned: true)
+        XCTAssertFalse(created); XCTAssertFalse(enabled); XCTAssertFalse(invalid); XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+    }
+}
+
+@MainActor
 final class BotLifecycleTests: XCTestCase {
     private static var catalog: [String: Any] {
         ["lifecycleSupported": true, "selectionSupported": true, "defaultWorkspace": "/fixture", "bots": [bot],

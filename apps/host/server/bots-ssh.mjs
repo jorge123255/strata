@@ -18,7 +18,7 @@ export function botSSHArguments(execution) {
   const { host, user, port } = normalizeBotSSH(execution);
   return ['-T', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=12', '-o', 'ConnectionAttempts=1', '-o', 'ClearAllForwardings=yes', '-o', 'ForwardAgent=no', '-o', 'PermitLocalCommand=no', '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=2', ...(port ? ['-p', String(port)] : []), ...(user ? ['-l', user] : []), '--', host, SSH_BOTS_COMMAND];
 }
-const assetNames = ['bots-runtime/index.mjs', 'bots-runtime/devin.mjs', 'bots-runtime/grok.mjs', 'bots-runtime/process.mjs', 'bots-runtime/tool-bridge.mjs', 'bots-runtime/mcp-stdio.mjs', 'bots-runtime/ssh-worker.mjs', 'bots-runtime/cua-qemu-prepare.py', 'bots-tools.mjs', 'bots-models.mjs', 'bots-cua.mjs', 'bots-cua.py', 'bots-host-folder.mjs', 'bots-host-folder.py', 'bots-host-folder-worker.mjs', 'bots-computer.swift', 'agent/browser-probe.mjs', 'agent/harness-runtime.mjs', 'external-env.mjs', 'powershell-utf8.mjs'];
+const assetNames = ['bots-runtime/index.mjs', 'bots-runtime/devin.mjs', 'bots-runtime/grok.mjs', 'bots-runtime/process.mjs', 'bots-runtime/tool-bridge.mjs', 'bots-runtime/created-tools.mjs', 'bots-runtime/mcp-stdio.mjs', 'bots-runtime/ssh-worker.mjs', 'bots-runtime/cua-qemu-prepare.py', 'bots-tools.mjs', 'bots-models.mjs', 'bots-cua.mjs', 'bots-cua.py', 'bots-host-folder.mjs', 'bots-host-folder.py', 'bots-host-folder-worker.mjs', 'bots-computer.swift', 'agent/browser-probe.mjs', 'agent/harness-runtime.mjs', 'external-env.mjs', 'powershell-utf8.mjs'];
 export async function botSSHBundle({ readAsset = name => readFile(new URL(name, import.meta.url)) } = {}) {
   const assets = {};
   for (const name of assetNames) assets[`server/${name}`] = Buffer.from(await readAsset(name));
@@ -155,6 +155,9 @@ export function createRemoteBotSSH({ sshPath = '/usr/bin/ssh', spawnProcess = sp
       if (bot.providerSettings) bot.providerSettings = bot.providerSettings.baseURL ? { baseURL: bot.providerSettings.baseURL } : undefined;
       // Host skill/MCP snapshots can contain private text and connection metadata.
       // Only explicitly assigned tool descriptions cross this channel; execution returns to the Mac.
+      // Only reviewed reusable command definitions cross to their selected
+      // executor. Every invocation still asks the owning host for current access.
+      if (bot.extensionSnapshots?.createdTools) bot.createdTools = { assignments: bot.extensionSnapshots.createdTools.assignments.map(({ id, digest, name }) => ({ id, digest, name })) };
       delete bot.extensionSnapshots;
       const hostTools = (input.hostTools ?? []).map(tool => ({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema }));
       let remoteIdentity = input.checkpoint?.remoteIdentity;

@@ -475,6 +475,120 @@ struct BotSkillDraft: Encodable {
     init(skill: BotSkill) { name = skill.name; description = skill.description; body = skill.body; triggers = skill.triggers }
 }
 
+/// Keep the complete reviewed schema, including scalar enum values. Unknown
+/// JSON is never silently discarded when editing a tool from another device.
+indirect enum BotToolJSON: Codable, Equatable {
+    case object([String: BotToolJSON]), array([BotToolJSON]), string(String), number(Double), bool(Bool), null
+    init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer()
+        if value.decodeNil() { self = .null }
+        else if let bool = try? value.decode(Bool.self) { self = .bool(bool) }
+        else if let string = try? value.decode(String.self) { self = .string(string) }
+        else if let number = try? value.decode(Double.self) { self = .number(number) }
+        else if let array = try? value.decode([BotToolJSON].self) { self = .array(array) }
+        else { self = .object(try value.decode([String: BotToolJSON].self)) }
+    }
+    func encode(to encoder: Encoder) throws {
+        var value = encoder.singleValueContainer()
+        switch self {
+        case .object(let object): try value.encode(object)
+        case .array(let array): try value.encode(array)
+        case .string(let string): try value.encode(string)
+        case .number(let number): try value.encode(number)
+        case .bool(let bool): try value.encode(bool)
+        case .null: try value.encodeNil()
+        }
+    }
+    var formatted: String {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        return (try? encoder.encode(self)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+    }
+}
+
+struct BotCreatedTool: Decodable, Identifiable, Equatable {
+    struct Provenance: Decodable, Equatable { var botId: String?; var chatId: String?; var turnId: String? }
+    var id: String
+    var name: String
+    var description: String
+    var command: String
+    var inputSchema: BotToolJSON
+    var timeoutSeconds: Int
+    var status: String
+    var revision: Int
+    var digest: String
+    var botIds: [String]
+    var teamIds: [String]
+    var provenance: Provenance?
+    var isEnabled: Bool { status == "enabled" }
+    func matchesReview(_ other: Self) -> Bool { id == other.id && revision == other.revision && digest == other.digest }
+    var hasValidReview: Bool {
+        CompanionClient.isSafeIdentifier(id) && revision > 0 && digest.count == 64 && digest.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+    }
+}
+
+struct BotCreatedToolsSnapshot: Decodable, Equatable {
+    var tools: [BotCreatedTool]
+    var createdToolsSupported: Bool?
+    var reason: String?
+    var isAvailable: Bool { createdToolsSupported == true && reason == nil }
+}
+
+struct BotCreatedToolDraft: Encodable {
+    var name = ""
+    var description = ""
+    var command = ""
+    var inputSchema: BotToolJSON = .object(["type": .string("object"), "properties": .object([:]), "required": .array([]), "additionalProperties": .bool(false)])
+    var timeoutSeconds = 30
+    init() { }
+    init(tool: BotCreatedTool) {
+        name = tool.name; description = tool.description; command = tool.command; inputSchema = tool.inputSchema; timeoutSeconds = tool.timeoutSeconds
+    }
+    var isValid: Bool {
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && name.utf16.count <= 120 &&
+        description.utf16.count <= 2_000 && !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && command.utf16.count <= 32_000 &&
+        ![name, description, command].contains(where: { $0.contains("\0") }) && (1...120).contains(timeoutSeconds) && Self.isSupportedSchema(inputSchema)
+    }
+    /// V1 accepts flat object inputs. The Mac validates the complete definition
+    /// again before saving; this check gives immediate feedback on the phone.
+    static func isSupportedSchema(_ schema: BotToolJSON) -> Bool {
+        func safeInteger(_ value: Double) -> Bool { value.isFinite && value.rounded() == value && abs(value) <= 9_007_199_254_740_991 }
+        guard case .object(let root) = schema, root["type"] == .string("object"), root["additionalProperties"] == .bool(false),
+              Set(root.keys).isSubset(of: ["type", "properties", "required", "additionalProperties"]),
+              case .object(let properties) = root["properties"], properties.count <= 32,
+              case .array(let required) = root["required"],
+              let data = try? JSONEncoder().encode(schema), data.count <= 16_000 else { return false }
+        var requiredNames = Set<String>()
+        for value in required {
+            guard case .string(let name) = value, properties[name] != nil, requiredNames.insert(name).inserted else { return false }
+        }
+        for (name, value) in properties {
+            guard name.range(of: "^[A-Za-z_][A-Za-z0-9_]{0,63}$", options: .regularExpression) != nil,
+                  !["__proto__", "prototype", "constructor"].contains(name), case .object(let property) = value,
+                  Set(property.keys).isSubset(of: ["type", "description", "enum", "minimum", "maximum", "maxLength"]),
+                  case .string(let type) = property["type"], ["string", "number", "integer", "boolean"].contains(type) else { return false }
+            if let description = property["description"] { guard case .string(let text) = description, text.utf16.count <= 500, !text.contains("\0") else { return false } }
+            for bound in ["minimum", "maximum"] {
+                if let value = property[bound] { guard ["number", "integer"].contains(type), case .number(let number) = value, number.isFinite, type != "integer" || safeInteger(number) else { return false } }
+            }
+            if case .number(let minimum) = property["minimum"], case .number(let maximum) = property["maximum"], minimum > maximum { return false }
+            if let length = property["maxLength"] { guard type == "string", case .number(let number) = length, safeInteger(number), (0...64_000).contains(number) else { return false } }
+            if let values = property["enum"] {
+                guard case .array(let list) = values, !list.isEmpty, list.count <= 64 else { return false }
+                for item in list {
+                    switch (type, item) {
+                    case ("string", .string(let string)) where !string.contains("\0"): break
+                    case ("boolean", .bool): break
+                    case ("number", .number(let number)) where number.isFinite: break
+                    case ("integer", .number(let number)) where safeInteger(number): break
+                    default: return false
+                    }
+                }
+            }
+        }
+        return true
+    }
+}
+
 struct BotConnectionTool: Decodable, Identifiable, Equatable {
     var id: String
     var name: String

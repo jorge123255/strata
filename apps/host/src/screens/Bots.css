@@ -260,6 +260,27 @@ button.cua-profile-row:disabled { opacity: .5; cursor: default; }
 .bots-access-toggle { display: flex; align-items: center; gap: 7px; font-size: 11px; color: var(--st-ink-muted); cursor: pointer; }
 .bots-skill-dialog { width: min(800px,calc(100vw - 32px)); }
 .bots-skill-body { resize: vertical; font: 12px/1.6 var(--st-font-mono); }
+.bots-tool-intro { display: flex; align-items: flex-start; gap: 14px; padding: 18px; margin-bottom: 20px; background: var(--st-surface); border: 1px solid var(--st-line); border-radius: var(--st-r-md); }
+.bots-tool-intro > .st-icon { flex: none; color: var(--st-accent-text); margin-top: 3px; }
+.bots-tool-intro strong { font-size: 13px; }
+.bots-tool-intro p { margin: 6px 0 0; color: var(--st-ink-muted); font-size: 12px; line-height: 1.6; }
+.bots-created-tools-list { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,340px),1fr)); gap: 14px; }
+.bots-created-tool-card { padding: 20px; border: 1px solid var(--st-line); border-radius: var(--st-r-md); background: var(--st-surface); min-width: 0; }
+.bots-created-tool-heading { display: flex; gap: 12px; align-items: center; }
+.bots-created-tool-heading > div { flex: 1; min-width: 0; }
+.bots-created-tool-heading h3 { margin: 0 0 5px; font-size: 14px; overflow-wrap: anywhere; }
+.bots-created-tool-card > p { color: var(--st-ink-muted); font-size: 12px; line-height: 1.6; }
+.bots-created-tool-preview { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 12px; background: var(--st-surface-2); border-radius: var(--st-r-sm); font: 11px/1.6 var(--st-font-mono); }
+.bots-created-tool-meta { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--st-ink-muted); font-size: 11px; margin-top: 14px; }
+.bots-created-tool-dialog { width: min(820px,calc(100vw - 32px)); }
+.bots-tool-code-section { margin: 20px 0; min-width: 0; }
+.bots-tool-code-section h3 { font-size: 12px; }
+.bots-tool-code-section pre { padding: 16px; border: 1px solid var(--st-line); border-radius: var(--st-r-sm); background: var(--st-surface-2); white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.6 var(--st-font-mono); }
+.bots-created-tool-dialog .bots-member-picker { margin-top: 14px; }
+.bots-tool-access-footer { display: flex; align-items: center; gap: 16px; margin-top: 12px; }
+.bots-tool-access-footer > p { flex: 1; }
+.bots-tool-access-footer > .st-btn { flex: none; }
+.bots-tool-review-warning { padding: 12px; border: 1px solid var(--st-line); border-radius: var(--st-r-sm); color: var(--st-warn-text); font-size: 12px; }
 .bots-delete-row { display: flex; align-items: center; gap: 10px; font-size: 12px; }
 .bots-connection-layout { display: grid; grid-template-columns: minmax(245px, .8fr) minmax(0,1.6fr); gap: 24px; }
 .bots-connection-list { display: flex; flex-direction: column; gap: 5px; align-self: start; }

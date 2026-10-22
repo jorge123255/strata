@@ -18,7 +18,7 @@ import { ChatScreen } from './Chat';
 import { ComputerPicker, CuaBotsConfig, BotPermissionPicker } from './CuaBotsConfig';
 import { BotMemoryDialog, BotOutputDialog, BotRoutineDialog, BotRulesDialog, BotsWorkView, EMPTY_BOT_WORK, routineScheduleLabel, useBotsWork, type BotRoutine, type BotWorkOutput, type BotsWorkTab } from './CuaBotsWork';
 import { BotTeamActivityView, BotTeamEditor, BotTeamPanel, TeamMark, useBotsResource } from './BotsWorkspace';
-import { BotConnectionsPanel, BotSkillsPanel } from './BotsCapabilities';
+import { BotConnectionsPanel, BotCreatedToolsPanel, BotSkillsPanel } from './BotsCapabilities';
 import './Bots.css';
 import { openNotifications } from '../lib/notifications';
 
@@ -60,8 +60,8 @@ export function BotsScreen() {
   const bots = snapshot?.bots ?? [];
   const selected = bots.find(bot => bot.id === location.param) ?? (!location.param ? bots[0] : undefined);
   const workTab = WORK_TABS.find(tab => tab.id === location.param)?.id;
-  const workspaceRoute = ['teams', 'activity', 'skills', 'connections'].includes(location.param ?? '') ? location.param : null;
-  const destination = workTab || workspaceRoute === 'activity' ? 'activity' : workspaceRoute === 'skills' ? 'skills' : workspaceRoute === 'connections' ? 'connections' : 'team';
+  const workspaceRoute = ['teams', 'activity', 'skills', 'tools', 'connections'].includes(location.param ?? '') ? location.param : null;
+  const destination = workTab || workspaceRoute === 'activity' ? 'activity' : workspaceRoute === 'skills' ? 'skills' : workspaceRoute === 'tools' ? 'tools' : workspaceRoute === 'connections' ? 'connections' : 'team';
   const route = workTab ?? workspaceRoute ?? (location.param === 'new' || !selected ? 'new' : 'bot');
   const { work, error: workError, refresh: refreshWork } = useBotsWork(workTab === 'scheduled' || workTab === 'outputs' ? bots : route === 'bot' && selected ? [selected] : []);
   const chats = selected ? botConversations(sessions, selected.id) : [], chatId = selected ? selectedChats[selected.id] ?? botPersonalConversations(chats, selected.id)[0]?.id : undefined;
@@ -229,7 +229,7 @@ export function BotsScreen() {
   const readiness = selected ? botReadiness(selected, { computerMode: context?.computerMode, conversation: !!chatId, unavailableConversation: !!chatId && !chat, active: chats.some(session => session.active), needsApproval: mood(selected) === 'needsApproval', computer: checkedComputer?.computer, computerError: checkedComputer?.error, checking: !checkedComputer || checkedComputer.checking }) : null;
 
   return <Screen title="Bots" titleDetail={route === 'new' ? 'New bot' : route === 'bot' ? selected?.name : undefined} bare actions={<><Btn size="sm" icon="activity" onClick={() => openNotifications()}>Notifications</Btn><IconBtn name="refresh" title="Refresh bots and shared work" disabled={loading || !!pending} onClick={() => { void refresh(true); void refreshWork(); void teams.refresh(); setReadinessRevision(value => value + 1); }}/></>}>
-    <div className="bots-workspace"><nav className="bots-destinations" aria-label="Bots workspace">{([{id:'team',label:'Team',icon:'experts'},{id:'activity',label:'Activity',icon:'activity'},{id:'skills',label:'Skills',icon:'skills'},{id:'connections',label:'Connectors',icon:'link'}] as const).map(tab=><button key={tab.id} aria-current={destination===tab.id?'page':undefined} onClick={()=>tab.id==='connections'?navigate('connectors'):navigate('bots',tab.id==='team'?'teams':tab.id)}><Icon name={tab.icon} size={17}/><span>{tab.label}</span>{tab.id==='activity'&&approvals?<b>{approvals}</b>:null}</button>)}</nav>
+    <div className="bots-workspace"><nav className="bots-destinations" aria-label="Bots workspace">{([{id:'team',label:'Team',icon:'experts'},{id:'activity',label:'Activity',icon:'activity'},{id:'skills',label:'Skills',icon:'skills'},{id:'tools',label:'Tools',icon:'tool'},{id:'connections',label:'Connectors',icon:'link'}] as const).map(tab=><button key={tab.id} aria-current={destination===tab.id?'page':undefined} onClick={()=>tab.id==='connections'?navigate('connectors'):navigate('bots',tab.id==='team'?'teams':tab.id)}><Icon name={tab.icon} size={17}/><span>{tab.label}</span>{tab.id==='activity'&&approvals?<b>{approvals}</b>:null}</button>)}</nav>
     <div className="cua-bots-shell" data-list={destination==='team'||undefined}>
       {destination==='team'?<aside className="cua-bots-sidebar" aria-label="Bots navigation"><nav>
         <button className="cua-sidebar-item cua-sidebar-new" data-selected={route === 'new' || undefined} onClick={startNew} aria-label="New bot"><Icon name="plus" size={16}/><span>New bot</span></button>
@@ -256,6 +256,7 @@ export function BotsScreen() {
         {route==='teams'?<BotTeamPanel bots={bots} resource={teams} teamId={location.query.get('team')??undefined} onSelect={id=>navigate('bots','teams',{team:id})} onNewTeam={()=>setNewTeam(true)} onNewBot={startNew} onOpenConversation={openSharedConversation}/>:null}
         {route==='activity'?<BotTeamActivityView bots={bots} onOpenConversation={openSharedConversation}/>:null}
         {route==='skills'?<BotSkillsPanel bots={bots}/>:null}
+        {route==='tools'?<BotCreatedToolsPanel bots={bots} teams={teams.data?.teams}/>:null}
         {route==='connections'?<BotConnectionsPanel bots={bots} teams={teams.data?.teams} initialScope={location.query.get('bot')?'bot:'+location.query.get('bot'):location.query.get('team')?'team:'+location.query.get('team'):'all'}/>:null}
         {route === 'new' ? <div className="cua-new-bot"><div className="cua-new-bot-body"><div className={step < 2 ? "cua-new-identity" : "cua-new-setup"}>
           {step < 2 ? <div className="cua-companion-intro"><p className="cua-companion-kicker">{step === 0 ? 'A new little teammate' : 'A face to call your own'}</p><div className="cua-companion-stage"><span className="cua-companion-spark" aria-hidden="true"/><span className="cua-companion-dot" aria-hidden="true"/><CuaBotAvatar config={newDraft.avatarConfig} name={newDraft.name} size={144} mood="idle" messageSignal={step === 1 ? JSON.stringify(newDraft.avatarConfig) : undefined}/></div></div> : <CuaBotAvatar config={newDraft.avatarConfig} name={newDraft.name} size={56} mood="idle"/>}

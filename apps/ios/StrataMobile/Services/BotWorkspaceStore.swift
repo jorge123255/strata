@@ -15,6 +15,7 @@ final class BotWorkspaceStore: ObservableObject {
     @Published private(set) var activityWorkReviewSupported = false
     @Published private(set) var supervision: BotSupervisionSnapshot?
     @Published private(set) var skills: BotSkillsSnapshot?
+    @Published private(set) var createdTools: BotCreatedToolsSnapshot?
     @Published private(set) var connections: BotConnectionsSnapshot?
     @Published private(set) var connectorCatalog: BotConnectorCatalog?
     @Published private(set) var messages: [String: String] = [:]
@@ -59,6 +60,12 @@ final class BotWorkspaceStore: ObservableObject {
     func refreshSkills() async {
         await load("skills", path: "/v1/bots/skills") { (value: BotSkillsSnapshot) in if self.skills != value { self.skills = value }; self.setMessage("skills", value.reason) }
     }
+    func refreshCreatedTools() async {
+        await load("createdTools", path: "/v1/bots/tools") { (value: BotCreatedToolsSnapshot) in
+            if self.createdTools != value { self.createdTools = value }
+            self.setMessage("createdTools", value.reason ?? (value.isAvailable ? nil : "Update Strata on your Mac to manage reusable tools."))
+        }
+    }
     func refreshConnections() async {
         await load("connections", path: "/v1/bots/connections") { (value: BotConnectionsSnapshot) in if self.connections != value { self.connections = value }; self.setMessage("connections", value.reason) }
     }
@@ -91,7 +98,7 @@ final class BotWorkspaceStore: ObservableObject {
         defer { mutation = nil }
         do {
             let value: T
-            if method == "DELETE" { value = try await client.perform(path, method: method) }
+            if method == "DELETE", key != "createdTools" { value = try await client.perform(path, method: method) }
             else { value = try await client.perform(path, method: method, jsonBody: body) }
             guard isCurrent(), !Task.isCancelled else { return nil }
             return value
@@ -101,6 +108,7 @@ final class BotWorkspaceStore: ObservableObject {
             workErrorStatus[key] = (error as? CompanionHTTPError)?.statusCode
             if (error as? CompanionHTTPError)?.statusCode == 409 {
                 if key == "skills" { await refreshSkills() }
+                else if key == "createdTools" { await refreshCreatedTools() }
                 else if key == "connections" { await refreshConnections() }
                 else if key == "teams" { await refreshTeams() }
             }
@@ -358,6 +366,74 @@ final class BotWorkspaceStore: ObservableObject {
             await refreshTeams()
             return isCurrent()
         } catch { messages[key] = error.localizedDescription; return false }
+    }
+
+    private func currentCreatedTool(_ reviewed: BotCreatedTool) -> BotCreatedTool? {
+        guard isCurrent(), createdTools?.isAvailable == true, messages["createdTools"] == nil,
+              reviewed.hasValidReview, let current = createdTools?.tools.first(where: { $0.id == reviewed.id }),
+              current.matchesReview(reviewed) else { return nil }
+        return current
+    }
+    @discardableResult func saveCreatedTool(_ draft: BotCreatedToolDraft, reviewing tool: BotCreatedTool? = nil) async -> Bool {
+        guard draft.isValid, createdTools?.isAvailable == true,
+              tool == nil || currentCreatedTool(tool!) != nil else {
+            setMessage("createdTools", "This tool changed or is unavailable. Refresh and review its current definition."); return false
+        }
+        struct Result: Decodable { var tool: BotCreatedTool }
+        let value: Result?
+        if let tool {
+            struct Update: Encodable { var name: String; var description: String; var command: String; var inputSchema: BotToolJSON; var timeoutSeconds: Int; var status = "draft"; var expectedRevision: Int; var expectedDigest: String }
+            value = await change("createdTools", path: "/v1/bots/tools/\(tool.id)", method: "PATCH", body: Update(name: draft.name, description: draft.description, command: draft.command, inputSchema: draft.inputSchema, timeoutSeconds: draft.timeoutSeconds, expectedRevision: tool.revision, expectedDigest: tool.digest))
+        } else { value = await change("createdTools", path: "/v1/bots/tools", body: draft) }
+        if value != nil { await refreshCreatedTools() }
+        return value != nil && isCurrent()
+    }
+    @discardableResult func setCreatedToolEnabled(_ tool: BotCreatedTool, enabled: Bool) async -> Bool {
+        guard currentCreatedTool(tool) != nil else {
+            setMessage("createdTools", "This tool changed. Review its current definition before changing its status."); return false
+        }
+        struct Update: Encodable { var status: String; var expectedRevision: Int; var expectedDigest: String }
+        struct Result: Decodable { var tool: BotCreatedTool }
+        let value: Result? = await change("createdTools", path: "/v1/bots/tools/\(tool.id)", method: "PATCH", body: Update(status: enabled ? "enabled" : "draft", expectedRevision: tool.revision, expectedDigest: tool.digest))
+        if value != nil { await refreshCreatedTools() }
+        return value != nil && isCurrent()
+    }
+    @discardableResult func deleteCreatedTool(_ tool: BotCreatedTool) async -> Bool {
+        guard currentCreatedTool(tool) != nil else {
+            setMessage("createdTools", "This tool changed. Review its current definition before deleting it."); return false
+        }
+        struct Proof: Encodable { var expectedRevision: Int; var expectedDigest: String }
+        struct Result: Decodable { var deleted: Bool }
+        let value: Result? = await change("createdTools", path: "/v1/bots/tools/\(tool.id)", method: "DELETE", body: Proof(expectedRevision: tool.revision, expectedDigest: tool.digest))
+        if value?.deleted == true { await refreshCreatedTools() }
+        return value?.deleted == true && isCurrent()
+    }
+    /// Merge one explicit grant into the latest exact revision, so a phone
+    /// toggle cannot overwrite assignments made on Mac while the page was open.
+    @discardableResult func assignCreatedTool(_ tool: BotCreatedTool, botId: String? = nil, teamId: String? = nil, assigned: Bool) async -> Bool {
+        guard let client, isCurrent(), mutation == nil, !isPreparingAssignment,
+              (botId == nil) != (teamId == nil), CompanionClient.isSafeIdentifier(botId ?? teamId ?? ""),
+              currentCreatedTool(tool) != nil else { return false }
+        isPreparingAssignment = true
+        defer { isPreparingAssignment = false }
+        let snapshot: BotCreatedToolsSnapshot
+        do { snapshot = try await client.perform("/v1/bots/tools") }
+        catch { if isCurrent() { setMessage("createdTools", error.localizedDescription) }; return false }
+        guard isCurrent(), !Task.isCancelled else { return false }
+        requests["createdTools"] = nil; setLoading("createdTools", false)
+        if createdTools != snapshot { createdTools = snapshot }
+        guard snapshot.isAvailable, let fresh = snapshot.tools.first(where: { $0.id == tool.id }),
+              fresh.matchesReview(tool), !assigned || fresh.isEnabled else {
+            setMessage("createdTools", "This tool changed. Review its current definition before assigning it."); return false
+        }
+        var botIds = Set(fresh.botIds), teamIds = Set(fresh.teamIds)
+        if let botId { if assigned { botIds.insert(botId) } else { botIds.remove(botId) } }
+        if let teamId { if assigned { teamIds.insert(teamId) } else { teamIds.remove(teamId) } }
+        struct Update: Encodable { var botIds: [String]; var teamIds: [String]; var expectedRevision: Int; var expectedDigest: String }
+        struct Result: Decodable { var tool: BotCreatedTool }
+        let value: Result? = await change("createdTools", path: "/v1/bots/tools/\(tool.id)", method: "PATCH", body: Update(botIds: botIds.sorted(), teamIds: teamIds.sorted(), expectedRevision: fresh.revision, expectedDigest: fresh.digest))
+        if value != nil { await refreshCreatedTools() }
+        return value != nil && isCurrent()
     }
 
     func saveSkill(_ draft: BotSkillDraft, reviewing skill: BotSkill? = nil) async -> Bool {

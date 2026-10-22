@@ -22,3 +22,4 @@ function BotSkillEditor({skill,onClose,onSaved}:{skill?:BotSkill;onClose:()=>voi
 }
 
 export { BotConnectionsPanel } from './BotConnectors';
+export { BotCreatedToolsPanel } from './BotCreatedTools';

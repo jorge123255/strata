@@ -15,7 +15,7 @@ struct BotWorkspaceDestinationView: View {
             switch destination {
             case .team: EmptyView()
             case .activity: BotActivityView(store: store, workspace: workspace, openChat: openChat)
-            case .skills: BotSkillsView(store: store, workspace: workspace)
+            case .skills: BotCapabilitiesLibraryView(store: store, workspace: workspace)
             case .connections: BotConnectionsView(store: store, workspace: workspace)
             }
         }.id(destination)
@@ -912,6 +912,198 @@ private struct BotActivityView: View {
         }.padding(.vertical, 10).accessibilityIdentifier("botSupervision-" + session.id)
     }
     private func botName(_ id: String) -> String { store.botCatalog?.bots.first { $0.id == id }?.name ?? "Bot" }
+}
+
+private struct BotCapabilitiesLibraryView: View {
+    @ObservedObject var store: CompanionStore
+    @ObservedObject var workspace: BotWorkspaceStore
+    @State private var library = "skills"
+    var body: some View {
+        VStack(spacing: 0) {
+            Picker("Library", selection: $library) {
+                Text("Skills").tag("skills")
+                Text("Tools").tag("tools")
+            }.pickerStyle(.segmented).padding(.horizontal).padding(.vertical, 8).accessibilityIdentifier("botCapabilitiesLibraryPicker")
+            if library == "tools" { BotCreatedToolsView(store: store, workspace: workspace) }
+            else { BotSkillsView(store: store, workspace: workspace) }
+        }
+    }
+}
+
+private struct BotCreatedToolsView: View {
+    @ObservedObject var store: CompanionStore
+    @ObservedObject var workspace: BotWorkspaceStore
+    @State private var creating = false
+    private var available: Bool { workspace.createdTools?.isAvailable == true && workspace.messages["createdTools"] == nil }
+    var body: some View {
+        List {
+            Section {
+                Label("Build a tool once. Let your bots reuse it.", systemImage: "wrench.and.screwdriver").font(.headline)
+                Text("Ask a bot to create a reusable tool when it needs a new capability. Its draft appears here for you to review, enable and share.").font(.subheadline).foregroundStyle(.secondary)
+                Button { creating = true } label: { Label("Create draft tool", systemImage: "plus") }
+                    .disabled(!available || workspace.mutation != nil).accessibilityIdentifier("createBotToolButton")
+            }
+            Section("Reusable tools") {
+                ForEach(workspace.createdTools?.tools ?? []) { tool in
+                    NavigationLink {
+                        BotCreatedToolDetailView(store: store, workspace: workspace, toolId: tool.id)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack { Text(tool.name).font(.headline); Spacer(); Text(tool.status.capitalized).font(.caption).foregroundStyle(tool.isEnabled ? StrataTheme.accentText : StrataTheme.secondaryInk) }
+                            Text(tool.description).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                            if let botId = tool.provenance?.botId {
+                                Text("Created by " + (store.botCatalog?.bots.first { $0.id == botId }?.name ?? "a bot")).font(.caption2).foregroundStyle(.secondary)
+                            }
+                        }
+                    }.accessibilityIdentifier("botTool-\(tool.id)")
+                }
+                if available && workspace.createdTools?.tools.isEmpty == true {
+                    Text("No tools yet. Ask a bot what it needs, or create a draft above.").font(.subheadline).foregroundStyle(.secondary)
+                }
+                BotWorkspaceMessage(workspace: workspace, key: "createdTools")
+            }
+        }.strataList()
+            .task(id: ObjectIdentifier(workspace)) { await workspace.refreshCreatedTools() }
+            .refreshable { await workspace.refreshCreatedTools() }
+            .sheet(isPresented: $creating) { BotCreatedToolEditor(workspace: workspace) }
+    }
+}
+
+private struct BotCreatedToolDetailView: View {
+    @ObservedObject var store: CompanionStore
+    @ObservedObject var workspace: BotWorkspaceStore
+    let toolId: String
+    @State private var editing = false
+    @State private var reviewedRevision: Int?
+    @State private var reviewedDigest: String?
+    @State private var deleting = false
+    @State private var deletionTarget: BotCreatedTool?
+    @Environment(\.dismiss) private var dismiss
+    private var tool: BotCreatedTool? { workspace.createdTools?.tools.first { $0.id == toolId } }
+    private var reviewed: Bool { tool?.hasValidReview == true && reviewedRevision == tool?.revision && reviewedDigest == tool?.digest }
+    private var available: Bool { workspace.createdTools?.isAvailable == true && workspace.messages["createdTools"] == nil }
+    private var busy: Bool { workspace.mutation != nil || workspace.isPreparingAssignment }
+    private func assignment(tool: BotCreatedTool, id: String, team: Bool) -> Binding<Bool> {
+        Binding(get: { team ? self.tool?.teamIds.contains(id) == true : self.tool?.botIds.contains(id) == true }, set: { value in
+            Task { _ = await workspace.assignCreatedTool(tool, botId: team ? nil : id, teamId: team ? id : nil, assigned: value) }
+        })
+    }
+    private func assignmentDisabled(tool: BotCreatedTool, assigned: Bool) -> Bool { !available || !reviewed || busy || (!tool.isEnabled && !assigned) }
+    var body: some View {
+        List {
+            if let tool {
+                Section("Definition to review") {
+                    Text(tool.description).font(.subheadline)
+                    LabeledContent("Type", value: "Command")
+                    LabeledContent("Timeout", value: "\(tool.timeoutSeconds) seconds")
+                    LabeledContent("Revision", value: String(tool.revision))
+                    Text(tool.command).font(.system(.caption, design: .monospaced)).textSelection(.enabled).accessibilityIdentifier("botToolReviewedCommand")
+                }
+                Section("Inputs") {
+                    Text(tool.inputSchema.formatted).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                    Text("The command reads inputs from STRATA_TOOL_INPUT as JSON. It runs on the bot’s selected computer, inside that bot’s workspace and tool permissions.").font(.caption).foregroundStyle(.secondary)
+                }
+                Section {
+                    if !reviewed {
+                        Button("I reviewed this version") { reviewedRevision = tool.revision; reviewedDigest = tool.digest }
+                            .disabled(!available || busy || !tool.hasValidReview).accessibilityIdentifier("reviewBotToolButton")
+                    } else { Label("Version reviewed", systemImage: "checkmark.circle").foregroundStyle(StrataTheme.accentText) }
+                    Button("Edit draft") { editing = true }.disabled(!available || !reviewed || busy).accessibilityIdentifier("editBotToolButton")
+                    Button(tool.isEnabled ? "Return to draft" : "Enable reviewed tool") {
+                        Task { await workspace.setCreatedToolEnabled(tool, enabled: !tool.isEnabled) }
+                    }.disabled(!available || !reviewed || busy).accessibilityIdentifier("enableBotToolButton")
+                } footer: {
+                    Text("Enabling and sharing do not run a command. The author can test its draft through normal bot work. Other bots can use an enabled tool through their normal approval policy. Editing its definition returns it to draft.")
+                }
+                Section("Bots with access") {
+                    ForEach(store.botCatalog?.bots ?? []) { bot in
+                        Toggle(bot.name, isOn: assignment(tool: tool, id: bot.id, team: false))
+                            .disabled(assignmentDisabled(tool: tool, assigned: tool.botIds.contains(bot.id))).accessibilityIdentifier("toolBotAssignment-\(bot.id)")
+                    }
+                }
+                Section {
+                    ForEach(workspace.teams?.teams ?? []) { team in
+                        Toggle(team.name, isOn: assignment(tool: tool, id: team.id, team: true))
+                            .disabled(assignmentDisabled(tool: tool, assigned: tool.teamIds.contains(team.id))).accessibilityIdentifier("toolTeamAssignment-\(team.id)")
+                    }
+                    BotWorkspaceMessage(workspace: workspace, key: "teams")
+                } header: { Text("Teams with access") } footer: { Text("Team access applies to the team’s work. It does not grant access to those bots’ private conversations.") }
+                Section {
+                    Button("Delete tool", role: .destructive) { deletionTarget = tool; deleting = true }
+                        .disabled(!available || !reviewed || busy).accessibilityIdentifier("deleteBotToolButton")
+                } footer: { Text("Removing this tool prevents future use. It does not stop a command that is already running.") }
+            } else if workspace.loading.contains("createdTools") { ProgressView("Loading tool…") }
+            else { Text("This tool is no longer available.").foregroundStyle(.secondary) }
+            Section {
+                BotWorkspaceMessage(workspace: workspace, key: "createdTools")
+                Button("Refresh tools") { Task { await workspace.refreshCreatedTools() } }.disabled(busy)
+            }
+        }.strataList().navigationTitle(tool?.name ?? "Tool").navigationBarTitleDisplayMode(.inline)
+            .task { await workspace.refreshCreatedTools(); await workspace.refreshTeams() }
+            .sheet(isPresented: $editing) { if let tool { BotCreatedToolEditor(workspace: workspace, tool: tool) } }
+            .confirmationDialog("Delete this reviewed tool?", isPresented: $deleting, titleVisibility: .visible, presenting: deletionTarget) { target in
+                Button("Delete tool", role: .destructive) { Task { if await workspace.deleteCreatedTool(target) { dismiss() } } }
+            }
+    }
+}
+
+private struct BotCreatedToolEditor: View {
+    @ObservedObject var workspace: BotWorkspaceStore
+    let tool: BotCreatedTool?
+    @State private var draft: BotCreatedToolDraft
+    @State private var schemaText: String
+    @State private var reviewedTool: BotCreatedTool?
+    @State private var ready: Bool
+    @Environment(\.dismiss) private var dismiss
+    init(workspace: BotWorkspaceStore, tool: BotCreatedTool? = nil) {
+        self.workspace = workspace; self.tool = tool
+        let value = tool.map(BotCreatedToolDraft.init(tool:)) ?? BotCreatedToolDraft()
+        _draft = State(initialValue: value); _schemaText = State(initialValue: value.inputSchema.formatted)
+        _ready = State(initialValue: tool == nil)
+    }
+    private var parsedDraft: BotCreatedToolDraft? {
+        guard schemaText.utf8.count <= 16_000, let data = schemaText.data(using: .utf8), let schema = try? JSONDecoder().decode(BotToolJSON.self, from: data) else { return nil }
+        var value = draft; value.inputSchema = schema
+        return value.isValid ? value : nil
+    }
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Reusable tool") {
+                    TextField("Name", text: $draft.name).accessibilityIdentifier("botToolNameInput")
+                    TextField("Description", text: $draft.description, axis: .vertical).accessibilityIdentifier("botToolDescriptionInput")
+                    Stepper("Timeout: \(draft.timeoutSeconds) seconds", value: $draft.timeoutSeconds, in: 1...120)
+                }
+                Section("Command") {
+                    TextEditor(text: $draft.command).frame(minHeight: 140).font(.system(.body, design: .monospaced)).textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityIdentifier("botToolCommandInput")
+                    Text("Use STRATA_TOOL_INPUT for JSON inputs. Saving a draft never runs it.").font(.caption).foregroundStyle(.secondary)
+                }
+                Section("Input schema") {
+                    TextEditor(text: $schemaText).frame(minHeight: 160).font(.system(.caption, design: .monospaced)).textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityIdentifier("botToolSchemaInput")
+                    Text("Use an object with up to 32 string, number, integer or boolean properties, a required array and additionalProperties: false.").font(.caption).foregroundStyle(.secondary)
+                    if parsedDraft == nil { Text("Enter a name, command and supported JSON input schema to save.").font(.caption).foregroundStyle(StrataTheme.warning) }
+                }
+                Section { BotWorkspaceMessage(workspace: workspace, key: "createdTools") }
+            }.disabled(!ready || workspace.mutation != nil)
+                .navigationTitle(tool == nil ? "Draft tool" : "Edit tool").navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(workspace.mutation != nil) }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Save draft") { Task { if let value = parsedDraft, await workspace.saveCreatedTool(value, reviewing: reviewedTool) { dismiss() } } }
+                            .disabled(!ready || parsedDraft == nil || workspace.mutation != nil).accessibilityIdentifier("saveBotToolButton")
+                    }
+                }
+                .task {
+                    if let tool {
+                        await workspace.refreshCreatedTools()
+                        if workspace.messages["createdTools"] == nil, let fresh = workspace.createdTools?.tools.first(where: { $0.id == tool.id }), fresh.matchesReview(tool) {
+                            draft = BotCreatedToolDraft(tool: fresh); schemaText = fresh.inputSchema.formatted; reviewedTool = fresh; ready = true
+                        }
+                    }
+                }
+                .interactiveDismissDisabled(workspace.mutation != nil)
+        }
+    }
 }
 
 private struct BotSkillsView: View {

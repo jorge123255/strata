@@ -12,6 +12,7 @@ import { createBotTeams } from './bots-team.mjs';
 import { botWorkAuthorityFingerprint } from './bots-work-authority.mjs';
 import { botSupervisionSnapshot } from './bots-supervision.mjs';
 import { createBotHostFolderTools, botHostFolderAuthority } from './bots-host-folder.mjs';
+import { createCreatedCommandTools } from './bots-runtime/created-tools.mjs';
 
 const fault = (status, message) => Object.assign(new Error(message), { status });
 const ids = new Set(['claude', 'codex', 'grok', 'kimi', 'ollama', 'devin', 'configured']);
@@ -60,7 +61,8 @@ function endpoint(value) {
   return url.href.replace(/\/$/, '');
 }
 
-export function createBots({ directory, runtime, tools, conversations = () => null, defaultWorkspace = () => homedir(), notify = () => {}, now = () => new Date().toISOString(), remoteSSH, modelProviders, modelRequest, cuaTools, skills, mcp, python = 'python3' }) {
+export function createBots({ directory, runtime, tools, conversations = () => null, defaultWorkspace = () => homedir(), notify = () => {}, now = () => new Date().toISOString(), remoteSSH, modelProviders, modelRequest, cuaTools, skills, mcp, createdTools, python = 'python3' }) {
+  if (createdTools) tools = createCreatedCommandTools(tools);
   const file = join(directory, 'bots.json'), profiles = new Map(), checkpoints = new Map(), chatProfiles = new Map(), active = new Map(), targets = new Map(), uncertainTargets = new Map(), ownedComputers = new Set();
   const owned = id => conversations()?.botId(id) ?? null;
   const folderKeys = ['hostFolder', 'hostFolderBinding', 'hostFolderRevision', 'hostFolderOwnerId', 'hostFolderRemoteIdentity'];
@@ -184,7 +186,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
       for (const key of folderKeys) delete fresh[key];
       Object.assign(fresh, actual);
     }
-    if (skills || mcp) fresh.extensionSnapshots = { ...(skills ? { skills: copy(skills.snapshot(fresh)) } : {}), ...(mcp ? { mcp: copy((mcp.recoverySnapshot ?? mcp.snapshot)(fresh)) } : {}) };
+    if (skills || mcp || createdTools) fresh.extensionSnapshots = { ...(skills ? { skills: copy(skills.snapshot(fresh)) } : {}), ...(mcp ? { mcp: copy((mcp.recoverySnapshot ?? mcp.snapshot)(fresh)) } : {}), ...(createdTools ? { createdTools: copy(createdTools.recoverySnapshot(fresh)) } : {}) };
     const fingerprint = botWorkAuthorityFingerprint(frozen);
     if (botWorkAuthorityFingerprint(fresh) !== fingerprint) throw fault(409, 'The task’s model, computer, instructions or tool access changed. Review a new request instead.');
     return { fingerprint, target: { botName: current.name, provider: frozen.provider, model: frozen.model || 'Provider default', computerLabel: executionLabel(frozen.execution), workspace: frozen.workspace } };
@@ -432,7 +434,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     if (teamContext) bot.teamContext = copy(teamContext);
     // Extension assignments and selected instructions are immutable for this chat.
     // Secrets never belong in these snapshots or in the public conversation preferences.
-    if (skills || mcp) bot.extensionSnapshots = { ...(skills ? { skills: copy(skills.snapshot(bot)) } : {}), ...(mcp ? { mcp: copy(mcp.snapshot(bot)) } : {}) };
+    if (skills || mcp || createdTools) bot.extensionSnapshots = { ...(skills ? { skills: copy(skills.snapshot(bot)) } : {}), ...(mcp ? { mcp: copy(mcp.snapshot(bot)) } : {}), ...(createdTools ? { createdTools: copy(createdTools.snapshot(bot)) } : {}) };
     if (uncertainTargets.has(executionKey(bot.execution))) throw fault(409, uncertainTargets.get(executionKey(bot.execution)));
     if (bot.execution.kind === 'sandbox' || bot.execution.kind === 'ssh' && !remoteSSH) throw fault(409, 'This execution adapter is not configured.');
     const result = conversations().createForBot({ ...bot, computerLabel: executionLabel(bot.execution), modelLabel: bot.modelLabel || `${bot.provider} · ${bot.model || 'Provider default'}` });
@@ -451,7 +453,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     if (options.team !== false) { const result = await team.stopForChat(chatId); if (result) { if (result.run.state === 'cleanup_pending') throw fault(503, result.run.detail); return { stopped: true }; } }
     const run = active.get(chatId);
     if (!run) {
-      const results = await Promise.allSettled([skills, mcp, hostFolders].filter(Boolean).map(extension => Promise.resolve().then(() => extension.finish?.(chatId))));
+      const results = await Promise.allSettled([skills, mcp, createdTools, hostFolders].filter(Boolean).map(extension => Promise.resolve().then(() => extension.finish?.(chatId))));
       const failure = results.find(result => result.status === 'rejected'); if (failure) throw failure.reason;
       return { stopped: false, pending: false };
     }
@@ -518,7 +520,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     const assertLive = () => { combined.throwIfAborted(); if (active.get(session.id) !== owner || !team.isLive(turnId)) throw fault(409, 'This bot turn has ended.'); };
     const requestPermission = request => conversationOnly ? Promise.resolve(false) : requestPolicyPermission(request);
     const context = { bot, chatId: session.id, turnId, signal: combined, requestPermission, requestTeamPermission: requestPolicyPermission, roomMode, assertLive, onFrame: emit };
-    const extensions = (conversationOnly ? [team] : [team, skills, mcp, hostFolders]).filter(Boolean);
+    const extensions = (conversationOnly ? [team] : [team, skills, mcp, createdTools, hostFolders]).filter(Boolean);
     const localTools = conversationOnly ? [] : tools.definitions(bot);
     let hostTools;
     try {
@@ -548,7 +550,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     try {
       team.begin(context);
       const folderInstructions = hostFolders.tools(bot).length ? `An explicit ${bot.hostFolder.access === 'read' ? 'read-only' : 'read/write'} host-folder share is available at ${JSON.stringify(bot.hostFolder.path)}. Use host_list_files, host_read_file${bot.hostFolder.access === 'read-write' && bot.policy !== 'plan' ? ' and host_write_file' : ''} with paths relative to that folder. Normal file, command and browser tools stay inside the isolated computer. This share is file access, not a mounted folder or host shell.` : '';
-      const instructions = (conversationOnly ? [team.instructions(context)] : [bot.instructions, work.instructions(bot.id), bot.extensionSnapshots?.skills?.instructions, bot.extensionSnapshots?.mcp?.instructions, team.instructions(context), folderInstructions]).filter(Boolean).join('\n\n');
+      const instructions = (conversationOnly ? [team.instructions(context)] : [bot.instructions, work.instructions(bot.id), bot.extensionSnapshots?.skills?.instructions, bot.extensionSnapshots?.mcp?.instructions, bot.extensionSnapshots?.createdTools?.instructions, team.instructions(context), folderInstructions]).filter(Boolean).join('\n\n');
       const runtimeBot = { ...bot, instructions, continuousTeam: team.isContinuousTurn(turnId) };
       if (conversationOnly) delete runtimeBot.extensionSnapshots;
       emit({ type: 'start', agent: true, model: bot.model || bot.provider });
@@ -563,7 +565,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
           if (active.get(session.id) !== owner || combined.aborted) throw fault(409, 'This bot turn has ended.');
           if (hostNames.has(name)) return executeHostTool(name, args, toolCallId);
           if (conversationOnly) throw fault(403, 'This team conversation turn cannot execute computer, file, browser or external tools.');
-          return tools.execute({ bot, chatId: session.id, name, args, toolCallId, signal: combined, onFrame: emit, requestPermission });
+          return tools.execute({ bot, chatId: session.id, name, args, toolCallId, signal: combined, onFrame: emit, requestPermission, ...(createdTools ? { authorizeCreatedTool: value => { assertLive(); return createdTools.authorize(value, context); } } : {}) });
         },
         checkpoint: !conversationOnly && oldCheckpoint?.fingerprint === fingerprint ? oldCheckpoint.value : null,
         onCheckpoint: value => { if (!conversationOnly && active.get(session.id) === owner) { checkpoints.set(session.id, { fingerprint, value }); save(); } } });

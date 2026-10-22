@@ -1,5 +1,6 @@
 // Narrow paired-phone surface for durable teams, reviewed skills and saved MCP
-// connections. Program paths, connection secrets and arbitrary tools stay on Mac.
+// connections and reviewable bot-created command tools. Tool configuration never
+// executes commands; execution stays with the selected bot and its permissions.
 import { botAvatarConfig } from './bots-lifecycle.mjs';
 const error = (status, message) => Object.assign(new Error(message), { status });
 const id = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,120}$/.test(value);
@@ -63,6 +64,40 @@ function connectorSettings(body, method, status) {
   for (const key of ['enabledToolIds', 'readOnlyToolIds']) if (body[key] !== undefined) ids(body[key], status, toolId, 256);
   if ((body.expectedInventoryDigest !== undefined || method === 'PATCH') && (typeof body.expectedInventoryDigest !== 'string' || !/^[a-f0-9]{64}$/.test(body.expectedInventoryDigest))) throw error(status, 'Review the current connector setup, tools and access before saving.');
 }
+function createdToolSchema(value, status) {
+  object(value, ['type', 'properties', 'required', 'additionalProperties'], status);
+  if (value.type !== 'object' || value.additionalProperties !== false || !isObject(value.properties) || Object.keys(value.properties).length > 32) throw error(status, 'Use a flat object input schema with no extra properties.');
+  for (const [name, field] of Object.entries(value.properties)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name) || ['__proto__', 'prototype', 'constructor'].includes(name)) throw error(status, 'Use simple names for tool inputs.');
+    object(field, ['type', 'description', 'enum', 'minimum', 'maximum', 'maxLength'], status);
+    if (!['string', 'number', 'integer', 'boolean'].includes(field.type)) throw error(status, 'Use text, number or boolean tool inputs.');
+    if (field.description !== undefined) string(field.description, 500, status, true);
+    const matches = v => field.type === 'string' ? typeof v === 'string' && !v.includes('\0') : field.type === 'boolean' ? typeof v === 'boolean' : Number.isFinite(v) && (field.type !== 'integer' || Number.isSafeInteger(v));
+    if (field.enum !== undefined && (!Array.isArray(field.enum) || !field.enum.length || field.enum.length > 64 || field.enum.some(v => !matches(v)))) throw error(status, 'Review the allowed tool input values.');
+    for (const key of ['minimum', 'maximum']) if (field[key] !== undefined && (!['number', 'integer'].includes(field.type) || !Number.isFinite(field[key]) || field.type === 'integer' && !Number.isSafeInteger(field[key]))) throw error(status, 'Review numeric input limits.');
+    if (field.minimum !== undefined && field.maximum !== undefined && field.minimum > field.maximum) throw error(status, 'Review numeric input limits.');
+    if (field.maxLength !== undefined && (field.type !== 'string' || !Number.isSafeInteger(field.maxLength) || field.maxLength < 0 || field.maxLength > 64000)) throw error(status, 'Review text input limits.');
+  }
+  if (!Array.isArray(value.required) || new Set(value.required).size !== value.required.length || value.required.some(key => typeof key !== 'string' || !Object.hasOwn(value.properties, key))) throw error(status, 'Required inputs must appear in the tool schema.');
+  if (JSON.stringify(value).length > 16000) throw error(status, 'Keep tool input definitions within 16,000 characters.');
+  return structuredClone(value);
+}
+function createdToolSettings(body, method, status) {
+  object(body, ['name', 'description', 'command', 'inputSchema', 'timeoutSeconds', ...(method === 'PATCH' ? ['status', 'botIds', 'teamIds', 'expectedRevision', 'expectedDigest'] : [])], status);
+  for (const [key, max] of [['name', 120], ['description', 2000], ['command', 32000]]) if (body[key] !== undefined || method === 'POST' && ['name', 'command'].includes(key)) string(body[key], max, status, key === 'description');
+  if (body.inputSchema !== undefined) createdToolSchema(body.inputSchema, status);
+  if (body.timeoutSeconds !== undefined && (!Number.isSafeInteger(body.timeoutSeconds) || body.timeoutSeconds < 1 || body.timeoutSeconds > 120)) throw error(status, 'Choose a tool timeout from 1 to 120 seconds.');
+  if (method === 'PATCH') {
+    if (!Number.isSafeInteger(body.expectedRevision) || body.expectedRevision < 1 || typeof body.expectedDigest !== 'string' || !/^[a-f0-9]{64}$/.test(body.expectedDigest)) throw error(status, 'Review the current tool revision before saving.');
+    if (body.status !== undefined && !['draft', 'enabled'].includes(body.status)) throw error(status, 'Review the tool before enabling it.');
+    if (body.botIds !== undefined) ids(body.botIds, status, id, 256);
+    if (body.teamIds !== undefined) ids(body.teamIds, status, id, 50);
+  }
+}
+function createdToolProof(body, status) {
+  object(body, ['expectedRevision', 'expectedDigest'], status);
+  if (!Number.isSafeInteger(body.expectedRevision) || body.expectedRevision < 1 || typeof body.expectedDigest !== 'string' || !/^[a-f0-9]{64}$/.test(body.expectedDigest)) throw error(status, 'Review the current tool revision before deleting it.');
+}
 export function botWorkspaceRequest(path, method, body, status = 403, validateBody = true) {
   if (path.includes('..') || path.includes('%') || !path.startsWith('/api/bots/')) return null;
   const url = new URL(path, 'http://loopback.invalid');
@@ -75,6 +110,7 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
   else if (p === '/api/bots/teams') route = { kind: 'teams' };
   else if (p === '/api/bots/skills') route = { kind: 'skills' };
   else if (p === '/api/bots/skills/assign') route = { kind: 'assignment' };
+  else if (p === '/api/bots/tools') route = { kind: 'createdTools' };
   else if (p === '/api/bots/connections') route = { kind: 'connections' };
   else if (p === '/api/bots/connectors/catalog') route = { kind: 'connectorCatalog' };
   else {
@@ -82,11 +118,13 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
     const team = /^\/api\/bots\/teams\/([A-Za-z0-9_-]{1,120})(?:\/runs(?:\/([A-Za-z0-9_-]{1,120})(?:\/(stop))?)?)?$/.exec(p);
     const task = /^\/api\/bots\/teams\/(team_[a-f0-9-]+)\/jobs\/(tj_[a-f0-9-]+)\/(review|recovery|resume)$/.exec(p);
     const skill = /^\/api\/bots\/skills\/([A-Za-z0-9_-]{1,120})$/.exec(p);
+    const createdTool = /^\/api\/bots\/tools\/(tool_[a-f0-9-]{1,100})$/.exec(p);
     const connection = /^\/api\/bots\/connections\/([A-Za-z0-9_-]{1,120})(?:\/(check|auth|auth\/complete|auth\/cancel))?$/.exec(p);
     if (task) route = { kind: 'task', teamId: task[1], jobId: task[2], action: task[3] };
     else if (channel) route = { kind: channel[2] === 'channel' ? 'channel' : 'channelMessage', teamId: channel[1] };
     else if (team) route = { kind: p.includes('/runs') ? 'run' : 'team', teamId: team[1], runId: team[2], action: team[3] };
     else if (skill) route = { kind: 'skill', skillId: skill[1] };
+    else if (createdTool) route = { kind: 'createdTool', toolId: createdTool[1] };
     else if (connection) route = { kind: connection[2]?.startsWith('auth') ? 'connectionAuth' : 'connection', connectionId: connection[1], action: connection[2] };
     else return null;
   }
@@ -99,8 +137,10 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
     else throw error(status, 'Choose a saved bot or provider.');
   } else if (route.kind === 'providerModels') throw error(status, 'Choose a provider.');
   const allowed = { teams: ['GET', 'POST'], team: ['PATCH'], channel: ['GET'], channelMessage: ['POST'], run: route.action === 'stop' ? ['POST'] : route.runId ? ['GET'] : ['POST'], activity: ['GET'], supervision: ['GET'], skills: ['GET', 'POST'], skill: ['PATCH', 'DELETE'], assignment: ['POST'], connections: ['GET', 'POST'], connection: route.action ? ['POST'] : ['PATCH', 'DELETE'], connectionAuth: ['auth/complete', 'auth/cancel'].includes(route.action) ? ['POST'] : ['GET', 'POST', 'DELETE'], connectorCatalog: ['GET'], providerModels: ['GET'] };
+  allowed.createdTools = ['GET', 'POST']; allowed.createdTool = ['PATCH', 'DELETE'];
   if (!(route.kind === 'task' ? route.action === 'recovery' ? ['GET'] : ['POST'] : allowed[route.kind]).includes(method)) throw error(status, 'This workspace action is unavailable from iPhone.');
   if (!validateBody) return route;
+  if (route.kind === 'createdTool' && method === 'DELETE') { createdToolProof(body, status); return route; }
   if (method === 'GET' || method === 'DELETE') {
     if (body !== undefined) throw error(status, 'This action does not accept settings.');
     return route;
@@ -148,6 +188,8 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
     if (body.expectedRevision !== undefined && !(Number.isInteger(body.expectedRevision) && body.expectedRevision >= 1)) throw error(status, 'Review the current skill revision.');
     if (body.expectedDigest !== undefined && (typeof body.expectedDigest !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(body.expectedDigest))) throw error(status, 'Review the current skill instructions.');
     if ((body.status === 'enabled' || body.expectedRevision !== undefined || body.expectedDigest !== undefined) && (body.expectedRevision === undefined || body.expectedDigest === undefined)) throw error(status, 'Review the current skill before enabling it.');
+  } else if (['createdTools', 'createdTool'].includes(route.kind)) {
+    createdToolSettings(body, method, status);
   } else if (route.kind === 'assignment') {
     object(body, ['botId', 'skillIds'], status); if (!id(body.botId)) throw error(status, 'Choose a saved bot.'); ids(body.skillIds, status, toolId, 32);
   } else if (route.kind === 'connections' || route.kind === 'connection') {
@@ -284,8 +326,22 @@ function connection(value) {
   let url; try { if (value.transport === 'http' && value.url) url = connectorURL(value.url, 502); } catch { /* Do not project malformed or credential-bearing URLs. */ }
   return { id: value.id, name: text(value.name, 200), transport: value.transport === 'http' ? 'http' : 'stdio', ...(url ? { url } : {}), ...(id(value.catalogId) ? { catalogId: value.catalogId } : {}), accountLabel: text(value.accountLabel, 120), authType: ['none', 'bearer', 'oauth'].includes(value.authType) ? value.authType : value.apiKeySet ? 'bearer' : 'none', enabled: value.enabled !== false, customInstructions: text(value.customInstructions, 8000), teamIds: safeIds(value.teamIds), ...(connectorAuth(value.auth) ? { auth: connectorAuth(value.auth) } : {}), oauthClientIdSet: value.oauthClientIdSet === true, oauthClientSecretSet: value.oauthClientSecretSet === true, apiKeySet: value.apiKeySet === true, inventoryDigest: typeof value.inventoryDigest === 'string' && /^[a-f0-9]{64}$/.test(value.inventoryDigest) ? value.inventoryDigest : '', botIds: safeIds(value.botIds), enabledToolIds: safeTools(value.enabledToolIds), readOnlyToolIds: safeTools(value.readOnlyToolIds), status: ['unchecked', 'starting', 'connected', 'unavailable'].includes(value.status) ? value.status : 'unchecked', detail: text(value.detail, 2_000), ...(date(value.checkedAt) !== undefined ? { checkedAt: date(value.checkedAt) } : {}), tools: (Array.isArray(value.tools) ? value.tools : []).filter(t => t && toolId(t.id)).slice(0, 256).map(t => ({ id: t.id, name: text(t.name, 300), description: text(t.description, 2_000), readOnly: t.readOnly === true })) };
 }
+function createdTool(value) {
+  if (!isObject(value) || !/^tool_[a-f0-9-]{1,100}$/.test(value.id) || !['draft', 'enabled'].includes(value.status) || !Number.isSafeInteger(value.revision) || value.revision < 1 || typeof value.digest !== 'string' || !/^[a-f0-9]{64}$/.test(value.digest)) throw error(502, 'Strata returned an unreadable reusable tool.');
+  for (const [key, max] of [['name', 120], ['description', 2000], ['command', 32000]]) string(value[key], max, 502, key === 'description');
+  createdToolSchema(value.inputSchema, 502);
+  if (!Number.isSafeInteger(value.timeoutSeconds) || value.timeoutSeconds < 1 || value.timeoutSeconds > 120) throw error(502, 'Strata returned an unreadable tool timeout.');
+  ids(value.botIds, 502, id, 256); ids(value.teamIds, 502, id, 50);
+  return { id: value.id, name: value.name, description: value.description, command: value.command, inputSchema: structuredClone(value.inputSchema), timeoutSeconds: value.timeoutSeconds, status: value.status, revision: value.revision, digest: value.digest, botIds: [...value.botIds], teamIds: [...value.teamIds], createdAt: date(value.createdAt), updatedAt: date(value.updatedAt), ...(id(value.provenance?.botId) ? { provenance: { botId: value.provenance.botId } } : {}) };
+}
 export function publicBotWorkspace(body, route) {
   if (!isObject(body)) throw error(502, 'Strata returned unreadable workspace information.');
+  if (['createdTools', 'createdTool'].includes(route.kind)) {
+    if (route.kind === 'createdTools' && Array.isArray(body.tools) && body.tools.length <= 256) return { tools: body.tools.map(createdTool), createdToolsSupported: body.createdToolsSupported === true };
+    if (body.tool && (!route.toolId || body.tool.id === route.toolId)) return { tool: createdTool(body.tool) };
+    if (route.kind === 'createdTool' && (body.removed === true || body.deleted === true)) return { deleted: true };
+    throw error(502, 'Strata returned unreadable reusable tools.');
+  }
   const rows = (key, project, valid = id, max = 1_000) => {
     if (!Array.isArray(body[key])) throw error(502, 'Strata returned unreadable workspace information.');
     return body[key].filter(v => v && valid(v.id)).slice(0, max).map(project);
@@ -326,13 +382,33 @@ export async function handleBotWorkspace({ path, method, req, res, session, host
   const upstreamPath = path.replace(/^\/v1\//, '/api/');
   const route = botWorkspaceRequest(upstreamPath, method, undefined, 405, false);
   if (!route) return false;
-  if (['GET', 'DELETE'].includes(method) && (Number(req.headers['content-length'] ?? 0) > 0 || req.headers['transfer-encoding'])) throw error(400, 'This action does not accept settings.');
-  const body = ['POST', 'PATCH'].includes(method) ? await readBody(req, ['teams', 'team'].includes(route.kind) ? 240_000 : 70_000) : undefined;
+  const toolDeletion = route.kind === 'createdTool' && method === 'DELETE';
+  if (['GET', 'DELETE'].includes(method) && !toolDeletion && (Number(req.headers['content-length'] ?? 0) > 0 || req.headers['transfer-encoding'])) throw error(400, 'This action does not accept settings.');
+  const body = ['POST', 'PATCH'].includes(method) || toolDeletion ? await readBody(req, ['createdTools', 'createdTool'].includes(route.kind) ? 256_000 : ['teams', 'team'].includes(route.kind) ? 240_000 : 70_000) : undefined;
   botWorkspaceRequest(upstreamPath, method, body, 400);
   requireCurrentSession();
   try {
     let teamCatalog;
     const currentTeams = async () => { if (!teamCatalog) { teamCatalog = await host.json('/api/bots/teams'); requireCurrentSession(); } return teamCatalog; };
+    if (['createdTools', 'createdTool'].includes(route.kind) && method !== 'GET') {
+      const catalog = await host.json('/api/bots/tools'); requireCurrentSession();
+      if (catalog.createdToolsSupported !== true || !Array.isArray(catalog.tools)) throw error(409, 'Update Strata on your Mac before managing reusable tools.');
+      if (route.toolId) {
+        const selected = catalog.tools.find(tool => tool.id === route.toolId);
+        if (!selected) throw error(404, 'This tool is no longer available.');
+        if (selected.revision !== body.expectedRevision || selected.digest !== body.expectedDigest) throw error(409, 'This tool changed. Review its current version before saving.');
+      }
+      if (body?.botIds !== undefined) {
+        const catalog = await host.json('/api/bots'); requireCurrentSession();
+        const current = new Set((catalog.bots ?? []).map(bot => bot.id));
+        if (body.botIds.some(botId => !current.has(botId))) throw error(409, 'Refresh the saved bots before changing tool access.');
+      }
+      if (body?.teamIds !== undefined) {
+        const catalog = await currentTeams();
+        const current = new Set((catalog.teams ?? []).map(team => team.id));
+        if (body.teamIds.some(teamId => !current.has(teamId))) throw error(409, 'Refresh the saved teams before changing tool access.');
+      }
+    }
     if (['teams', 'team'].includes(route.kind) && continuousLimits(body?.limits)) {
       const catalog = await currentTeams();
       if (catalog.teamContinuousSupported !== true) throw error(409, 'Update Strata on your Mac before changing continuous team work.');
@@ -407,7 +483,7 @@ export async function handleBotWorkspace({ path, method, req, res, session, host
   } catch (failure) {
     requireCurrentSession();
     if ([404, 405, 501].includes(failure.status) && method === 'GET') {
-      const empty = { teams: { teams: [], runs: [] }, channel: { teamId: route.teamId, supported: false, messages: [], activeRuns: [], nextSequence: 0, hasMore: false, hasMoreBefore: false }, activity: { activity: [] }, supervision: { supported: false, sessions: [], counts: { waiting: 0, working: 0, completed: 0, errors: 0 }, hasMore: false }, skills: { skills: [], assignments: [] }, connections: { connections: [] }, providerModels: { provider: route.provider, models: [] } }[route.kind];
+      const empty = { teams: { teams: [], runs: [] }, channel: { teamId: route.teamId, supported: false, messages: [], activeRuns: [], nextSequence: 0, hasMore: false, hasMoreBefore: false }, activity: { activity: [] }, supervision: { supported: false, sessions: [], counts: { waiting: 0, working: 0, completed: 0, errors: 0 }, hasMore: false }, skills: { skills: [], assignments: [] }, createdTools: { tools: [], createdToolsSupported: false }, connections: { connections: [] }, providerModels: { provider: route.provider, models: [] } }[route.kind];
       if (empty) { sendJSON(res, 200, { ...empty, reason: 'Update Strata on your Mac to use this Bots feature.' }); return true; }
     }
     const status = [400, 404, 409, 413, 501].includes(failure.status) ? failure.status : 503;

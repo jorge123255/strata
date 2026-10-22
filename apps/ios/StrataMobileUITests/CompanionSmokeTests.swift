@@ -795,6 +795,66 @@ final class CompanionSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testCreatedToolDraftReviewBotAndTeamAccessWithoutExecution() async throws {
+        let control = try pairWorkspaceFixture()
+        try selectWorkspace("Skills")
+        let library = app.segmentedControls["botCapabilitiesLibraryPicker"]
+        try require(library); library.buttons["Tools"].tap()
+        try tapWorkspace(app.buttons["botTool-tool_00000000-0000-4000-8000-000000000001"])
+        try require(app.staticTexts["botToolReviewedCommand"])
+        attachScreenshot("Reusable tool — command and input schema to review")
+        try tapWorkspace(app.buttons["enableBotToolButton"], performTap: false)
+        XCTAssertFalse(app.buttons["enableBotToolButton"].isEnabled)
+        let bot = app.switches["toolBotAssignment-fixture-bot"]
+        func reviewCurrent() throws {
+            try tapWorkspace(app.buttons["reviewBotToolButton"])
+        }
+        try reviewCurrent()
+        attachScreenshot("Reusable tool — reviewed definition ready to enable")
+        try waitEnabled(app.buttons["enableBotToolButton"]); try tapWorkspace(app.buttons["enableBotToolButton"])
+        let review = app.buttons["reviewBotToolButton"]; try require(review)
+        try reviewCurrent(); try waitEnabled(bot); try tapSwitch(bot)
+        let assignedBot = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == '1'"), object: bot)
+        await fulfillment(of: [assignedBot], timeout: 10)
+        try reviewCurrent()
+        let team = app.switches["toolTeamAssignment-team_tool_fixture"]
+        try waitEnabled(team); try tapSwitch(team)
+        let assignedTeam = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == '1'"), object: team)
+        await fulfillment(of: [assignedTeam], timeout: 10)
+        attachScreenshot("Reusable tool — bot and team access on the phone")
+        try reviewCurrent(); try tapWorkspace(app.buttons["editBotToolButton"])
+        let command = app.textViews["botToolCommandInput"]; try require(command); try tapWorkspace(command)
+        command.typeText(" --summary")
+        try waitEnabled(app.buttons["saveBotToolButton"]); app.buttons["saveBotToolButton"].tap()
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.buttons["saveBotToolButton"])
+        await fulfillment(of: [dismissed], timeout: 10)
+        try require(app.buttons["enableBotToolButton"])
+        XCTAssertEqual(app.buttons["enableBotToolButton"].label, "Enable reviewed tool", "Editing must return the tool to draft.")
+        let state = try await fixtureControl(control, action: "state")
+        let calls = try XCTUnwrap(state["calls"] as? [[String: Any]])
+        let writes = calls.filter { $0["method"] as? String != "GET" }
+        XCTAssertEqual(writes.count, 4)
+        XCTAssertTrue(writes.allSatisfy { $0["path"] as? String == "/api/bots/tools/tool_00000000-0000-4000-8000-000000000001" && $0["method"] as? String == "PATCH" })
+        let tools = try XCTUnwrap(state["createdTools"] as? [[String: Any]])
+        let saved = try XCTUnwrap(tools.first { $0["id"] as? String == "tool_00000000-0000-4000-8000-000000000001" })
+        XCTAssertEqual(saved["status"] as? String, "draft"); XCTAssertEqual(saved["revision"] as? Int, 5)
+        XCTAssertTrue((saved["command"] as? String)?.contains("--summary") == true)
+        XCTAssertEqual(saved["botIds"] as? [String], ["fixture-bot"]); XCTAssertEqual(saved["teamIds"] as? [String], ["team_tool_fixture"])
+        XCTAssertFalse(calls.contains { ($0["path"] as? String)?.contains("/computer/") == true || ($0["path"] as? String)?.hasSuffix("/messages") == true })
+        try reviewCurrent(); try tapWorkspace(app.buttons["deleteBotToolButton"])
+        let confirm = app.buttons["Delete tool"].firstMatch
+        try require(confirm); confirm.tap()
+        try require(app.buttons["createBotToolButton"])
+        XCTAssertFalse(app.buttons["botTool-tool_00000000-0000-4000-8000-000000000001"].exists)
+        let final = try await fixtureControl(control, action: "state"), finalCalls = try XCTUnwrap(final["calls"] as? [[String: Any]])
+        let deletion = try XCTUnwrap(finalCalls.first { $0["method"] as? String == "DELETE" })
+        let proof = try XCTUnwrap(deletion["body"] as? [String: Any])
+        XCTAssertEqual(proof["expectedRevision"] as? Int, 5); XCTAssertEqual(proof["expectedDigest"] as? String, saved["digest"] as? String)
+        XCTAssertEqual(finalCalls.filter { $0["method"] as? String != "GET" }.count, 5)
+        XCTAssertTrue(try XCTUnwrap(final["createdTools"] as? [[String: Any]]).isEmpty)
+    }
+
+    @MainActor
     func testReviewedSkillAssignmentAndWorkspaceNavigation() async throws {
         let controlURL = try pairWorkspaceFixture()
         try selectWorkspace("Skills")
