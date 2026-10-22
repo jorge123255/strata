@@ -1,6 +1,6 @@
 # Bot harness validation
 
-Source: `9ba99f33ed9de2ef37c576fd4b382c05a85efae5`, on the fork's `feature/iphone-companion` branch. This includes the earlier coordinator Work tools, compact conversation loading and reusable command-tool library from `c62fa684`.
+Source checks below record `9ba99f33ed9de2ef37c576fd4b382c05a85efae5`, on the fork's `feature/iphone-companion` branch. This includes the earlier coordinator Work tools, compact conversation loading and reusable command-tool library from `c62fa684`. These features were activated together with workflow source `1937b2829d15e9166d3391f2269caa47484e5538`; see the final activation section and [workflow validation](docs/BOTS-WORKFLOWS-VALIDATION.md).
 
 ## Behavior
 
@@ -34,10 +34,12 @@ The owner’s conversations, bot tasks and computers were not used to generate a
 
 ## Activation
 
-Pending. The signed Mac candidate is independently accepted, including its complete application aggregate. The installed Mac app still runs the earlier `de96c71b` source. The first harness readiness snapshot passed all 13 runtime checks, but the native app has an open Import MCP configuration editor. No quit, app replacement or draft discard was performed. A fresh idle/draft check is required before activation.
+Completed on 2026-10-22 with the later accepted workflow source `1937b282`, which includes this harness and its inherited coordinator tools, compact history and command-tool library. The previous 9ba candidate remains preserved; it was not installed separately.
 
-The physical iPhone has not been replaced or launched for this harness update. Build 34 has passed its final signature/identity review and is staged for the owner's interruption decision.
+The empty MCP form contained no user input and was closed. Two fresh all-13-check idle snapshots were 31 seconds apart, followed by an immediate prequit check. Native Quit, verified unique backups and atomic replacement completed successfully. The same-origin host reopened healthy; all signed resources and the fresh native executable passed the postlaunch gate.
 
-The prepared postactivation verifier also passed a separate review and 26 synthetic checks. It has not run against the owner app. It will check signatures, exact installed source, complete owner-data preservation, receipt-store bytes or absence, pairing, guest disk/process identity and all 13 runtime idle checks before any subsequent owner UI navigation. This preparation is not activation evidence.
+Before owner UI navigation, the independently executed postactivation verifier accepted complete Mac owner-data preservation with zero P1/P2 findings: 150 conversations, 594 messages, three paired devices, nine model connections including separate Maya, exact tool/action/workflow stores and original guest identity. No team migration, old work replay, prompt, acknowledgement or tool run was created. Subsequent read-only native inspection confirmed Activity/action recovery and Tools, and only the selected Test conversation's read marker/revision changed through normal viewing; messages and model preferences did not change.
 
-Private evidence: `/Users/gszulc/Projects/Strata-iphone-evidence/strata-harness-20261022`. See `docs/BOTS-HARNESS.md` for behavior and operating limits.
+Signed iPhone35, carrying this harness and the new workflows, was installed in place and device metadata confirmed build35. No Strata process was active before or after installation; the phone app was left closed. Signing/profile/keychain identity is unchanged. Private device data and physical phone UI are not independently verified. Maya and its services were not modified. The completed background Mac follow-up is disabled.
+
+Source-check evidence remains at `/Users/gszulc/Projects/Strata-iphone-evidence/strata-harness-20261022`. Final installation evidence is at `/Users/gszulc/Projects/Strata-iphone-evidence/strata-workflow-20261022`, including `independent-activation-acceptance.json` and the unique activation-attempt directory. See `docs/BOTS-HARNESS.md` for behavior and operating limits.
