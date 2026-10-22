@@ -11,6 +11,7 @@ import { botWorkspaceRequest, handleBotWorkspace } from './bots-workspace.mjs';
 import { botProfileDraft, botProfileRoute, botAvatarConfig, BOT_AVATAR_SHAPES } from './bots-lifecycle.mjs';
 import { hostFolderUpdate, hostFolderRequest } from './bots-host-folder.mjs';
 import { notificationRoute, notificationRequest, handleNotifications } from './notifications.mjs';
+import { createNetworkEndpointCache, discoverNetworkEndpoints } from './network-endpoints.mjs';
 
 const run = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -590,7 +591,7 @@ function lanAddress() {
   return '127.0.0.1';
 }
 
-export async function createBridge({ directory = join(homedir(), 'Library', 'Application Support', 'Strata Companion'), host = new HostClient(), listen = '0.0.0.0', port = 8787, adminPort = 8788, advertiseHost = lanAddress(), now = Date.now, pairingTTL = 300_000, qr = true } = {}) {
+export async function createBridge({ directory = join(homedir(), 'Library', 'Application Support', 'Strata Companion'), host = new HostClient(), listen = '0.0.0.0', port = 8787, adminPort = 8788, advertiseHost = lanAddress(), now = Date.now, pairingTTL = 300_000, qr = true, discoverEndpoints = discoverNetworkEndpoints, endpointRefreshMs = 30_000 } = {}) {
   if (!/^[a-zA-Z0-9.:-]+$/.test(advertiseHost)) throw new Error('Invalid advertised host.');
   const identity = await ensureIdentity(directory);
   const authority = new PairingAuthority(directory, { now, ttl: pairingTTL });
@@ -621,6 +622,7 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
   const qrFile = join(directory, 'pairing.png');
   let networkPort, localPort, closing = false, closed;
   let qrReady = false;
+  let endpointCache;
   const saveChats = () => privateJSON(chatFile, chats);
   const invitation = () => {
     const urlHost = advertiseHost.includes(':') ? `[${advertiseHost}]` : advertiseHost;
@@ -648,6 +650,7 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
   function localState() {
     const { available, expiresAt } = adminState();
     return {
+      endpoints: endpointCache?.snapshot() ?? [],
       invitation: {
         url: invitation(), code: authority.code, fingerprint: identity.fingerprint,
         address: new URL(invitation()).searchParams.get('url'), expiresAt, available,
@@ -729,6 +732,7 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
         if (closing) throw fail(409, 'iPhone pairing is disabled.');
         if (!authority.sessions.some(saved => saved.id === session.id)) throw fail(401, 'This device was removed. Pair it again.');
       };
+      if (path === '/v1/connection' && method === 'GET') return sendJSON(res, 200, { macName, endpoints: endpointCache?.snapshot() ?? [] });
       if (notification) {
         await handleNotifications({ path: path + url.search, method, req, res, session, host, readBody, sendJSON, requireCurrentSession });
         return;
@@ -1191,6 +1195,8 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
   try { await new Promise((resolve, reject) => { adminServer.once('error', reject); adminServer.listen(adminPort, '127.0.0.1', resolve); }); }
   catch (error) { secureServer.close(); throw error; }
   localPort = adminServer.address().port;
+  endpointCache = createNetworkEndpointCache({ port: networkPort, listen, discover: discoverEndpoints, refreshMs: endpointRefreshMs });
+  await endpointCache.start();
   await updateQR();
   return {
     authority, identity, secureServer, adminServer,
@@ -1198,12 +1204,14 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
     adminURL: `http://127.0.0.1:${localPort}${adminPath}`,
     invitation,
     state: localState,
+    refreshEndpoints: () => endpointCache.refresh(),
     rotateInvitation,
     revokeSession,
     qrImage: () => qrReady && adminState().available && !closing ? readFileSync(qrFile) : null,
     async close() {
       if (closing) return closed;
       closing = true;
+      endpointCache.close();
       const releases = releaseComputerLeases();
       const running = [...active.values(), ...folderRequests];
       for (const request of running) request.abort.abort();

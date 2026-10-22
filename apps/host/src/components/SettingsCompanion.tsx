@@ -22,6 +22,7 @@ interface CompanionState {
     qrAvailable: boolean;
   } | null;
   devices: PairedDevice[];
+  endpoints?: { kind: 'lan' | 'tailscale'; url: string }[];
   error?: string | null;
 }
 
@@ -125,7 +126,7 @@ export function SettingsCompanion() {
       {!state.enabled ? <section className="st-card companion-enable" aria-labelledby="companion-enable-title">
         <span className="companion-mark"><Icon name="link" size={28}/></span>
         <div><h3 className="h4" id="companion-enable-title">{tr('Take Strata with you')}</h3><p className="small muted">{tr('Read your Mac’s chat history, continue its conversations, follow browser and tool activity, and answer tool approvals from your iPhone.')}</p></div>
-        <p className="small muted">{tr('Keep your Mac and iPhone on the same trusted Wi-Fi network. Enable pairing when you are ready to connect.')}</p>
+        <p className="small muted">{tr('Connect on trusted Wi-Fi, or use Tailscale on both devices when you are away. Enable pairing when you are ready to connect.')}</p>
         <div><Btn variant="primary" icon="link" disabled={busy} onClick={() => void change('/api/companion/start')}>{tr(busy ? 'Starting pairing…' : 'Enable iPhone pairing')}</Btn></div>
       </section> : <section className="st-card companion-invitation" aria-labelledby="companion-invitation-title">
         <div className="companion-invitation__head"><h3 className="h4" id="companion-invitation-title">{tr(available ? 'Scan to connect' : 'Ready for another iPhone?')}</h3>{available ? <span className="xs muted companion-expiration"><Icon name="clock" size={14}/>{tr('Expires in {0}', [expiration])}</span> : null}</div>
@@ -152,6 +153,17 @@ export function SettingsCompanion() {
         </> : <p className="small muted">{tr('The previous invitation was used or expired. Create a new code to connect another iPhone. Your paired devices keep their access.')}</p>}
         <div className="companion-invitation__actions"><Btn size="sm" icon="refresh" disabled={busy} onClick={() => void change('/api/companion/invitation')}>{tr(busy ? 'Updating…' : 'Create new code')}</Btn><span className="xs muted"><Icon name="shield" size={14}/>{tr('Encrypted connection to this Mac')}</span></div>
       </section>}
+
+      {state.enabled ? <section className="settings-section" aria-labelledby="companion-away-title">
+        <h3 className="h4 companion-section-title" id="companion-away-title">{tr('Connect away from home')}</h3>
+        <div className="st-card stack">
+          <p className="small muted">{tr('Keep Tailscale connected on your Mac and iPhone. Leave this Mac awake with Strata open.')}</p>
+          {state.endpoints?.some(endpoint => endpoint.kind === 'tailscale') ? <>
+            {state.endpoints.filter(endpoint => endpoint.kind === 'tailscale').map(endpoint => <CopyDetail key={endpoint.url} label={tr('Tailscale address')} value={endpoint.url} copied={copied === endpoint.url} onCopy={() => void copy(endpoint.url, endpoint.url)} />)}
+            <p className="small muted">{tr('The iPhone app saves this address when it connects. If your phone is already away, open Connection → Update Mac address and enter it. Your existing pairing and history stay connected to this Mac.')}</p>
+          </> : <p className="small muted" role="status">{tr(state.endpoints === undefined ? 'Update Strata on this Mac to show its Tailscale address.' : 'No Tailscale address detected yet. Connect Tailscale on this Mac; Strata will refresh the address automatically.')}</p>}
+        </div>
+      </section> : null}
 
       <section className="settings-section" aria-labelledby="companion-devices-title">
         <h3 className="h4 companion-section-title" id="companion-devices-title">{tr('Paired devices')}</h3>

@@ -55,7 +55,7 @@ test('desktop startup keeps pairing off, imports nothing and creates no identity
   const directory = join(base, 'private-identity');
   let imports = 0;
   const manager = createCompanionManager({ hostPort: 8791, directory, loadBridge: () => { imports++; throw new Error('must stay lazy'); } });
-  assert.deepEqual(manager.state(), { enabled: false, invitation: null, devices: [], error: null });
+  assert.deepEqual(manager.state(), { enabled: false, invitation: null, endpoints: [], devices: [], error: null });
   assert.equal(manager.qrImage(), null);
   assert.equal(manager.hasOptedIn(), false);
   assert.equal((await manager.restore()).enabled, false);
@@ -113,6 +113,21 @@ test('integrated controls pair, renew and revoke without exposing private creden
   const removed = await manager.revokeSession(next.devices[0].id);
   assert.equal(removed.devices.length, 0);
   assert.equal((await phoneRequest(port, '/v1/status', { token })).status, 401);
+});
+
+test('integrated companion exposes cached connection endpoints only while enabled', async t => {
+  let tailscale = false, calls = 0;
+  const { manager, bridge } = await fixture(t, { bridgeOptions: { qr: false, advertiseHost: '127.0.0.1', discoverEndpoints: async ({ port }) => { calls++; return [{ kind: 'lan', url: `https://192.168.1.12:${port}` }, ...(tailscale ? [{ kind: 'tailscale', url: `https://100.78.1.2:${port}` }] : [])]; } } });
+  assert.deepEqual(manager.state().endpoints, []);
+  const enabled = await manager.start(), { token, port } = await paired(manager);
+  assert.equal(enabled.endpoints.length, 1);
+  for (let i = 0; i < 10; i++) assert.equal(manager.state().endpoints.length, 1);
+  assert.equal(calls, 1);
+  tailscale = true; await bridge().refreshEndpoints();
+  assert.deepEqual((await phoneRequest(port, '/v1/connection', { token })).body.endpoints, manager.state().endpoints);
+  assert.equal(manager.state().endpoints.length, 2); assert.equal(calls, 2);
+  const disabled = await manager.stop();
+  assert.deepEqual(disabled.endpoints, []); assert.equal(disabled.devices.length, 1);
 });
 
 test('disabling closes both listeners while re-enable preserves the certificate and paired token', async t => {
@@ -267,7 +282,9 @@ test('packaged Resources layout resolves the bundled bridge and starts with the 
   const managerPath = join(server, 'companion.mjs');
   copyFileSync(fileURLToPath(new URL('../server/companion.mjs', import.meta.url)), managerPath);
   copyFileSync(fileURLToPath(bridgeURL), join(companion, 'bridge.mjs'));
+  copyFileSync(fileURLToPath(new URL('../../companion-bridge/network-endpoints.mjs', import.meta.url)), join(companion, 'network-endpoints.mjs'));
   copyFileSync(fileURLToPath(new URL('../../companion-bridge/bots-workspace.mjs', import.meta.url)), join(companion, 'bots-workspace.mjs'));
+  copyFileSync(fileURLToPath(new URL('../../companion-bridge/bots-workflows.mjs', import.meta.url)), join(companion, 'bots-workflows.mjs'));
   copyFileSync(fileURLToPath(new URL('../../companion-bridge/bots-lifecycle.mjs', import.meta.url)), join(companion, 'bots-lifecycle.mjs'));
   copyFileSync(fileURLToPath(new URL('../../companion-bridge/bots-host-folder.mjs', import.meta.url)), join(companion, 'bots-host-folder.mjs'));
   copyFileSync(fileURLToPath(new URL('../../companion-bridge/notifications.mjs', import.meta.url)), join(companion, 'notifications.mjs'));

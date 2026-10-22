@@ -1,10 +1,20 @@
 # Pair an iPhone from Strata on Mac
 
-Choose **Pair iPhone** in the sidebar, or **Settings → iPhone**, then **Enable iPhone pairing**. Scan the QR code from the Strata iPhone app and confirm the connection. Both devices must be on the same trusted network.
+Choose **Pair iPhone** in the sidebar, or **Settings → iPhone**, then **Enable iPhone pairing**. Scan the QR code from the Strata iPhone app and confirm the connection. Use the same trusted Wi-Fi network for the initial QR connection, or enter the Mac's Tailscale address manually when both devices are connected to your Tailscale network.
 
 Pairing stays off until enabled. Once enabled, Strata restores the connection service on subsequent launches. **Disable pairing** closes its listeners without forgetting paired phones. **Remove device** revokes that phone's access. New invitation codes expire after five minutes and work once. The panel also provides copyable connection details for manual setup.
 
 The desktop app uses the same private certificate, device sessions, and phone conversations as the older standalone helper. Quit **Strata Companion** before enabling the built-in service; only one service can own the pairing ports at a time. The Mac's existing inference host remains on loopback, and the phone receives only the companion's narrow authenticated HTTPS controls.
+
+## Connect over Tailscale
+
+Keep Tailscale connected on the Mac and iPhone. The Mac must remain awake with Strata open and iPhone pairing enabled. **Pair iPhone → Connect away from home** shows this Mac's detected Tailscale address. Strata discovers its own address; it does not change Tailscale settings, open a public tunnel or expose the inference host.
+
+An updated paired iPhone learns the Mac's available addresses while connected. It can switch between those addresses for read requests using the same pinned certificate and saved pairing. If the phone is already away and knows only the old Wi-Fi address, choose **Connection → Update Mac address** and enter the Tailscale address shown on the Mac. The app checks that it reaches the same trusted Mac before saving. Pairing, conversations and model settings are retained.
+
+The Mac refreshes detected addresses while pairing is enabled, including when Tailscale connects after Strata starts. An older Mac without address discovery remains compatible with manual address updates. If Tailscale is connected but the Mac is unreachable, check that your tailnet access policy allows the iPhone to reach the companion's HTTPS port (8787 by default), and that the Mac accepts incoming Tailscale connections. Tailscale on the iPhone needs its VPN connection enabled.
+
+Strata never automatically resends a message, approval, model operation or computer action on another address after a connection failure. Check the task's current state before retrying an interrupted operation. A read-only connection check does not establish that a previous command failed to run.
 
 On iPhone, open **Chat → History** to reopen a Mac conversation and continue its work. The same messages and browser/tool activity appear on both screens. Existing conversations keep their model, folder and permission mode. Pending tool requests can be allowed or denied on the phone. Closing the phone app leaves Mac work running; **Stop** ends the selected turn explicitly.
 

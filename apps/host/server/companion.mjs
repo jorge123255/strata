@@ -45,7 +45,7 @@ export function createCompanionManager({
   let pending = Promise.resolve();
   const state = () => {
     const current = bridge?.state();
-    return { enabled: !!bridge, invitation: current?.invitation ?? null, devices: current?.devices ?? devices, error };
+    return { enabled: !!bridge, invitation: current?.invitation ?? null, endpoints: current?.endpoints ?? [], devices: current?.devices ?? devices, error };
   };
   // An enable immediately followed by disable must close the resulting listener.
   const serialized = action => {
