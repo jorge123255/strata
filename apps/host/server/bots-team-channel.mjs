@@ -18,7 +18,7 @@ export function createTeamChannels({ directory, now = Date.now, notify = () => {
     if (!id(row?.teamId) || channels.has(row.teamId) || !Array.isArray(row.messages) || !cursor(row.nextSequence) || row.nextSequence < 1) throw fault(503, 'A saved team channel is invalid.');
     let previous = 0; const seen = new Set();
     for (const message of row.messages) {
-      if (!id(message?.id) || seen.has(message.id) || message.teamId !== row.teamId || !cursor(message.sequence) || message.sequence <= previous || message.sequence >= row.nextSequence || !kinds.has(message.kind) || typeof message.content !== 'string' || message.content.length > 16000 || !['user', 'bot', 'system'].includes(message.author?.type) || typeof message.author.name !== 'string' || typeof message.createdAt !== 'string' || message.state && !states.has(message.state)) throw fault(503, 'A saved team message is invalid.');
+      if (!id(message?.id) || seen.has(message.id) || message.teamId !== row.teamId || !cursor(message.sequence) || message.sequence <= previous || message.sequence >= row.nextSequence || !kinds.has(message.kind) || typeof message.content !== 'string' || message.content.length > 16000 || !['user', 'bot', 'system'].includes(message.author?.type) || typeof message.author.name !== 'string' || typeof message.createdAt !== 'string' || message.state && !states.has(message.state) || message.workMode !== undefined && !['chat', 'work'].includes(message.workMode)) throw fault(503, 'A saved team message is invalid.');
       previous = message.sequence; seen.add(message.id);
     }
     channels.set(row.teamId, copy(row));
@@ -35,7 +35,7 @@ export function createTeamChannels({ directory, now = Date.now, notify = () => {
   function append(teamId, input, receipt) {
     const old = channels.get(teamId), row = old ?? { teamId, nextSequence: 1, messages: [] };
     if (row.messages.length >= 50000) throw fault(503, 'This team channel reached its history limit. Existing history was retained.');
-    const message = { id: input.id ?? `tm_${randomUUID()}`, sequence: row.nextSequence, teamId, kind: input.kind ?? 'message', author: copy(input.author), content: String(input.content).slice(0, 16000), createdAt: new Date(now()).toISOString(), ...Object.fromEntries(['replyToId', 'recipientIds', 'runId', 'chatId', 'state'].filter(key => input[key] !== undefined).map(key => [key, copy(input[key])])) };
+    const message = { id: input.id ?? `tm_${randomUUID()}`, sequence: row.nextSequence, teamId, kind: input.kind ?? 'message', author: copy(input.author), content: String(input.content).slice(0, 16000), createdAt: new Date(now()).toISOString(), ...Object.fromEntries(['replyToId', 'recipientIds', 'runId', 'chatId', 'state', 'workMode'].filter(key => input[key] !== undefined).map(key => [key, copy(input[key])])) };
     if (row.messages.some(item => item.id === message.id)) return copy(row.messages.find(item => item.id === message.id));
     const receiptKey = receipt ? `${teamId}:${receipt.requestId}` : undefined;
     if (receipt && (receipts.has(receiptKey) || receipts.size >= 20000)) throw fault(503, 'The team channel receipt is unavailable. Existing history was retained.');

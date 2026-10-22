@@ -66,7 +66,7 @@ export interface BotTaskResult { id: string; summary: string; evidence: BotTaskE
 export interface BotTaskWork { status: 'working'|'ready_for_review'|'verified'|'blocked'|'interrupted'; revision: number; summary?: string; evidence: BotTaskEvidence[]; resultHistory: BotTaskResult[]; reviewHistory: {decision:'accept'|'reject'; note?:string; reviewedAt:string; resultId:string}[]; sourceJobId?: string; recoveryJobId?: string; legacy?: boolean }
 export interface BotTaskRecoveryPlan { id: string; jobId: string; sourceRunId: string; expectedRevision: number; expiresAt: string; canResume: boolean; blockedReason?: string; botId: string; botName: string; provider: string; model: string; computerLabel: string; workspace: string; summary: string; completedReports: {jobId: string; chatId: string; reportId?: string; summary: string}[]; steps: string[] }
 export interface BotTeamActivity { id: string; type: 'run'|'delivery'|'subagent'; teamId: string; runId: string; botId?: string; chatId?: string; parentChatId?: string; title: string; state: string; fromBotId?: string; toBotId?: string; createdAt: string; updatedAt: string; detail?: string; work?: BotTaskWork }
-export interface BotTeamsSnapshot { teams: BotTeam[]; runs: BotTeamRun[]; channelsSupported?: boolean; teamSettingsSupported?: boolean; teamInstructionsSupported?: boolean; teamUnrestrictedSupported?: boolean; teamContinuousSupported?: boolean; teamWorkReviewSupported?: boolean; teamComputers?: BotTeamComputer[] }
+export interface BotTeamsSnapshot { teams: BotTeam[]; runs: BotTeamRun[]; channelsSupported?: boolean; teamSettingsSupported?: boolean; teamInstructionsSupported?: boolean; teamUnrestrictedSupported?: boolean; teamContinuousSupported?: boolean; teamWorkReviewSupported?: boolean; teamCoordinatorWorkToolsSupported?: boolean; teamComputers?: BotTeamComputer[] }
 export interface BotTeamActivitySnapshot { activity: BotTeamActivity[]; teamWorkReviewSupported?: boolean }
 export function botTaskWorkLabel(status: string) { return ({working:'Working',ready_for_review:'Ready for review',verified:'Verified',blocked:'Blocked',interrupted:'Interrupted'} as Record<string,string>)[status] ?? 'Needs review'; }
 /** Public, durable room messages are separate from each bot's private work chat. */
@@ -74,7 +74,7 @@ export interface BotTeamChannelAuthor { type: 'user'|'bot'|'system'; botId?: str
 export interface BotTeamChannelMessage {
   id: string; sequence: number; teamId: string; kind: 'message'|'assignment'|'report'|'status';
   author: BotTeamChannelAuthor; content: string; createdAt: string; replyToId?: string;
-  recipientIds?: string[]; runId?: string; chatId?: string; state?: string;
+  recipientIds?: string[]; runId?: string; chatId?: string; state?: string; workMode?: 'chat'|'work';
 }
 export interface BotTeamChannelPreview { id: string; sequence: number; kind: BotTeamChannelMessage['kind']; author: Pick<BotTeamChannelAuthor, 'type'|'name'|'botId'>; content: string; createdAt: string }
 export interface BotTeamChannelSnapshot { teamId: string; supported: boolean; messages: BotTeamChannelMessage[]; activeRuns: BotTeamRun[]; nextSequence: number; hasMore?: boolean; hasMoreBefore?: boolean; firstSequence?: number }

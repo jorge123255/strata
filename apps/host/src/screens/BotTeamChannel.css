@@ -139,3 +139,11 @@
 .bot-room-message-disclosure > summary span { display:block; margin-top:5px; color:var(--st-ink-muted); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .bot-room-message-disclosure[open] > summary { margin-bottom:12px; border-bottom:1px solid var(--st-line-soft); }
 .bot-room-message-disclosure > summary:focus-visible { outline:2px solid var(--st-accent); outline-offset:4px; border-radius:6px; }
+
+.bot-room-work-mode { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; margin:8px 5px 10px 55px; }
+.bot-room-work-mode > div { display:inline-flex; flex:none; padding:3px; border:1px solid var(--st-line); border-radius:20px; background:var(--st-surface-2); }
+.bot-room-work-mode button { border:0; border-radius:16px; padding:7px 12px; background:transparent; color:var(--st-ink-muted); font:11px var(--st-font); cursor:pointer; }
+.bot-room-work-mode button[aria-pressed='true'] { background:var(--st-surface); color:var(--st-ink); box-shadow:0 1px 4px #0002; }
+.bot-room-work-mode button:disabled { opacity:.55; cursor:default; }
+.bot-room-work-mode p { flex:1; min-width:180px; color:var(--st-ink-muted); font-size:10px; line-height:1.5; margin:0; }
+@media (max-width:700px) { .bot-room-work-mode { margin-left:46px; } }

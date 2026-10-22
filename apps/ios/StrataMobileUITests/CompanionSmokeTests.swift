@@ -1221,6 +1221,76 @@ final class CompanionSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testTeamWorkIntentRequiresExplicitSendAndKeepsChatCompatible() async throws {
+        let control = try pairWorkspaceFixture()
+        _ = try await fixtureControl(control, action: "appearance-dark")
+        let initial = try await fixtureControl(control, action: "state")
+        let team = try XCTUnwrap(initial["roomTeam"] as? [String: Any])
+        let teamId = try XCTUnwrap(team["id"] as? String)
+        try tapWorkspace(app.buttons["team-" + teamId])
+        let picker = app.segmentedControls["teamMessageWorkModePicker"]
+        try require(picker)
+        XCTAssertTrue(picker.buttons["Chat"].isSelected)
+        let opening = try await fixtureControl(control, action: "state")
+        XCTAssertTrue(try XCTUnwrap(opening["calls"] as? [[String: Any]]).allSatisfy { $0["method"] as? String == "GET" })
+        XCTAssertTrue(try XCTUnwrap(opening["roomTurns"] as? [[String: Any]]).isEmpty)
+        picker.buttons["Work"].tap()
+        XCTAssertEqual(app.staticTexts["teamMessageWorkModeExplanation"].label, "Coordinator and teammates can use their saved tools, approvals and selected team computer/folder.")
+        let selected = try await fixtureControl(control, action: "state")
+        XCTAssertTrue(try XCTUnwrap(selected["calls"] as? [[String: Any]]).allSatisfy { $0["method"] as? String == "GET" }, "Selecting Work does not send a prompt or start tools.")
+        attachScreenshot("Team composer — explicit Work intent before Send")
+        let input = app.descendants(matching: .any).matching(identifier: "botTeamTaskInput").firstMatch
+        try tapWorkspace(input); input.typeText("Inspect the inert fixture source")
+        try require(app.buttons["dismissBotTeamTaskKeyboardButton"]); app.buttons["dismissBotTeamTaskKeyboardButton"].tap()
+        app.buttons["startBotTeamTaskButton"].tap()
+        try require(app.staticTexts["Work fixture result: the coordinator received the explicit Work request."])
+        XCTAssertTrue(picker.buttons["Chat"].isSelected, "A successful Work send returns the composer to Chat.")
+        let workState = try await fixtureControl(control, action: "state")
+        let workCalls = try XCTUnwrap(workState["calls"] as? [[String: Any]]).filter { $0["method"] as? String == "POST" }
+        XCTAssertEqual(workCalls.count, 1)
+        XCTAssertEqual((workCalls.first?["body"] as? [String: Any])?["workMode"] as? String, "work")
+        let entries = try XCTUnwrap((workState["teamChannel"] as? [String: Any])?["messages"] as? [[String: Any]])
+        let sent = try XCTUnwrap(entries.first { ($0["author"] as? [String: Any])?["type"] as? String == "user" })
+        try require(app.descendants(matching: .any).matching(identifier: "teamMessageWorkRequest-" + (try XCTUnwrap(sent["id"] as? String))).firstMatch)
+        let turns = try XCTUnwrap(workState["roomTurns"] as? [[String: Any]])
+        XCTAssertEqual(turns.first?["mode"] as? String, "task")
+        attachScreenshot("Team history — explicit Work request and retained result")
+        picker.buttons["Work"].tap()
+        app.buttons["teamComposerMenuButton"].tap()
+        try require(app.buttons["draftTeamGreetingButton"]); app.buttons["draftTeamGreetingButton"].tap()
+        XCTAssertTrue(picker.buttons["Chat"].isSelected, "Drafting a greeting resets Chat without sending anything.")
+        let greetingDraft = try await fixtureControl(control, action: "state")
+        XCTAssertEqual(try XCTUnwrap(greetingDraft["calls"] as? [[String: Any]]).filter { $0["method"] as? String == "POST" }.count, 1)
+        if app.buttons["dismissBotTeamTaskKeyboardButton"].exists { app.buttons["dismissBotTeamTaskKeyboardButton"].tap() }
+        app.buttons["startBotTeamTaskButton"].tap()
+        try require(app.staticTexts["Chat fixture reply: the coordinator can talk without direct work tools."])
+        let chatState = try await fixtureControl(control, action: "state")
+        let chatCalls = try XCTUnwrap(chatState["calls"] as? [[String: Any]]).filter { $0["method"] as? String == "POST" }
+        XCTAssertEqual(chatCalls.count, 2)
+        XCTAssertEqual((chatCalls.last?["body"] as? [String: Any])?["workMode"] as? String, "chat")
+        XCTAssertEqual((chatCalls.last?["body"] as? [String: Any])?["recipientIds"] as? [String], team["memberIds"] as? [String])
+        _ = try await fixtureControl(control, action: "team-work-tools-unsupported")
+        let hidden = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: picker)
+        XCTAssertEqual(XCTWaiter.wait(for: [hidden], timeout: 15), .completed)
+        try tapWorkspace(input); input.typeText("Legacy host chat")
+        app.buttons["dismissBotTeamTaskKeyboardButton"].tap(); app.buttons["startBotTeamTaskButton"].tap()
+        try require(app.staticTexts["Legacy host chat"])
+        // A cleared SwiftUI TextField exposes its placeholder separately from
+        // its nil/empty value. Keep both checks so retained draft text fails.
+        let emptyInput = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true AND (value == nil OR value == %@) AND placeholderValue == %@", "", "Message…"), object: input)
+        XCTAssertEqual(XCTWaiter.wait(for: [emptyInput], timeout: 15), .completed)
+        XCTAssertFalse(app.buttons["startBotTeamTaskButton"].isEnabled)
+        XCTAssertFalse(picker.exists)
+        let final = try await fixtureControl(control, action: "state")
+        let calls = try XCTUnwrap(final["calls"] as? [[String: Any]])
+        let posts = calls.filter { $0["method"] as? String == "POST" }
+        XCTAssertEqual(posts.count, 3)
+        XCTAssertNil((posts.last?["body"] as? [String: Any])?["workMode"], "Older hosts retain their original message payload.")
+        XCTAssertTrue(posts.allSatisfy { ($0["path"] as? String)?.hasSuffix("/messages") == true })
+        XCTAssertFalse(calls.contains { ($0["path"] as? String)?.contains("/computer/") == true })
+    }
+
+    @MainActor
     func testCurrentWorkOverviewKeepsActiveLegacyAndRequiresExplicitHistoryExpansion() async throws {
         let control = try pairWorkspaceFixture()
         _ = try await fixtureControl(control, action: "appearance-dark")

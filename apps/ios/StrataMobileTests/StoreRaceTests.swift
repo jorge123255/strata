@@ -1653,6 +1653,61 @@ final class BotWorkspaceTests: XCTestCase {
         XCTAssertFalse(fixture.requests.contains { $0.path.hasSuffix("/runs") || $0.path.contains("serving") || $0.path.contains("model-management") })
     }
 
+    func testWorkModeDecodesOnlyKnownValuesAndLegacyDraftOmitsNewField() throws {
+        var message = channelEntry(1); message["author"] = ["type": "user", "name": "You"]
+        XCTAssertNil(try decode(message, as: BotTeamChannelMessage.self).workMode)
+        message["workMode"] = "work"
+        XCTAssertEqual(try decode(message, as: BotTeamChannelMessage.self).workMode, .work)
+        message["workMode"] = "privileged"
+        XCTAssertThrowsError(try decode(message, as: BotTeamChannelMessage.self))
+        let old = BotTeamChannelPost(message: "Hello", requestId: "legacy_request")
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(old)) as? [String: Any])
+        XCTAssertEqual(Set(body.keys), ["message", "requestId"])
+        var modern = old; modern.workMode = .chat
+        let chat = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(modern)) as? [String: Any])
+        XCTAssertEqual(chat["workMode"] as? String, "chat")
+    }
+
+    func testTeamWorkModeRequiresLiteralCapabilityAndPreservesTypedRetryAndTargeting() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        var capability: Bool? = nil
+        fixture.respond { request in
+            if request.url!.path.hasSuffix("/channel") { return self.channelSnapshot([self.channelEntry(1)]) }
+            if request.url!.path.hasSuffix("/messages") { return ["channel": self.channelSnapshot([self.channelEntry(1), self.channelEntry(2)])] }
+            if request.url!.path == "/v1/bots/teams" {
+                var value: [String: Any] = ["teams": [self.team(enabled: true)], "runs": []]
+                if let capability { value["teamCoordinatorWorkToolsSupported"] = capability }
+                return value
+            }
+            return nil
+        }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore()
+        await workspace.refreshTeams(); await workspace.refreshChannel("team_fixture")
+        let selected = try decode(team(enabled: true), as: BotTeam.self)
+        let work = BotTeamChannelPost(message: "Read the saved source", requestId: "request_work", recipientIds: ["bot_reviewer"], replyToId: "tm_1", workMode: .work)
+        XCTAssertNil(workspace.teams?.teamCoordinatorWorkToolsSupported)
+        let unsupportedWork = await workspace.postTeamMessage(selected, draft: work)
+        let unsupportedChat = await workspace.postTeamMessage(selected, draft: BotTeamChannelPost(message: "Chat", requestId: "request_chat", workMode: .chat))
+        XCTAssertFalse(unsupportedWork); XCTAssertFalse(unsupportedChat)
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+        capability = true; await workspace.refreshTeams()
+        let sent = await workspace.postTeamMessage(selected, draft: work)
+        let retried = await workspace.postTeamMessage(selected, draft: work)
+        XCTAssertTrue(sent); XCTAssertTrue(retried)
+        let writes = fixture.requests.filter { $0.method == "POST" }
+        XCTAssertEqual(writes.count, 2)
+        XCTAssertEqual(writes.map { $0.jsonBody?["workMode"] as? String }, ["work", "work"])
+        XCTAssertEqual(writes.map { $0.jsonBody?["requestId"] as? String }, ["request_work", "request_work"])
+        XCTAssertEqual(writes.first?.jsonBody?["recipientIds"] as? [String], ["bot_reviewer"])
+        XCTAssertEqual(writes.first?.jsonBody?["replyToId"] as? String, "tm_1")
+        capability = false; await workspace.refreshTeams()
+        let withdrawn = await workspace.postTeamMessage(selected, draft: work)
+        XCTAssertFalse(withdrawn)
+        XCTAssertEqual(fixture.requests.filter { $0.method == "POST" }.count, 2)
+        XCTAssertNil(store.currentConversation)
+        XCTAssertFalse(fixture.requests.contains { $0.path.hasSuffix("/runs") || $0.path.contains("/computer/") })
+    }
+
     func testBusyChannelPostWindowCannotSkipUnreadGapAndIdsKeepTheirSequences() async throws {
         let fixture = StoreTransport(); defer { fixture.close() }
         var queries: [String] = []

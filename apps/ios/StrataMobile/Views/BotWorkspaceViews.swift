@@ -287,6 +287,7 @@ struct BotTeamDetailView: View {
     @State private var requestId = UUID().uuidString
     @State private var navigation = UUID()
     @State private var recipient = ""
+    @State private var workMode: BotTeamMessageWorkMode = .chat
     @State private var reply: BotTeamChannelMessage?
     @State private var confirmingStop: BotTeamRun?
     @State private var visible = false
@@ -305,6 +306,7 @@ struct BotTeamDetailView: View {
     private var team: BotTeam? { workspace.teams?.teams.first { $0.id == teamId } }
     private var channel: BotTeamChannel? { workspace.channels[teamId] }
     private var channelKey: String { BotWorkspaceStore.channelKey(teamId) }
+    private var supportsCoordinatorWork: Bool { workspace.teams?.teamCoordinatorWorkToolsSupported == true }
     private var entries: [BotTeamChannelMessage] { channel?.messages ?? [] }
     private var runs: [BotTeamRun] { (workspace.teams?.runs ?? []).filter { $0.teamId == teamId } }
     private var activeRuns: [BotTeamRun] { channel?.supported == true ? channel?.activeRuns ?? [] : runs.filter(\.isActive) }
@@ -419,6 +421,7 @@ struct BotTeamDetailView: View {
                 do { try await Task.sleep(for: .seconds(3)) } catch { break }
             } while !Task.isCancelled && visible && scenePhase == .active && navigation == generation
         }
+        .onChange(of: supportsCoordinatorWork) { _, supported in if !supported { workMode = .chat; requestId = UUID().uuidString } }
         .onChange(of: message) { _, _ in requestId = UUID().uuidString }
         .onChange(of: recipient) { _, _ in requestId = UUID().uuidString }
         .onChange(of: reply?.id) { _, _ in requestId = UUID().uuidString }
@@ -591,6 +594,7 @@ struct BotTeamDetailView: View {
                     if entry.kind != "assignment", let recipients = entry.recipientIds, !recipients.isEmpty, Set(recipients) != Set(team.memberIds) {
                         Text("To " + recipients.map { id in store.botCatalog?.bots.first { $0.id == id }?.name ?? "Teammate" }.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary)
                     }
+                    if human, entry.workMode == .work { Label("Work request", systemImage: "hammer").font(.caption.weight(.medium)).foregroundStyle(.secondary).accessibilityIdentifier("teamMessageWorkRequest-" + entry.id) }
                     messageContent(entry)
                     if entry.kind != "message" { Text(entry.kind.replacingOccurrences(of: "_", with: " ").capitalized).font(.caption2.weight(.medium)).foregroundStyle(.secondary) }
                 }.padding(.horizontal, 15).padding(.vertical, 12)
@@ -680,9 +684,24 @@ struct BotTeamDetailView: View {
                     if !activeRuns.isEmpty { Label("Team working", systemImage: "circle.fill").labelStyle(.titleOnly).foregroundStyle(StrataTheme.accentText) }
                 }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 8)
             }
+            if supportsCoordinatorWork, channel?.supported == true {
+                VStack(alignment: .leading, spacing: 6) {
+                    Picker("Team message mode", selection: $workMode) {
+                        Text("Chat").tag(BotTeamMessageWorkMode.chat)
+                        Text("Work").tag(BotTeamMessageWorkMode.work)
+                    }.pickerStyle(.segmented).disabled(workspace.mutation != nil).accessibilityIdentifier("teamMessageWorkModePicker")
+                    Text(workMode == .work ? "Coordinator and teammates can use their saved tools, approvals and selected team computer/folder." : "Talk with the team. Your coordinator can bring in teammates.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("teamMessageWorkModeExplanation")
+                }.onChange(of: workMode) { _, _ in requestId = UUID().uuidString }
+            }
             HStack(alignment: .bottom, spacing: 10) {
                 Menu {
-                    if channel?.supported == true { recipientPicker(team) }
+                    if channel?.supported == true {
+                        recipientPicker(team)
+                        Button("Draft a greeting to everyone", systemImage: "hand.wave") { workMode = .chat; message = "Hi everyone!"; recipient = "everyone"; reply = nil; requestId = UUID().uuidString; taskFocused = true }
+                            .disabled(workspace.mutation != nil).accessibilityIdentifier("draftTeamGreetingButton")
+                    }
                     Button("Team details", systemImage: "person.3") { taskFocused = false; showingDetails = true }
                     Button(workspace.workReviewSupported ? "Tasks & results" : "Previous tasks", systemImage: "checklist") { taskFocused = false; tasksExpanded = !workspace.workReviewSupported; showingDetails = true }
                     if reply != nil { Button("Cancel reply", systemImage: "xmark") { reply = nil } }
@@ -714,7 +733,7 @@ struct BotTeamDetailView: View {
     private func send(_ team: BotTeam) {
         taskFocused = false
         let generation = navigation, text = message, request = requestId
-        let draft = BotTeamChannelPost(message: text, requestId: request, recipientIds: recipient.isEmpty ? nil : recipient == "everyone" ? team.memberIds : [recipient], replyToId: reply?.id)
+        let draft = BotTeamChannelPost(message: text, requestId: request, recipientIds: recipient.isEmpty ? nil : recipient == "everyone" ? team.memberIds : [recipient], replyToId: reply?.id, workMode: supportsCoordinatorWork ? workMode : nil)
         Task {
             let sent: Bool
             if channel?.supported == true { sent = await workspace.postTeamMessage(team, draft: draft) }
@@ -722,7 +741,7 @@ struct BotTeamDetailView: View {
             // Leave the room in place. Reading Thinking is a separate explicit action.
             if sent, navigation == generation {
                 sentScrollRequest = request
-                if message == text, requestId == request { message = ""; reply = nil; requestId = UUID().uuidString }
+                if message == text, requestId == request { message = ""; workMode = .chat; reply = nil; requestId = UUID().uuidString }
             }
         }
     }

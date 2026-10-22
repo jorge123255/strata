@@ -325,7 +325,8 @@ final class BotWorkspaceStore: ObservableObject {
               CompanionClient.isSafeIdentifier(draft.requestId), !text.isEmpty, text.utf16.count <= 16_000,
               draft.replyToId == nil || CompanionClient.isSafeIdentifier(draft.replyToId!),
               draft.recipientIds == nil || (!draft.recipientIds!.isEmpty && draft.recipientIds!.count <= team.memberIds.count && Set(draft.recipientIds!).count == draft.recipientIds!.count && draft.recipientIds!.allSatisfy({ team.memberIds.contains($0) })),
-              channels[team.id]?.supported == true else { return false }
+              channels[team.id]?.supported == true,
+              draft.workMode == nil || teams?.teamCoordinatorWorkToolsSupported == true else { return false }
         struct Result: Decodable { var channel: BotTeamChannel; var run: BotTeamRun? }
         let key = Self.channelKey(team.id)
         let value: Result? = await change(key, path: "/v1/bots/teams/\(team.id)/messages", body: draft)

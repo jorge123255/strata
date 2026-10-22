@@ -131,11 +131,12 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
       if (!continuousLimits(body.limits)) for (const [key, value] of Object.entries(body.limits)) if (!Number.isSafeInteger(value) || value < limits[key][0] || value > limits[key][1]) throw error(status, 'Choose supported team limits.');
     }
   } else if (route.kind === 'channelMessage') {
-    object(body, ['message', 'requestId', 'recipientIds', 'replyToId'], status);
+    object(body, ['message', 'requestId', 'recipientIds', 'replyToId', 'workMode'], status);
     string(body.message, 16_000, status);
     if (!id(body.requestId)) throw error(status, 'Choose a valid team message request.');
     if (body.recipientIds !== undefined) { ids(body.recipientIds, status, id, Infinity); if (!body.recipientIds.length) throw error(status, 'Choose a teammate or send to the team.'); }
     if (body.replyToId !== undefined && !id(body.replyToId)) throw error(status, 'Choose a message from this team.');
+    if (body.workMode !== undefined && !['chat', 'work'].includes(body.workMode)) throw error(status, 'Choose Chat or Work for this team message.');
   } else if (route.kind === 'run') {
     object(body, route.action ? [] : ['message', 'requestId'], status);
     if (!route.action) { string(body.message, 16_000, status); if (body.requestId !== undefined && !id(body.requestId)) throw error(status, 'Choose a valid task request.'); }
@@ -245,9 +246,10 @@ function channelSnapshot(value, route) {
     seen.add(v.id); previous = v.sequence;
     for (const key of ['replyToId', 'runId', 'chatId']) if (v[key] !== undefined && !id(v[key])) invalid();
     if (v.recipientIds !== undefined && (!Array.isArray(v.recipientIds) || v.recipientIds.some(x => !id(x)) || new Set(v.recipientIds).size !== v.recipientIds.length)) invalid();
+    if (v.workMode !== undefined && (v.author.type !== 'user' || !['chat', 'work'].includes(v.workMode))) invalid();
     let avatarConfig;
     if (v.author.avatarConfig !== undefined) { try { avatarConfig = botAvatarConfig(v.author.avatarConfig, 502); if (avatarConfig.shape === 'classic') delete avatarConfig.shape; } catch { /* Omit unavailable future artwork; never forward arbitrary assets or fields. */ } }
-    return { id: v.id, sequence: v.sequence, teamId: v.teamId, kind: v.kind, author: { type: v.author.type, name: v.author.name, ...(v.author.type === 'bot' ? { botId: v.author.botId } : {}), ...(avatarConfig ? { avatarConfig } : {}) }, content: v.content, createdAt: date(v.createdAt), ...Object.fromEntries(['replyToId', 'runId', 'chatId'].filter(key => v[key] !== undefined).map(key => [key, v[key]])), ...(v.recipientIds ? { recipientIds: v.recipientIds } : {}), ...(['queued', 'working', 'done', 'error', 'interrupted', 'cancelled'].includes(v.state) ? { state: v.state } : {}) };
+    return { id: v.id, sequence: v.sequence, teamId: v.teamId, kind: v.kind, author: { type: v.author.type, name: v.author.name, ...(v.author.type === 'bot' ? { botId: v.author.botId } : {}), ...(avatarConfig ? { avatarConfig } : {}) }, content: v.content, createdAt: date(v.createdAt), ...(v.workMode !== undefined ? { workMode: v.workMode } : {}), ...Object.fromEntries(['replyToId', 'runId', 'chatId'].filter(key => v[key] !== undefined).map(key => [key, v[key]])), ...(v.recipientIds ? { recipientIds: v.recipientIds } : {}), ...(['queued', 'working', 'done', 'error', 'interrupted', 'cancelled'].includes(v.state) ? { state: v.state } : {}) };
   });
   if (messages.length && value.nextSequence !== messages.at(-1).sequence || value.activeRuns.some(v => !isObject(v) || !id(v.id) || v.teamId !== route.teamId)) invalid();
   return { teamId: value.teamId, supported: true, messages, activeRuns: value.activeRuns.map(run), nextSequence: value.nextSequence, hasMore: value.hasMore, hasMoreBefore: value.hasMoreBefore, ...(messages.length ? { firstSequence: messages[0].sequence } : {}) };
@@ -296,7 +298,7 @@ export function publicBotWorkspace(body, route) {
     return {activity:taskActivity(body.activity),...(route.action==='resume'?{run:run(body.run)}:{})};
   }
   if (route.kind === 'channelMessage') return { channel: channelSnapshot(body.channel, route), ...(body.run && id(body.run.id) && body.run.teamId === route.teamId ? { run: run(body.run) } : {}) };
-  if (route.kind === 'teams' && Array.isArray(body.teams)) return { teams: rows('teams', team), runs: rows('runs', run, id, Infinity), ...(body.teamUnrestrictedSupported === true ? { teamUnrestrictedSupported: true } : {}), ...(body.teamContinuousSupported === true ? { teamContinuousSupported: true } : {}), ...(body.teamWorkReviewSupported === true ? { teamWorkReviewSupported: true } : {}), ...(body.channelsSupported === true ? { channelsSupported: true } : {}), ...(body.teamInstructionsSupported === true ? { teamInstructionsSupported: true } : {}), ...(body.teamSettingsSupported === true ? { teamSettingsSupported: true, teamComputers: (Array.isArray(body.teamComputers) ? body.teamComputers : []).slice(0, 1000).map(teamComputer).filter(Boolean) } : {}) };
+  if (route.kind === 'teams' && Array.isArray(body.teams)) return { teams: rows('teams', team), runs: rows('runs', run, id, Infinity), ...(body.teamUnrestrictedSupported === true ? { teamUnrestrictedSupported: true } : {}), ...(body.teamContinuousSupported === true ? { teamContinuousSupported: true } : {}), ...(body.teamWorkReviewSupported === true ? { teamWorkReviewSupported: true } : {}), ...(body.teamCoordinatorWorkToolsSupported === true ? { teamCoordinatorWorkToolsSupported: true } : {}), ...(body.channelsSupported === true ? { channelsSupported: true } : {}), ...(body.teamInstructionsSupported === true ? { teamInstructionsSupported: true } : {}), ...(body.teamSettingsSupported === true ? { teamSettingsSupported: true, teamComputers: (Array.isArray(body.teamComputers) ? body.teamComputers : []).slice(0, 1000).map(teamComputer).filter(Boolean) } : {}) };
   if (body.team && id(body.team.id)) return { team: team(body.team) };
   if (body.run && id(body.run.id)) return { run: run(body.run) };
   if (route.kind === 'activity') return { activity: rows('activity', taskActivity), ...(body.teamWorkReviewSupported === true ? {teamWorkReviewSupported:true} : {}) };
@@ -336,7 +338,8 @@ export async function handleBotWorkspace({ path, method, req, res, session, host
       if (catalog.teamContinuousSupported !== true) throw error(409, 'Update Strata on your Mac before changing continuous team work.');
     }
     if (route.kind === 'channelMessage') {
-      const catalog = await host.json('/api/bots/teams'); requireCurrentSession();
+      const catalog = await currentTeams();
+      if (body.workMode !== undefined && catalog.teamCoordinatorWorkToolsSupported !== true) throw error(409, 'Update Strata on your Mac before choosing Chat or Work for a team message.');
       const selected = (catalog.teams ?? []).find(team => team.id === route.teamId);
       const members = new Set(Array.isArray(selected?.memberIds) ? selected.memberIds : []);
       if (!selected || !selected.enabled || body.recipientIds?.some(botId => !members.has(botId))) throw error(409, 'Refresh this team and choose its available members.');

@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { createBotRuntime, acpArguments, acpProfile, normalizeTools, readSse } from '../server/bots-runtime/index.mjs';
 import { redact, jsonRpcProcess, killOwned } from '../server/bots-runtime/process.mjs';
 import { startToolBridge } from '../server/bots-runtime/tool-bridge.mjs';
+import { createBotTools } from '../server/bots-tools.mjs';
 
 const root = await mkdtemp(join(tmpdir(), 'strata-runtime-test-'));
 test.after(async () => { await rm(root, { recursive: true, force: true }); });
@@ -233,4 +234,60 @@ test('Stop escalates the owned group when its leader exits before a TERM-resista
 test('bridge refuses an already stopped run without creating a live socket', async () => {
   const controller = new AbortController(); controller.abort();
   await assert.rejects(startToolBridge({ tools, executeTool: async () => '', signal: controller.signal }), { name: 'AbortError' });
+});
+
+test('Codex native read-only isolation still dispatches supplied host write/command tools and explains only the actual turn inventory', async t => {
+  const script = join(root, 'codex-dynamic-boundary-fixture.mjs');
+  await writeFile(script, `
+import readline from 'node:readline';
+const mode=process.argv[2];let stage;
+const send=value=>process.stdout.write(JSON.stringify({jsonrpc:'2.0',...value})+String.fromCharCode(10));
+const ok=(id,result)=>send({id,result});
+const finish=()=>{send({method:'item/agentMessage/delta',params:{threadId:'host-owned-thread',itemId:'answer',delta:'Host dynamic tools completed.'}});send({method:'turn/completed',params:{threadId:'host-owned-thread',turn:{id:'host-owned-turn',status:'completed'}}});};
+readline.createInterface({input:process.stdin}).on('line',line=>{
+ const m=JSON.parse(line);
+ if(m.id>=100&&!m.method){
+  if(stage==='native'){
+   if(m.result?.decision!=='decline')process.exit(20);
+   if(mode==='effects'){stage='write';send({id:101,method:'item/tool/call',params:{threadId:'host-owned-thread',tool:'write_file',callId:'host-write',arguments:{path:'host-boundary-output.txt',content:'Written by the host-owned dynamic tool.'}}});}
+   else finish();
+  }else if(stage==='write'){
+   if(m.result?.success!==true)process.exit(21);stage='command';send({id:102,method:'item/tool/call',params:{threadId:'host-owned-thread',tool:'run_command',callId:'host-command',arguments:{command:'INERT_NATIVE_BOUNDARY_COMMAND'}}});
+  }else if(stage==='command'){
+   if(m.result?.success!==true||!m.result.contentItems?.[0]?.text?.includes('inert native-boundary command'))process.exit(22);finish();
+  }
+  return;
+ }
+ if(m.method==='initialize')ok(m.id,{});
+ if(m.method==='config/read')ok(m.id,{config:{mcp_servers:{inherited:{url:'https://fixture.invalid/mcp'}}}});
+ if(m.method==='mcpServerStatus/list')ok(m.id,{data:[],nextCursor:null});
+ if(m.method==='thread/start'){
+  const p=m.params,expected=mode==='effects'?['write_file','run_command']:mode==='readonly'?['read_file']:mode==='routing'?['list_teammates']:['search_tools'];
+  if(p.sandbox!=='read-only'||p.approvalPolicy!=='never'||p.config.features.shell_tool!==false||p.config.features.apps!==false||p.config.features.in_app_browser!==false||p.config.features.multi_agent!==false||p.config.mcp_servers.inherited.enabled!==false)process.exit(23);
+  if(JSON.stringify(p.dynamicTools.map(t=>t.name))!==JSON.stringify(expected))process.exit(24);
+  const text=p.developerInstructions,inventory=JSON.parse(text.split('Available Strata tools (exact current turn): ')[1].split('. Use only those supplied tools')[0]);
+  if(JSON.stringify(inventory)!==JSON.stringify(expected)||!text.includes('That native restriction does not disable the supplied Strata dynamic tools')||!text.includes('under Strata’s saved approval policy and access boundaries'))process.exit(25);
+  for(const unavailable of ['write_file','run_command','read_file','list_teammates','search_tools'].filter(name=>!expected.includes(name)))if(text.includes(unavailable))process.exit(26);
+  if(mode==='connectors'&&!text.includes('search_tools discovers authorized external connector tools only'))process.exit(27);
+  ok(m.id,{thread:{id:'host-owned-thread'}});
+ }
+ if(m.method==='turn/start'){ok(m.id,{turn:{id:'host-owned-turn'}});stage='native';send({id:100,method:'item/commandExecution/requestApproval',params:{threadId:'host-owned-thread',command:'NATIVE_ACTION_MUST_BE_DENIED'}});}
+});
+`);
+  for (const mode of ['effects', 'readonly', 'routing', 'connectors']) await t.test(mode, async () => {
+    const commands = [], events = framesFor(); let approvals = 0;
+    const profile = bot('codex', { policy: mode === 'readonly' ? 'plan' : 'bypass', instructions: 'Only the explicitly selected fixture work is authorized.' });
+    const host = createBotTools({ directory: root, processRunner: async (command, args, options) => { commands.push({ command, args, cwd: options.cwd }); return { code: 0, stdout: 'inert native-boundary command', stderr: '' }; } });
+    const wanted = mode === 'effects' ? ['write_file', 'run_command'] : mode === 'readonly' ? ['read_file'] : mode === 'routing' ? ['list_teammates'] : ['search_tools'];
+    const catalog = wanted.map(name => host.definitions(profile).find(tool => tool.name === name) ?? { name, description: 'Inert host metadata', inputSchema: { type: 'object', properties: {} } });
+    const controller = new AbortController(), runtime = createBotRuntime({ commands: { codex: '/fixture/codex' }, env: { PATH: '' }, spawnProcess: (_command, _args, options) => spawn(process.execPath, [script, mode], options), runTimeoutMs: 4000 });
+    try {
+      const answer = await runtime.run({ bot: profile, sessionId: `dynamic-${mode}`, message: 'Use the exact authorized Strata tool catalog.', tools: catalog, history: [], signal: controller.signal, onFrame: events.onFrame,
+        requestPermission: async () => { approvals++; return false; }, executeTool: async (name, args, toolCallId) => { assert.equal(mode, 'effects'); return host.execute({ bot: profile, chatId: `dynamic-${mode}`, name, args, toolCallId, signal: controller.signal, onFrame: events.onFrame, requestPermission: async () => false }); } });
+      assert.equal(answer.text, 'Host dynamic tools completed.'); assert.equal(approvals, 0, 'native built-ins are denied without broad approval');
+      assert.ok(events.frames.some(frame => frame.type === 'agent-tool' && frame.tool.state === 'denied'));
+      if (mode === 'effects') { assert.equal(await readFile(join(root, 'host-boundary-output.txt'), 'utf8'), 'Written by the host-owned dynamic tool.'); assert.equal(commands.length, 1); assert.equal(commands[0].cwd, root); assert.deepEqual(commands[0].args, ['-c', 'INERT_NATIVE_BOUNDARY_COMMAND']); }
+      else assert.equal(commands.length, 0);
+    } finally { await runtime.close(); await host.finish(`dynamic-${mode}`); await host.close(); }
+  });
 });

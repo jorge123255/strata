@@ -181,6 +181,7 @@ struct BotTeamsSnapshot: Decodable, Equatable {
     var teamUnrestrictedSupported: Bool?
     var teamContinuousSupported: Bool?
     var teamWorkReviewSupported: Bool?
+    var teamCoordinatorWorkToolsSupported: Bool?
     var teamComputers: [BotTeamComputer]?
 }
 
@@ -206,6 +207,7 @@ struct BotTeamChannelMessage: Decodable, Identifiable, Equatable {
     var runId: String?
     var chatId: String?
     var state: String?
+    var workMode: BotTeamMessageWorkMode?
     var usesCompactCard: Bool { kind == "assignment" || kind == "report" && content.count > 1_800 }
     var compactPreview: String {
         let first = content.split(whereSeparator: \.isNewline).first.map(String.init) ?? content
@@ -225,11 +227,14 @@ struct BotTeamChannel: Decodable, Equatable {
     var reason: String?
 }
 
+enum BotTeamMessageWorkMode: String, Codable, CaseIterable { case chat, work }
+
 struct BotTeamChannelPost: Encodable, Equatable {
     var message: String
     var requestId: String
     var recipientIds: [String]?
     var replyToId: String?
+    var workMode: BotTeamMessageWorkMode?
 }
 
 struct BotTeamDraft: Encodable {
