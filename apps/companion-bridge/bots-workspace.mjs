@@ -80,9 +80,11 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
   else {
     const channel = /^\/api\/bots\/teams\/([A-Za-z0-9_-]{1,120})\/(channel|messages)$/.exec(p);
     const team = /^\/api\/bots\/teams\/([A-Za-z0-9_-]{1,120})(?:\/runs(?:\/([A-Za-z0-9_-]{1,120})(?:\/(stop))?)?)?$/.exec(p);
+    const task = /^\/api\/bots\/teams\/(team_[a-f0-9-]+)\/jobs\/(tj_[a-f0-9-]+)\/(review|recovery|resume)$/.exec(p);
     const skill = /^\/api\/bots\/skills\/([A-Za-z0-9_-]{1,120})$/.exec(p);
     const connection = /^\/api\/bots\/connections\/([A-Za-z0-9_-]{1,120})(?:\/(check|auth|auth\/complete|auth\/cancel))?$/.exec(p);
-    if (channel) route = { kind: channel[2] === 'channel' ? 'channel' : 'channelMessage', teamId: channel[1] };
+    if (task) route = { kind: 'task', teamId: task[1], jobId: task[2], action: task[3] };
+    else if (channel) route = { kind: channel[2] === 'channel' ? 'channel' : 'channelMessage', teamId: channel[1] };
     else if (team) route = { kind: p.includes('/runs') ? 'run' : 'team', teamId: team[1], runId: team[2], action: team[3] };
     else if (skill) route = { kind: 'skill', skillId: skill[1] };
     else if (connection) route = { kind: connection[2]?.startsWith('auth') ? 'connectionAuth' : 'connection', connectionId: connection[1], action: connection[2] };
@@ -97,13 +99,20 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
     else throw error(status, 'Choose a saved bot or provider.');
   } else if (route.kind === 'providerModels') throw error(status, 'Choose a provider.');
   const allowed = { teams: ['GET', 'POST'], team: ['PATCH'], channel: ['GET'], channelMessage: ['POST'], run: route.action === 'stop' ? ['POST'] : route.runId ? ['GET'] : ['POST'], activity: ['GET'], supervision: ['GET'], skills: ['GET', 'POST'], skill: ['PATCH', 'DELETE'], assignment: ['POST'], connections: ['GET', 'POST'], connection: route.action ? ['POST'] : ['PATCH', 'DELETE'], connectionAuth: ['auth/complete', 'auth/cancel'].includes(route.action) ? ['POST'] : ['GET', 'POST', 'DELETE'], connectorCatalog: ['GET'], providerModels: ['GET'] };
-  if (!allowed[route.kind].includes(method)) throw error(status, 'This workspace action is unavailable from iPhone.');
+  if (!(route.kind === 'task' ? route.action === 'recovery' ? ['GET'] : ['POST'] : allowed[route.kind]).includes(method)) throw error(status, 'This workspace action is unavailable from iPhone.');
   if (!validateBody) return route;
   if (method === 'GET' || method === 'DELETE') {
     if (body !== undefined) throw error(status, 'This action does not accept settings.');
     return route;
   }
-  if (route.kind === 'teams' || route.kind === 'team') {
+  if (route.kind === 'task') {
+    object(body, route.action === 'review' ? ['expectedRevision','decision','note'] : ['planId','expectedRevision','idempotencyKey'], status);
+    if (!Number.isSafeInteger(body.expectedRevision) || body.expectedRevision < 1) throw error(status, 'Review the current task result.');
+    if (route.action === 'review') {
+      if (!['accept','reject'].includes(body.decision)) throw error(status, 'Choose a review decision.');
+      if (body.note !== undefined) string(body.note,2500,status,true);
+    } else if (!id(body.planId) || !id(body.idempotencyKey)) throw error(status, 'Review the current recovery plan before continuing.');
+  } else if (route.kind === 'teams' || route.kind === 'team') {
     object(body, ['name', 'memberIds', 'coordinatorId', 'enabled', 'limits', 'execution', 'briefing', 'expectedRevision'], status);
     if (body.expectedRevision !== undefined && (!Number.isSafeInteger(body.expectedRevision) || body.expectedRevision < 1)) throw error(status, 'Review the current team revision.');
     if (body.execution !== undefined) {
@@ -194,6 +203,38 @@ function run(value) {
   const fanout = Number.isSafeInteger(value.consumedTurns) && Number.isSafeInteger(value.rosterFanoutTurns) && value.rosterFanoutTurns >= 0 && value.rosterFanoutTurns <= value.consumedTurns ? { rosterFanoutTurns: value.rosterFanoutTurns } : {};
   return { id: value.id, teamId: id(value.teamId) ? value.teamId : '', rootChatId: id(value.rootChatId) ? value.rootChatId : '', rootBotId: id(value.rootBotId) ? value.rootBotId : '', state: states.has(value.state) ? value.state : 'interrupted', limits: team(value).limits, consumedTurns: Number.isInteger(value.consumedTurns) ? value.consumedTurns : 0, ...fanout, createdAt: date(value.createdAt), updatedAt: date(value.updatedAt), ...(typeof value.detail === 'string' ? { detail: text(value.detail, 2_000) } : {}) };
 }
+function taskText(value, max, empty = false) {
+  if (typeof value !== 'string' || value.length > max || value.includes('\0') || !value.isWellFormed() || !empty && !value.trim()) throw error(502, 'Strata returned unreadable task results.');
+  return value;
+}
+function taskEvidence(value) {
+  if (!Array.isArray(value) || value.length > 32) throw error(502, 'Strata returned unreadable task evidence.');
+  return value.map(v => {
+    if (!isObject(v) || !['file','test','link','note'].includes(v.kind)) throw error(502, 'Strata returned unreadable task evidence.');
+    return {kind:v.kind,label:taskText(v.label,160),detail:taskText(v.detail,4000)};
+  });
+}
+function taskWork(value) {
+  if (!isObject(value) || !['working','ready_for_review','verified','blocked','interrupted'].includes(value.status) || !Number.isSafeInteger(value.revision) || value.revision<1 || !Array.isArray(value.resultHistory) || value.resultHistory.length>16 || !Array.isArray(value.reviewHistory) || value.reviewHistory.length>32) throw error(502, 'Strata returned unreadable task review information.');
+  const resultHistory = value.resultHistory.map(v => {
+    if (!isObject(v) || !id(v.id) || !id(v.botId) || !date(v.submittedAt) || v.outcome!==undefined && !['ready_for_review','blocked'].includes(v.outcome)) throw error(502, 'Strata returned unreadable submitted results.');
+    return {id:v.id,botId:v.botId,summary:taskText(v.summary,8000),evidence:taskEvidence(v.evidence),submittedAt:v.submittedAt,...(v.outcome?{outcome:v.outcome}:{})};
+  });
+  const reviewHistory = value.reviewHistory.map(v => {
+    if (!isObject(v) || !id(v.resultId) || !['accept','reject'].includes(v.decision) || !date(v.reviewedAt)) throw error(502, 'Strata returned unreadable review history.');
+    return {resultId:v.resultId,decision:v.decision,reviewedAt:v.reviewedAt,...(v.note!==undefined?{note:taskText(v.note,2500,true)}:{})};
+  });
+  const evidence = taskEvidence(value.evidence);
+  if (value.status==='verified' && (!resultHistory.length || reviewHistory.at(-1)?.decision!=='accept' || reviewHistory.at(-1).resultId!==resultHistory.at(-1).id)) throw error(502, 'Strata returned an unverified task result.');
+  return {status:value.status,revision:value.revision,evidence,resultHistory,reviewHistory,...(value.summary!==undefined?{summary:taskText(value.summary,8000)}:{}),...Object.fromEntries(['sourceJobId','recoveryJobId'].filter(key=>id(value[key])).map(key=>[key,value[key]]))};
+}
+function taskActivity(v) {
+  return { id: v.id, type: ['run','delivery','subagent'].includes(v.type) ? v.type : 'run', teamId:id(v.teamId)?v.teamId:'',runId:id(v.runId)?v.runId:'',title:text(v.title,300),state:text(v.state,60),...Object.fromEntries(['botId','chatId','parentChatId','fromBotId','toBotId'].filter(k=>id(v[k])).map(k=>[k,v[k]])),createdAt:date(v.createdAt),updatedAt:date(v.updatedAt),...(typeof v.detail==='string'?{detail:text(v.detail,2000)}:{}),...(v.work!==undefined?{work:taskWork(v.work)}:{}) };
+}
+function taskRecovery(value,route) {
+  if (!isObject(value) || !id(value.id) || value.jobId!==route.jobId || !id(value.sourceRunId) || !id(value.botId) || !Number.isSafeInteger(value.expectedRevision) || value.expectedRevision<1 || typeof value.canResume!=='boolean' || !date(value.expiresAt) || !Array.isArray(value.completedReports) || value.completedReports.length>1000 || !Array.isArray(value.steps) || value.steps.length>32) throw error(502, 'Strata returned unreadable recovery information.');
+  return {id:value.id,jobId:value.jobId,sourceRunId:value.sourceRunId,botId:value.botId,expectedRevision:value.expectedRevision,canResume:value.canResume,expiresAt:value.expiresAt,...Object.fromEntries(['botName','provider','model','computerLabel','workspace','summary'].map(key=>[key,taskText(value[key],key==='summary'?8000:key==='workspace'?4000:500,true)])),...(value.blockedReason!==undefined?{blockedReason:taskText(value.blockedReason,2500)}:{}),steps:value.steps.map(v=>taskText(v,2000)),completedReports:value.completedReports.map(v=>{if(!isObject(v)||!id(v.jobId)||!id(v.chatId))throw error(502,'Strata returned unreadable earlier results.');return{jobId:v.jobId,chatId:v.chatId,summary:taskText(v.summary,8000),...(id(v.reportId)?{reportId:v.reportId}:{})};})};
+}
 function channelSnapshot(value, route) {
   const invalid = () => { throw error(502, 'Strata returned unreadable team channel information.'); };
   if (!isObject(value) || value.teamId !== route.teamId || value.supported !== true || !Array.isArray(value.messages) || value.messages.length > 100 || !Array.isArray(value.activeRuns) || !Number.isSafeInteger(value.nextSequence) || value.nextSequence < 0 || typeof value.hasMore !== 'boolean' || typeof value.hasMoreBefore !== 'boolean') invalid();
@@ -247,11 +288,17 @@ export function publicBotWorkspace(body, route) {
     return body[key].filter(v => v && valid(v.id)).slice(0, max).map(project);
   };
   if (route.kind === 'channel') return channelSnapshot(body, route);
+  if (route.kind === 'task') {
+    if (route.action==='recovery') return {plan:taskRecovery(body.plan,route)};
+    if (!isObject(body.activity) || !id(body.activity.id) || body.activity.teamId!==route.teamId || !body.activity.work) throw error(502, 'Strata returned an unrelated task.');
+    if (route.action==='review' && body.activity.id!==route.jobId || route.action==='resume' && (body.activity.id===route.jobId || body.activity.work.sourceJobId!==route.jobId || !isObject(body.run) || body.run.teamId!==route.teamId || body.activity.runId!==body.run.id)) throw error(502, 'Strata returned an unrelated task action.');
+    return {activity:taskActivity(body.activity),...(route.action==='resume'?{run:run(body.run)}:{})};
+  }
   if (route.kind === 'channelMessage') return { channel: channelSnapshot(body.channel, route), ...(body.run && id(body.run.id) && body.run.teamId === route.teamId ? { run: run(body.run) } : {}) };
-  if (route.kind === 'teams' && Array.isArray(body.teams)) return { teams: rows('teams', team), runs: rows('runs', run, id, Infinity), ...(body.teamUnrestrictedSupported === true ? { teamUnrestrictedSupported: true } : {}), ...(body.teamContinuousSupported === true ? { teamContinuousSupported: true } : {}), ...(body.channelsSupported === true ? { channelsSupported: true } : {}), ...(body.teamInstructionsSupported === true ? { teamInstructionsSupported: true } : {}), ...(body.teamSettingsSupported === true ? { teamSettingsSupported: true, teamComputers: (Array.isArray(body.teamComputers) ? body.teamComputers : []).slice(0, 1000).map(teamComputer).filter(Boolean) } : {}) };
+  if (route.kind === 'teams' && Array.isArray(body.teams)) return { teams: rows('teams', team), runs: rows('runs', run, id, Infinity), ...(body.teamUnrestrictedSupported === true ? { teamUnrestrictedSupported: true } : {}), ...(body.teamContinuousSupported === true ? { teamContinuousSupported: true } : {}), ...(body.teamWorkReviewSupported === true ? { teamWorkReviewSupported: true } : {}), ...(body.channelsSupported === true ? { channelsSupported: true } : {}), ...(body.teamInstructionsSupported === true ? { teamInstructionsSupported: true } : {}), ...(body.teamSettingsSupported === true ? { teamSettingsSupported: true, teamComputers: (Array.isArray(body.teamComputers) ? body.teamComputers : []).slice(0, 1000).map(teamComputer).filter(Boolean) } : {}) };
   if (body.team && id(body.team.id)) return { team: team(body.team) };
   if (body.run && id(body.run.id)) return { run: run(body.run) };
-  if (route.kind === 'activity') return { activity: rows('activity', v => ({ id: v.id, type: ['run', 'delivery', 'subagent'].includes(v.type) ? v.type : 'run', teamId: id(v.teamId) ? v.teamId : '', runId: id(v.runId) ? v.runId : '', title: text(v.title, 300), state: text(v.state, 60), ...Object.fromEntries(['botId', 'chatId', 'parentChatId', 'fromBotId', 'toBotId'].filter(k => id(v[k])).map(k => [k, v[k]])), createdAt: date(v.createdAt), updatedAt: date(v.updatedAt), ...(typeof v.detail === 'string' ? { detail: text(v.detail, 2_000) } : {}) })) };
+  if (route.kind === 'activity') return { activity: rows('activity', taskActivity), ...(body.teamWorkReviewSupported === true ? {teamWorkReviewSupported:true} : {}) };
   if (route.kind === 'supervision') {
     const count = value => Number.isSafeInteger(value) && value >= 0 ? Math.min(value, 1_000_000) : 0;
     const sessions = rows('sessions', v => ({ id: v.id, botId: v.botId, name: text(v.name, 120), title: text(v.title, 300), state: v.state, approvalCount: count(v.approvalCount),

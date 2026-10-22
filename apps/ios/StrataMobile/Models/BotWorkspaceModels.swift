@@ -177,6 +177,7 @@ struct BotTeamsSnapshot: Decodable, Equatable {
     var teamInstructionsSupported: Bool?
     var teamUnrestrictedSupported: Bool?
     var teamContinuousSupported: Bool?
+    var teamWorkReviewSupported: Bool?
     var teamComputers: [BotTeamComputer]?
 }
 
@@ -261,7 +262,95 @@ struct BotWorkspaceActivity: Decodable, Identifiable, Equatable {
     var fromBotId: String?
     var toBotId: String?
     var detail: String?
+    var work: BotTeamWork?
+    var isExecutionActive: Bool { ["queued", "running", "stopping", "cleanup_pending"].contains(state) }
+    var workStatusLabel: String { work?.status.label ?? state.replacingOccurrences(of: "_", with: " ").capitalized }
     var icon: String { type == "subagent" ? "arrow.triangle.branch" : type == "delivery" ? "bubble.left.and.bubble.right" : "person.3.sequence" }
+}
+
+/// A task result is an attributed submission, not proof that its execution succeeded.
+/// Only an explicit owner review can move a submitted result to Verified.
+struct BotTeamWork: Decodable, Equatable {
+    enum Status: String, Decodable {
+        case working, readyForReview = "ready_for_review", verified, blocked, interrupted
+        var label: String {
+            switch self {
+            case .working: "Working"
+            case .readyForReview: "Ready for review"
+            case .verified: "Verified"
+            case .blocked: "Blocked"
+            case .interrupted: "Interrupted"
+            }
+        }
+    }
+    var status: Status
+    var revision: Int
+    var summary: String?
+    var evidence: [BotTeamEvidence]
+    var resultHistory: [BotTeamResult]
+    var reviewHistory: [BotTeamOwnerReview]
+    var sourceJobId: String?
+    var recoveryJobId: String?
+    var canReview: Bool { status == .readyForReview && revision > 0 }
+    var canPlanRecovery: Bool { [.blocked, .interrupted].contains(status) && revision > 0 && recoveryJobId == nil }
+}
+struct BotTeamEvidence: Decodable, Equatable {
+    var kind: String
+    var label: String
+    var detail: String
+    var icon: String { switch kind { case "file": "doc"; case "test": "checklist"; case "link": "link"; default: "note.text" } }
+}
+struct BotTeamResult: Decodable, Equatable, Identifiable {
+    var id: String
+    var summary: String
+    var evidence: [BotTeamEvidence]
+    var submittedAt: BotWorkspaceTimestamp
+    var botId: String
+}
+struct BotTeamOwnerReview: Decodable, Equatable {
+    var decision: String
+    var note: String?
+    var reviewedAt: BotWorkspaceTimestamp
+    var resultId: String
+}
+struct BotTeamRecoveryPlan: Decodable, Equatable, Identifiable {
+    var id: String
+    var jobId: String
+    var sourceRunId: String
+    var expectedRevision: Int
+    var expiresAt: String
+    var canResume: Bool
+    var blockedReason: String?
+    var botId: String
+    var botName: String
+    var provider: String
+    var model: String
+    var computerLabel: String
+    var workspace: String
+    var summary: String
+    var completedReports: [CompletedReport]
+    var steps: [String]
+    struct CompletedReport: Decodable, Equatable {
+        var jobId: String
+        var chatId: String
+        var reportId: String?
+        var summary: String
+    }
+    func isExpired(at now: Date = Date()) -> Bool {
+        let fractional = ISO8601DateFormatter(); fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        guard let expiry = fractional.date(from: expiresAt) ?? ISO8601DateFormatter().date(from: expiresAt) else { return true }
+        return expiry <= now
+    }
+}
+struct BotTeamReviewRequest: Encodable, Equatable {
+    var expectedRevision: Int
+    var decision: String
+    var note: String?
+}
+struct BotTeamResumeRequest: Encodable, Equatable {
+    var planId: String
+    var expectedRevision: Int
+    var idempotencyKey: String
 }
 
 enum BotSkillRevision: Codable, Equatable, CustomStringConvertible {

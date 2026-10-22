@@ -9,6 +9,7 @@ import { botModelDestination } from './bots-models.mjs';
 import { createBotComputers } from './bots-computers.mjs';
 import { createBotWork } from './bots-work.mjs';
 import { createBotTeams } from './bots-team.mjs';
+import { botWorkAuthorityFingerprint } from './bots-work-authority.mjs';
 import { botSupervisionSnapshot } from './bots-supervision.mjs';
 import { createBotHostFolderTools, botHostFolderAuthority } from './bots-host-folder.mjs';
 
@@ -169,7 +170,30 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     return status;
   }
   const work = createBotWork({ directory, requireBot, chats: conversations, createConversation, notify });
-  const team = createBotTeams({ directory, requireBot, conversations, createConversation: (id, teamContext) => createConversation(id, {}, teamContext), discardConversation: id => { conversations().remove(id); chatProfiles.delete(id); checkpoints.delete(id); save(); }, notify,
+  function workAuthority(botId, chatId, shared) {
+    const frozen = chatProfiles.get(chatId), current = requireBot(botId);
+    if (!frozen || frozen.id !== botId) throw fault(409, 'The original task settings are unavailable. Start a new request after reviewing its history.');
+    const fresh = { id: botId, ...validate({}, current), ...(frozen.teamContext ? { teamContext: copy(frozen.teamContext) } : {}) };
+    if (shared) {
+      // Re-resolve the selected anchor rather than trusting an old guest/folder
+      // grant copied into a run. This is metadata validation, not preparation.
+      const selected = team.list().teams.find(row => row.id === frozen.teamContext?.teamId);
+      if (!selected?.execution || selected.execution.mode !== 'shared') throw fault(409, 'The team computer changed. Review a new request instead.');
+      const actual = resolveTeamExecution(selected.execution, selected.memberIds);
+      if (botWorkAuthorityFingerprint({ ...frozen, ...actual }) !== botWorkAuthorityFingerprint({ ...frozen, ...shared })) throw fault(409, 'The shared computer or folder access changed. Review a new request instead.');
+      for (const key of folderKeys) delete fresh[key];
+      Object.assign(fresh, actual);
+    }
+    if (skills || mcp) fresh.extensionSnapshots = { ...(skills ? { skills: copy(skills.snapshot(fresh)) } : {}), ...(mcp ? { mcp: copy((mcp.recoverySnapshot ?? mcp.snapshot)(fresh)) } : {}) };
+    const fingerprint = botWorkAuthorityFingerprint(frozen);
+    if (botWorkAuthorityFingerprint(fresh) !== fingerprint) throw fault(409, 'The task’s model, computer, instructions or tool access changed. Review a new request instead.');
+    return { fingerprint, target: { botName: current.name, provider: frozen.provider, model: frozen.model || 'Provider default', computerLabel: executionLabel(frozen.execution), workspace: frozen.workspace } };
+  }
+  function assertRecoveryAvailable(botId, chatId) {
+    if (active.has(chatId) || conversations()?.isRunning?.(chatId) || [...active.values()].some(run => run.botId === botId)) throw fault(409, 'This bot is still working. Wait for it to finish.');
+    validateSelection({ botId, chatId });
+  }
+  const team = createBotTeams({ directory, requireBot, conversations, createConversation: (id, teamContext) => createConversation(id, {}, teamContext), discardConversation: id => { conversations().remove(id); chatProfiles.delete(id); checkpoints.delete(id); save(); }, notify, workAuthority, assertRecoveryAvailable,
     usesComputer: (source, target) => { const bot = typeof source === 'string' ? chatProfiles.get(source) : source; return bot?.computerMode === 'cua' && cuaResource(bot) === cuaResource(target); }, teamComputers: teamComputerRows, resolveExecution: resolveTeamExecution, isChatBusy: chatBusy, isBotBusy: id => [...active.values()].some(run => run.botId === id), stopDirect: id => stop(id, { team: false }) });
   const hasOwnedComputer = id => [...ownedComputers, ...uncertainTargets.keys()].some(key => key.startsWith(`cua:${id}:`));
   const markOwned = bot => { ownedComputers.add(cuaResource(bot)); save(); };
@@ -620,6 +644,17 @@ export function createBotRoutes({ bots, port }) {
         if (req.method === 'GET') return json(res, 200, bots.team.list());
         if (req.method === 'POST') return json(res, 201, bots.team.create(await readBody(req)));
         return error(res, 405, 'This team action is unavailable.');
+      }
+      const jobRoute = /^\/api\/bots\/teams\/(team_[a-f0-9-]+)\/jobs\/(tj_[a-f0-9-]+)\/(review|recovery|resume)$/.exec(url.pathname);
+      if (jobRoute) {
+        const [, teamId, jobId, action] = jobRoute;
+        if ([...url.searchParams].length) throw fault(400, 'Task actions take no URL settings.');
+        if (action === 'recovery' && req.method === 'GET') {
+          if (req.headers['transfer-encoding'] || Number(req.headers['content-length'] ?? 0) > 0) throw fault(400, 'Recovery reads take no request body.');
+          return json(res, 200, bots.team.recoveryPlan(teamId, jobId));
+        }
+        if (action !== 'recovery' && req.method === 'POST') return json(res, 200, await bots.team[action === 'review' ? 'reviewJob' : 'resumeJob'](teamId, jobId, await readBody(req)));
+        return error(res, 405, 'This task action is unavailable.');
       }
       const channelRoute = /^\/api\/bots\/teams\/(team_[a-f0-9-]+)\/(channel|messages)$/.exec(url.pathname);
       if (channelRoute) {

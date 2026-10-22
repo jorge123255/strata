@@ -10,6 +10,8 @@ final class BotWorkspaceStore: ObservableObject {
     @Published private(set) var teams: BotTeamsSnapshot?
     @Published private(set) var channels: [String: BotTeamChannel] = [:]
     @Published private(set) var activity: [BotWorkspaceActivity] = []
+    @Published private(set) var recoveryPlans: [String: BotTeamRecoveryPlan] = [:]
+    @Published private(set) var activityWorkReviewSupported = false
     @Published private(set) var supervision: BotSupervisionSnapshot?
     @Published private(set) var skills: BotSkillsSnapshot?
     @Published private(set) var connections: BotConnectionsSnapshot?
@@ -23,19 +25,27 @@ final class BotWorkspaceStore: ObservableObject {
     private let currentBotIds: () -> Set<String>?
     private var requests: [String: UUID] = [:]
     private var channelCursors: [String: Int] = [:]
+    private var workErrorStatus: [String: Int] = [:]
 
     init(client: CompanionClient?, isCurrent: @escaping () -> Bool, currentBotIds: @escaping () -> Set<String>? = { nil }) {
         self.client = client; self.isCurrent = isCurrent; self.currentBotIds = currentBotIds
     }
     var unrestrictedTeams: Bool { teams?.teamUnrestrictedSupported == true }
     var continuousTeams: Bool { teams?.teamContinuousSupported == true }
+    var workReviewSupported: Bool { teams?.teamWorkReviewSupported == true || activityWorkReviewSupported }
 
     func refreshTeams() async {
         await load("teams", path: "/v1/bots/teams") { (value: BotTeamsSnapshot) in self.teams = value; self.messages["teams"] = value.reason }
     }
     func refreshActivity() async {
-        struct Snapshot: Decodable { var activity: [BotWorkspaceActivity]; var reason: String? }
-        await load("activity", path: "/v1/bots/activity") { (value: Snapshot) in self.activity = value.activity; self.messages["activity"] = value.reason }
+        struct Snapshot: Decodable { var activity: [BotWorkspaceActivity]; var reason: String?; var teamWorkReviewSupported: Bool? }
+        await load("activity", path: "/v1/bots/activity") { (value: Snapshot) in
+            self.activity = value.activity; self.messages["activity"] = value.reason
+            self.activityWorkReviewSupported = value.teamWorkReviewSupported == true
+            self.recoveryPlans = self.recoveryPlans.filter { id, plan in
+                value.activity.contains { $0.id == id && $0.work?.revision == plan.expectedRevision && $0.work?.canPlanRecovery == true }
+            }
+        }
     }
     func refreshSupervision() async {
         await load("supervision", path: "/v1/bots/supervision") { (value: BotSupervisionSnapshot) in self.supervision = value; self.messages["supervision"] = value.reason }
@@ -63,7 +73,7 @@ final class BotWorkspaceStore: ObservableObject {
     }
     private func change<T: Decodable, Body: Encodable>(_ key: String, path: String, method: String = "POST", body: Body) async -> T? {
         guard let client, isCurrent(), mutation == nil else { return nil }
-        mutation = key; messages[key] = nil
+        mutation = key; messages[key] = nil; workErrorStatus[key] = nil
         requests[key] = nil; loading.remove(key)
         defer { mutation = nil }
         do {
@@ -75,6 +85,7 @@ final class BotWorkspaceStore: ObservableObject {
         } catch {
             guard isCurrent() else { return nil }
             let message = error.localizedDescription
+            workErrorStatus[key] = (error as? CompanionHTTPError)?.statusCode
             if (error as? CompanionHTTPError)?.statusCode == 409 {
                 if key == "skills" { await refreshSkills() }
                 else if key == "connections" { await refreshConnections() }
@@ -83,6 +94,92 @@ final class BotWorkspaceStore: ObservableObject {
             if isCurrent() { messages[key] = message }
             return nil
         }
+    }
+
+    static func workKey(_ jobId: String) -> String { "work-" + jobId }
+    private func currentWork(_ item: BotWorkspaceActivity) -> BotTeamWork? {
+        guard isCurrent(), workReviewSupported, CompanionClient.isSafeIdentifier(item.teamId), CompanionClient.isSafeIdentifier(item.id),
+              let work = item.work, work.revision > 0,
+              activity.contains(where: { $0.id == item.id && $0.teamId == item.teamId && $0.work?.revision == work.revision }) else { return nil }
+        return work
+    }
+    private func applyWork(_ item: BotWorkspaceActivity, replacing previous: BotWorkspaceActivity) throws {
+        guard item.id == previous.id, item.teamId == previous.teamId, let revision = item.work?.revision,
+              revision > (previous.work?.revision ?? 0) else {
+            throw CompanionError.server("The task changed while it was being reviewed. Refresh its results before continuing.")
+        }
+        if let index = activity.firstIndex(where: { $0.id == item.id && $0.teamId == item.teamId }),
+           (activity[index].work?.revision ?? 0) <= revision { activity[index] = item }
+    }
+    /// Reading a recovery plan never queues or resumes a task.
+    func refreshRecovery(_ item: BotWorkspaceActivity) async {
+        let key = Self.workKey(item.id)
+        guard currentWork(item) != nil else {
+            if isCurrent() { messages[key] = "The task changed or review is unavailable. Refresh its current results before continuing." }; return
+        }
+        recoveryPlans[item.id] = nil
+        await load(key, path: "/v1/bots/teams/\(item.teamId)/jobs/\(item.id)/recovery") { (value: RecoveryResponse) in
+            guard self.currentWork(item) != nil, value.plan.jobId == item.id,
+                  value.plan.sourceRunId == item.runId, value.plan.expectedRevision == item.work?.revision,
+                  CompanionClient.isSafeIdentifier(value.plan.id) else {
+                self.recoveryPlans[item.id] = nil; self.messages[key] = "This recovery plan is out of date. Refresh the task before continuing."; return
+            }
+            self.recoveryPlans[item.id] = value.plan
+        }
+    }
+    private struct RecoveryResponse: Decodable { var plan: BotTeamRecoveryPlan }
+    private struct ReviewResponse: Decodable { var activity: BotWorkspaceActivity }
+    private struct ResumeResponse: Decodable { var run: BotTeamRun; var activity: BotWorkspaceActivity }
+    func reviewWork(_ item: BotWorkspaceActivity, decision: String, note: String = "") async -> Bool {
+        let key = Self.workKey(item.id)
+        guard let work = currentWork(item) else {
+            if isCurrent() { messages[key] = "The submitted result changed. Refresh and review its current revision." }; return false
+        }
+        guard work.canReview, !item.isExecutionActive, ["accept", "reject"].contains(decision), note.utf16.count <= 2_500, !note.contains("\0") else { return false }
+        requests["activity"] = nil; loading.remove("activity")
+        let body = BotTeamReviewRequest(expectedRevision: work.revision, decision: decision, note: note.isEmpty ? nil : note)
+        let value: ReviewResponse? = await change(key, path: "/v1/bots/teams/\(item.teamId)/jobs/\(item.id)/review", body: body)
+        guard let value else { await reconcileWorkError(item); return false }
+        guard value.activity.work?.status == (decision == "accept" ? .verified : .blocked) else {
+            messages[key] = "The Mac returned an inconsistent review decision. Refresh the task before continuing."; return false
+        }
+        do { try applyWork(value.activity, replacing: item) }
+        catch { messages[key] = error.localizedDescription; return false }
+        recoveryPlans[item.id] = nil
+        await refreshActivity(); await refreshTeams()
+        return isCurrent()
+    }
+    func resumeWork(_ item: BotWorkspaceActivity, plan: BotTeamRecoveryPlan, idempotencyKey: String) async -> BotTeamRun? {
+        let key = Self.workKey(item.id)
+        guard let work = currentWork(item), work.canPlanRecovery, recoveryPlans[item.id] == plan,
+              plan.jobId == item.id, plan.expectedRevision == work.revision, plan.canResume, !plan.isExpired(),
+              CompanionClient.isSafeIdentifier(idempotencyKey) else {
+            if isCurrent() { messages[key] = "The recovery plan changed or expired. Refresh the task and prepare a new plan." }; return nil
+        }
+        requests["activity"] = nil; loading.remove("activity")
+        let body = BotTeamResumeRequest(planId: plan.id, expectedRevision: plan.expectedRevision, idempotencyKey: idempotencyKey)
+        let value: ResumeResponse? = await change(key, path: "/v1/bots/teams/\(item.teamId)/jobs/\(item.id)/resume", body: body)
+        guard let value else { await reconcileWorkError(item); return nil }
+        guard value.run.teamId == item.teamId, CompanionClient.isSafeIdentifier(value.run.id),
+              value.activity.teamId == item.teamId, value.activity.runId == value.run.id,
+              value.activity.id != item.id, CompanionClient.isSafeIdentifier(value.activity.id),
+              value.activity.work?.sourceJobId == item.id, (value.activity.work?.revision ?? 0) > 0 else {
+            messages[key] = "The Mac returned an inconsistent recovery task. Refresh its current state before continuing."; return nil
+        }
+        if let index = activity.firstIndex(where: { $0.id == value.activity.id && $0.teamId == item.teamId }) {
+            if (activity[index].work?.revision ?? 0) <= (value.activity.work?.revision ?? 0) { activity[index] = value.activity }
+        } else { activity.insert(value.activity, at: 0) }
+        recoveryPlans[item.id] = nil
+        await refreshActivity(); await refreshTeams(); await refreshChannel(item.teamId)
+        return isCurrent() ? value.run : nil
+    }
+    private func reconcileWorkError(_ item: BotWorkspaceActivity) async {
+        let key = Self.workKey(item.id), message = messages[key]
+        // A refused or unavailable plan cannot be retried implicitly. Refreshes
+        // remain GET-only and preserve an explicit, stable resume request key.
+        if [401, 403, 404, 409, 410].contains(workErrorStatus[key] ?? 0) { recoveryPlans[item.id] = nil }
+        await refreshActivity(); await refreshTeams()
+        if isCurrent() { messages[key] = message }
     }
 
     func createTeam(_ draft: BotTeamDraft) async -> Bool {

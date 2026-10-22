@@ -379,7 +379,7 @@ struct BotTeamDetailView: View {
                 Menu {
                     Button("Team details", systemImage: "person.3") { taskFocused = false; showingDetails = true }
                         .accessibilityIdentifier("showTeamDetailsButton")
-                    Button("Previous tasks", systemImage: "clock") { taskFocused = false; tasksExpanded = true; showingDetails = true }
+                    Button(workspace.workReviewSupported ? "Tasks & results" : "Previous tasks", systemImage: "checklist") { taskFocused = false; tasksExpanded = true; showingDetails = true }
                         .accessibilityIdentifier("showTeamPreviousTasksButton")
                     NotificationMuteButton(notifications: store.notifications, destination: CompanionNotificationDestination(type: "team", id: teamId))
                     Button("Refresh", systemImage: "arrow.clockwise") { Task { await workspace.refreshTeams(); await workspace.refreshChannel(teamId, reset: true) } }
@@ -449,6 +449,19 @@ struct BotTeamDetailView: View {
                         }.buttonStyle(.plain).accessibilityIdentifier("botTeamSettingsDisclosure")
                         if settingsExpanded { teamSettings(team) }
                     }
+                    if workspace.workReviewSupported {
+                        Section("Tasks & results") {
+                            let work = workspace.activity.filter { $0.teamId == teamId && $0.work != nil }
+                            ForEach(work) { item in
+                                NavigationLink {
+                                    BotTeamTaskReviewView(store: store, workspace: workspace, item: item, openChat: { showingDetails = false; openChat() })
+                                } label: { BotTeamTaskLabel(item: item) }
+                                    .accessibilityIdentifier("teamWork-" + item.id)
+                            }
+                            if work.isEmpty { Text("Task results and recovery will appear here. A finished reply still needs a result and your review.").font(.caption).foregroundStyle(.secondary) }
+                            BotWorkspaceMessage(workspace: workspace, key: "activity")
+                        }
+                    }
                     if !activeRuns.isEmpty { Section("Team work") { ForEach(activeRuns) { run in runRow(run) } } }
                     Section {
                         Button { tasksExpanded.toggle() } label: {
@@ -462,6 +475,7 @@ struct BotTeamDetailView: View {
                     BotWorkspaceMessage(workspace: workspace, key: "teams")
                 }
             }.strataList().navigationTitle("Team details").navigationBarTitleDisplayMode(.inline)
+                .task { await workspace.refreshActivity() }
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingDetails = false }.accessibilityIdentifier("closeTeamDetailsButton") } }
                 .sheet(item: $editingTeam) { team in BotTeamEditor(store: store, workspace: workspace, team: team) }
                 .confirmationDialog("Stop this team task and its delegated work?", isPresented: Binding(get: { confirmingStop != nil }, set: { if !$0 { confirmingStop = nil } })) {
@@ -633,7 +647,7 @@ struct BotTeamDetailView: View {
                 Menu {
                     if channel?.supported == true { recipientPicker(team) }
                     Button("Team details", systemImage: "person.3") { taskFocused = false; showingDetails = true }
-                    Button("Previous tasks", systemImage: "clock") { taskFocused = false; tasksExpanded = true; showingDetails = true }
+                    Button(workspace.workReviewSupported ? "Tasks & results" : "Previous tasks", systemImage: "checklist") { taskFocused = false; tasksExpanded = true; showingDetails = true }
                     if reply != nil { Button("Cancel reply", systemImage: "xmark") { reply = nil } }
                 } label: { Image(systemName: "plus").font(.system(size: 24, weight: .medium)).frame(width: 48, height: 48).strataChrome() }
                     .accessibilityLabel("Team message options").accessibilityIdentifier("teamComposerMenuButton")
@@ -680,6 +694,7 @@ struct BotTeamDetailView: View {
 private struct BotActivityView: View {
     @ObservedObject var store: CompanionStore
     @ObservedObject var workspace: BotWorkspaceStore
+    @State private var reviewingWork: BotWorkspaceActivity?
     let openChat: () -> Void
     @State private var visible = false
     @State private var supervisionFilter: BotSupervisionFilter = .all
@@ -738,16 +753,20 @@ private struct BotActivityView: View {
                                 .background(StrataTheme.grouped, in: RoundedRectangle(cornerRadius: 12))
                             VStack(alignment: .leading, spacing: 5) {
                                 Text(item.title).font(.body.weight(.semibold))
-                                StrataStatusPill(title: item.state.replacingOccurrences(of: "_", with: " ").capitalized,
+                                StrataStatusPill(title: workspace.workReviewSupported ? item.workStatusLabel : item.state.replacingOccurrences(of: "_", with: " ").capitalized,
                                     tone: ["running", "working"].contains(item.state) ? .success : ["queued", "pending"].contains(item.state) ? .attention : .neutral)
                             }
                         }
                         if let from = item.fromBotId, let to = item.toBotId { Text(botName(from) + " → " + botName(to)).font(.subheadline) }
                         if let detail = item.detail { Text(detail).font(.caption).foregroundStyle(.secondary) }
+                        if workspace.workReviewSupported, item.work != nil {
+                            Button("Results & recovery", systemImage: "checklist") { reviewingWork = item }
+                                .buttonStyle(.borderless).accessibilityIdentifier("openTeamWork-" + item.id)
+                        }
                         if let chatId = item.chatId ?? workspace.teams?.runs.first(where: { $0.id == item.runId })?.rootChatId {
                             BotSharedConversationButton(store: store, chatId: chatId, title: "Open conversation", openChat: openChat)
                         }
-                    }.padding(.vertical, 8).accessibilityIdentifier("botActivity-\(item.id)")
+                    }.padding(.vertical, 8).accessibilityElement(children: .contain).accessibilityIdentifier("botActivity-\(item.id)")
                 }
                 BotWorkspaceMessage(workspace: workspace, key: "activity")
             } header: { Text("Team activity") }
@@ -758,6 +777,10 @@ private struct BotActivityView: View {
                 Text("Open a conversation to review its current approval requests or stop that exact task.").font(.caption).foregroundStyle(.secondary)
             }
         }.strataList()
+            .sheet(item: $reviewingWork) { item in NavigationStack {
+                BotTeamTaskReviewView(store: store, workspace: workspace, item: item, openChat: { reviewingWork = nil; openChat() })
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { reviewingWork = nil }.accessibilityIdentifier("closeTeamWorkReviewButton") } }
+            } }
             .refreshable { await workspace.refreshSupervision(); await workspace.refreshActivity(); await workspace.refreshTeams(); await store.refresh(silently: true) }
             .onAppear { visible = true }
             .onDisappear { visible = false }
@@ -954,5 +977,164 @@ private struct BotWorkspaceMessage: View {
     var body: some View {
         if let message = workspace.messages[key] { Label(message, systemImage: "info.circle").font(.caption).foregroundStyle(StrataTheme.warning).accessibilityIdentifier("botWorkspaceMessage-\(key)") }
         if workspace.loading.contains(key) { ProgressView().controlSize(.small) }
+    }
+}
+
+
+private struct BotTeamTaskLabel: View {
+    let item: BotWorkspaceActivity
+    var showSummary = true
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(item.title).font(.body.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+            StrataStatusPill(title: item.workStatusLabel, tone: item.work?.status == .verified ? .success : item.work?.status == .working ? .accent : .attention)
+            if showSummary, let summary = item.work?.summary, !summary.isEmpty { Text(summary).font(.caption).foregroundStyle(.secondary).lineLimit(3) }
+        }.padding(.vertical, 5)
+    }
+}
+
+/// Every mutation in this view follows a deliberate owner tap. Opening results
+/// and inspecting a recovery plan only read the Mac's saved task state.
+private struct BotTeamTaskReviewView: View {
+    @ObservedObject var store: CompanionStore
+    @ObservedObject var workspace: BotWorkspaceStore
+    let item: BotWorkspaceActivity
+    let openChat: () -> Void
+    @State private var note = ""
+    @State private var confirmingReview: String?
+    @State private var reviewTarget: BotWorkspaceActivity?
+    @State private var resumeTarget: BotWorkspaceActivity?
+    @State private var resumePlan: BotTeamRecoveryPlan?
+    @State private var confirmingResume = false
+    @State private var idempotencyKey = UUID().uuidString
+    @State private var showEarlierResults = false
+    @Environment(\.scenePhase) private var scenePhase
+    private var current: BotWorkspaceActivity? { workspace.activity.first { $0.id == item.id && $0.teamId == item.teamId } }
+    private var work: BotTeamWork? { store.isPaired && workspace.workReviewSupported ? current?.work : nil }
+    private var key: String { BotWorkspaceStore.workKey(item.id) }
+    private var plan: BotTeamRecoveryPlan? { workspace.recoveryPlans[item.id] }
+    private var busy: Bool { workspace.mutation != nil || workspace.loading.contains(key) }
+
+    var body: some View {
+        List {
+            if let current, let work {
+                Section {
+                    BotTeamTaskLabel(item: current, showSummary: false)
+                    if let summary = work.summary, !summary.isEmpty { Text(summary).textSelection(.enabled).fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("teamWorkSummary") }
+                    if work.status == .readyForReview {
+                        Text("The bot submitted these results. Review the evidence before marking the task verified.").font(.callout).foregroundStyle(.secondary)
+                    } else if work.status == .verified {
+                        Text("You marked this submitted result verified. That decision does not grant new tool permissions.").font(.caption).foregroundStyle(.secondary)
+                    } else if let detail = current.detail, !detail.isEmpty { Text(detail).font(.callout).textSelection(.enabled) }
+                    if let chatId = current.chatId { BotSharedConversationButton(store: store, chatId: chatId, title: "Open task conversation", openChat: openChat) }
+                }
+                if !work.evidence.isEmpty {
+                    Section("Submitted evidence") { evidenceRows(work.evidence) }
+                }
+                if work.canReview {
+                    Section {
+                        if current.isExecutionActive { Text("The result was submitted, and the bot is still finishing its work. Review will be available after it stops.").font(.callout).foregroundStyle(.secondary) }
+                        TextField("Review note (optional)", text: $note, axis: .vertical).lineLimit(3...7).accessibilityIdentifier("teamWorkReviewNote")
+                        if note.utf16.count > 2_500 { Text("Keep your note under 2,500 characters.").font(.caption).foregroundStyle(StrataTheme.warning) }
+                        Button("Mark verified", systemImage: "checkmark.seal") { reviewTarget = current; confirmingReview = "accept" }
+                            .disabled(busy || current.isExecutionActive || note.utf16.count > 2_500).accessibilityIdentifier("verifyTeamWorkButton")
+                        Button("Request changes", systemImage: "arrow.uturn.backward") { reviewTarget = current; confirmingReview = "reject" }
+                            .disabled(busy || current.isExecutionActive || note.utf16.count > 2_500).accessibilityIdentifier("requestTeamWorkChangesButton")
+                    } header: { Text("Your review") } footer: { Text("Requesting changes records your feedback. It does not restart the task.") }
+                }
+                if work.canPlanRecovery {
+                    Section {
+                        Button("Prepare recovery", systemImage: "arrow.clockwise") { Task { await workspace.refreshRecovery(current) } }
+                            .disabled(busy).accessibilityIdentifier("prepareTeamRecoveryButton")
+                        Text("Review the saved context and exact working computer before you resume this one unfinished task.").font(.caption).foregroundStyle(.secondary)
+                    } header: { Text("Recovery") }
+                } else if work.recoveryJobId != nil {
+                    Section("Recovery") { Text("A continuation was already created for this task. Its results appear in the team's task list.").font(.callout).accessibilityIdentifier("teamWorkAlreadyRecovered") }
+                }
+                if let plan { recoverySection(plan, current: current) }
+                if !work.reviewHistory.isEmpty {
+                    Section("Owner review history") {
+                        ForEach(Array(work.reviewHistory.enumerated()), id: \.offset) { _, review in
+                            VStack(alignment: .leading, spacing: 6) {
+                                Label(review.decision == "accept" ? "Marked verified" : "Changes requested", systemImage: review.decision == "accept" ? "checkmark.seal" : "arrow.uturn.backward").font(.subheadline.weight(.medium))
+                                if let note = review.note, !note.isEmpty { Text(note).font(.callout).textSelection(.enabled) }
+                            }.padding(.vertical, 4)
+                        }
+                    }
+                }
+                if work.resultHistory.count > 1 {
+                    Section {
+                        DisclosureGroup("Earlier submitted results", isExpanded: $showEarlierResults) {
+                            ForEach(work.resultHistory.dropLast()) { result in
+                                VStack(alignment: .leading, spacing: 10) { Text(result.summary).textSelection(.enabled); evidenceRows(result.evidence) }.padding(.vertical, 8)
+                            }
+                        }
+                    }
+                }
+            } else {
+                Section { Text("This task is no longer available, or the Mac no longer supports result review. Refresh before continuing.").foregroundStyle(.secondary) }
+            }
+            if busy { Section { ProgressView("Updating task…") } }
+            if let message = workspace.messages[key] { Section { Text(message).foregroundStyle(StrataTheme.warning).fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("teamWorkError") } }
+        }.strataList().navigationTitle("Task results").navigationBarTitleDisplayMode(.inline)
+            .accessibilityIdentifier("teamWorkReviewView")
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Refresh", systemImage: "arrow.clockwise") { Task { await workspace.refreshTeams(); await workspace.refreshActivity() } }.disabled(busy).accessibilityIdentifier("refreshTeamWorkButton") } }
+            .task { await workspace.refreshActivity() }
+            .onChange(of: plan?.id) { _, _ in idempotencyKey = UUID().uuidString }
+            .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await workspace.refreshTeams(); await workspace.refreshActivity() } } }
+            .confirmationDialog(confirmingReview == "accept" ? "Mark this submitted result verified?" : "Request changes to this submitted result?", isPresented: Binding(get: { confirmingReview != nil }, set: { if !$0 { confirmingReview = nil } })) {
+                if let decision = confirmingReview, let target = reviewTarget {
+                    Button(decision == "accept" ? "Mark verified" : "Request changes") {
+                        confirmingReview = nil
+                        Task { _ = await workspace.reviewWork(target, decision: decision, note: note) }
+                    }.accessibilityIdentifier("confirmTeamWorkReviewButton")
+                }
+            } message: { Text("Your review applies only to the result revision currently shown.") }
+            .confirmationDialog("Resume this unfinished task?", isPresented: $confirmingResume) {
+                if let target = resumeTarget, let plan = resumePlan {
+                    Button("Resume this task") { Task { _ = await workspace.resumeWork(target, plan: plan, idempotencyKey: idempotencyKey) } }.accessibilityIdentifier("confirmTeamWorkResumeButton")
+                }
+            } message: { Text("This queues only the task shown above, using its saved context. It does not replay already completed teammate assignments.") }
+    }
+    private func evidenceRows(_ evidence: [BotTeamEvidence]) -> some View {
+        ForEach(Array(evidence.enumerated()), id: \.offset) { _, evidence in
+            VStack(alignment: .leading, spacing: 6) {
+                Label(evidence.label, systemImage: evidence.icon).font(.subheadline.weight(.semibold))
+                Text(evidence.detail).font(.callout).foregroundStyle(.secondary).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            }.padding(.vertical, 5)
+        }
+    }
+    private func recoverySection(_ plan: BotTeamRecoveryPlan, current: BotWorkspaceActivity) -> some View {
+        Section {
+            Text(plan.summary).textSelection(.enabled).accessibilityIdentifier("teamRecoverySummary")
+            if let review = work?.reviewHistory.last, review.decision == "reject", let note = review.note, !note.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("Requested changes", systemImage: "arrow.uturn.backward").font(.subheadline.weight(.semibold))
+                    Text(note).font(.callout).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                }.accessibilityIdentifier("teamRecoveryRequestedChanges")
+            }
+            LabeledContent("Bot", value: plan.botName)
+            LabeledContent("Provider", value: plan.provider)
+            LabeledContent("Model", value: plan.model.isEmpty ? "Provider default" : plan.model)
+            LabeledContent("Computer", value: plan.computerLabel)
+            VStack(alignment: .leading, spacing: 5) { Text("Working folder").font(.caption).foregroundStyle(.secondary); Text(plan.workspace).font(.callout).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
+                .accessibilityIdentifier("teamRecoveryWorkspace")
+            ForEach(Array(plan.steps.enumerated()), id: \.offset) { index, step in Text("\(index + 1). \(step)").font(.callout).fixedSize(horizontal: false, vertical: true) }
+            ForEach(Array(plan.completedReports.enumerated()), id: \.offset) { _, report in
+                VStack(alignment: .leading, spacing: 7) {
+                    Label("Saved teammate result", systemImage: "doc.text").font(.subheadline.weight(.medium))
+                    Text(report.summary).font(.callout).textSelection(.enabled)
+                    BotSharedConversationButton(store: store, chatId: report.chatId, title: "Open saved result", openChat: openChat)
+                }
+            }
+            if let reason = plan.blockedReason, !reason.isEmpty { Text(reason).font(.callout).foregroundStyle(StrataTheme.warning).accessibilityIdentifier("teamRecoveryBlockedReason") }
+            TimelineView(.periodic(from: .now, by: 1)) { clock in
+                let expired = plan.isExpired(at: clock.date)
+                if expired { Text("This recovery plan expired. Prepare a fresh plan before resuming.").font(.caption).foregroundStyle(StrataTheme.warning) }
+                Button("Resume this task", systemImage: "play.fill") { resumeTarget = current; resumePlan = plan; confirmingResume = true }
+                    .disabled(busy || !plan.canResume || expired || work?.canPlanRecovery != true || work?.revision != plan.expectedRevision)
+                    .accessibilityIdentifier("resumeTeamWorkButton")
+            }
+        } header: { Text("Recovery plan") } footer: { Text("Resume is explicit. Tool approvals and computer permissions still apply.") }
     }
 }

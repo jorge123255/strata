@@ -1221,6 +1221,62 @@ final class CompanionSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testSubmittedTaskReviewAndExplicitRecoveryWithoutReplayingFinishedWork() async throws {
+        let control = try pairWorkspaceFixture()
+        _ = try await fixtureControl(control, action: "appearance-dark")
+        try selectWorkspace("Activity")
+        try tapWorkspace(app.buttons["openTeamWork-tj_00000000-0000-4000-8000-000000000001"])
+        try require(app.navigationBars["Task results"])
+        let summary = app.staticTexts["teamWorkSummary"]; try require(summary)
+        XCTAssertEqual(summary.label, "The parser fix is ready for your review.")
+        let verify = app.buttons["verifyTeamWorkButton"]
+        try tapWorkspace(verify, performTap: false)
+        XCTAssertTrue(verify.isEnabled)
+        let before = try await fixtureControl(control, action: "state")
+        let initialCalls = try XCTUnwrap(before["calls"] as? [[String: Any]])
+        XCTAssertTrue(initialCalls.allSatisfy { $0["method"] as? String == "GET" }, "Opening submitted evidence grants no completion or execution authority.")
+        attachScreenshot("Submitted results — owner review and evidence")
+        verify.tap()
+        let verifyConfirmation = app.buttons.matching(identifier: "confirmTeamWorkReviewButton").firstMatch; try require(verifyConfirmation); verifyConfirmation.tap()
+        let verified = app.staticTexts["Marked verified"]; try tapWorkspace(verified, performTap: false)
+        XCTAssertFalse(app.buttons["verifyTeamWorkButton"].exists)
+        attachScreenshot("Task result — explicitly verified by owner")
+        app.buttons["closeTeamWorkReviewButton"].tap()
+        try tapWorkspace(app.buttons["openTeamWork-tj_00000000-0000-4000-8000-000000000002"])
+        try tapWorkspace(app.buttons["prepareTeamRecoveryButton"])
+        let recoverySummary = app.staticTexts["teamRecoverySummary"]; try tapWorkspace(recoverySummary, performTap: false)
+        XCTAssertEqual(recoverySummary.label, "Finish the renderer using the retained parser result.")
+        try tapWorkspace(app.descendants(matching: .any).matching(identifier: "teamRecoveryWorkspace").firstMatch, performTap: false)
+        let resume = app.buttons["resumeTeamWorkButton"]; try tapWorkspace(resume, performTap: false)
+        XCTAssertTrue(resume.isEnabled)
+        let prepared = try await fixtureControl(control, action: "state")
+        let preparedCalls = try XCTUnwrap(prepared["calls"] as? [[String: Any]])
+        XCTAssertEqual(preparedCalls.filter { $0["method"] as? String != "GET" }.count, 1, "Preparing recovery never queues a continuation.")
+        XCTAssertTrue(preparedCalls.contains { ($0["path"] as? String)?.hasSuffix("/tj_00000000-0000-4000-8000-000000000002/recovery") == true && $0["method"] as? String == "GET" })
+        attachScreenshot("Recovery plan — saved computer, working folder and completed teammate work")
+        resume.tap()
+        let resumeConfirmation = app.buttons.matching(identifier: "confirmTeamWorkResumeButton").firstMatch; try require(resumeConfirmation); resumeConfirmation.tap()
+        let recovered = app.staticTexts["teamWorkAlreadyRecovered"]; try tapWorkspace(recovered, performTap: false)
+        XCTAssertFalse(app.buttons["resumeTeamWorkButton"].exists)
+        let final = try await fixtureControl(control, action: "state")
+        let calls = try XCTUnwrap(final["calls"] as? [[String: Any]])
+        let writes = calls.filter { $0["method"] as? String != "GET" }
+        XCTAssertEqual(writes.count, 2)
+        XCTAssertTrue(writes[0]["path"] as? String == "/api/bots/teams/" + (try XCTUnwrap((final["reviewTasks"] as? [[String: Any]])?.first?["teamId"] as? String)) + "/jobs/tj_00000000-0000-4000-8000-000000000001/review")
+        XCTAssertTrue((writes[1]["path"] as? String)?.hasSuffix("/jobs/tj_00000000-0000-4000-8000-000000000002/resume") == true)
+        let resumeBody = try XCTUnwrap(writes[1]["body"] as? [String: Any])
+        XCTAssertEqual(Set(resumeBody.keys), Set(["planId", "expectedRevision", "idempotencyKey"]))
+        XCTAssertEqual(resumeBody["expectedRevision"] as? Int, 1)
+        XCTAssertFalse((resumeBody["idempotencyKey"] as? String ?? "").isEmpty)
+        let savedTasks = try XCTUnwrap(final["reviewTasks"] as? [[String: Any]])
+        XCTAssertEqual(savedTasks.count, 3)
+        XCTAssertEqual((savedTasks[0]["work"] as? [String: Any])?["status"] as? String, "verified")
+        XCTAssertEqual((savedTasks[2]["work"] as? [String: Any])?["sourceJobId"] as? String, "tj_00000000-0000-4000-8000-000000000002")
+        XCTAssertFalse(calls.contains { ($0["path"] as? String)?.hasSuffix("/messages") == true || ($0["path"] as? String)?.contains("/computer/") == true })
+        attachScreenshot("Recovery queued — original evidence and finished work retained")
+    }
+
+    @MainActor
     func testContinuousTeamWorkHasNoNumericStopLimits() async throws {
         let control = try pairWorkspaceFixture(), initial = try await fixtureControl(control, action: "state")
         let members = try XCTUnwrap(initial["roomMembers"] as? [[String: Any]])
@@ -1611,7 +1667,8 @@ final class CompanionSmokeTests: XCTestCase {
             let navigation = app.navigationBars.firstMatch
             let top = max(window.minY + 60, navigation.exists ? navigation.frame.maxY + 8 : window.minY + 60)
             var bottom = window.maxY - 24
-            if app.tabBars.firstMatch.exists { bottom = min(bottom, app.tabBars.firstMatch.frame.minY - 18) }
+            let taskReviewSheet = app.buttons["closeTeamWorkReviewButton"].exists
+            if !taskReviewSheet, app.tabBars.firstMatch.exists { bottom = min(bottom, app.tabBars.firstMatch.frame.minY - 18) }
             if app.keyboards.firstMatch.exists { bottom = min(bottom, app.keyboards.firstMatch.frame.minY - 12) }
             let teamFooter = app.otherElements["teamEditorFooter"]
             if teamFooter.exists { bottom = min(bottom, teamFooter.frame.minY - 12) }
@@ -1619,11 +1676,11 @@ final class CompanionSmokeTests: XCTestCase {
             // from that overlay cannot move the underlying list.
             let targetIdentifier = element.exists ? element.identifier : ""
             let rosterMenu = app.buttons["botsWorkspaceMenuButton"]
-            if rosterMenu.exists, !["botRosterSearchInput", "botsWorkspaceMenuButton"].contains(targetIdentifier) {
+            if !taskReviewSheet, rosterMenu.exists, !["botRosterSearchInput", "botsWorkspaceMenuButton"].contains(targetIdentifier) {
                 bottom = min(bottom, rosterMenu.frame.minY - 12)
             }
             let teamInput = app.descendants(matching: .any).matching(identifier: "botTeamTaskInput").firstMatch
-            if !app.buttons["closeTeamDetailsButton"].exists, !app.buttons["confirmBotTeamButton"].exists, teamInput.exists, !["botTeamTaskInput", "startBotTeamTaskButton", "teamChannelRecipientPicker", "teamComposerMenuButton"].contains(targetIdentifier) {
+            if !taskReviewSheet, !app.buttons["closeTeamDetailsButton"].exists, !app.buttons["confirmBotTeamButton"].exists, teamInput.exists, !["botTeamTaskInput", "startBotTeamTaskButton", "teamChannelRecipientPicker", "teamComposerMenuButton"].contains(targetIdentifier) {
                 bottom = min(bottom, teamInput.frame.minY - 54)
             }
             let frame = element.exists ? element.frame : .zero, y = frame.midY

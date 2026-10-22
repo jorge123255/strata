@@ -24,6 +24,18 @@ Assignments appear as compact cards. Open one to read its full instructions. Lon
 
 **Activity** shows queued, running, completed, failed, interrupted and stopped work. Open a task to follow its actual chat, thinking, tool cards and approvals. **Stop team** cancels queued assignments and requests cancellation of its running work and descendants. Strata shows unconfirmed cleanup instead of reporting success. Restarted work remains in history and is marked interrupted; Strata does not replay it automatically.
 
+## Review results and continue unfinished tasks
+
+In a team's **Work** tab, **Tasks & results** shows the actual bot assignments. **Working** means the task is still running. Bots submit a summary and labeled files, checks, links or notes as evidence. A submitted result becomes **Ready for review**. The evidence is the bot's report; Strata does not claim that a provider ending its response proves the work succeeded.
+
+Choose **Review task** to read the complete result. Check the deliverables, then choose **Mark verified**, or **Request changes** with a correction note. Verification records your review of that exact result. It starts no model work. Earlier results and reviews remain attached to the task. You can review a finished task while independent teammates keep working; its own delegated work must finish first.
+
+For a tracked task that is **Blocked** or **Interrupted**, choose **Review recovery** on Mac or iPhone. Review the saved bot, model, computer, working folder, requested corrections and earlier completed reports. Opening this preview starts no work. Choose **Resume unfinished work** to create one new continuation for that selected task. It begins by inspecting current files and reported progress, with the original task scope and release holds retained. Native provider checkpoints and previous tool calls are not replayed automatically. Other failed tasks and completed teammates do not restart.
+
+Recovery checks the original saved settings and current access again before starting. Changed team instructions, membership, model, folder, connectors or skills require a new explicit request with the current settings. Unconfirmed cleanup or a computer under human control also blocks recovery. A failed response can be retried with the same recovery selection without duplicating its continuation.
+
+Older tasks retain their original history. They were created without the new access receipt, so they are not automatically marked verified or given invented recovery settings. Read their conversation and send a new explicit request to continue that older work. Individual casual bot chats remain conversations; these task states apply to concrete assignments in Teams.
+
 ## Change members, computer and working folder
 
 Open the team’s **Team details** menu. On Mac, choose **Edit members**, **Change** beside **Computer & working folder**, or **Team settings**. On iPhone, expand **Team settings** and choose **Edit team members & settings**. Add or remove members and choose the coordinator there. Earlier public messages and completed work stay in the same team when its roster changes. Members keep their private chats, memory, credentials and identities; joining a team does not share those with teammates.

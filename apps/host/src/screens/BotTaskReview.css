@@ -1,0 +1,12 @@
+.bot-task-review { display: grid; gap: 1rem; min-width: 0; }
+.bot-task-review p,.bot-task-review dd,.bot-task-review strong { overflow-wrap: anywhere; }
+.bot-task-text,.bot-task-evidence p { white-space: pre-wrap; }
+.bot-task-review p { margin: 0; line-height: 1.55; }
+.bot-task-evidence { display: grid; gap: .4rem; padding: 1rem; border: 1px solid var(--st-line-soft); border-radius: 1rem; min-width: 0; background: var(--st-surface-2); }
+.bot-task-evidence small { color: var(--st-ink-muted); }
+.bot-task-review dl { display: grid; grid-template-columns: max-content minmax(0,1fr); gap: .6rem 1rem; }
+.bot-task-review dd { margin: 0; }
+.bot-task-review textarea { min-height: 5rem; }
+.bot-task-review details { min-width: 0; }
+
+.bot-task-summary { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; overflow-wrap: anywhere; }

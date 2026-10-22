@@ -2810,3 +2810,225 @@ extension BotWorkspaceTests {
         XCTAssertEqual(try decode(value, as: BotTeamRun.self).workTurns, 0)
     }
 }
+
+@MainActor
+final class TeamWorkReviewTests: XCTestCase {
+    private let path = "/v1/bots/teams/team_fixture/jobs/job_fixture"
+    private func decode<T: Decodable>(_ value: [String: Any], as type: T.Type) throws -> T {
+        try JSONDecoder().decode(type, from: JSONSerialization.data(withJSONObject: value))
+    }
+    private func task(status: String = "ready_for_review", revision: Int = 1, recovered: Bool = false) -> [String: Any] {
+        var work: [String: Any] = ["status": status, "revision": revision, "summary": "Implemented the fix and checked the result.",
+            "evidence": [["kind": "test", "label": "Focused checks", "detail": "8 checks passed. Owner review is still required."]],
+            "resultHistory": [["id": "result_fixture", "summary": "Implemented the fix and checked the result.", "evidence": [["kind": "file", "label": "Changed file", "detail": "/workspace/Sources/Fix.swift"]], "submittedAt": "2026-10-21T01:00:00Z", "botId": "bot_coder"]], "reviewHistory": []]
+        if recovered { work["recoveryJobId"] = "job_recovery" }
+        return ["id": "job_fixture", "type": "assignment", "teamId": "team_fixture", "runId": "run_fixture", "botId": "bot_coder", "chatId": "s_fixture", "title": "Fix the issue", "state": "completed", "work": work]
+    }
+    private func plan(revision: Int = 1, canResume: Bool = true, expiresAt: String = "2099-10-21T01:00:00.000Z") -> [String: Any] {
+        ["id": "plan_fixture", "jobId": "job_fixture", "sourceRunId": "run_fixture", "expectedRevision": revision,
+         "expiresAt": expiresAt, "canResume": canResume, "botId": "bot_coder", "botName": "Coder", "provider": "codex", "model": "configured-model", "computerLabel": "Saved computer", "workspace": "/workspace/project with spaces", "summary": "Continue the selected unfinished assignment.", "steps": ["Read the retained result.", "Complete only the unfinished work."], "completedReports": [["jobId": "job_finished", "chatId": "s_completed", "summary": "Tests already passed for the other assignment."]]]
+    }
+    private func recoveryRun() -> [String: Any] {
+        ["id": "run_recovery", "teamId": "team_fixture", "rootChatId": "s_recovery", "rootBotId": "bot_coder", "state": "queued", "consumedTurns": 0]
+    }
+    private func snapshot(_ task: [String: Any], supported: Bool = true) -> [String: Any] { ["activity": [task], "teamWorkReviewSupported": supported] }
+    private var teams: [String: Any] { ["teams": [], "runs": [], "teamWorkReviewSupported": true] }
+
+    func testTransportCompletedDoesNotImplyVerifiedAndOldHostsKeepOptionalWork() throws {
+        var legacy = task(); legacy["work"] = nil
+        XCTAssertNil(try decode(legacy, as: BotWorkspaceActivity.self).work)
+        let submitted = try decode(task(), as: BotWorkspaceActivity.self)
+        XCTAssertEqual(submitted.state, "completed")
+        XCTAssertEqual(submitted.workStatusLabel, "Ready for review")
+        XCTAssertTrue(submitted.work?.canReview == true)
+        XCTAssertEqual(submitted.work?.evidence.first?.detail, "8 checks passed. Owner review is still required.")
+        XCTAssertEqual(try decode(task(status: "verified"), as: BotWorkspaceActivity.self).workStatusLabel, "Verified")
+        XCTAssertFalse(try decode(task(status: "verified"), as: BotWorkspaceActivity.self).work?.canReview == true)
+        let old = try decode(["teams": [], "runs": []], as: BotTeamsSnapshot.self)
+        XCTAssertNil(old.teamWorkReviewSupported)
+        for bad: Any in [1, "true", [true]] {
+            XCTAssertThrowsError(try decode(["teams": [], "runs": [], "teamWorkReviewSupported": bad], as: BotTeamsSnapshot.self))
+        }
+    }
+    func testOpeningResultsAndRecoveryReadsOnlyAndKeepsExactContext() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { request in request.url!.path == self.path + "/recovery" ? ["plan": self.plan()] : self.snapshot(self.task(status: "interrupted")) }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore()
+        await workspace.refreshActivity()
+        let item = try XCTUnwrap(workspace.activity.first)
+        await workspace.refreshRecovery(item)
+        let saved = try XCTUnwrap(workspace.recoveryPlans[item.id])
+        XCTAssertEqual(saved.workspace, "/workspace/project with spaces")
+        XCTAssertEqual(saved.completedReports.first?.chatId, "s_completed")
+        XCTAssertFalse(saved.isExpired())
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+        XCTAssertEqual(fixture.requests.map(\.path), ["/v1/bots/activity", path + "/recovery"])
+    }
+    func testMissingCapabilityRejectsReviewAndRecoveryWithoutRequests() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { _ in self.snapshot(self.task(), supported: false) }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(); await workspace.refreshActivity()
+        let item = try XCTUnwrap(workspace.activity.first), before = fixture.requests.count
+        let reviewed = await workspace.reviewWork(item, decision: "accept")
+        await workspace.refreshRecovery(item)
+        XCTAssertFalse(reviewed); XCTAssertEqual(fixture.requests.count, before)
+    }
+    func testExplicitReviewBindsRevisionAndDoesNotResumeOrMessage() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }; var revision = 1
+        fixture.respond { request in
+            if request.url!.path == self.path + "/review" { revision = 2; return ["activity": self.task(status: "verified", revision: revision)] }
+            if request.url!.path == "/v1/bots/teams" { return self.teams }
+            return self.snapshot(self.task(status: revision == 1 ? "ready_for_review" : "verified", revision: revision))
+        }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(); await workspace.refreshActivity()
+        let item = try XCTUnwrap(workspace.activity.first)
+        let reviewed = await workspace.reviewWork(item, decision: "accept", note: "Checked the changed file and tests.")
+        XCTAssertTrue(reviewed); XCTAssertEqual(workspace.activity.first?.work?.status, .verified)
+        let writes = fixture.requests.filter { $0.method != "GET" }; XCTAssertEqual(writes.count, 1)
+        XCTAssertEqual(writes.first?.path, path + "/review")
+        XCTAssertEqual(writes.first?.jsonBody?["expectedRevision"] as? Int, 1)
+        XCTAssertEqual(writes.first?.jsonBody?["decision"] as? String, "accept")
+        XCTAssertEqual(writes.first?.jsonBody?["note"] as? String, "Checked the changed file and tests.")
+        let stale = await workspace.reviewWork(item, decision: "reject")
+        XCTAssertFalse(stale); XCTAssertEqual(fixture.requests.filter { $0.method != "GET" }.count, 1)
+    }
+    func testSubmittedResultCannotBeReviewedWhileItsExecutionIsStillActive() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        var active = task(); active["state"] = "running"
+        fixture.respond { _ in self.snapshot(active) }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(); await workspace.refreshActivity()
+        let item = try XCTUnwrap(workspace.activity.first)
+        XCTAssertTrue(item.isExecutionActive)
+        let accepted = await workspace.reviewWork(item, decision: "accept")
+        let rejected = await workspace.reviewWork(item, decision: "reject")
+        XCTAssertFalse(accepted); XCTAssertFalse(rejected)
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+    }
+    func testRequestChangesRecordsFeedbackAndRetainsEvidenceWithoutRestarting() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }; var changed = false
+        fixture.respond { request in
+            if request.url!.path.hasSuffix("/review") { changed = true; return ["activity": self.task(status: "blocked", revision: 2)] }
+            if request.url!.path == "/v1/bots/teams" { return self.teams }
+            return self.snapshot(self.task(status: changed ? "blocked" : "ready_for_review", revision: changed ? 2 : 1))
+        }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(); await workspace.refreshActivity()
+        let item = try XCTUnwrap(workspace.activity.first), evidence = item.work?.evidence
+        let changedResult = await workspace.reviewWork(item, decision: "reject", note: "Please include the missing reproduction check.")
+        XCTAssertTrue(changedResult); XCTAssertEqual(workspace.activity.first?.work?.status, .blocked)
+        XCTAssertEqual(workspace.activity.first?.work?.evidence, evidence)
+        let writes = fixture.requests.filter { $0.method != "GET" }; XCTAssertEqual(writes.count, 1)
+        XCTAssertEqual(writes[0].jsonBody?["decision"] as? String, "reject")
+        XCTAssertFalse(fixture.requests.contains { $0.path.hasSuffix("/resume") || $0.path.hasSuffix("/messages") })
+    }
+    func testUnknownResumeResponseCanRetryOnlySamePlanAndIdempotencyWithoutAutoRetry() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { request in
+            if request.url!.path.hasSuffix("/recovery") { return ["plan": self.plan()] }
+            if request.url!.path == "/v1/bots/teams" { return self.teams }
+            return self.snapshot(self.task(status: "interrupted"))
+        }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(); await workspace.refreshActivity()
+        let item = try XCTUnwrap(workspace.activity.first); await workspace.refreshRecovery(item)
+        let prepared = try XCTUnwrap(workspace.recoveryPlans[item.id]), pending = fixture.hold(path + "/resume")
+        let first = Task { await workspace.resumeWork(item, plan: prepared, idempotencyKey: "stable_retry") }
+        await fulfillment(of: [pending.requested], timeout: 2)
+        pending.finish(["error": "The response is unavailable. Check the current task before retrying."], status: 503)
+        let result = await first.value; XCTAssertNil(result)
+        XCTAssertEqual(workspace.recoveryPlans[item.id], prepared)
+        XCTAssertEqual(fixture.requests.filter { $0.method != "GET" }.count, 1)
+        fixture.release(path + "/resume")
+        let retry = fixture.hold(path + "/resume")
+        let second = Task { await workspace.resumeWork(item, plan: prepared, idempotencyKey: "stable_retry") }
+        await fulfillment(of: [retry.requested], timeout: 2)
+        retry.finish(["error": "The task was already recovered. Refresh the task."], status: 409)
+        _ = await second.value
+        let writes = fixture.requests.filter { $0.method != "GET" }
+        XCTAssertEqual(writes.count, 2)
+        XCTAssertEqual(writes[0].jsonBody?["idempotencyKey"] as? String, writes[1].jsonBody?["idempotencyKey"] as? String)
+        XCTAssertEqual(writes[0].jsonBody?["planId"] as? String, writes[1].jsonBody?["planId"] as? String)
+        XCTAssertNil(workspace.recoveryPlans[item.id])
+    }
+    func testReviewRejectsForgedDecisionOversizeNoteAndUnknownTask() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { _ in self.snapshot(self.task()) }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(); await workspace.refreshActivity()
+        var item = try XCTUnwrap(workspace.activity.first)
+        let badDecision = await workspace.reviewWork(item, decision: "autoverify")
+        let tooLong = await workspace.reviewWork(item, decision: "reject", note: String(repeating: "😀", count: 1_251))
+        let nullNote = await workspace.reviewWork(item, decision: "accept", note: "bad\0note")
+        item.teamId = "../another"
+        let otherTeam = await workspace.reviewWork(item, decision: "accept")
+        XCTAssertFalse(badDecision); XCTAssertFalse(tooLong); XCTAssertFalse(nullNote); XCTAssertFalse(otherTeam)
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+    }
+    func testStaleRecoveryPlanAndExpiredPlanCannotResume() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }; var response = plan(revision: 2)
+        fixture.respond { request in request.url!.path.hasSuffix("/recovery") ? ["plan": response] : self.snapshot(self.task(status: "interrupted")) }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(); await workspace.refreshActivity()
+        let item = try XCTUnwrap(workspace.activity.first); await workspace.refreshRecovery(item)
+        XCTAssertNil(workspace.recoveryPlans[item.id]); XCTAssertNotNil(workspace.messages[BotWorkspaceStore.workKey(item.id)])
+        response = plan(expiresAt: "2000-01-01T00:00:00Z"); await workspace.refreshRecovery(item)
+        let expired = try XCTUnwrap(workspace.recoveryPlans[item.id]); XCTAssertTrue(expired.isExpired())
+        let resumed = await workspace.resumeWork(item, plan: expired, idempotencyKey: "phone_fixture")
+        XCTAssertNil(resumed); XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+        var invalid = expired; invalid.expiresAt = "malformed"; XCTAssertTrue(invalid.isExpired())
+    }
+    func testExplicitResumeUsesOnlySelectedTaskPlanAndStableIdempotency() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }; var recovered = false
+        fixture.respond { request in
+            if request.url!.path.hasSuffix("/recovery") { return ["plan": self.plan()] }
+            if request.url!.path.hasSuffix("/resume") {
+                recovered = true
+                var continuation = self.task(status: "working"), work = continuation["work"] as! [String: Any]
+                continuation["id"] = "job_recovery"; continuation["runId"] = "run_recovery"; continuation["chatId"] = "s_recovery"
+                work["sourceJobId"] = "job_fixture"; continuation["work"] = work
+                return ["run": self.recoveryRun(), "activity": continuation]
+            }
+            if request.url!.path == "/v1/bots/teams" { return self.teams }
+            return self.snapshot(self.task(status: "interrupted", revision: recovered ? 2 : 1, recovered: recovered))
+        }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(); await workspace.refreshActivity()
+        let item = try XCTUnwrap(workspace.activity.first); await workspace.refreshRecovery(item)
+        let prepared = try XCTUnwrap(workspace.recoveryPlans[item.id])
+        let resumed = await workspace.resumeWork(item, plan: prepared, idempotencyKey: "phone_recovery_fixture")
+        XCTAssertEqual(resumed?.id, "run_recovery"); XCTAssertNil(workspace.recoveryPlans[item.id])
+        let writes = fixture.requests.filter { $0.method != "GET" }; XCTAssertEqual(writes.count, 1)
+        XCTAssertEqual(writes.first?.path, path + "/resume")
+        XCTAssertEqual(Set(writes.first?.jsonBody?.keys.map { $0 } ?? []), Set(["planId", "expectedRevision", "idempotencyKey"]))
+        XCTAssertEqual(writes.first?.jsonBody?["planId"] as? String, "plan_fixture")
+        XCTAssertEqual(writes.first?.jsonBody?["expectedRevision"] as? Int, 1)
+        XCTAssertEqual(writes.first?.jsonBody?["idempotencyKey"] as? String, "phone_recovery_fixture")
+        let repeated = await workspace.resumeWork(item, plan: prepared, idempotencyKey: "phone_recovery_fixture")
+        XCTAssertNil(repeated); XCTAssertEqual(fixture.requests.filter { $0.method != "GET" }.count, 1)
+    }
+    func testConflictClearsPlanRefreshesReadOnlyAndDoesNotAutoRetry() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { request in
+            if request.url!.path.hasSuffix("/recovery") { return ["plan": self.plan()] }
+            if request.url!.path == "/v1/bots/teams" { return self.teams }
+            return self.snapshot(self.task(status: "interrupted"))
+        }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(); await workspace.refreshActivity()
+        let item = try XCTUnwrap(workspace.activity.first); await workspace.refreshRecovery(item)
+        let prepared = try XCTUnwrap(workspace.recoveryPlans[item.id]), refused = fixture.hold(path + "/resume")
+        let action = Task { await workspace.resumeWork(item, plan: prepared, idempotencyKey: "phone_conflict") }
+        await fulfillment(of: [refused.requested], timeout: 2)
+        refused.finish(["error": "The task changed. Prepare a fresh recovery plan."], status: 409)
+        let result = await action.value
+        XCTAssertNil(result); XCTAssertNil(workspace.recoveryPlans[item.id])
+        XCTAssertTrue(workspace.messages[BotWorkspaceStore.workKey(item.id)]?.contains("changed") == true)
+        XCTAssertEqual(fixture.requests.filter { $0.method != "GET" }.count, 1)
+    }
+    func testRevokedPairingCannotPublishLateRecoveryOrReview() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { _ in self.snapshot(self.task(status: "interrupted")) }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(); await workspace.refreshActivity()
+        let item = try XCTUnwrap(workspace.activity.first), pending = fixture.hold(path + "/recovery")
+        let reading = Task { await workspace.refreshRecovery(item) }
+        await fulfillment(of: [pending.requested], timeout: 2)
+        store.forgetMac(); pending.finish(["plan": plan()]); await reading.value
+        XCTAssertNil(workspace.recoveryPlans[item.id]); XCTAssertEqual(fixture.deletedConnections, 1)
+        let rejected = await workspace.reviewWork(item, decision: "accept")
+        XCTAssertFalse(rejected); XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+    }
+}
