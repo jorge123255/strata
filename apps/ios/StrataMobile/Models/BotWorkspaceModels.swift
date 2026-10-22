@@ -270,6 +270,7 @@ struct BotTeamWorkflow: Decodable, Identifiable, Equatable {
     var canStop: Bool { hasValidProof && phase.isActive }
     var canReview: Bool { hasValidProof && phase == .awaitingReview }
     var canContinue: Bool { hasValidProof && canResume && [.blocked, .interrupted, .stopped].contains(phase) }
+    var showsCurrentEvaluation: Bool { [.awaitingReview, .completed].contains(phase) }
     var hasValidProof: Bool {
         guard Self.validID(id, prefix: "wf_"), CompanionClient.isSafeIdentifier(teamId),
               [plannerId, builderId, evaluatorId].allSatisfy(CompanionClient.isSafeIdentifier), builderId != evaluatorId,
@@ -327,6 +328,52 @@ struct BotTeamWorkflow: Decodable, Identifiable, Equatable {
     }
     static func validText(_ value: String, maximum: Int, empty: Bool = true) -> Bool {
         value.utf16.count <= maximum && !value.contains("\0") && (empty || !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+}
+
+/// Presentation only: workflow stages never count as ordinary task completion.
+struct BotTeamWorkflowWorkOverview {
+    var working: [BotTeamWorkflow]
+    var attention: [BotTeamWorkflow]
+    var history: [BotTeamWorkflow]
+    private var labels: [String: String]
+    init(_ rows: [BotTeamWorkflow], teamId: String, supervision: [BotSupervisionSession] = []) {
+        working = []; attention = []; history = []; labels = [:]
+        for row in rows where row.teamId == teamId && row.hasValidProof {
+            let current = row.steps.last
+            let session = current?.chatId.flatMap { chat in supervision.first { $0.id == chat && $0.botId == current?.botId && $0.teamId == teamId } }
+            let activeStep = current?.state == .pending || current?.state == .running
+            let waiting = activeStep && (session?.state == .error || session?.state == .approval && (session?.approvalCount ?? 0) > 0)
+            labels[row.id] = row.phase.isActive && waiting ? session?.statusLabel : row.phase == .stopping && row.blockedReason?.isEmpty == false ? "Cleanup needs attention" : row.phase.label
+            if [.awaitingReview, .blocked, .interrupted].contains(row.phase) || row.phase.isActive && waiting || row.phase == .stopping && row.blockedReason?.isEmpty == false { attention.append(row) }
+            else if row.phase.isActive { working.append(row) }
+            else { history.append(row) }
+        }
+    }
+    var summary: String { "\(working.count) working · \(attention.count) need you" }
+    func statusLabel(_ row: BotTeamWorkflow) -> String { labels[row.id] ?? row.phase.label }
+}
+
+/// Incoming content growth must not be mistaken for an intentional scroll away.
+struct BotTeamMessageFollowState: Equatable {
+    private(set) var positioned = false
+    private(set) var followingLatest = true
+    private(set) var newestSequence = 0
+    private(set) var acknowledgedSequence = 0
+    var unreadCount: Int { max(0, newestSequence - acknowledgedSequence) }
+    mutating func messagesChanged(to sequence: Int) -> Bool {
+        guard sequence > 0 else { return false }
+        if sequence < newestSequence { self = Self() }
+        newestSequence = sequence
+        guard !positioned || followingLatest else { return false }
+        markLatestRead(); return true
+    }
+    mutating func viewportChanged(nearBottom: Bool, userInitiated: Bool) {
+        if nearBottom { markLatestRead() }
+        else if userInitiated { followingLatest = false }
+    }
+    mutating func markLatestRead() {
+        positioned = true; followingLatest = true; acknowledgedSequence = newestSequence
     }
 }
 

@@ -15,3 +15,13 @@
 .bot-team-workflow button:focus-visible,.bot-workflow-dialog button:focus-visible,.bot-workflow-dialog summary:focus-visible,.bot-workflow-create :is(button,select,textarea):focus-visible,.bot-workflow-action :is(button,input,textarea):focus-visible{outline:2px solid var(--st-focus);outline-offset:3px}
 @media(max-width:780px){.bot-workflow-toolbar{align-items:flex-start;flex-wrap:wrap}.bot-workflow-toolbar>div:last-child{justify-content:flex-start;width:100%}.bot-workflow-inspector{grid-template-columns:minmax(0,1fr);gap:16px}.bot-workflow-inspector nav{flex-direction:row;overflow-x:auto;padding:3px}.bot-workflow-inspector nav>button{min-width:170px;width:170px;flex:none}.bot-workflow-roles{grid-template-columns:minmax(0,1fr)}.bot-workflow-rail{gap:3px}.bot-workflow-rail li{padding-inline:4px}}
 @media(prefers-reduced-motion:reduce){.bot-team-workflow *,.bot-workflow-dialog *,.bot-workflow-create *,.bot-workflow-action *{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+/* The same workflow controller remains mounted while switching team tabs. */
+.bot-team-view{display:flex;flex-direction:column;flex:1;min-height:0;min-width:0;overflow:hidden}
+.bot-team-view--work{display:block;overflow:auto;padding-top:10px}.bot-team-view--work>.bot-room-work{overflow:visible;padding-top:10px}
+.bot-team-view--work>.bot-team-workflow{margin-inline:auto}.bot-workflow-work{padding-top:14px}.bot-workflow-work>h3{font-size:14px;font-weight:550;margin:5px 0 12px}
+.bot-workflow-card{padding:14px 16px;margin:10px 0;border:1px solid var(--st-line-soft);border-radius:16px;background:var(--st-surface)}
+.bot-workflow-card-heading{display:flex;align-items:center;gap:10px}.bot-workflow-card-heading>small{color:var(--st-ink-muted);font-size:10px;margin-left:auto}
+.bot-workflow-card h4{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;font-size:14px;line-height:1.5;font-weight:550;white-space:pre-wrap;overflow-wrap:anywhere;margin:12px 0 8px}
+.bot-workflow-stage{font-size:11px;line-height:1.6;color:var(--st-ink-muted);margin:6px 12px 10px;overflow-wrap:anywhere}.bot-workflow-stage strong{color:var(--st-ink);font-weight:550}.bot-workflow-stage>span{display:block;margin-top:3px}
+.bot-workflow-stage[role=status]>span{color:var(--st-warning,var(--st-ink))}.bot-workflow-card .bot-workflow-stage{margin-inline:0}.bot-workflow-card-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.bot-workflow-current>.st-btn{margin-left:12px}
+.bot-workflow-history{margin-top:15px}.bot-workflow-history>summary{font-size:12px;cursor:pointer;padding:12px 0}

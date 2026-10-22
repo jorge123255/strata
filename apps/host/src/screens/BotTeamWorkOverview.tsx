@@ -7,17 +7,21 @@ import { BotTaskReview } from './BotTaskReview';
 import { teamEarlierUnverifiedCount, teamTaskEvidence, teamTaskLabel, type TeamWorkGroups } from './botTeamWorkSelectors';
 import './BotTeamWorkOverview.css';
 
-export function TeamWorkCounts({ groups, stale = false }: { groups: TeamWorkGroups; stale?: boolean }) {
-  return <span className="bot-work-counts" aria-label={`${stale ? 'Last known: ' : ''}${groups.needsYou.length} need you, ${groups.working.length} working`}>
-    {stale ? <span>Last known:</span> : null}
-    <span data-attention={!!groups.needsYou.length || undefined}>{groups.needsYou.length} need you</span>
-    <span>{groups.working.length} working</span>
+export function TeamWorkCounts({ groups, stale = false, workflows }: { groups: TeamWorkGroups; stale?: boolean; workflows?: { needsYou: number; working: number; unknown?: boolean; partial?: boolean } }) {
+  if (workflows?.unknown) return <span className="bot-work-counts" role="status">Workflow status unavailable{groups.needsYou.length || groups.working.length ? ` · Assigned tasks: ${groups.needsYou.length} need you, ${groups.working.length} working` : ''}</span>;
+  const partial = workflows?.partial ? 'At least ' : '';
+  const needsYou = groups.needsYou.length + (workflows?.needsYou ?? 0), working = groups.working.length + (workflows?.working ?? 0);
+  return <span className="bot-work-counts" aria-label={`${stale ? 'Last known: ' : ''}${partial}${needsYou} need you, ${working} working`}>
+    {stale ? <span>Last known:</span> : null}{partial ? <span>At least:</span> : null}
+    <span data-attention={!!needsYou || undefined}>{needsYou} need you</span>
+    <span>{working} working</span>
   </span>;
 }
 
-export function BotTeamWorkOverview({ groups, bots, stale, disabled, onChanged, onOpenConversation }: {
+export function BotTeamWorkOverview({ groups, bots, stale, disabled, workflows, onChanged, onOpenConversation }: {
   groups: TeamWorkGroups; bots: Bot[]; stale: boolean; disabled: boolean;
   onChanged: () => Promise<void>; onOpenConversation: (id: string) => void;
+  workflows?: { needsYou: number; working: number; unknown?: boolean; partial?: boolean };
 }) {
   const history = useRef<HTMLDetailsElement>(null), earlierUnverified = teamEarlierUnverifiedCount(groups);
   function showEarlierWork() {
@@ -55,11 +59,12 @@ export function BotTeamWorkOverview({ groups, bots, stale, disabled, onChanged, 
     </section> : null;
   }
   return <section className="bot-team-work-overview" aria-label="Current team work">
-    <div className="bots-section-heading"><h3>Current work</h3><TeamWorkCounts groups={groups} stale={stale}/></div>
-    {!groups.needsYou.length && !groups.working.length ? <div className="bot-work-empty" role="status">
+    <div className="bots-section-heading"><h3>Current work</h3><TeamWorkCounts groups={groups} stale={stale} workflows={workflows}/></div>
+    {!groups.needsYou.length && !groups.working.length && !workflows?.needsYou && !workflows?.working && !workflows?.unknown && !workflows?.partial ? <div className="bot-work-empty" role="status">
       <p className="small muted">{stale ? 'At the last check, no current tasks were tracked.' : 'No current tasks are tracked.'}</p>
       {earlierUnverified ? <><p className="small muted">{earlierUnverified} earlier {earlierUnverified === 1 ? 'turn has' : 'turns have'} no verified result.</p><Btn size="sm" onClick={showEarlierWork}>Review earlier work</Btn></> : null}
     </div> : null}
+    {!groups.needsYou.length && !groups.working.length && !workflows?.needsYou && !workflows?.working && !workflows?.unknown && workflows?.partial ? <p className="small muted" role="status">No current work in this page. Earlier workflows may still need attention.</p> : null}
     {section('Needs you', groups.needsYou, 'Tasks needing you')}
     {section('Working', groups.working, 'Tasks in progress')}
     {section('Earlier results with a continuation', groups.continuing, 'Results with a continuation')}

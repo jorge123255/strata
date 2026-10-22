@@ -4,6 +4,8 @@ The harness connects each bot's model to its instructions, conversation, tools a
 
 This update extends the existing Bots runtime. It does not replace the native Claude, Codex, Grok, Kimi or Devin sessions, the Ollama/configured-model adapters, or CUA's computer backend.
 
+Public team chat keeps the speaking bot's own saved instructions and personality. It does not load private work memory or another bot's profile. Chat and volunteer replies still use conversation tools only; keeping a bot's identity does not grant computer or connector access.
+
 ## Long conversations
 
 Configured model and Ollama requests share a context budget. Instructions, tool definitions, the current request and the latest complete tool exchange remain together. Older exchanges can leave the model request as complete groups. A small digest quotes incomplete source excerpts with hashes; it is not a verified task summary. Large plain tool results can become explicit head/tail excerpts. Native signed or opaque protocol blocks and images are never cut apart.
@@ -28,6 +30,8 @@ A reviewed command tool can declare supported platforms, required program names 
 
 Presence checks do not prove program versions, script correctness or successful execution. Tools still need their files on the selected computer. No operation falls back from an SSH or isolated computer to the Mac.
 
+Approval cards show a target for recognized file, command and browser actions, so you can see which file or command is requested. These are bounded previews; recognized credential values and some URL details are hidden. Arbitrary connector arguments and file contents are not added to the target. A shortened or redacted preview is not a complete inspection of an action.
+
 ## Understanding slow or blocked work
 
 Activity has an expandable timing record for each observed conversation: preparation, provider wait, approvals, tools, cleanup, time to first output, tool calls/errors and context compactions. Provider wait includes startup and connection time. These are measured host-session timings, not generated thinking, completion verification or a claim about model quality. They reset when the host restarts; durable action receipts do not. Timing counters keep a bounded recent-ID window, so a very late repeated display event can be counted again; these counters never authorize or deduplicate execution.
@@ -37,6 +41,8 @@ Independent team work keeps the existing fair scheduler and unrestricted continu
 ## Planned work and saved stage checkpoints
 
 Teams can opt into [Plan and verify](BOTS-WORKFLOWS.md): a planner, builder and separate reviewer work against explicit success criteria. Completed stages are saved before the next stage starts. A restart leaves unfinished work for inspection and explicit continuation; it does not replay commands. Reviewer findings can drive repair rounds, while final owner acceptance remains separate from a model's reported pass.
+
+The team Work view includes planned workflows alongside assigned tasks. It identifies the saved stage and bot, shows known approval waits, and links to the exact conversation. Counts distinguish partial or unavailable records from an empty team. During repairs, earlier evaluator findings remain inspectable as previous results while new checks are pending.
 
 ## References
 

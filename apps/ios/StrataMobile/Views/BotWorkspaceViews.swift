@@ -292,13 +292,13 @@ struct BotTeamDetailView: View {
     @State private var confirmingStop: BotTeamRun?
     @State private var visible = false
     @State private var showingDetails = false
+    @State private var detailsVisible = false
     @State private var showingWorkflows = false
     @State private var editingTeam: BotTeam?
     @State private var settingsExpanded = false
     @State private var tasksExpanded = false
     @State private var workHistoryExpanded = false
-    @State private var initiallyPositioned = false
-    @State private var acknowledgedSequence = 0
+    @State private var follow = BotTeamMessageFollowState()
     @State private var sentScrollRequest: String?
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -312,6 +312,20 @@ struct BotTeamDetailView: View {
     private var runs: [BotTeamRun] { (workspace.teams?.runs ?? []).filter { $0.teamId == teamId } }
     private var activeRuns: [BotTeamRun] { channel?.supported == true ? channel?.activeRuns ?? [] : runs.filter(\.isActive) }
     private var latestSequence: Int { entries.last?.sequence ?? 0 }
+    private var workSurfaceVisible: Bool { visible && scenePhase == .active && !showingWorkflows && editingTeam == nil && (!showingDetails || detailsVisible) }
+    private var workflowSnapshot: BotTeamWorkflowsSnapshot? { workspace.workflows[teamId] }
+    private var workflowWork: BotTeamWorkflowWorkOverview {
+        let rows = (workflowSnapshot?.workflows ?? []).map { workspace.workflow($0.id, teamId: teamId) ?? $0 }
+        let sessions = workspace.messages["supervision"] == nil && workspace.supervision?.supported == true ? workspace.supervision?.sessions ?? [] : []
+        return BotTeamWorkflowWorkOverview(rows, teamId: teamId, supervision: sessions)
+    }
+    private var workflowWorkSummary: String {
+        let key = BotWorkspaceStore.workflowsKey(teamId)
+        guard let snapshot = workflowSnapshot else { return workspace.messages[key] == nil ? "Checking workflows…" : "Workflows unavailable" }
+        guard snapshot.isAvailable || !snapshot.workflows.isEmpty else { return "Workflows unavailable" }
+        let prefix = workspace.messages[key] != nil || !snapshot.isAvailable ? "Last known: " : ""
+        return prefix + (snapshot.hasMore ? "Latest workflows: " : "") + workflowWork.summary + (snapshot.hasMore ? " · more saved" : "")
+    }
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -334,37 +348,40 @@ struct BotTeamDetailView: View {
                     } else { Text("This team is no longer available. Refresh Bots.").foregroundStyle(.secondary) }
                     Color.clear.frame(height: 1).id("team-channel-latest")
                 }.padding(.horizontal, 16).padding(.top, 22).padding(.bottom, 12)
+                    .background { GeometryReader { geometry in Color.clear.preference(key: BotTeamLegacyScrollPreference.self, value: .init(contentFrame: geometry.frame(in: .named("team-channel-scroll-viewport")))) } }
             }
+            .coordinateSpace(name: "team-channel-scroll-viewport")
             .background(StrataTheme.background).accessibilityIdentifier("teamChannelMessages")
+            .modifier(BotTeamScrollObservation { nearBottom, userInitiated in follow.viewportChanged(nearBottom: nearBottom, userInitiated: userInitiated) })
             .scrollDismissesKeyboard(.interactively)
             .overlay(alignment: .bottomTrailing) {
-                if !entries.isEmpty, initiallyPositioned {
+                if !entries.isEmpty, follow.positioned, !follow.followingLatest || follow.unreadCount > 0 {
                     Button {
                         proxy.scrollTo("team-channel-latest", anchor: .bottom)
-                        acknowledgedSequence = latestSequence
-                    } label: { Image(systemName: "arrow.down").font(.system(size: 18, weight: .semibold)).frame(width: 46, height: 46).strataChrome() }
-                        .accessibilityLabel("Latest messages").padding(16).accessibilityIdentifier("latestTeamMessagesButton")
+                        _ = follow.messagesChanged(to: latestSequence); follow.markLatestRead()
+                    } label: {
+                        HStack(spacing: 8) {
+                            if follow.unreadCount > 0 { Text("\(follow.unreadCount) new updates").font(.caption.weight(.semibold)) }
+                            Image(systemName: "arrow.down").font(.system(size: 18, weight: .semibold))
+                        }.padding(.horizontal, follow.unreadCount > 0 ? 14 : 0).frame(minWidth: 46, minHeight: 46).strataChrome()
+                    }
+                        .accessibilityLabel(follow.unreadCount > 0 ? "\(follow.unreadCount) new team updates. Latest messages" : "Latest messages").padding(16).accessibilityIdentifier("latestTeamMessagesButton")
                 }
             }
             .onAppear {
-                if !entries.isEmpty, !initiallyPositioned {
-                    initiallyPositioned = true; acknowledgedSequence = latestSequence
-                    proxy.scrollTo("team-channel-latest", anchor: .bottom)
-                }
+                if follow.messagesChanged(to: latestSequence) { proxy.scrollTo("team-channel-latest", anchor: .bottom) }
             }
-            .onChange(of: entries.isEmpty) { _, empty in
-                if !empty, !initiallyPositioned {
-                    initiallyPositioned = true; acknowledgedSequence = latestSequence
-                    proxy.scrollTo("team-channel-latest", anchor: .bottom)
-                }
+            .onChange(of: latestSequence) { _, sequence in
+                if follow.messagesChanged(to: sequence) { proxy.scrollTo("team-channel-latest", anchor: .bottom) }
             }
             .onChange(of: sentScrollRequest) { _, request in
                 if request != nil {
-                    initiallyPositioned = true; acknowledgedSequence = latestSequence
+                    _ = follow.messagesChanged(to: latestSequence); follow.markLatestRead()
                     proxy.scrollTo("team-channel-latest", anchor: .bottom)
                 }
             }
-            .safeAreaInset(edge: .top, spacing: 0) { if workspace.workReviewSupported { currentWorkButton } }
+            .onChange(of: store.pairingGeneration) { _, _ in follow = BotTeamMessageFollowState() }
+            .safeAreaInset(edge: .top, spacing: 0) { if workspace.workReviewSupported || workspace.workflowsSupported { currentWorkButton } }
             .safeAreaInset(edge: .bottom, spacing: 0) { if let team { composer(team) } }
         }
         .navigationTitle("").navigationBarTitleDisplayMode(.inline)
@@ -418,17 +435,27 @@ struct BotTeamDetailView: View {
         .refreshable { await workspace.refreshTeams(); if workspace.workReviewSupported { await workspace.refreshActivity() }; await workspace.refreshChannel(teamId, reset: true) }
         .onAppear { visible = true; store.notifications.focus(CompanionNotificationDestination(type: "team", id: teamId)) }
         .onDisappear { visible = false; navigation = UUID(); if store.notifications.focusedDestination == CompanionNotificationDestination(type: "team", id: teamId) { store.notifications.focus(nil) } }
-        .task(id: visible && scenePhase == .active) {
-            guard visible, scenePhase == .active else { return }
+        .task(id: workSurfaceVisible) {
+            guard workSurfaceVisible else { return }
             let generation = navigation
+            var lastWorkflowRefresh: Date?
             repeat {
                 if workspace.mutation == nil {
                     if !workspace.loading.contains("teams") { await workspace.refreshTeams() }
+                    guard !Task.isCancelled, workSurfaceVisible, navigation == generation else { return }
                     if workspace.workReviewSupported, !workspace.loading.contains("activity") { await workspace.refreshActivity() }
-                    if !workspace.loading.contains(channelKey) { await workspace.refreshChannel(teamId) }
+                    guard !Task.isCancelled, workSurfaceVisible, navigation == generation else { return }
+                    if workspace.workflowsSupported, lastWorkflowRefresh.map({ Date().timeIntervalSince($0) >= 10 }) ?? true {
+                        await workspace.refreshWorkflows(teamId)
+                        guard !Task.isCancelled, workSurfaceVisible, navigation == generation else { return }
+                        await workspace.refreshSupervision()
+                        guard !Task.isCancelled, workSurfaceVisible, navigation == generation else { return }
+                        lastWorkflowRefresh = Date()
+                    }
+                    if !showingDetails, !workspace.loading.contains(channelKey) { await workspace.refreshChannel(teamId) }
                 }
                 do { try await Task.sleep(for: .seconds(3)) } catch { break }
-            } while !Task.isCancelled && visible && scenePhase == .active && navigation == generation
+            } while !Task.isCancelled && workSurfaceVisible && navigation == generation
         }
         .onChange(of: supportsCoordinatorWork) { _, supported in if !supported { workMode = .chat; requestId = UUID().uuidString } }
         .onChange(of: message) { _, _ in requestId = UUID().uuidString }
@@ -442,19 +469,26 @@ struct BotTeamDetailView: View {
         let overview = BotTeamWorkOverview(workspace.activity.filter { $0.teamId == teamId })
         let stale = workspace.messages["activity"] != nil
         let value = workspace.activityLoaded ? (stale ? "Last known: " : "") + "\(overview.attentionCount) need you, \(overview.workingCount) working" : stale ? "Unavailable" : "Checking current work"
-        return Button {
+        return HStack(spacing: 10) {
+            Button {
             taskFocused = false; tasksExpanded = false; showingDetails = true
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: "checklist").foregroundStyle(StrataTheme.accentText)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Current work").font(.caption.weight(.semibold))
-                    Text(value).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Text("Team work").font(.caption.weight(.semibold))
+                    if workspace.workReviewSupported { Text("Tasks: " + value).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+                    if workspace.workflowsSupported { Text("Workflows: " + workflowWorkSummary).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("teamWorkflowWorkSummary") }
                 }
                 Spacer(minLength: 4)
                 Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-            }.padding(.horizontal, 16).padding(.vertical, 10).background(StrataTheme.background)
-        }.buttonStyle(.plain).accessibilityLabel("Current work").accessibilityValue(value).accessibilityIdentifier("teamCurrentWorkButton")
+            }.padding(.vertical, 10)
+        }.buttonStyle(.plain).accessibilityLabel("Team work").accessibilityValue((workspace.workReviewSupported ? "Tasks: " + value : "") + (workspace.workflowsSupported ? ". Workflows: " + workflowWorkSummary : "")).accessibilityIdentifier("teamCurrentWorkButton")
+            if workspace.workflowsSupported {
+                Button { taskFocused = false; showingWorkflows = true } label: { Image(systemName: "checkmark.seal").font(.system(size: 20)).frame(width: 44, height: 44).strataChrome() }
+                    .accessibilityLabel("Open Plan & verify workflows").accessibilityIdentifier("teamCurrentWorkflowsButton")
+            }
+        }.padding(.horizontal, 16).background(StrataTheme.background)
     }
     private func members(_ team: BotTeam) -> [CompanionBot] { team.memberIds.compactMap { id in store.botCatalog?.bots.first { $0.id == id } } }
     private func emptyChannel(_ team: BotTeam) -> some View {
@@ -479,8 +513,23 @@ struct BotTeamDetailView: View {
                     Section {
                         NavigationLink {
                             BotTeamWorkflowsView(store: store, workspace: workspace, teamId: teamId, openChat: { showingDetails = false; openChat() })
-                        } label: { Label("Plan & verify", systemImage: "checkmark.seal") }
+                        } label: {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Label("Plan & verify", systemImage: "checkmark.seal")
+                                if workspace.workflowsSupported { Text(workflowWorkSummary).font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("teamDetailsWorkflowWorkSummary") }
+                            }
+                        }
                             .accessibilityIdentifier("teamWorkflowsLink")
+                        ForEach(workflowWork.attention + workflowWork.working) { value in
+                            NavigationLink {
+                                BotTeamWorkflowDetailView(store: store, workspace: workspace, teamId: teamId, workflowId: value.id, openChat: { showingDetails = false; openChat() })
+                            } label: {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text(value.goal).font(.subheadline.weight(.semibold)).lineLimit(2)
+                                    Text((workspace.messages[BotWorkspaceStore.workflowsKey(teamId)] != nil || workflowSnapshot?.isAvailable != true ? "Last known: " : "") + workflowWork.statusLabel(value)).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }.accessibilityIdentifier("teamCurrentWorkflow-" + value.id)
+                        }
                     } footer: { Text("Give work a plan, an independent evaluator and clear success criteria.") }
                     Section {
                         Button { settingsExpanded.toggle() } label: {
@@ -523,6 +572,7 @@ struct BotTeamDetailView: View {
                     BotWorkspaceMessage(workspace: workspace, key: "teams")
                 }
             }.strataList().navigationTitle("Team details").navigationBarTitleDisplayMode(.inline)
+                .onAppear { detailsVisible = true }.onDisappear { detailsVisible = false }
                 .task { await workspace.refreshActivity() }
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingDetails = false }.accessibilityIdentifier("closeTeamDetailsButton") } }
                 .sheet(item: $editingTeam) { team in BotTeamEditor(store: store, workspace: workspace, team: team) }
@@ -736,6 +786,7 @@ struct BotTeamDetailView: View {
             }
             if !team.enabled { Button("Review and enable your team") { settingsExpanded = true; showingDetails = true }.font(.caption).accessibilityIdentifier("reviewTeamForChatButton") }
         }.padding(.horizontal, 16).padding(.vertical, 10).background(StrataTheme.background)
+            .background { GeometryReader { geometry in Color.clear.preference(key: BotTeamLegacyScrollPreference.self, value: .init(bottomInset: geometry.size.height)) } }
     }
     private func recipientPicker(_ team: BotTeam) -> some View {
         Picker("Recipients", selection: $recipient) {
@@ -758,6 +809,51 @@ struct BotTeamDetailView: View {
                 sentScrollRequest = request
                 if message == text, requestId == request { message = ""; workMode = .chat; reply = nil; requestId = UUID().uuidString }
             }
+        }
+    }
+}
+
+private struct BotTeamScrollMetrics: Equatable {
+    var offset: CGFloat; var contentHeight: CGFloat; var viewportHeight: CGFloat; var bottomInset: CGFloat
+    var nearBottom: Bool { offset + viewportHeight >= contentHeight + bottomInset - 44 }
+    func movedWithoutContentGrowth(from old: Self) -> Bool {
+        abs(offset - old.offset) > 0.5 && abs(contentHeight - old.contentHeight) < 0.5 && abs(viewportHeight - old.viewportHeight) < 0.5 && abs(bottomInset - old.bottomInset) < 0.5
+    }
+}
+private struct BotTeamLegacyScrollValue: Equatable {
+    var contentFrame: CGRect?; var viewportHeight: CGFloat?; var bottomInset: CGFloat?
+    var metrics: BotTeamScrollMetrics? {
+        guard let contentFrame, let viewportHeight else { return nil }
+        return .init(offset: -contentFrame.minY, contentHeight: contentFrame.height, viewportHeight: viewportHeight, bottomInset: bottomInset ?? 0)
+    }
+}
+private struct BotTeamLegacyScrollPreference: PreferenceKey {
+    static let defaultValue = BotTeamLegacyScrollValue()
+    static func reduce(value: inout BotTeamLegacyScrollValue, nextValue: () -> BotTeamLegacyScrollValue) {
+        let next = nextValue()
+        value.contentFrame = next.contentFrame ?? value.contentFrame
+        value.viewportHeight = next.viewportHeight ?? value.viewportHeight
+        value.bottomInset = next.bottomInset ?? value.bottomInset
+    }
+}
+private struct BotTeamScrollObservation: ViewModifier {
+    let changed: (Bool, Bool) -> Void
+    @State private var previousLegacy: BotTeamScrollMetrics?
+    @State private var userScrolling = false
+    @ViewBuilder func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content.onScrollGeometryChange(for: BotTeamScrollMetrics.self) { geometry in
+                .init(offset: geometry.visibleRect.minY, contentHeight: geometry.contentSize.height, viewportHeight: geometry.visibleRect.height, bottomInset: 0)
+            } action: { old, new in changed(new.nearBottom, userScrolling && new.movedWithoutContentGrowth(from: old)) }
+                .onScrollPhaseChange { _, phase in userScrolling = phase == .tracking || phase == .interacting || phase == .decelerating }
+        } else {
+            content.background { GeometryReader { geometry in Color.clear.preference(key: BotTeamLegacyScrollPreference.self, value: .init(viewportHeight: geometry.size.height)) } }
+                .onPreferenceChange(BotTeamLegacyScrollPreference.self) { value in
+                    guard let next = value.metrics else { return }
+                    let moved = userScrolling && (previousLegacy.map { next.movedWithoutContentGrowth(from: $0) } ?? false)
+                    previousLegacy = next; changed(next.nearBottom, moved)
+                }
+                .simultaneousGesture(DragGesture(minimumDistance: 1).onChanged { _ in userScrolling = true }.onEnded { _ in userScrolling = false })
         }
     }
 }
@@ -1841,7 +1937,10 @@ private struct BotTeamWorkflowDetailView: View {
         Section {
             Text(value.goal).font(.title3.weight(.semibold)).textSelection(.enabled).accessibilityIdentifier("workflowGoal")
             Label((stale ? "Last known: " : "") + value.phase.label, systemImage: value.phase == .completed ? "checkmark.seal.fill" : "arrow.triangle.branch").font(.headline).foregroundStyle(StrataTheme.accentText).accessibilityIdentifier("workflowPhase")
-            if let summary = value.summary, !summary.isEmpty { Text(summary).font(.callout).textSelection(.enabled).accessibilityIdentifier("workflowSummary") }
+            if let summary = value.summary, !summary.isEmpty {
+                if !value.showsCurrentEvaluation { Text("Last saved report").font(.caption.weight(.semibold)).foregroundStyle(.secondary) }
+                Text(summary).font(.callout).textSelection(.enabled).accessibilityIdentifier("workflowSummary")
+            }
             LabeledContent("Planner", value: botName(value.plannerId))
             LabeledContent("Builder", value: botName(value.builderId))
             LabeledContent("Independent evaluator", value: botName(value.evaluatorId)).accessibilityIdentifier("workflowIndependentEvaluator")
@@ -1860,12 +1959,12 @@ private struct BotTeamWorkflowDetailView: View {
             ForEach(value.criteria) { criterion in
                 let check = value.checks.first { $0.criterionId == criterion.id }
                 VStack(alignment: .leading, spacing: 7) {
-                    Label(criterion.text, systemImage: check.map { $0.passed ? "checkmark.circle" : "exclamationmark.circle" } ?? "circle.dashed").font(.subheadline.weight(.medium))
-                    Text(check.map { $0.passed ? "Evaluator: passed" : "Evaluator: changes needed" } ?? "Awaiting evaluation").font(.caption).foregroundStyle(.secondary)
+                    Label(criterion.text, systemImage: check.map { value.showsCurrentEvaluation ? ($0.passed ? "checkmark.circle" : "exclamationmark.circle") : "clock.arrow.circlepath" } ?? "circle.dashed").font(.subheadline.weight(.medium))
+                    Text(check.map { value.showsCurrentEvaluation ? ($0.passed ? "Evaluator: passed" : "Evaluator: changes needed") : ($0.passed ? "Previously passed · recheck pending" : "Previous changes requested · recheck pending") } ?? "Awaiting evaluation").font(.caption).foregroundStyle(.secondary)
                     if let detail = check?.detail, !detail.isEmpty { Text(detail).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
                 }.padding(.vertical, 4).accessibilityElement(children: .contain).accessibilityIdentifier("workflowCriterion-" + criterion.id)
             }
-        } header: { Text("Success criteria") } footer: { Text("These are the independent evaluator’s findings. Your acceptance is recorded separately.") }
+        } header: { Text("Success criteria") } footer: { Text(!value.checks.isEmpty && !value.showsCurrentEvaluation ? "These are the last saved evaluation findings. The current work needs a new evaluation before your review." : "These are the independent evaluator’s findings. Your acceptance is recorded separately.") }
     }
     private func stepsSection(_ value: BotTeamWorkflow) -> some View {
         Section {

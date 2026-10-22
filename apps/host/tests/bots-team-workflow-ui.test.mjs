@@ -72,3 +72,22 @@ test('reads cannot roll back committed checkpoints; Plan policy is limited to th
   assert.deepEqual(roles, { plannerId: 'planner', builderId: 'builder', evaluatorId: 'reviewer' }); assert.equal(state.workflowFormError(team, bots, 'Goal', ['Criterion'], roles), '');
   assert.match(state.workflowFormError(team, bots, 'Goal', ['Criterion'], { ...roles, builderId: 'planner' }), /builder and reviewer who can do work/);
 });
+
+test('workflow counts include current work and owner review without counting finished or stopped stages', () => {
+  const phases = ['planning','building','evaluating','repairing','stopping','awaiting_review','blocked','interrupted','stopped','completed'];
+  const rows = phases.map((phase, index) => workflow({ id: uuid('wf',index+1), phase }));
+  assert.deepEqual(state.teamWorkflowCounts(rows), {working:5,needsYou:3});
+  const cleanup = workflow({phase:'stopping',blockedReason:'Cleanup needs inspection'}); assert.deepEqual(state.teamWorkflowCounts([cleanup]),{working:0,needsYou:1});
+});
+test('only the exact current stage observation can label an approval or error as needing the owner', () => {
+  const row = workflow({phase:'building',steps:[{id:uuid('ws',3),phase:'building',botId:'bot_builder',chatId:'s_current',state:'running'}],totalSteps:1,checks:[]});
+  const pending={id:'s_current',botId:'bot_builder',teamId:row.teamId,state:'approval',approvalCount:1,toolName:'write_file'};
+  assert.deepEqual(state.teamWorkflowCounts([row],[pending]),{working:0,needsYou:1});
+  for(const patch of [{id:'s_other'},{botId:'bot_planner'},{teamId:'team_other'},{approvalCount:0}]) assert.deepEqual(state.teamWorkflowCounts([row],[{...pending,...patch}]),{working:1,needsYou:0});
+  assert.equal(state.workflowObservedActivity({...row,phase:'awaiting_review'},[pending]),undefined);
+  assert.equal(state.workflowObservedActivity({...row,steps:[{...row.steps[0],state:'completed'}]},[pending]),undefined);
+});
+
+test('three available roles prefer three distinct bots while two bots remain supported',()=>{
+ const team={memberIds:['planner','builder','reviewer'],coordinatorId:'planner'},bots=team.memberIds.map(id=>({id,policy:'manual'}));assert.deepEqual(state.defaultWorkflowRoles(team,bots),{plannerId:'planner',builderId:'builder',evaluatorId:'reviewer'});assert.deepEqual(state.defaultWorkflowRoles({...team,memberIds:['planner','builder']},bots),{plannerId:'planner',builderId:'builder',evaluatorId:'planner'});
+});

@@ -3866,7 +3866,92 @@ final class TeamWorkflowTests: XCTestCase {
     }
 }
 
+final class TeamMessageFollowTests: XCTestCase {
+    func testIncomingRepliesFollowWhileAtBottomAndContentGrowthDoesNotUnpin() {
+        var state = BotTeamMessageFollowState()
+        XCTAssertTrue(state.messagesChanged(to: 10)); XCTAssertEqual(state.unreadCount, 0)
+        state.viewportChanged(nearBottom: false, userInitiated: false)
+        XCTAssertTrue(state.messagesChanged(to: 11)); XCTAssertTrue(state.followingLatest)
+        XCTAssertEqual(state.acknowledgedSequence, 11); XCTAssertEqual(state.unreadCount, 0)
+    }
+    func testReadingEarlierMessagesKeepsPositionAndAccumulatesUnreadUpdates() {
+        var state = BotTeamMessageFollowState()
+        _ = state.messagesChanged(to: 10)
+        state.viewportChanged(nearBottom: false, userInitiated: true)
+        XCTAssertFalse(state.messagesChanged(to: 13)); XCTAssertEqual(state.unreadCount, 3)
+        XCTAssertFalse(state.messagesChanged(to: 13), "Older pagination does not jump to the latest row.")
+        XCTAssertEqual(state.unreadCount, 3); XCTAssertEqual(state.acknowledgedSequence, 10)
+        state.markLatestRead(); XCTAssertTrue(state.followingLatest); XCTAssertEqual(state.unreadCount, 0)
+    }
+    func testReturningToBottomAcknowledgesAndResetTimelineCannotInheritUnread() {
+        var state = BotTeamMessageFollowState()
+        _ = state.messagesChanged(to: 10); state.viewportChanged(nearBottom: false, userInitiated: true)
+        _ = state.messagesChanged(to: 12); state.viewportChanged(nearBottom: true, userInitiated: true)
+        XCTAssertEqual(state.unreadCount, 0); XCTAssertTrue(state.followingLatest)
+        state.viewportChanged(nearBottom: false, userInitiated: true)
+        XCTAssertTrue(state.messagesChanged(to: 2)); XCTAssertEqual(state.acknowledgedSequence, 2)
+        XCTAssertEqual(state.unreadCount, 0)
+    }
+}
+
 extension TeamWorkflowTests {
+    func testWorkflowWorkVisibilitySeparatesStagesAttentionAndSavedHistory() throws {
+        let phases = ["planning", "building", "evaluating", "repairing", "stopping", "awaiting_review", "blocked", "interrupted", "stopped", "completed"]
+        let rows = try phases.enumerated().map { index, phase in
+            var row = workflow(phase: phase)
+            row["id"] = String(format: "wf_00000000-0000-4000-8000-%012d", index + 1)
+            return try decode(row)
+        }
+        let overview = BotTeamWorkflowWorkOverview(rows, teamId: teamID)
+        XCTAssertEqual(overview.working.count, 5)
+        XCTAssertEqual(overview.attention.count, 3)
+        XCTAssertEqual(overview.history.count, 2)
+        XCTAssertEqual(overview.summary, "5 working · 3 need you")
+        XCTAssertTrue(overview.history.contains { $0.phase == .stopped && $0.canContinue })
+    }
+    func testWorkflowAttentionMatchesOnlyItsExactCurrentConversationRoleAndTeam() throws {
+        var row = try decode(workflow(phase: "building"))
+        row.steps[0].phase = .building; row.steps[0].botId = row.builderId; row.steps[0].state = .running
+        for defect in ["none", "chat", "bot", "team"] {
+            let value: [String: Any] = ["id": defect == "chat" ? "other_chat" : "saved_step_chat", "botId": defect == "bot" ? "other_bot" : row.builderId,
+                "teamId": defect == "team" ? "other_team" : teamID, "name": "Builder", "title": "Current stage", "state": "approval", "approvalCount": 1]
+            let session = try JSONDecoder().decode(BotSupervisionSession.self, from: JSONSerialization.data(withJSONObject: value))
+            let overview = BotTeamWorkflowWorkOverview([row], teamId: teamID, supervision: [session])
+            XCTAssertEqual(overview.attention.count, defect == "none" ? 1 : 0, defect)
+            XCTAssertEqual(overview.working.count, defect == "none" ? 0 : 1, defect)
+            XCTAssertEqual(overview.statusLabel(row), defect == "none" ? "1 approval waiting" : "Building", defect)
+        }
+    }
+    func testWorkflowCleanupBlockerNeedsOwnerAndForeignOrInvalidRowsDoNotCount() throws {
+        var stopping = try decode(workflow(phase: "stopping")); stopping.blockedReason = "Cleanup could not be confirmed"
+        var foreign = stopping; foreign.teamId = "other_team"
+        var invalid = stopping; invalid.proof = "invalid"
+        let overview = BotTeamWorkflowWorkOverview([stopping, foreign, invalid], teamId: teamID)
+        XCTAssertEqual(overview.attention.count, 1); XCTAssertTrue(overview.working.isEmpty)
+    }
+    func testWorkflowAttentionIgnoresFinishedStageAndZeroPendingApprovals() throws {
+        for defect in ["completedApproval", "completedError", "zeroApprovals", "liveApproval", "liveError"] {
+            var row = try decode(workflow(phase: "building"))
+            row.steps[0].phase = .building; row.steps[0].botId = row.builderId
+            row.steps[0].state = defect.hasPrefix("completed") ? .completed : .running
+            let session: [String: Any] = ["id": "saved_step_chat", "botId": row.builderId, "teamId": teamID, "name": "Builder", "title": "Current stage",
+                "state": defect.hasSuffix("Error") ? "error" : "approval", "approvalCount": defect == "zeroApprovals" ? 0 : 1]
+            let decoded = try JSONDecoder().decode(BotSupervisionSession.self, from: JSONSerialization.data(withJSONObject: session))
+            let overview = BotTeamWorkflowWorkOverview([row], teamId: teamID, supervision: [decoded])
+            XCTAssertEqual(overview.attention.count, defect.hasPrefix("live") ? 1 : 0, defect)
+            XCTAssertEqual(overview.working.count, defect.hasPrefix("live") ? 0 : 1, defect)
+        }
+    }
+    func testSavedChecksDuringRepairsAreNotCurrentEvaluationOrOwnerAcceptance() throws {
+        for phase in ["planning", "building", "repairing", "evaluating", "blocked", "interrupted", "stopped"] {
+            let row = try decode(workflow(phase: phase))
+            XCTAssertFalse(row.showsCurrentEvaluation, phase); XCTAssertFalse(row.canReview, phase)
+            XCTAssertTrue(row.checks.first?.passed == true, "Previous finding stays inspectable.")
+        }
+        XCTAssertTrue(try decode(workflow()).showsCurrentEvaluation)
+        XCTAssertTrue(try decode(workflow(phase: "completed")).showsCurrentEvaluation)
+    }
+
     func testWorkflowRequiresCompleteIndependentFinalEvaluationAndBoundedEvidence() throws {
         var valid = workflow(); valid["round"] = 100_000
         XCTAssertTrue(try decode(valid).hasValidProof, "Rounds are observed progress, never a product stop limit.")

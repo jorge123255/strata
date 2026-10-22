@@ -1,4 +1,5 @@
 import type { Bot, BotTaskEvidence, BotTeam, BotTeamWorkflow, BotTeamWorkflowsSnapshot } from '../lib/bots';
+import type { BotSupervisionSession } from '../components/BotSupervision';
 
 export const workflowPhases = ['planning', 'building', 'evaluating', 'repairing', 'awaiting_review', 'completed', 'blocked', 'interrupted', 'stopping', 'stopped'] as const;
 export const workflowStagePhases = ['planning', 'building', 'evaluating', 'repairing'] as const;
@@ -54,6 +55,20 @@ export function validateTeamWorkflows(value: unknown, teamId: string, previous?:
 }
 export const workflowActive = (phase: BotTeamWorkflow['phase']) => workflowStagePhases.includes(phase as never) || phase === 'stopping';
 export const workflowLabel = (phase: BotTeamWorkflow['phase']) => ({ planning: 'Planning', building: 'Building', evaluating: 'Independent review', repairing: 'Making changes', awaiting_review: 'Needs your review', completed: 'Accepted by you', blocked: 'Blocked', interrupted: 'Interrupted', stopping: 'Stopping', stopped: 'Stopped' })[phase];
+/** Observations belong only to the exact latest stage, never to a bot's other chat. */
+export function workflowObservedActivity(workflow: BotTeamWorkflow, sessions: BotSupervisionSession[]) {
+  const step = workflow.steps.at(-1);
+  if (!workflowActive(workflow.phase) || !step?.chatId || !['pending', 'running'].includes(step.state)) return undefined;
+  return sessions.find(row => row.id === step.chatId && row.botId === step.botId && row.teamId === workflow.teamId);
+}
+export function workflowNeedsOwner(workflow: BotTeamWorkflow, sessions: BotSupervisionSession[] = []) {
+  const observed = workflowObservedActivity(workflow, sessions);
+  return ['awaiting_review', 'blocked', 'interrupted'].includes(workflow.phase) || workflow.phase === 'stopping' && !!workflow.blockedReason || observed?.state === 'error' || observed?.state === 'approval' && observed.approvalCount > 0;
+}
+export function teamWorkflowCounts(workflows: BotTeamWorkflow[], sessions: BotSupervisionSession[] = []) {
+  const needsYou = workflows.filter(row => workflowNeedsOwner(row, sessions)).length;
+  return { needsYou, working: workflows.filter(row => workflowActive(row.phase) && !workflowNeedsOwner(row, sessions)).length };
+}
 export function workflowMutationMatches(before: BotTeamWorkflow, after: unknown, action: 'resume'|'stop'|'accept'|'changes_requested'): after is BotTeamWorkflow {
   if (!validTeamWorkflow(after, before.teamId) || after.id !== before.id || after.revision <= before.revision || after.proof === before.proof ||
       after.goal !== before.goal || after.plannerId !== before.plannerId || after.builderId !== before.builderId || after.evaluatorId !== before.evaluatorId || JSON.stringify(after.criteria) !== JSON.stringify(before.criteria)) return false;
@@ -64,7 +79,7 @@ export function workflowMemberAvailable(bot: Bot) { return !bot.paused && bot.av
 export function defaultWorkflowRoles(team: BotTeam, bots: Bot[]) {
   const members = workflowMembers(team, bots).filter(workflowMemberAvailable), plannerId = members.find(bot => bot.id === team.coordinatorId)?.id ?? members[0]?.id ?? '';
   const workers = members.filter(bot => bot.policy !== 'plan'), builderId = workers.find(bot => bot.id !== plannerId)?.id ?? workers[0]?.id ?? '';
-  return { plannerId, builderId, evaluatorId: workers.find(bot => bot.id !== builderId)?.id ?? '' };
+  return { plannerId, builderId, evaluatorId: workers.find(bot => bot.id !== builderId && bot.id !== plannerId)?.id ?? workers.find(bot => bot.id !== builderId)?.id ?? '' };
 }
 export function workflowFormError(team: BotTeam, bots: Bot[], goal: string, criteria: string[], roles: {plannerId: string; builderId: string; evaluatorId: string}) {
   const eligible = workflowMembers(team, bots).filter(workflowMemberAvailable).map(bot => bot.id);

@@ -9,7 +9,6 @@ import './BotTeamChannel.css';
 import { NotificationMuteButton } from '../components/BotNotifications';
 import { useNotificationDestination } from '../lib/notifications';
 import { currentLanguage } from '../lib/i18n';
-import { BotTeamWorkflow } from './BotTeamWorkflow';
 
 const messageError = (cause: unknown) => cause instanceof Error ? cause.message : String(cause);
 const roomPath = (teamId: string) => `/api/bots/teams/${encodeURIComponent(teamId)}`;
@@ -86,8 +85,8 @@ function useTeamChannel(teamId: string, visible: boolean, onUnsupported: () => v
   return { messages, activeRuns, loading, error, hasEarlier, loadingEarlier, accept: acceptPosted, refresh, loadEarlier };
 }
 
-export function BotTeamChannel({ team, bots, visible, current, continuousSupported = false, coordinatorWorkToolsSupported = false, workflowsSupported = false, onUnsupported, onOpenConversation, onStateChange, onDetails, onShowWork }: {
-  team: BotTeam; bots: Bot[]; visible: boolean; current: boolean; continuousSupported?: boolean; coordinatorWorkToolsSupported?: boolean; workflowsSupported?: boolean; onUnsupported: () => void;
+export function BotTeamChannel({ team, bots, visible, current, continuousSupported = false, coordinatorWorkToolsSupported = false, onUnsupported, onOpenConversation, onStateChange, onDetails, onShowWork }: {
+  team: BotTeam; bots: Bot[]; visible: boolean; current: boolean; continuousSupported?: boolean; coordinatorWorkToolsSupported?: boolean; onUnsupported: () => void;
   onOpenConversation: (chatId: string, conversation?: Session) => Promise<void>; onStateChange: () => Promise<void>; onDetails: () => void; onShowWork: () => void;
 }) {
   const channel = useTeamChannel(team.id, visible, onUnsupported);
@@ -150,7 +149,6 @@ export function BotTeamChannel({ team, bots, visible, current, continuousSupport
   const recipientLabel = recipients.length === team.memberIds.length ? 'Everyone' : recipients.length ? recipients.map(id => bots.find(bot => bot.id === id)?.name ?? 'Unavailable teammate').join(', ') : 'Team';
   return <div className="bot-room" hidden={!visible} aria-label={`${team.name} channel`}>
     {channel.error ? <ErrorNotice message={channel.error} next="Showing saved messages. Refresh to verify current team work before sending." action="Refresh channel" onRetry={() => void channel.refresh()}/> : null}
-    {workflowsSupported ? <BotTeamWorkflow key={team.id} team={team} bots={bots} visible={visible} current={current} onOpenConversation={onOpenConversation} onChanged={onStateChange}/> : null}
     <div className="bot-room-feed" ref={feed} role="region" aria-label="Team conversation" tabIndex={0} onScroll={() => { const element = feed.current; if (element) { follow.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80; setAway(!follow.current); if (follow.current) setUnread(0); } }}>
       {channel.loading ? <p role="status" className="bot-room-loading">Opening the team channel…</p> : null}
       {channel.hasEarlier ? <div className="bot-room-earlier"><Btn size="sm" disabled={channel.loadingEarlier} onClick={() => { if (feed.current) olderAnchor.current = { height: feed.current.scrollHeight, top: feed.current.scrollTop }; void channel.loadEarlier().then(ok => { if (!ok) olderAnchor.current = null; }); }}>{channel.loadingEarlier ? 'Loading earlier…' : 'Load earlier messages'}</Btn></div> : null}

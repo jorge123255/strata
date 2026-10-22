@@ -477,12 +477,12 @@ test('public history contains no private teammate instructions and invitation co
   assert.equal(readFileSync(join(f.directory, 'bot-team-channels.json'), 'utf8').includes('BUILDER_PRIVATE_SECRET'), false);
 });
 
-test('conversation-only prompts exclude own private instructions, memory, extension snapshots and provider checkpoints', async t => {
+test('conversation-only prompts keep own profile instructions but exclude private memory, extensions and provider checkpoints', async t => {
   let f;
   const extension = { snapshot: () => ({ instructions: 'PRIVATE_EXTENSION_MARKER' }), tools: () => { throw new Error('A conversation must not load extension tools'); }, owns: () => false, finish: async () => {} };
   f = fixture(t, async input => {
     assert.equal(JSON.stringify(input.bot).includes('PRIVATE_EXTENSION_MARKER'), false);
-    assert.equal(input.bot.instructions.includes('PRIVATE_PROFILE_MARKER'), false);
+    assert.equal(input.bot.instructions.includes('PRIVATE_PROFILE_MARKER'), true);
     assert.equal(input.bot.instructions.includes('PRIVATE_MEMORY_MARKER'), false);
     assert.equal(JSON.stringify(input.history).includes('PRIVATE_HISTORY_MARKER'), false);
     assert.equal(input.checkpoint, null); await input.onCheckpoint({ nativeSessionId: 'private-provider-checkpoint' });

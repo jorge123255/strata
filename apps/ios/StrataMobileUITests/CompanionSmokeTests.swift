@@ -2538,6 +2538,76 @@ final class ExistingPairingComputerAcceptanceTests: XCTestCase {
 
 extension CompanionSmokeTests {
     @MainActor
+    func testTeamIncomingRepliesFollowAndUnreadPreservesReadingPosition() async throws {
+        let control = try pairWorkspaceFixture()
+        let teamID = "team_00000000-0000-4000-8000-000000000034"
+        try tapWorkspace(app.buttons["team-" + teamID])
+        let work = app.buttons["teamCurrentWorkButton"]
+        try require(work)
+        let working = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "Workflows: 1 working"), object: work)
+        XCTAssertEqual(XCTWaiter.wait(for: [working], timeout: 15), .completed)
+        XCTAssertTrue(app.buttons["teamCurrentWorkflowsButton"].isHittable)
+
+        func message(_ sequence: Int) -> XCUIElement { app.staticTexts["teamMessageContent-follow_msg_\(sequence)"] }
+        func visible(_ element: XCUIElement, timeout: TimeInterval = 15) throws {
+            let shown = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: element)
+            guard XCTWaiter.wait(for: [shown], timeout: timeout) == .completed else { throw acceptanceError("Expected message/control to become visible without scrolling: \(element.identifier)") }
+        }
+        try visible(message(40))
+        _ = try await fixtureControl(control, action: "team-follow-append")
+        try visible(message(41))
+        XCTAssertFalse(app.buttons["latestTeamMessagesButton"].exists)
+        attachScreenshot("Team — incoming reply follows at the bottom and workflow stays visible")
+
+        let input = app.descendants(matching: .any).matching(identifier: "botTeamTaskInput").firstMatch
+        try require(input)
+        let top = work.frame.maxY + 28, bottom = input.frame.minY - 24
+        XCTAssertGreaterThan(bottom - top, 200)
+        let start = app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: app.frame.midX, dy: top + 36))
+        let finish = app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: app.frame.midX, dy: bottom - 36))
+        start.press(forDuration: 0.1, thenDragTo: finish)
+        start.press(forDuration: 0.1, thenDragTo: finish)
+        let latest = app.buttons["latestTeamMessagesButton"]
+        try visible(latest)
+        let anchors = app.staticTexts.matching(NSPredicate(format: "identifier BEGINSWITH %@", "teamMessageContent-follow_msg_")).allElementsBoundByIndex
+        let anchor = try XCTUnwrap(anchors.first { $0.isHittable && $0.frame.minY > top && $0.frame.maxY < bottom })
+        let anchorID = anchor.identifier, previousY = anchor.frame.minY
+        _ = try await fixtureControl(control, action: "team-follow-append")
+        let unread = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS %@", "1 new team updates"), object: latest)
+        XCTAssertEqual(XCTWaiter.wait(for: [unread], timeout: 15), .completed)
+        let preserved = app.staticTexts[anchorID]
+        XCTAssertTrue(preserved.isHittable)
+        XCTAssertEqual(preserved.frame.minY, previousY, accuracy: 6, "An incoming reply must not move the earlier message being read.")
+        XCTAssertFalse(message(42).isHittable)
+        attachScreenshot("Team — reading position preserved with one new update")
+        latest.tap()
+        try visible(message(42))
+        let read = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: latest)
+        XCTAssertEqual(XCTWaiter.wait(for: [read], timeout: 5), .completed)
+
+        input.tap(); input.typeText("A draft kept on this phone\nwith several lines\nwhile new replies arrive\nwithout sending it")
+        _ = try await fixtureControl(control, action: "team-follow-append")
+        try visible(message(43))
+        let send = app.buttons["startBotTeamTaskButton"]
+        XCTAssertTrue(send.isHittable)
+        XCTAssertLessThanOrEqual(message(43).frame.maxY, input.frame.minY + 1, "The latest reply must remain above the expanded composer.")
+        attachScreenshot("Team — latest reply remains above the multiline composer")
+
+        // Navigation is read-only; checking saved evaluator findings never accepts a result.
+        app.buttons["teamCurrentWorkflowsButton"].tap()
+        try require(app.navigationBars["Plan & verify"])
+        try tapWorkspace(app.buttons["workflow-wf_00000000-0000-4000-8000-000000000034"])
+        try tapWorkspace(app.staticTexts["Previously passed · recheck pending"], performTap: false)
+        XCTAssertFalse(app.buttons["acceptTeamWorkflowButton"].exists)
+        attachScreenshot("Workflow — repair labels saved findings as pending recheck")
+        let final = try await fixtureControl(control, action: "state")
+        let calls = try XCTUnwrap(final["calls"] as? [[String: Any]])
+        XCTAssertTrue(calls.allSatisfy { $0["method"] as? String == "GET" }, "This geometry fixture must not dispatch a model prompt, workflow mutation, approval or computer action.")
+        XCTAssertEqual((final["followMessages"] as? [[String: Any]])?.count, 43)
+        XCTAssertEqual(final["providerDispatches"] as? Int, 0)
+    }
+
+    @MainActor
     func testTeamWorkflowRolesEvidenceOwnerReviewAndExplicitContinuation() async throws {
         let control = try pairWorkspaceFixture()
         let teamID = "team_00000000-0000-4000-8000-000000000034"

@@ -15,6 +15,7 @@ import { createBotHostFolderTools, botHostFolderAuthority } from './bots-host-fo
 import { createCreatedCommandTools } from './bots-runtime/created-tools.mjs';
 import { createBotActionJournal, botActionTurnIdentity } from './bots-action-journal.mjs';
 import { createHarnessObserver } from './bots-harness-observer.mjs';
+import { botApprovalTarget } from './bots-approval-target.mjs';
 
 const fault = (status, message) => Object.assign(new Error(message), { status });
 const ids = new Set(['claude', 'codex', 'grok', 'kimi', 'ollama', 'devin', 'configured']);
@@ -521,12 +522,13 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
       if (bot.policy === 'bypass') return true;
       const callId = typeof id === 'string' && /^[A-Za-z0-9_.:-]{1,160}$/.test(id) ? id : `bt_${createHash('sha256').update(String(id ?? randomUUID())).digest('hex').slice(0, 32)}`;
       if (owner.pending.has(callId)) throw fault(409, 'This tool request is already waiting.');
-      emit({ type: 'agent-tool', tool: { id: callId, name: name ?? 'Bot action', args, preview: reason, effect: reason, scope: 'connected', state: 'proposed' } });
+      const target = botApprovalTarget(name, args, { secrets: [bot.providerSettings?.apiKey] });
+      emit({ type: 'agent-tool', tool: { id: callId, name: name ?? 'Bot action', args, ...(target ? { target } : {}), preview: reason, effect: reason, scope: 'connected', state: 'proposed' } });
       return new Promise(resolve => {
         const abort = () => finish(false);
         const finish = allowed => {
           combined.removeEventListener('abort', abort); owner.pending.delete(callId);
-          emit({ type: 'agent-tool', tool: { id: callId, name: name ?? 'Bot action', args, preview: reason, effect: reason, scope: 'connected', state: allowed ? 'running' : 'denied' } });
+          emit({ type: 'agent-tool', tool: { id: callId, name: name ?? 'Bot action', args, ...(target ? { target } : {}), preview: reason, effect: reason, scope: 'connected', state: allowed ? 'running' : 'denied' } });
           resolve(allowed);
         };
         owner.pending.set(callId, { callId, tool: name, reason, args, at: Date.now(), resolve: finish });
@@ -574,7 +576,9 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     try {
       team.begin(context);
       const folderInstructions = hostFolders.tools(bot).length ? `An explicit ${bot.hostFolder.access === 'read' ? 'read-only' : 'read/write'} host-folder share is available at ${JSON.stringify(bot.hostFolder.path)}. Use host_list_files, host_read_file${bot.hostFolder.access === 'read-write' && bot.policy !== 'plan' ? ' and host_write_file' : ''} with paths relative to that folder. Normal file, command and browser tools stay inside the isolated computer. This share is file access, not a mounted folder or host shell.` : '';
-      const instructions = (conversationOnly ? [team.instructions(context)] : [bot.instructions, work.instructions(bot.id), bot.extensionSnapshots?.skills?.instructions, bot.extensionSnapshots?.mcp?.instructions, bot.extensionSnapshots?.createdTools?.instructions, team.instructions(context), folderInstructions]).filter(Boolean).join('\n\n');
+      // Keep this bot's saved identity in public conversation turns, without
+      // sharing peer profiles or loading private work/extension context or tools.
+      const instructions = (conversationOnly ? [bot.instructions, team.instructions(context)] : [bot.instructions, work.instructions(bot.id), bot.extensionSnapshots?.skills?.instructions, bot.extensionSnapshots?.mcp?.instructions, bot.extensionSnapshots?.createdTools?.instructions, team.instructions(context), folderInstructions]).filter(Boolean).join('\n\n');
       const runtimeBot = { ...bot, instructions, continuousTeam: team.isContinuousTurn(turnId) };
       if (conversationOnly) delete runtimeBot.extensionSnapshots;
       emit({ type: 'start', agent: true, model: bot.model || bot.provider });
