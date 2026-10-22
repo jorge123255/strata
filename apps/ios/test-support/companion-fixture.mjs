@@ -331,6 +331,8 @@ const { botSupervisionSnapshot } = await import('../../host/server/bots-supervis
 const host = {
   async json(path, options = {}) {
     calls.push({ path, method: options.method ?? 'GET', body: options.body ?? null });
+    // This legacy host fixture ignores the new read-only summary query.
+    if (path === '/api/companion/conversations?summary=1') path = '/api/companion/conversations';
     if (teamReviewMode) {
       if (path === '/api/bots/supervision') return { supported: true, sessions: [], counts: { waiting: 0, working: 0, completed: 0, errors: 0 }, hasMore: false };
       if (path === '/api/bots/activity') {

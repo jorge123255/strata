@@ -1627,6 +1627,69 @@ final class BotWorkspaceTests: XCTestCase {
         XCTAssertNil(store.currentConversation)
     }
 
+    func testEqualWorkspacePollsPublishOnlyLoadingTransitionsAndPreserveChangedAuthority() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        var teamRevision = 1, taskRevision = 1, includeMessage = false, activeRun = false
+        var activityReason: String?
+        var channelQueries: [String] = []
+        fixture.respond { request in
+            if request.url!.path == "/v1/bots/teams" {
+                var team = self.team(enabled: true); team["revision"] = teamRevision
+                return ["teams": [team], "runs": [], "teamWorkReviewSupported": true]
+            }
+            if request.url!.path == "/v1/bots/activity" {
+                var value: [String: Any] = ["activity": [["id": "task_fixture", "type": "delivery", "teamId": "team_fixture", "runId": "run_fixture", "title": "Saved result", "state": "completed", "work": ["status": "ready_for_review", "revision": taskRevision, "evidence": [], "resultHistory": [], "reviewHistory": []]]], "teamWorkReviewSupported": true]
+                if let activityReason { value["reason"] = activityReason }
+                return value
+            }
+            if request.url!.path.hasSuffix("/channel") {
+                let query = request.url!.query ?? ""; channelQueries.append(query)
+                var value = self.channelSnapshot(query.isEmpty ? [self.channelEntry(1)] : includeMessage ? [self.channelEntry(2)] : [])
+                value["nextSequence"] = includeMessage ? 2 : 1
+                if activeRun { value["activeRuns"] = [self.runRecord()] }
+                return value
+            }
+            return nil
+        }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore()
+        await workspace.refreshTeams(); await workspace.refreshActivity(); await workspace.refreshChannel("team_fixture")
+        var publications = 0, teamPublications = 0, activityPublications = 0, channelPublications = 0, messagePublications = 0
+        let observation = workspace.objectWillChange.sink { publications += 1 }
+        let teams = workspace.$teams.dropFirst().sink { _ in teamPublications += 1 }
+        let activity = workspace.$activity.dropFirst().sink { _ in activityPublications += 1 }
+        let channel = workspace.$channels.dropFirst().sink { _ in channelPublications += 1 }
+        let messages = workspace.$messages.dropFirst().sink { _ in messagePublications += 1 }
+        defer { observation.cancel(); teams.cancel(); activity.cancel(); channel.cancel(); messages.cancel() }
+        await workspace.refreshTeams(); await workspace.refreshActivity(); await workspace.refreshChannel("team_fixture")
+        XCTAssertEqual(publications, 6, "Only the three real loading start/end transitions remain observable.")
+        XCTAssertEqual(teamPublications, 0); XCTAssertEqual(activityPublications, 0); XCTAssertEqual(channelPublications, 0); XCTAssertEqual(messagePublications, 0)
+        XCTAssertEqual(workspace.channels["team_fixture"]?.messages.map(\.sequence), [1])
+        XCTAssertEqual(channelQueries, ["", "after=1"])
+
+        teamRevision = 2; taskRevision = 2; activeRun = true
+        await workspace.refreshTeams(); await workspace.refreshActivity(); await workspace.refreshChannel("team_fixture")
+        XCTAssertEqual(teamPublications, 1); XCTAssertEqual(activityPublications, 1); XCTAssertEqual(channelPublications, 1)
+        XCTAssertEqual(workspace.teams?.teams.first?.revision, 2)
+        XCTAssertEqual(workspace.activity.first?.work?.revision, 2)
+        XCTAssertEqual(workspace.channels["team_fixture"]?.activeRuns.count, 1)
+        includeMessage = true; await workspace.refreshChannel("team_fixture")
+        XCTAssertEqual(workspace.channels["team_fixture"]?.messages.map(\.sequence), [1, 2])
+        XCTAssertEqual(channelPublications, 2)
+        includeMessage = false; await workspace.refreshChannel("team_fixture")
+        XCTAssertEqual(channelQueries.last, "after=2", "Empty polls preserve the retained forward cursor.")
+        XCTAssertEqual(workspace.channels["team_fixture"]?.messages.map(\.sequence), [1, 2])
+        XCTAssertEqual(channelPublications, 2)
+
+        activityReason = "Synthetic host temporarily unavailable"
+        await workspace.refreshActivity(); await workspace.refreshActivity()
+        XCTAssertEqual(messagePublications, 1, "An unchanged unavailable reason must not clear and republish itself on every poll.")
+        XCTAssertEqual(workspace.activity.first?.work?.revision, 2)
+        XCTAssertTrue(workspace.activityLoaded)
+        activityReason = nil; await workspace.refreshActivity()
+        XCTAssertEqual(messagePublications, 2, "A successful fresh snapshot must still clear stale-state guidance.")
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+    }
+
     func testTeamChannelSendStaysInRoomAndRetriesUseExactTypedRequest() async throws {
         let fixture = StoreTransport(); defer { fixture.close() }
         let posted = channelSnapshot([channelEntry(1), channelEntry(2)])
@@ -2381,6 +2444,40 @@ final class BotConnectorTests: XCTestCase {
         var draft = BotConnectorDraft(); draft.name = "Program"; draft.url = "https://example.invalid/mcp"
         let refused = await workspace.saveConnectorSetup(draft, editing: program); XCTAssertFalse(refused)
         XCTAssertFalse(fixture.requests.contains { $0.method == "PATCH" })
+    }
+
+    func testConnectorAuthSuccessfulPollClearsTransientErrorOnlyForMatchingAccount() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        var value = connector(); value["authType"] = "oauth"; value["auth"] = ["status": "waiting", "detail": "Synthetic pending sign-in"]
+        let initial = value, flags = features
+        var reply = initial; reply["auth"] = ["status": "connected", "detail": "Synthetic sign-in accepted"]
+        fixture.respond { request in request.url!.path.hasSuffix("/auth") ? ["connection": reply] : ["connections": [initial], "connectorFeatures": flags] }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore()
+        await workspace.refreshConnections()
+        let connection = try decode(initial, as: BotMCPConnection.self)
+        let path = "/v1/bots/connections/\(connection.id)/auth"
+        let failure = fixture.hold(path)
+        let first = Task { await workspace.connectorAuthentication(connection, action: "poll") }
+        await fulfillment(of: [failure.requested], timeout: 2)
+        failure.finish(["error": "Synthetic temporary sign-in status failure"], status: 503)
+        let failed = await first.value; XCTAssertFalse(failed)
+        XCTAssertNotNil(workspace.messages["connections"])
+        fixture.release(path)
+
+        let retried = await workspace.connectorAuthentication(connection, action: "poll")
+        XCTAssertTrue(retried); XCTAssertNil(workspace.messages["connections"])
+        XCTAssertEqual(workspace.connections?.connections.first?.auth?.status, "connected")
+        var publications = 0
+        let observation = workspace.objectWillChange.sink { publications += 1 }
+        let repeated = await workspace.connectorAuthentication(connection, action: "poll")
+        observation.cancel()
+        XCTAssertTrue(repeated); XCTAssertEqual(publications, 2, "An unchanged successful poll only publishes its loading start/end.")
+
+        reply["id"] = "mcpc_other_account"
+        let mismatched = await workspace.connectorAuthentication(connection, action: "poll")
+        XCTAssertFalse(mismatched); XCTAssertNotNil(workspace.messages["connections"])
+        XCTAssertEqual(workspace.connections?.connections.first?.id, connection.id)
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" }, "Sign-in status retries never start authentication, grant access or run a model.")
     }
 
     func testDiscoverPresetActionsNameAccountsAndKeepBearerServicesHonest() throws {

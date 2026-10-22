@@ -1,0 +1,27 @@
+import assert from 'node:assert/strict';
+import { build } from 'esbuild';
+import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+import { readFileSync,writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+const root=fileURLToPath(new URL('../../..',import.meta.url));
+const files=['apps/host/src/lib/store.ts','apps/host/src/lib/shared-conversation-batch.ts'];
+const hashes=Object.fromEntries(files.map(path=>[path,createHash('sha256').update(readFileSync(root+'/'+path)).digest('hex')]));
+const {outputFiles}=await build({entryPoints:[root+'/'+files[0]],bundle:true,write:false,platform:'node',format:'cjs',plugins:[{name:'reviewer-controlled-client',setup(builder){builder.onResolve({filter:/(?:^|\/)client$/},args=>args.importer.includes('/src/')?{path:'client',namespace:'fixture'}:undefined);builder.onLoad({filter:/.*/,namespace:'fixture'},()=>({contents:'export const api=harness.api;export const onEvent=harness.onEvent;export const streamPost=()=>{throw Error("No model prompt allowed")};export class ApiError extends Error {}',loader:'js'}));}}]});
+const at='2026-10-21T00:00:00Z';const initial={id:'fixture_chat',title:'Original',workspace:'/fixture',revision:1,active:false,createdAt:at,updatedAt:at,tokensIn:0,tokensOut:0,messages:[{id:'answer',role:'assistant',content:'One',at}]};
+test('shared history commits a remote batch once, retains immediate state and never overwrites newer local edits', async () => {
+const values=new Map([['strata.sessions.v1',JSON.stringify([initial])]]),writes=[],calls=[],listeners=new Map();let event;
+const request=async(method,path,body)=>{calls.push({method,path});if(path==='/api/companion/conversations?summary=1')return {available:true,conversations:[{id:initial.id}]};if(path==='/api/companion/conversations/sync')return {results:[],conversations:[initial]};if(path==='/api/companion/conversations')throw Error('Full extra startup GET should not occur');return ({'/api/setup':{complete:true},'/api/models':{variants:[]},'/api/skills':[],'/api/workspaces':{workspaces:[{id:'fixture',path:'/fixture',name:'Fixture'}]},'/api/runtime':{instances:[]},'/api/serving':{stats:{running:0,waiting:0},revision:1},'/api/model-providers':{connections:[]}})[path]??{}};
+const harness={api:Object.fromEntries(['get','post','patch','put','del'].map(method=>[method,(path,body)=>request(method,path,body)])),onEvent:handler=>{event=handler;return()=>{}}};
+const module={exports:{}};
+new Function('require','module','exports','harness','localStorage','sessionStorage','window','document','matchMedia','navigator',outputFiles[0].text)(createRequire(root+'/apps/host/package.json'),module,module.exports,harness,{getItem:key=>values.get(key)??null,setItem:(key,value)=>{values.set(key,value);writes.push({key,value})},removeItem:key=>values.delete(key)},{getItem:()=>null,setItem(){}},{location:{hash:'#/chat/fixture_chat'},addEventListener:(name,fn)=>listeners.set(name,fn),removeEventListener:name=>listeners.delete(name)},{documentElement:{dataset:{},style:{setProperty(){},removeProperty(){}}},querySelector:()=>null},()=>({matches:false,addEventListener(){}}),{language:'en'});
+const store=module.exports;for(let i=0;i<149;i++)store.adoptSharedConversation(initial);await new Promise(resolve=>setImmediate(resolve));assert.equal(calls.filter(row=>row.path==='/api/companion/conversations?summary=1').length,1,'Concurrent adoption joins one canonical startup');assert.equal(calls.filter(row=>row.path.endsWith('/sync')).length,1);await store.bootstrap();await new Promise(resolve=>setTimeout(resolve,275));writes.length=0;
+const emit=(revision,content)=>event({event:'conversation',data:{conversation:{...initial,revision,messages:[{id:'answer',role:'assistant',content,at}]}}});
+emit(2,'Two');assert.equal(store.getState().sessions[0].messages[0].content,'Two','SSE state is immediately visible');emit(3,'Three');emit(3,'Three');assert.equal(writes.length,0);await new Promise(resolve=>setTimeout(resolve,275));assert.equal(writes.length,1);assert.equal(JSON.parse(writes[0].value)[0].messages[0].content,'Three');
+writes.length=0;emit(4,'Four');store.renameSession(initial.id,'Owner local title');assert.equal(writes.length,1);assert.equal(JSON.parse(writes[0].value)[0].title,'Owner local title');await new Promise(resolve=>setTimeout(resolve,275));assert.equal(writes.length,1,'Queued remote cache must not overwrite newer local persistence');
+writes.length=0;emit(5,'Five');listeners.get('pagehide')();assert.equal(writes.length,1);assert.equal(JSON.parse(writes[0].value)[0].messages[0].content,'Five');await new Promise(resolve=>setTimeout(resolve,275));assert.equal(writes.length,1,'Pagehide cancels the pending timer');
+const current=store.getState();emit(4,'Older');assert.equal(store.getState(),current,'Stale revisions do not republish');
+event({event:'conversation',data:{deleted:initial.id}});assert.equal(store.getState().sessions.some(row=>row.id===initial.id),false,'Delete removes immediately');listeners.get('pagehide')();assert.deepEqual(JSON.parse(values.get('strata.sessions.v1')),[]);
+assert.equal(calls.some(call=>call.path==='/api/companion/conversations'),false);assert.equal(calls.some(call=>call.path==='/api/chat/stream'||call.path.endsWith('/messages')),false);
+});

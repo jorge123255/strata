@@ -20,6 +20,7 @@ import { noModelNotice } from './no-model';
 import { taskHandoverMessage, taskHandoverTitle, chatHandoverMessage, chatHandoverTitle } from './task-handover';
 import type { Task } from './tasks';
 import { postWithFolderFallback } from './folder-pick';
+import { sharedConversationBatch, sharedSessionSnapshot as sessionSnapshot, type SharedConversationUpdate } from './shared-conversation-batch';
 import { setTranslationLanguage, tr, validLanguage, type Language } from './i18n';
 /**
  * Strata app store.
@@ -693,7 +694,7 @@ function applyEvent(e: StreamEvent) {
       if (data.available === true && !sharedReady) void initializeSharedConversations().catch(() => undefined);
       break;
     case 'conversation':
-      applySharedConversation(data as { conversation?: Session; deleted?: string });
+      applySharedConversation(data as SharedConversationUpdate);
       break;
     case 'agent':
       if (typeof data.sessionId === 'string') patchSession(data.sessionId, s => ({ ...s, agents: updateAgent(s.agents ?? [], data.agent) }));
@@ -1030,49 +1031,55 @@ let sharedReady = false;
 let sharedSyncTimer: ReturnType<typeof setTimeout> | null = null;
 let sharedSyncPending = Promise.resolve();
 const botSends = new Set<string>();
-const sessionSnapshot = (session: Session) => { const { revision, active, status, ...snapshot } = session; return snapshot; };
-function cacheSessions(sessions: Session[]) {
-  try { localStorage.setItem(SESSION_KEY, JSON.stringify(sessions)); } catch { /* Offline cache may be full; the host retains history. */ }
+let sharedInitialization: Promise<void> | null = null;
+let sessionCacheTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingSessionCache: Session[] | null = null;
+function flushSessionCache() {
+  if (sessionCacheTimer) clearTimeout(sessionCacheTimer);
+  sessionCacheTimer = null;
+  const sessions = pendingSessionCache; pendingSessionCache = null;
+  if (sessions) try { localStorage.setItem(SESSION_KEY, JSON.stringify(sessions)); } catch { /* The host retains complete history. */ }
 }
-function applySharedConversation(data: { conversation?: Session; deleted?: string }) {
-  if (data.deleted) {
-    sharedActive.delete(data.deleted); sharedRevisions.delete(data.deleted); sharedSnapshots.delete(data.deleted);
-    const sessions = state.sessions.filter(s => s.id !== data.deleted);
-    cacheSessions(sessions); set({ sessions, activeSession: state.activeSession === data.deleted ? null : state.activeSession }); return;
-  }
-  const session = data.conversation;
-  if (!session || !Array.isArray(session.messages) || !session.id) return;
-  if (typeof session.revision === 'number' && session.revision < (sharedRevisions.get(session.id) ?? 0)) return;
-  sharedRevisions.set(session.id, session.revision ?? 0);
-  if (session.active) sharedActive.add(session.id); else sharedActive.delete(session.id);
-  // This renderer already projects its own stream; applying the same deltas twice would duplicate text.
-  if (liveTurns.has(session.id)) return;
-  sharedSnapshots.set(session.id, JSON.stringify(sessionSnapshot(session)));
-  const sessions = state.sessions.some(s => s.id === session.id) ? state.sessions.map(s => s.id === session.id ? session : s) : [session, ...state.sessions];
-  cacheSessions(sessions);
-  set({ sessions, streaming: !!state.activeSession && (liveTurns.has(state.activeSession) || sharedActive.has(state.activeSession)), liveChats: new Set([...liveTurns.keys(), ...sharedActive]).size });
+function cacheSessions(sessions: Session[]) {
+  pendingSessionCache = sessions;
+  // Bound cache serialization during streams; visible state still updates immediately.
+  sessionCacheTimer ??= setTimeout(flushSessionCache, 250);
+}
+window.addEventListener('pagehide', flushSessionCache);
+function applySharedConversations(updates: SharedConversationUpdate[]) {
+  const result = sharedConversationBatch(state.sessions, state.activeSession, updates, { revisions: sharedRevisions, snapshots: sharedSnapshots, active: sharedActive, liveTurns });
+  if (!result.changed) return;
+  cacheSessions(result.sessions);
+  set({ sessions: result.sessions, activeSession: result.activeSession, streaming: !!result.activeSession && (liveTurns.has(result.activeSession) || sharedActive.has(result.activeSession)), liveChats: new Set([...liveTurns.keys(), ...sharedActive]).size });
   document.documentElement.dataset.streaming = state.liveChats ? 'true' : 'false';
 }
+function applySharedConversation(data: SharedConversationUpdate) { applySharedConversations([data]); }
 /** Adopt the canonical host conversation when opening a bot from its profile. */
 export function adoptSharedConversation(conversation: Session) {
-  applySharedConversation({ conversation });
+  adoptSharedConversations([conversation]);
+}
+export function adoptSharedConversations(conversations: Session[]) {
+  applySharedConversations(conversations.map(conversation => ({ conversation })));
   if (!sharedReady) void initializeSharedConversations().catch(() => undefined);
 }
-async function initializeSharedConversations() {
-  const availability = await api.get<{ available?: boolean }>('/api/companion/conversations');
+function initializeSharedConversations(): Promise<void> {
+  return sharedInitialization ??= initializeSharedConversationsOnce().finally(() => { sharedInitialization = null; });
+}
+async function initializeSharedConversationsOnce() {
+  const availability = await api.get<{ available?: boolean }>('/api/companion/conversations?summary=1');
   if (availability.available === false) { sharedReady = false; return; }
   // First import is insert-only; reconnecting with an old browser cache never replaces newer phone work.
-  const result = await api.post<{ results: { conversation?: Session; deleted?: string; id?: string }[] }>('/api/companion/conversations/sync', { sessions: state.sessions.filter(session => !liveTurns.has(session.id)).map(session => ({ session: sessionSnapshot(session) })) });
-  for (const item of result.results) applySharedConversation(item.deleted ? { deleted: item.id } : item);
-  const remote = await api.get<{ conversations: Session[] }>('/api/companion/conversations');
-  for (const conversation of remote.conversations) applySharedConversation({ conversation });
+  const result = await api.post<{ results: { conversation?: Session; deleted?: string; id?: string }[]; conversations?: Session[] }>('/api/companion/conversations/sync', { sessions: state.sessions.filter(session => !liveTurns.has(session.id)).map(session => ({ session: sessionSnapshot(session) })) });
+  applySharedConversations(result.results.map(item => item.deleted ? { deleted: item.id } : item));
+  const remote = Array.isArray(result.conversations) ? { conversations: result.conversations } : await api.get<{ conversations: Session[] }>('/api/companion/conversations');
+  applySharedConversations(remote.conversations.map(conversation => ({ conversation })));
   sharedReady = true;
   scheduleSharedSync();
 }
 async function syncSharedSession(session: Session) {
   const snapshot = sessionSnapshot(session);
   const result = await api.post<{ results: { conversation?: Session; deleted?: boolean; id?: string }[] }>('/api/companion/conversations/sync', { sessions: [{ session: snapshot, baseRevision: session.revision }] });
-  for (const item of result.results) applySharedConversation(item.deleted ? { deleted: item.id } : { conversation: item.conversation });
+  applySharedConversations(result.results.map(item => item.deleted ? { deleted: item.id } : { conversation: item.conversation }));
 }
 function scheduleSharedSync() {
   if (!sharedReady || sharedSyncTimer) return;
@@ -1089,6 +1096,8 @@ function scheduleSharedSync() {
 }
 
 function persistSessions(sessions: Session[]) {
+  if (sessionCacheTimer) clearTimeout(sessionCacheTimer);
+  sessionCacheTimer = null; pendingSessionCache = null;
   try {
     localStorage.setItem(SESSION_KEY, JSON.stringify(sessions));
   } catch {

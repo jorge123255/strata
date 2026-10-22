@@ -8,7 +8,7 @@ export function createConversationRoutes({ conversations, port }) {
     if (!isLocalCompanionRequest(req, typeof port === 'function' ? port() : port)) return error(res, 403, 'Open Strata on this Mac to use conversations.');
     const root = '/api/companion/conversations';
     try {
-      if (url.pathname === root && req.method === 'GET') return json(res, 200, conversations.list());
+      if (url.pathname === root && req.method === 'GET') return json(res, 200, conversations.list(url.searchParams.get('summary') === '1' ? { summary: true } : undefined));
       if (url.pathname === root && req.method === 'POST') return json(res, 201, conversations.create(await readBody(req)));
       if (url.pathname === root + '/sync' && req.method === 'POST') return json(res, 200, conversations.sync((await readBody(req, 64 * 1024 * 1024)).sessions));
       const match = /^\/api\/companion\/conversations\/([A-Za-z0-9_.:-]{1,160})(?:\/(messages|stop|approval|preferences))?$/.exec(url.pathname);

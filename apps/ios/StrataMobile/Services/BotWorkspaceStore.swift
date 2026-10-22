@@ -36,48 +36,58 @@ final class BotWorkspaceStore: ObservableObject {
     var workReviewSupported: Bool { teams?.teamWorkReviewSupported == true || activityWorkReviewSupported }
 
     func refreshTeams() async {
-        await load("teams", path: "/v1/bots/teams") { (value: BotTeamsSnapshot) in self.teams = value; self.messages["teams"] = value.reason }
+        await load("teams", path: "/v1/bots/teams") { (value: BotTeamsSnapshot) in if self.teams != value { self.teams = value }; self.setMessage("teams", value.reason) }
     }
     func refreshActivity() async {
         struct Snapshot: Decodable { var activity: [BotWorkspaceActivity]; var reason: String?; var teamWorkReviewSupported: Bool? }
         await load("activity", path: "/v1/bots/activity") { (value: Snapshot) in
-            self.messages["activity"] = value.reason
+            self.setMessage("activity", value.reason)
             guard value.reason == nil else { return }
-            self.activity = value.activity; self.activityLoaded = true
-            self.activityWorkReviewSupported = value.teamWorkReviewSupported == true
-            self.recoveryPlans = self.recoveryPlans.filter { id, plan in
+            if self.activity != value.activity { self.activity = value.activity }
+            if !self.activityLoaded { self.activityLoaded = true }
+            let reviewSupported = value.teamWorkReviewSupported == true
+            if self.activityWorkReviewSupported != reviewSupported { self.activityWorkReviewSupported = reviewSupported }
+            let retainedPlans = self.recoveryPlans.filter { id, plan in
                 value.activity.contains { $0.id == id && $0.work?.revision == plan.expectedRevision && $0.work?.canPlanRecovery == true }
             }
+            if self.recoveryPlans != retainedPlans { self.recoveryPlans = retainedPlans }
         }
     }
     func refreshSupervision() async {
-        await load("supervision", path: "/v1/bots/supervision") { (value: BotSupervisionSnapshot) in self.supervision = value; self.messages["supervision"] = value.reason }
+        await load("supervision", path: "/v1/bots/supervision") { (value: BotSupervisionSnapshot) in if self.supervision != value { self.supervision = value }; self.setMessage("supervision", value.reason) }
     }
     func refreshSkills() async {
-        await load("skills", path: "/v1/bots/skills") { (value: BotSkillsSnapshot) in self.skills = value; self.messages["skills"] = value.reason }
+        await load("skills", path: "/v1/bots/skills") { (value: BotSkillsSnapshot) in if self.skills != value { self.skills = value }; self.setMessage("skills", value.reason) }
     }
     func refreshConnections() async {
-        await load("connections", path: "/v1/bots/connections") { (value: BotConnectionsSnapshot) in self.connections = value; self.messages["connections"] = value.reason }
+        await load("connections", path: "/v1/bots/connections") { (value: BotConnectionsSnapshot) in if self.connections != value { self.connections = value }; self.setMessage("connections", value.reason) }
     }
     func refreshConnectorCatalog() async {
         guard connections?.connectorFeatures?.catalog == true else { return }
-        await load("connectorCatalog", path: "/v1/bots/connectors/catalog") { (value: BotConnectorCatalog) in self.connectorCatalog = value; self.messages["connectorCatalog"] = value.reason }
+        await load("connectorCatalog", path: "/v1/bots/connectors/catalog") { (value: BotConnectorCatalog) in if self.connectorCatalog != value { self.connectorCatalog = value }; self.setMessage("connectorCatalog", value.reason) }
+    }
+    private func setMessage(_ key: String, _ message: String?) {
+        if messages[key] != message { messages[key] = message }
+    }
+    private func setLoading(_ key: String, _ active: Bool) {
+        if active, !loading.contains(key) { loading.insert(key) }
+        else if !active, loading.contains(key) { loading.remove(key) }
     }
     private func load<T: Decodable>(_ key: String, path: String, apply: (T) -> Void) async {
         guard let client, isCurrent() else { return }
-        let request = UUID(); requests[key] = request; loading.insert(key)
-        defer { if requests[key] == request { requests[key] = nil; loading.remove(key) } }
+        let request = UUID(); requests[key] = request; setLoading(key, true)
+        defer { if requests[key] == request { requests[key] = nil; setLoading(key, false) } }
         do {
             let value: T = try await client.perform(path)
             guard isCurrent(), requests[key] == request, !Task.isCancelled else { return }
-            messages[key] = nil; apply(value)
+            apply(value)
         } catch is CancellationError { }
-        catch { if isCurrent(), requests[key] == request { messages[key] = error.localizedDescription } }
+        catch { if isCurrent(), requests[key] == request { setMessage(key, error.localizedDescription) } }
     }
     private func change<T: Decodable, Body: Encodable>(_ key: String, path: String, method: String = "POST", body: Body) async -> T? {
         guard let client, isCurrent(), mutation == nil else { return nil }
         mutation = key; messages[key] = nil; workErrorStatus[key] = nil
-        requests[key] = nil; loading.remove(key)
+        requests[key] = nil; setLoading(key, false)
         defer { mutation = nil }
         do {
             let value: T
@@ -127,6 +137,7 @@ final class BotWorkspaceStore: ObservableObject {
                   CompanionClient.isSafeIdentifier(value.plan.id) else {
                 self.recoveryPlans[item.id] = nil; self.messages[key] = "This recovery plan is out of date. Refresh the task before continuing."; return
             }
+            self.setMessage(key, nil)
             self.recoveryPlans[item.id] = value.plan
         }
     }
@@ -268,19 +279,20 @@ final class BotWorkspaceStore: ObservableObject {
         let previous = channels[teamId]
         let before = older ? previous?.messages.first?.sequence : nil
         let after = !reset && !older ? channelCursors[teamId] : nil
-        let token = UUID(); requests[key] = token; loading.insert(key)
-        defer { if requests[key] == token { requests[key] = nil; loading.remove(key) } }
+        let token = UUID(); requests[key] = token; setLoading(key, true)
+        defer { if requests[key] == token { requests[key] = nil; setLoading(key, false) } }
         do {
             let value = try await client.teamChannel(teamId: teamId, after: after, before: before)
             guard isCurrent(), requests[key] == token, !Task.isCancelled else { return }
             try applyChannel(value, teamId: teamId, replacing: reset || previous == nil, older: older)
-            messages[key] = value.reason
+            setMessage(key, value.reason)
         } catch is CancellationError { }
         catch {
             guard isCurrent(), requests[key] == token else { return }
             if (error as? CompanionHTTPError)?.isUnsupported == true {
-                channels[teamId] = BotTeamChannel(teamId: teamId, supported: false, messages: [], activeRuns: [], nextSequence: 0, reason: "Update Strata on your Mac for the shared team channel. Existing team tasks remain available.")
-            } else { messages[key] = error.localizedDescription }
+                let unavailable = BotTeamChannel(teamId: teamId, supported: false, messages: [], activeRuns: [], nextSequence: 0, reason: "Update Strata on your Mac for the shared team channel. Existing team tasks remain available.")
+                if channels[teamId] != unavailable { channels[teamId] = unavailable }
+            } else { setMessage(key, error.localizedDescription) }
         }
     }
 
@@ -291,6 +303,16 @@ final class BotWorkspaceStore: ObservableObject {
               Set(value.messages.map(\.id)).count == value.messages.count,
               Set(value.messages.map(\.sequence)).count == value.messages.count else {
             throw CompanionError.server("The Mac returned inconsistent team history. Refresh the room.")
+        }
+        // Most incremental polls contain no new entries. Preserve the exact
+        // retained history and cursor without re-indexing and sorting it.
+        if !replacing && !older && value.messages.isEmpty, let previous = channels[teamId] {
+            var merged = value
+            merged.messages = previous.messages
+            merged.hasMoreBefore = previous.hasMoreBefore
+            merged.nextSequence = channelCursors[teamId] ?? 0
+            if channels[teamId] != merged { channels[teamId] = merged }
+            return
         }
         var combined = replacing ? [] : channels[teamId]?.messages ?? []
         for entry in value.messages {
@@ -316,7 +338,7 @@ final class BotWorkspaceStore: ObservableObject {
         while cursor < Int.max - 1, sequences.contains(cursor + 1) { cursor += 1 }
         channelCursors[teamId] = cursor
         merged.nextSequence = cursor
-        channels[teamId] = merged
+        if channels[teamId] != merged { channels[teamId] = merged }
     }
 
     func postTeamMessage(_ team: BotTeam, draft: BotTeamChannelPost) async -> Bool {
@@ -459,7 +481,13 @@ final class BotWorkspaceStore: ObservableObject {
         let path = "/v1/bots/connections/\(connection.id)/auth" + (action == "complete" ? "/complete" : action == "cancel" ? "/cancel" : "")
         if action == "poll" {
             await load("connections", path: path) { (value: Result) in
-                if let index = self.connections?.connections.firstIndex(where: { $0.id == value.connection.id }) { self.connections?.connections[index] = value.connection }
+                guard value.connection.id == connection.id,
+                      let index = self.connections?.connections.firstIndex(where: { $0.id == connection.id }) else {
+                    self.setMessage("connections", "The account changed while its sign-in status was being checked. Refresh your connectors.")
+                    return
+                }
+                if self.connections?.connections[index] != value.connection { self.connections?.connections[index] = value.connection }
+                self.setMessage("connections", nil)
             }
             return messages["connections"] == nil && isCurrent()
         }

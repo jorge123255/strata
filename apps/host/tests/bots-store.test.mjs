@@ -19,7 +19,7 @@ async function fixture(t, initial = session()) {
   const api = async (method, path, body) => {
     calls.push({ method, path, body: structuredClone(body) });
     if (path.endsWith('/messages')) return send(body);
-    if (path === '/api/companion/conversations') return { available: true, conversations: [initial] };
+    if (path === '/api/companion/conversations' || path === '/api/companion/conversations?summary=1') return { available: true, conversations: [initial] };
     if (path.endsWith('/sync')) return { results: [] };
     const fixtures = { '/api/setup': { complete: true }, '/api/models': { variants: [] }, '/api/skills': [], '/api/workspaces': { workspaces: [{ id: 'w', path: '/fixture/project', name: 'Project' }] }, '/api/runtime': { instances: [] }, '/api/serving': { stats: { running: 0, waiting: 0 }, revision: 1 }, '/api/model-providers': { connections: [{ id: 'maya', protocol: 'openai-chat', models: [{ id: 'Maya-S24' }] }] } };
     return fixtures[path] ?? {};
@@ -27,7 +27,7 @@ async function fixture(t, initial = session()) {
   const harness = { api: Object.fromEntries(['get', 'post', 'patch', 'put', 'del'].map(method => [method, (path, body) => api(method, path, body)])), onEvent: handler => { event = handler; return () => {}; }, streamPost: () => { throw new Error('A bot must not use the local model stream'); } };
   const module = { exports: {} };
   new Function('require', 'module', 'exports', 'harness', 'localStorage', 'sessionStorage', 'window', 'document', 'matchMedia', 'navigator', outputFiles[0].text)(createRequire(import.meta.url), module, module.exports, harness,
-    { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) }, { getItem: () => null, setItem() {} }, { location: { hash: '#/chat/bot-chat' } },
+    { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) }, { getItem: () => null, setItem() {} }, { location: { hash: '#/chat/bot-chat' }, addEventListener() {}, removeEventListener() {} },
     { documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, querySelector: () => null }, () => ({ matches: false, addEventListener() {} }), { language: 'en' });
   const store = module.exports;
   await store.bootstrap(); store.selectSession(initial.id);

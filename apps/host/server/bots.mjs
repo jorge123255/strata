@@ -221,7 +221,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
   function publicBot(bot) {
     const { providerSettings, modelDestination, extensionSnapshots, computerOwnerId, sharedComputer, hostFolderBinding, hostFolderRevision, hostFolderOwnerId, hostFolderRemoteIdentity, ...safe } = copy(bot);
     return { ...safe, avatar: BOT_AVATARS.includes(bot.avatar) ? bot.avatar : '🤖', ...(providerSettings ? { providerSettings: { ...(providerSettings.baseURL ? { baseURL: providerSettings.baseURL } : {}), apiKeySet: !!providerSettings.apiKey } } : {}),
-      conversations: (conversations()?.list().conversations ?? []).filter(chat => chat.preferences?.botId === bot.id).map(chat => chat.id),
+      conversations: conversations()?.identitiesForBot?.(bot.id) ?? (conversations()?.list().conversations ?? []).filter(chat => chat.preferences?.botId === bot.id).map(chat => chat.id),
       active: [...active.values()].some(run => run.botId === bot.id) };
   }
   function validate(input, old = {}) {

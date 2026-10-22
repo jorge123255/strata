@@ -136,21 +136,24 @@ test('HostClient only admits exact shared-conversation methods and prevents desk
   const host = new HostClient({ upstream: 'http://127.0.0.1:47831', fetcher: async (url, options) => { calls.push({ url, options }); return new Response('{}'); } });
   for (const [path, method] of [
     ['/api/companion/conversations', 'GET'], ['/api/companion/conversations', 'POST'],
+    ['/api/companion/conversations?summary=1', 'GET'],
     ['/api/companion/conversations/s_desktop-1', 'GET'],
     ...['messages', 'approval', 'stop'].map(action => [`/api/companion/conversations/s_desktop-1/${action}`, 'POST']),
   ]) await host.request(path, { method });
-  assert.equal(calls.length, 6);
+  assert.equal(calls.length, 7);
   for (const [path, method] of [
+    ['/api/companion/conversations?summary=1', 'POST'], ['/api/companion/conversations?summary=2', 'GET'], ['/api/companion/conversations?summary=1&path=/private', 'GET'],
     ['/api/companion/conversations/sync', 'GET'], ['/api/companion/conversations/sync', 'POST'],
     ['/api/companion/conversations/s_desktop-1', 'DELETE'], ['/api/companion/conversations/s_desktop-1/messages', 'GET'],
     ['/api/companion/conversations/s_desktop-1/mode', 'POST'], ['/api/companion/conversations/s_desktop-1?path=/private', 'GET'],
     ['/api/companion/conversations/../settings', 'GET'], ['https://evil.test/api/companion/conversations', 'GET'],
   ]) await assert.rejects(host.request(path, { method }), { status: 403 });
-  assert.equal(calls.length, 6, 'unsupported paths never reach fetch');
+  await assert.rejects(host.request('/api/companion/conversations?summary=1', { method: 'GET', body: {} }), { status: 403 });
+  assert.equal(calls.length, 7, 'unsupported paths never reach fetch');
 });
 
 test('paired conversation routes inherit Mac configuration and forward only message, stop or exact approval', async t => {
-  const { bridge, calls, token } = await fixture(t, path => path === '/api/companion/conversations'
+  const { bridge, calls, token } = await fixture(t, path => path === '/api/companion/conversations?summary=1'
     ? { conversations: [conversation], activeChatId: conversation.id } : detail());
   assert.equal((await request(bridge, '/v1/conversations')).status, 401);
   const listed = await request(bridge, '/v1/conversations', { token });
@@ -220,4 +223,13 @@ test('revocation while a new-chat body is arriving prevents a later Mac mutation
   const result = await response;
   assert.equal(result.status, 401);
   assert.ok(!calls.some(call => call.path === '/api/companion/conversations' && call.method === 'POST'));
+});
+
+
+test('compact summaries preserve legacy previews without exposing history or changing full-detail projection', () => {
+  const compact = { id: conversation.id, title: conversation.title, active: true, updatedAt: conversation.updatedAt, workspace: conversation.workspace, mode: 'manual', modelName: 'Saved Mac model', preview: 'I am opening the page.' };
+  assert.deepEqual(publicConversation(compact, { summary: true }), publicConversation(conversation, { summary: true }));
+  assert.deepEqual(publicConversation({ ...conversation, preview: 'UNTRUSTED_STALE_PREVIEW' }, { summary: true }), publicConversation(conversation, { summary: true }), 'Full histories keep the authoritative last-message preview.');
+  assert.equal(publicConversation({ ...compact, preview: 'x'.repeat(500) }, { summary: true }).preview.length, 300);
+  assert.deepEqual(publicConversation({ ...compact, preview: 'Not a message' }).messages, [], 'A preview is never invented full chat history.');
 });

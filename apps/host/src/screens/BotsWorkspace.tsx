@@ -17,21 +17,21 @@ export { BotTeamEditor } from './BotTeamEditor';
 
 /** Old data stays visible after a failed poll and is explicitly marked stale. */
 export function useBotsResource<T>(path: string | null, interval = 5000, resetKey?: string) {
-  const [data, setData] = useState<T | null>(null), [error, setError] = useState(''), [loading, setLoading] = useState(true), [checkedAt, setCheckedAt] = useState<string>();
-  const generation = useRef(0), alive = useRef(true), inFlight = useRef(false);
+  const [data, setData] = useState<T | null>(null), [error, setError] = useState(''), [loading, setLoading] = useState(true);
+  const generation = useRef(0), alive = useRef(true), inFlight = useRef(false), checkedAt = useRef<string | undefined>(undefined), signature = useRef('');
   const refresh = useCallback(async (force = true) => {
     if (!path || inFlight.current && !force) return;
     const request = ++generation.current; inFlight.current = true;
-    try { const result = await api.get<T>(path); if (alive.current && request === generation.current) { setData(result); setError(''); setCheckedAt(new Date().toISOString()); } }
+    try { const result = await api.get<T>(path); if (alive.current && request === generation.current) { const next = JSON.stringify(result); if (signature.current !== next) { signature.current = next; setData(result); } setError(''); checkedAt.current = new Date().toISOString(); } }
     catch (cause) { if (alive.current && request === generation.current) setError(errorMessage(cause)); }
     finally { if (alive.current && request === generation.current) { setLoading(false); inFlight.current = false; } }
   }, [path, resetKey]);
   useEffect(() => {
-    alive.current = true; generation.current++; inFlight.current = false; setData(null); setError(''); setLoading(!!path); setCheckedAt(undefined);
+    alive.current = true; generation.current++; inFlight.current = false; signature.current = ''; checkedAt.current = undefined; setData(null); setError(''); setLoading(!!path);
     void refresh(); const timer = setInterval(() => { if (!document.hidden) void refresh(false); }, interval);
     return () => { alive.current = false; generation.current++; inFlight.current = false; clearInterval(timer); };
   }, [refresh, interval]);
-  return { data, error, loading, checkedAt, refresh };
+  return { data, error, loading, checkedAt: checkedAt.current, refresh };
 }
 export function ResourceNotice({ error, loading, checkedAt, onRefresh, children }: { error: string; loading: boolean; checkedAt?: string; onRefresh: () => void; children?: ReactNode }) {
   return <>{error ? <ErrorNotice message={error} next={checkedAt ? `Showing the last successful check from ${new Date(checkedAt).toLocaleTimeString()}. Work may still be running.` : 'Current state could not be verified.'} action="Retry" onRetry={onRefresh}/> : null}{loading ? <p role="status" className="small muted">Loading current state…</p> : children}</>;

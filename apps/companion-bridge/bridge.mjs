@@ -219,7 +219,8 @@ export class HostClient {
   }
   async request(path, { method = 'GET', body, signal, deviceId } = {}) {
     const notification = notificationRequest(path, method, body, deviceId);
-    const conversation = /^\/api\/companion\/conversations(?:\/[a-zA-Z0-9_-]{1,120}(?:\/(messages|stop|approval))?)?$/.exec(path);
+    const summaryConversations = path === '/api/companion/conversations?summary=1';
+    const conversation = /^\/api\/companion\/conversations(?:\/[a-zA-Z0-9_-]{1,120}(?:\/(messages|stop|approval))?)?$/.exec(summaryConversations ? '/api/companion/conversations' : path);
     const bots = path === '/api/bots' || /^\/api\/bots\/[a-zA-Z0-9_-]{1,120}\/conversations$/.test(path);
     const avatar = /^\/api\/bots\/[a-zA-Z0-9_-]{1,120}$/.test(path) && method === 'PATCH';
     const workspace = botWorkspaceRequest(path, method, body);
@@ -247,6 +248,7 @@ export class HostClient {
       if (method !== (path === '/api/bots' ? 'GET' : 'POST') || (path === '/api/bots' && body !== undefined)) throw fail(403, 'Unsupported bot control.');
       if (body !== undefined) botSelection(body, 403);
     } else if (conversation) {
+      if (summaryConversations && (method !== 'GET' || body !== undefined)) throw fail(403, 'Unsupported host control.');
       const create = path === '/api/companion/conversations' && method === 'POST';
       if (method !== (conversation[1] || create ? 'POST' : 'GET')) throw fail(403, 'Unsupported host control method.');
       if (path === '/api/companion/conversations/sync') throw fail(403, 'Desktop synchronization is unavailable from iPhone.');
@@ -469,7 +471,7 @@ export function publicConversation(conversation, { summary = false } = {}) {
   if (typeof model === 'string') result.modelName = shortText(model, 300);
   if (summary) {
     const last = [...messages].reverse().find(message => typeof message.content === 'string' && message.content.trim());
-    result.preview = shortText(last?.content, 300);
+    result.preview = shortText(!Array.isArray(conversation.messages) && typeof conversation.preview === 'string' ? conversation.preview : last?.content, 300);
   } else {
     result.messages = messages.filter(message => message && safeId(message.id) && ['user', 'assistant', 'system'].includes(message.role)).map(message => {
       const clean = { id: message.id, role: message.role, content: typeof message.content === 'string' ? message.content : '' };
@@ -963,7 +965,9 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
         return sendJSON(res, 201, publicConversationDetail(body));
       }
       if (path === '/v1/conversations' && method === 'GET') {
-        const body = await host.json('/api/companion/conversations');
+        // Updated hosts omit transcripts here; older hosts ignore the query and
+        // retain the same public summary after the existing sanitization.
+        const body = await host.json('/api/companion/conversations?summary=1');
         requireCurrentSession();
         const conversations = (Array.isArray(body.conversations) ? body.conversations : []).map(conversation => publicConversation(conversation, { summary: true }));
         return sendJSON(res, 200, { conversations, ...(safeId(body.activeChatId) ? { activeChatId: body.activeChatId } : {}) });

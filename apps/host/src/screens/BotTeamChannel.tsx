@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ApiError, api } from '../lib/client';
 import { botActivityLabel, botTeamRunActive, mergeBotTeamChannelMessages, type Bot, type BotTeam, type BotTeamChannelMessage, type BotTeamChannelSnapshot, type BotTeamRun } from '../lib/bots';
 import type { Session } from '../lib/types';
@@ -8,9 +8,13 @@ import { Btn, Dialog, ErrorNotice, Icon } from '../components/ui';
 import './BotTeamChannel.css';
 import { NotificationMuteButton } from '../components/BotNotifications';
 import { useNotificationDestination } from '../lib/notifications';
+import { currentLanguage } from '../lib/i18n';
 
 const messageError = (cause: unknown) => cause instanceof Error ? cause.message : String(cause);
 const roomPath = (teamId: string) => `/api/bots/teams/${encodeURIComponent(teamId)}`;
+// Draft keystrokes and unchanged status checks do not reparse saved reports.
+// Language is an explicit key below so translated Markdown controls stay fresh.
+const ChannelMarkdown = memo(Markdown);
 
 /** A room's polling never creates a chat, resumes a bot or executes a tool. */
 function useTeamChannel(teamId: string, visible: boolean, onUnsupported: () => void) {
@@ -22,13 +26,13 @@ function useTeamChannel(teamId: string, visible: boolean, onUnsupported: () => v
   const accept = useCallback((snapshot: BotTeamChannelSnapshot, older = false) => {
     if (snapshot.teamId !== teamId || snapshot.supported !== true || !Array.isArray(snapshot.messages) || !Array.isArray(snapshot.activeRuns) || !Number.isSafeInteger(snapshot.nextSequence) || snapshot.nextSequence < 0 || snapshot.messages.some(row => row.teamId !== teamId || !Number.isSafeInteger(row.sequence) || row.sequence < 1)) throw new Error('The team channel response did not match this team.');
     if (snapshot.messages.some((row, index) => index > 0 && row.sequence <= snapshot.messages[index - 1].sequence) || snapshot.messages.length && snapshot.nextSequence !== snapshot.messages.at(-1)!.sequence) throw new Error('The team channel returned an invalid message order. Refresh before sending.');
-    const merged = mergeBotTeamChannelMessages(cached.current, snapshot.messages, teamId);
+    const merged = snapshot.messages.length ? mergeBotTeamChannelMessages(cached.current, snapshot.messages, teamId) : cached.current;
     const highest = Math.max(0, ...snapshot.messages.map(row => row.teamId === teamId ? row.sequence : 0));
     cursor.current = Math.max(cursor.current ?? 0, highest, older ? 0 : snapshot.nextSequence);
     const lowest = Math.min(...snapshot.messages.filter(row => row.teamId === teamId).map(row => row.sequence));
     if (Number.isFinite(lowest)) first.current = first.current ? Math.min(first.current, lowest) : lowest;
     cached.current = merged; setMessages(merged);
-    if (!older) setActiveRuns(snapshot.activeRuns);
+    if (!older) setActiveRuns(previous => JSON.stringify(previous) === JSON.stringify(snapshot.activeRuns) ? previous : snapshot.activeRuns);
     if (older || first.current === lowest) setHasEarlier(!!snapshot.hasMoreBefore);
     setError(''); setLoading(false);
   }, [teamId]);
@@ -179,7 +183,7 @@ function TeamChannelMessage({ message, team, bots, messages, disabled, onReply, 
     <div className="bot-room-message-main"><header><strong>{author.name}</strong>{author.botId === team.coordinatorId ? <span className="bot-room-role">Coordinator</span> : null}{kind ? <span className="bot-room-kind">{kind}</span> : null}{validDate ? <time dateTime={message.createdAt} title={date.toLocaleString()}>{date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time> : null}</header>
       <div className="bot-room-message-bubble">{message.recipientIds?.length && !addressedEveryone ? <p className="bot-room-addressed">To {message.recipientIds.map(id => bots.find(item => item.id === id)?.name ?? 'Former teammate').join(', ')}</p> : null}
       {message.replyToId && !implicitRootReply ? <blockquote className="bot-room-reply-context"><strong>{replying?.author.name ?? 'Earlier message'}</strong><span>Related message</span></blockquote> : null}
-      <div className="bot-room-message-body">{folded ? <details className="bot-room-message-disclosure"><summary><strong>{message.kind === 'assignment' ? 'Task assignment' : 'Read full report'}</strong><span>{preview}</span></summary><Markdown text={message.content}/></details> : <Markdown text={message.content}/>}</div>
+      <div className="bot-room-message-body">{folded ? <details className="bot-room-message-disclosure"><summary><strong>{message.kind === 'assignment' ? 'Task assignment' : 'Read full report'}</strong><span>{preview}</span></summary><ChannelMarkdown key={currentLanguage()} text={message.content}/></details> : <ChannelMarkdown key={currentLanguage()} text={message.content}/>}</div>
       <footer><button type="button" disabled={disabled} onClick={onReply}>Reply<span className="sr-only"> to {author.name}</span></button>{message.chatId ? <button type="button" onClick={() => onOpenConversation(message.chatId!)}><Icon name="activity" size={12}/>Thinking & tools</button> : null}{message.state && ['error', 'interrupted', 'cancelled'].includes(message.state) ? <span>{botActivityLabel(message.state)}</span> : null}</footer></div>
     </div>
   </article>;

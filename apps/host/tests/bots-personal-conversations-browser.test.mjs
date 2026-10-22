@@ -15,7 +15,7 @@ test('bot taps open personal chat or one empty default chat, preserving team lin
   const at = '2026-10-21T12:00:00Z';
   const bots = [
     ['ava', 'Ava', false], ['fresh', 'New partner', false], ['paused', 'Paused partner', true], ['paused-empty', 'Paused newcomer', true],
-    ['failure', 'Unavailable partner', false], ['lookup', 'Lookup partner', false], ['creation', 'Creation partner', false], ['phone', 'Phone partner', false], ['malformed', 'Mismatched partner', false],
+    ['failure', 'Unavailable partner', false], ['lookup', 'Lookup partner', false], ['creation', 'Creation partner', false], ['phone', 'Phone partner', false], ['malformed', 'Mismatched partner', false], ['detail', 'Detail partner', false], ['legacy', 'Legacy partner', false], ['dot', 'Dot partner', false],
   ].map(([id, name, paused]) => ({ id, name, paused, provider: 'codex', model: 'saved-model', effort: 'high', policy: 'bypass', capabilities: 'both',
     instructions: '', workspace: '/workspace', execution: { kind: 'local' }, computerMode: 'cua',
     avatarConfig: { color: 'sky', eyes: 'round', ears: 'round' }, createdAt: at, updatedAt: at, available: true }));
@@ -25,7 +25,8 @@ test('bot taps open personal chat or one empty default chat, preserving team lin
     chat('ava-old-personal', 'ava', '2026-10-01T12:00:00Z'), chat('ava-latest-personal', 'ava', '2026-10-10T12:00:00Z'),
     chat('ava-newer-router', 'ava', at, { teamId: 'crew', teamRunId: 'run' }),
     chat('ava-legacy-worker', 'ava', '2026-10-22T12:00:00Z', { parentChatId: 'root' }),
-    chat('fresh-team-worker', 'fresh', at, { teamRunId: 'run' }), chat('paused-personal', 'paused', at),
+    chat('fresh-team-worker', 'fresh', at, { teamRunId: 'run' }), chat('paused-personal', 'paused', at), chat('detail-personal', 'detail', at),
+    chat('legacy:personal', 'legacy', at), chat('legacy:unrelated.' + 'x'.repeat(130), 'unrelated', at), chat('.', 'dot', at),
   ];
   const entry = `import React from 'react';import{createRoot}from'react-dom/client';import{BotsScreen}from${JSON.stringify(join(source, 'screens/Bots.tsx'))};
     window.fixtureState={sessions:[],workspaces:[{id:'fixture',path:'/fixture'}],activeWorkspace:'fixture',workspacePath:'/fixture'};
@@ -35,16 +36,16 @@ test('bot taps open personal chat or one empty default chat, preserving team lin
       builder.onResolve({ filter: /^\.\/Chat$/ }, args => args.importer.endsWith('/screens/Bots.tsx') ? { path: 'chat', namespace: 'fixture' } : undefined);
       builder.onResolve({ filter: /(?:^|\/)store$/ }, args => args.importer.includes('/src/') ? { path: 'store', namespace: 'fixture' } : undefined);
       builder.onLoad({ filter: /.*/, namespace: 'fixture' }, args => args.path === 'chat' ? { contents: `import React from'react';export function ChatScreen({sessionId}){return <section data-testid="shared-chat" data-session={sessionId}><h2>Shared conversation {sessionId}</h2><textarea aria-label="Message bot" placeholder="Message your bot…"/></section>}`, loader: 'tsx', resolveDir: source } : {
-        contents: `import{useSyncExternalStore}from'react';const listeners=new Set();function emit(state){window.fixtureState=state;for(const listener of listeners)listener()}export const useStore=selector=>selector(useSyncExternalStore(listener=>{listeners.add(listener);return()=>listeners.delete(listener)},()=>window.fixtureState));export const adoptSharedConversation=conversation=>{const state=window.fixtureState;emit({...state,sessions:state.sessions.some(row=>row.id===conversation.id)?state.sessions.map(row=>row.id===conversation.id?conversation:row):[conversation,...state.sessions]})};export const selectSession=id=>emit({...window.fixtureState,activeSession:id});export const answerChatTool=()=>{},pickWorkspace=async()=>'/fixture',dismissActionError=()=>{},dismissToast=()=>{},holdToast=()=>{},releaseToast=()=>{};`, loader: 'js', resolveDir: source,
+        contents: `import{useSyncExternalStore}from'react';const listeners=new Set();function emit(state){window.fixtureState=state;for(const listener of listeners)listener()}export const useStore=selector=>selector(useSyncExternalStore(listener=>{listeners.add(listener);return()=>listeners.delete(listener)},()=>window.fixtureState));export const adoptSharedConversation=conversation=>{const state=window.fixtureState;emit({...state,sessions:state.sessions.some(row=>row.id===conversation.id)?state.sessions.map(row=>row.id===conversation.id?conversation:row):[conversation,...state.sessions]})};export const adoptSharedConversations=conversations=>conversations.forEach(adoptSharedConversation);export const selectSession=id=>emit({...window.fixtureState,activeSession:id});export const answerChatTool=()=>{},pickWorkspace=async()=>'/fixture',dismissActionError=()=>{},dismissToast=()=>{},holdToast=()=>{},releaseToast=()=>{};`, loader: 'js', resolveDir: source,
       });
     } }] });
   const script = outputFiles.find(file => file.path.endsWith('.js')).text;
   const css = ['styles/kit/tokens.css', 'styles/kit/components.css', 'styles/app.css'].map(path => readFileSync(join(source, path), 'utf8')).join('\n') + '\n' + outputFiles.find(file => file.path.endsWith('.css')).text;
   const calls = [], unexpected = [], errors = [], blocked = [];
-  let holdLookup = false, releaseLookup, holdCreation = false, releaseCreation, malformed = 'wrong-bot';
+  let holdLookup = false, releaseLookup, holdCreation = false, releaseCreation, malformed = 'wrong-bot', compactCatalog = false, catalogAvailable = true, badDetail = false, holdDetail = '', releaseDetail;
   const reply = (res, body, status = 200, type = 'application/json') => { res.writeHead(status, { 'content-type': type }); res.end(type === 'application/json' ? JSON.stringify(body) : body); };
   const server = http.createServer(async (req, res) => {
-    const path = new URL(req.url, 'http://fixture').pathname;
+    const url = new URL(req.url, 'http://fixture'), path = url.pathname;
     if (path === '/') return reply(res, '<!doctype html><html data-theme="dark" data-motion="reduced"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/harness.css"><div id="root"></div><script src="/harness.js"></script>', 200, 'text/html');
     if (path === '/harness.js') return reply(res, script, 200, 'text/javascript');
     if (path === '/harness.css') return reply(res, css, 200, 'text/css');
@@ -52,12 +53,20 @@ test('bot taps open personal chat or one empty default chat, preserving team lin
     if (/^\/fonts\/GTWalsheimPro-(Regular|Medium|Bold|Black)\.woff2$/.test(path)) return reply(res, readFileSync(join(root, 'public', path)), 200, 'font/woff2');
     if (path === '/favicon.ico') { res.writeHead(204); return res.end(); }
     let raw = ''; for await (const chunk of req) raw += chunk;
-    const body = raw ? JSON.parse(raw) : undefined; calls.push({ method: req.method, path, body });
+    const body = raw ? JSON.parse(raw) : undefined; calls.push({ method: req.method, path, query: url.search, body });
     if (path === '/api/bots') return reply(res, { bots, providers: [{ id: 'codex', name: 'Codex', available: true }], computers: [{ id: 'local', name: 'This Mac', kind: 'local', available: true }], models: [] });
     if (path === '/api/bots/teams') return reply(res, { teams: [], runs: [] });
     if (path === '/api/companion/conversations') {
       if (holdLookup) { holdLookup = false; await new Promise(resolve => { releaseLookup = resolve; }); }
-      return reply(res, { available: true, conversations });
+      const selected = compactCatalog && url.searchParams.get('summary') === '1' ? conversations.map(row => ({ id: row.id, updatedAt: row.updatedAt, ...Object.fromEntries(['botId', 'teamId', 'teamRunId', 'parentChatId'].filter(key => row.preferences[key] !== undefined).map(key => [key, row.preferences[key]])) })) : conversations;
+      return reply(res, { available: catalogAvailable, conversations: selected });
+    }
+    const detail = /^\/api\/companion\/conversations\/([^/]+)$/.exec(path);
+    if (detail && req.method === 'GET') {
+      if (holdDetail === detail[1]) { holdDetail = ''; await new Promise(resolve => { releaseDetail = resolve; }); }
+      const conversation = conversations.find(row => row.id === detail[1]);
+      if (!conversation) return reply(res, { error: 'Conversation unavailable.' }, 404);
+      return reply(res, { conversation: badDetail && detail[1] === 'detail-personal' ? { ...conversation, preferences: { ...conversation.preferences, botId: 'ava' } } : conversation });
     }
     if (/^\/api\/bots\/[^/]+\/work$/.test(path)) return reply(res, { memory: '', rules: [], routines: [], outputs: [], files: [] });
     if (/^\/api\/bots\/[^/]+\/computer$/.test(path) && req.method === 'GET') return reply(res, { available: true, running: false, detail: 'Fixture computer is stopped.' });
@@ -78,7 +87,7 @@ test('bot taps open personal chat or one empty default chat, preserving team lin
     unexpected.push(req.method + ' ' + path); return reply(res, { error: 'Unexpected fixture operation' }, 404);
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => { releaseLookup?.(); releaseCreation?.(); server.closeAllConnections(); server.close(); });
+  t.after(() => { releaseLookup?.(); releaseCreation?.(); releaseDetail?.(); server.closeAllConnections(); server.close(); });
   const origin = `http://127.0.0.1:${server.address().port}`;
   const browser = await chromium.launch({ executablePath, headless: true, args: ['--disable-background-networking', '--disable-component-update', '--disable-sync', '--no-first-run'] });
   t.after(() => browser.close());
@@ -108,6 +117,24 @@ test('bot taps open personal chat or one empty default chat, preserving team lin
   await tap('Paused partner'); await openedId('paused-personal');
   await tap('Paused newcomer'); await page.getByText('This bot is paused. Resume it before starting a new chat.', { exact: true }).waitFor();
   assert.equal(mutations().length, 1, 'Paused bots can read personal history but cannot create a chat.');
+  compactCatalog = true;
+  await tap('Legacy partner'); await openedId('legacy:personal');
+  assert.ok(calls.some(call => call.path === '/api/companion/conversations/legacy:personal'), 'Valid host IDs keep their raw allowlisted colon in detail routes.');
+  await tap('Dot partner'); await openedId('.');
+  assert.equal(calls.some(call => call.path === '/api/companion/conversations/.'), false, 'A dot-segment ID uses exact retained full history instead of an unroutable URL.');
+  await tap('Ava'); await openedId('ava-latest-personal');
+  assert.ok(calls.some(call => call.path === '/api/companion/conversations' && call.query === '?summary=1'));
+  const beforeDetailFailure = mutations().length; badDetail = true;
+  await tap('Detail partner'); await page.getByText('Strata returned a different conversation. Refresh Bots and try again.', { exact: true }).waitFor();
+  assert.equal(await opened.getAttribute('data-session'), 'ava-latest-personal'); assert.equal(mutations().length, beforeDetailFailure, 'A mismatched compact-catalog detail cannot create a replacement chat.');
+  badDetail = false; await tap('Detail partner'); await openedId('detail-personal');
+  catalogAvailable = false; await tap('New partner'); await page.getByText('Shared conversations are temporarily unavailable. Refresh Bots and try again.', { exact: true }).waitFor();
+  assert.equal(mutations().length, beforeDetailFailure); catalogAvailable = true;
+  holdDetail = 'ava-latest-personal'; releaseDetail = undefined; await tap('Ava'); await waitFor(() => !!releaseDetail);
+  await nav.getByRole('button', { name: 'All teams', exact: true }).click(); releaseDetail();
+  await page.waitForFunction(() => !document.querySelector('[aria-label="Open Ava"]').disabled);
+  assert.equal(await page.evaluate(() => location.hash), '#/bots/teams', 'A late selected-detail response cannot steal navigation.');
+  await tap('Paused partner'); await openedId('paused-personal');
   await tap('Unavailable partner'); await page.getByText('The saved bot is temporarily unavailable. Please retry.', { exact: true }).waitFor();
   assert.equal(await opened.getAttribute('data-session'), 'paused-personal', 'A failed create cannot replace an existing conversation.');
   await page.waitForResponse(response => response.url() === origin + '/api/bots' && response.request().method() === 'GET');

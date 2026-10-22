@@ -22,20 +22,24 @@ export type BotsWorkTab = 'scheduled' | 'approvals' | 'outputs';
 
 export function useBotsWork(bots: Bot[]) {
   const [work, setWork] = useState<Record<string, BotWork>>({}), [error, setError] = useState('');
-  const ids = bots.map(bot => bot.id).sort().join('|'), generation = useRef(0);
-  const refresh = useCallback(async () => {
+  const ids = bots.map(bot => bot.id).sort().join('|'), generation = useRef(0), reading = useRef(false);
+  const refresh = useCallback(async (force = true) => {
+    if (reading.current && !force) return;
     const request = ++generation.current, list = ids ? ids.split('|') : [];
+    if (!list.length) { setWork(previous => Object.keys(previous).length ? {} : previous); setError(''); return; }
+    reading.current = true;
     const results = await Promise.allSettled(list.map(async id => [id, await api.get<BotWork>(`/api/bots/${encodeURIComponent(id)}/work`)] as const));
     if (request !== generation.current) return;
+    reading.current = false;
     setWork(previous => {
       const next: Record<string, BotWork> = {};
       results.forEach((result, index) => { if (result.status === 'fulfilled') next[result.value[0]] = result.value[1]; else if (previous[list[index]]) next[list[index]] = previous[list[index]]; });
-      return next;
+      return JSON.stringify(previous) === JSON.stringify(next) ? previous : next;
     });
     const failed = results.find(result => result.status === 'rejected');
     setError(failed?.status === 'rejected' ? message(failed.reason) : '');
   }, [ids]);
-  useEffect(() => { void refresh(); const timer = setInterval(() => { if (!document.hidden) void refresh(); }, 5000); return () => { generation.current++; clearInterval(timer); }; }, [refresh]);
+  useEffect(() => { reading.current = false; void refresh(); if (!ids) return () => { generation.current++; }; const timer = setInterval(() => { if (!document.hidden) void refresh(false); }, 5000); return () => { generation.current++; reading.current = false; clearInterval(timer); }; }, [refresh, ids]);
   return { work, error, refresh };
 }
 

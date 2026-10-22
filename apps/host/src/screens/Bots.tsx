@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { api } from '../lib/client';
 import { navigate, useLocation } from '../lib/router';
 import { useMedia } from '../lib/responsive';
-import { adoptSharedConversation, selectSession, useStore } from '../lib/store';
+import { adoptSharedConversation, adoptSharedConversations, selectSession, useStore } from '../lib/store';
 import { sessionTitle } from '../lib/session-title';
 import { relTime } from '../lib/format';
 import { blankBot, botComputerSelection, botConversationContext, botConversations, botPersonalConversations, botDraftError, botPolicyLabel, botAvatarActivity, botReplySignal, botConversationRoster, botProviderName, botSetupStepError, type BotPolicy, type Bot, type BotDraft, type BotExecution, type BotsSnapshot, type BotTeamsSnapshot } from '../lib/bots';
@@ -24,6 +24,20 @@ import { openNotifications } from '../lib/notifications';
 
 const SETUP_STEPS = ['Name', 'Look', 'Model', 'Computer', 'Permissions'];
 const WORK_TABS: { id: BotsWorkTab; label: string; icon: 'clock' | 'shield' | 'file' }[] = [{ id: 'scheduled', label: 'Scheduled', icon: 'clock' }, { id: 'approvals', label: 'Approvals', icon: 'shield' }, { id: 'outputs', label: 'Outputs', icon: 'file' }];
+type ConversationMetadata = { id: string; updatedAt: string; botId?: string; teamId?: string; teamRunId?: string; parentChatId?: string; preferences?: Session['preferences'] };
+function personalConversationMetadata(rows: ConversationMetadata[], botId: string) {
+  if (!Array.isArray(rows)) throw new Error('Shared conversations could not be checked. Refresh Bots and try again.');
+  const normalized = rows.map(row => {
+    if (!row || typeof row !== 'object' || typeof row.id !== 'string' || !/^[A-Za-z0-9_.:-]{1,160}$/.test(row.id) || typeof row.updatedAt !== 'string') throw new Error('Shared conversations returned an invalid identity. Refresh Bots and try again.');
+    const preferences = { ...row.preferences };
+    for (const key of ['botId', 'teamId', 'teamRunId', 'parentChatId'] as const) if (row[key] !== undefined) {
+      if (typeof row[key] !== 'string' || preferences[key] !== undefined && preferences[key] !== row[key]) throw new Error('Shared conversations returned conflicting ownership. Refresh Bots and try again.');
+      preferences[key] = row[key];
+    }
+    return { id: row.id, updatedAt: row.updatedAt, preferences };
+  });
+  return botPersonalConversations(normalized, botId);
+}
 
 export function BotsScreen() {
   const location = useLocation(), sessions = useStore(state => state.sessions);
@@ -42,13 +56,14 @@ export function BotsScreen() {
   const [showRosterFilters, setShowRosterFilters] = useState(false), [showChatHistory, setShowChatHistory] = useState(false);
   const teams = useBotsResource<BotTeamsSnapshot>('/api/bots/teams');
   const [computerReadiness, setComputerReadiness] = useState<{ key: string; computer?: BotComputerReadiness; error?: string; checking?: boolean } | null>(null);
-  const generation = useRef(0), navigationRevision = useRef(0), alive = useRef(true), personalChatRequest = useRef<symbol | null>(null);
-  const bots = snapshot?.bots ?? [], { work, error: workError, refresh: refreshWork } = useBotsWork(bots);
+  const generation = useRef(0), navigationRevision = useRef(0), alive = useRef(true), personalChatRequest = useRef<symbol | null>(null), snapshotSignature = useRef(''), reading = useRef(false);
+  const bots = snapshot?.bots ?? [];
   const selected = bots.find(bot => bot.id === location.param) ?? (!location.param ? bots[0] : undefined);
   const workTab = WORK_TABS.find(tab => tab.id === location.param)?.id;
   const workspaceRoute = ['teams', 'activity', 'skills', 'connections'].includes(location.param ?? '') ? location.param : null;
   const destination = workTab || workspaceRoute === 'activity' ? 'activity' : workspaceRoute === 'skills' ? 'skills' : workspaceRoute === 'connections' ? 'connections' : 'team';
   const route = workTab ?? workspaceRoute ?? (location.param === 'new' || !selected ? 'new' : 'bot');
+  const { work, error: workError, refresh: refreshWork } = useBotsWork(workTab === 'scheduled' || workTab === 'outputs' ? bots : route === 'bot' && selected ? [selected] : []);
   const chats = selected ? botConversations(sessions, selected.id) : [], chatId = selected ? selectedChats[selected.id] ?? botPersonalConversations(chats, selected.id)[0]?.id : undefined;
   const chat = chats.find(item => item.id === chatId);
   const context = selected ? botConversationContext(selected, chat ?? (chatId ? { id: chatId, preferences: { botId: selected.id } } : undefined), snapshot?.models) : null;
@@ -56,25 +71,29 @@ export function BotsScreen() {
   const computerKey = selected && hasComputer ? `${selected.id}:${context?.chatId ?? 'profile'}:${context?.chatId ? '' : selected.updatedAt}` : '';
   const approvals = sessions.filter(session => bots.some(bot => bot.id === session.preferences?.botId)).flatMap(session => session.messages.flatMap(row => (row.tools ?? []).filter(tool => tool.live && tool.state === 'proposed'))).length;
 
-  async function refresh(includeChats = false) {
+  async function refresh(includeChats = false, force = true) {
+    if (reading.current && !force) return;
     const request = ++generation.current;
+    reading.current = true;
     try {
       const result = await api.get<BotsSnapshot>('/api/bots');
       if (!alive.current || request !== generation.current) return;
-      setSnapshot(result); setError('');
+      const signature = JSON.stringify(result);
+      if (snapshotSignature.current !== signature) { snapshotSignature.current = signature; setSnapshot(result); }
+      setError('');
       if (includeChats) {
         const catalog = await api.get<{ conversations: Session[] }>('/api/companion/conversations');
         if (!alive.current || request !== generation.current) return;
-        for (const conversation of catalog.conversations ?? []) adoptSharedConversation(conversation);
+        adoptSharedConversations(catalog.conversations ?? []);
       }
     } catch (cause) { if (alive.current && request === generation.current) setError(message(cause)); }
-    finally { if (alive.current && request === generation.current) setLoading(false); }
+    finally { if (alive.current && request === generation.current) { setLoading(false); reading.current = false; } }
   }
   useEffect(() => {
     alive.current = true; void refresh(true);
     const navigated = () => { navigationRevision.current++; };
     window.addEventListener('hashchange', navigated);
-    const timer = setInterval(() => { if (!document.hidden) void refresh(); }, 3000);
+    const timer = setInterval(() => { if (!document.hidden) void refresh(false, false); }, 3000);
     return () => { alive.current = false; generation.current++; navigationRevision.current++; clearInterval(timer); window.removeEventListener('hashchange', navigated); };
   }, []);
   useEffect(() => { setEditing(null); setOpening(null); setEditorError(''); setNewTeam(false); setShowChatHistory(false); }, [location.route, location.param, location.query.toString()]);
@@ -112,10 +131,23 @@ export function BotsScreen() {
     try {
       // Another device may have created this bot's personal chat since the roster
       // loaded. Read the shared history before making a new empty conversation.
-      const catalog = await api.get<{ conversations: Session[] }>('/api/companion/conversations');
+      const catalog = await api.get<{ available?: boolean; conversations: ConversationMetadata[] }>('/api/companion/conversations?summary=1');
       if (!current()) return;
-      let conversation = botPersonalConversations(catalog.conversations, bot.id)[0];
-      if (!conversation) {
+      if (catalog.available === false) throw new Error('Shared conversations are temporarily unavailable. Refresh Bots and try again.');
+      const selected = personalConversationMetadata(catalog.conversations, bot.id)[0];
+      let conversation: Session;
+      if (selected) {
+        // These allowlisted host IDs contain no URL delimiters. Encoding ':'
+        // would make older host route matchers reject a valid existing chat.
+        // URL dot segments cannot address a detail route; inspect the exact
+        // retained full row instead, without creating a replacement chat.
+        const detail = ['.', '..'].includes(selected.id)
+          ? { conversation: (await api.get<{ conversations: Session[] }>('/api/companion/conversations')).conversations.find(row => row.id === selected.id)! }
+          : await api.get<{ conversation: Session }>(`/api/companion/conversations/${selected.id}`);
+        if (!current()) return;
+        conversation = detail.conversation;
+        if (!conversation || conversation.id !== selected.id || !botPersonalConversations([conversation], bot.id).length) throw new Error('Strata returned a different conversation. Refresh Bots and try again.');
+      } else {
         if (bot.paused) throw new Error('This bot is paused. Resume it before starting a new chat.');
         // Defaults are frozen by the host. Creating an empty chat sends no prompt
         // and does not start or prepare a computer, provider, or model service.
@@ -137,10 +169,13 @@ export function BotsScreen() {
       if (bot) openChat(bot, known); else navigate('chat', id);
       return;
     }
-    const catalog = await api.get<{ conversations: Session[] }>('/api/companion/conversations');
+    if (!/^[A-Za-z0-9_.:-]{1,160}$/.test(id)) throw new Error('This conversation is no longer available. Refresh the shared history.');
+    const detail = ['.', '..'].includes(id)
+      ? { conversation: (await api.get<{ conversations: Session[] }>('/api/companion/conversations')).conversations.find(row => row.id === id)! }
+      : await api.get<{ conversation: Session }>(`/api/companion/conversations/${id}`);
     if (!alive.current || revision !== navigationRevision.current || hash !== window.location.hash) return;
-    const found = catalog.conversations.find(item => item.id === id);
-    if (!found) throw new Error('This conversation is no longer available. Refresh the shared history.');
+    const found = detail.conversation;
+    if (!found || found.id !== id) throw new Error('This conversation is no longer available. Refresh the shared history.');
     await openSharedConversation(id, found);
   }
   async function save(draft: BotDraft, bot?: Bot) {

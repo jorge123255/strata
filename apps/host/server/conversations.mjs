@@ -45,6 +45,37 @@ export function createConversations({ directory, enabled = () => true, notify = 
     } finally { try { unlinkSync(tmp); } catch {} }
   }
   const view = record => ({ ...copy(record.session), revision: record.revision, active: turns.has(record.session.id), status: record.status });
+  // Roster/list clients need display metadata, not every transcript, tool result
+  // and Thinking block. Keep this separate from the exact full-history view.
+  function summaryView(record) {
+    const session = record.session, preferences = session.preferences ?? {};
+    const result = { id: session.id, title: session.title.slice(0, 500), updatedAt: session.updatedAt,
+      revision: record.revision, active: turns.has(session.id), status: record.status };
+    for (const [key, max] of [['createdAt', 80], ['workspace', 4000]]) if (typeof session[key] === 'string') result[key] = session[key].slice(0, max);
+    for (const [output, key, max] of [['mode', 'mode', 40], ['botName', 'botName', 200], ['computerName', 'botComputer', 300], ['botModelName', 'botModel', 300]]) {
+      const value = preferences[key] ?? session[output];
+      if (typeof value === 'string') result[output] = value.slice(0, max);
+    }
+    for (const key of ['botId', 'teamId', 'teamRunId', 'parentChatId']) {
+      const value = preferences[key] ?? session[key];
+      if (validId(value)) result[key] = value;
+    }
+    const avatar = preferences.botAvatar ?? session.botAvatar;
+    if (typeof avatar === 'string' && avatar.length <= 32) result.botAvatar = avatar;
+    const face = preferences.botAvatarConfig ?? session.botAvatarConfig;
+    if (face !== undefined) result.botAvatarConfig = face && typeof face === 'object' && !Array.isArray(face)
+      && Object.keys(face).every(key => ['color', 'eyes', 'ears', 'kind', 'shape'].includes(key))
+      && Object.values(face).every(value => typeof value === 'string' && value.length <= 100) ? copy(face) : null;
+    const effort = preferences.botEffort ?? session.botEffort;
+    if (typeof effort === 'string' && /^[A-Za-z0-9_-]{0,40}$/.test(effort)) result.botEffort = effort;
+    const computerMode = preferences.botComputerMode ?? session.computerMode;
+    if (['host', 'cua'].includes(computerMode)) result.computerMode = computerMode;
+    const model = session.modelName ?? session.messages.findLast(message => typeof message.model === 'string')?.model;
+    if (typeof model === 'string') result.modelName = model.slice(0, 300);
+    const last = session.messages.findLast(message => typeof message.content === 'string' && message.content.trim());
+    result.preview = last?.content.slice(0, 300) ?? '';
+    return result;
+  }
   function publish() {
     clearTimeout(eventTimer); eventTimer = null;
     for (const id of changed) notify('conversation', entries.has(id) ? { conversation: view(entries.get(id)) } : { deleted: id });
@@ -74,10 +105,15 @@ export function createConversations({ directory, enabled = () => true, notify = 
       return { id, name: typeof p.tool === 'string' ? p.tool : p.tool?.name ?? card?.name ?? 'Tool', args: {}, preview: p.reason ?? '', effect: '', scope: 'connected', ...card, state: 'proposed', live: true };
     }) };
   }
-  function list() {
+  function list(options = {}) {
     if (!available()) return { available: false, conversations: [], activeChatId: null };
-    const conversations = [...entries.values()].map(view).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    const conversations = [...entries.values()].map(options?.summary === true ? summaryView : view).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     return { available: true, conversations, activeChatId: conversations.find(s => s.active)?.id ?? null };
+  }
+  function identitiesForBot(botId) {
+    if (!available()) return [];
+    return [...entries.values()].filter(({ session }) => session.preferences?.botId === botId)
+      .sort((a, b) => b.session.updatedAt.localeCompare(a.session.updatedAt)).map(({ session }) => session.id);
   }
   // Reconciliation needs identities and terminal state, never message content or Thinking.
   function notificationSources() {
@@ -272,6 +308,6 @@ export function createConversations({ directory, enabled = () => true, notify = 
     requireRecord(id); if (turns.has(id)) throw fault(409, 'Stop this conversation before deleting it.');
     entries.delete(id); deleted.add(id); touch(id, true); return { deleted: id };
   }
-  return { list, detail, notificationSources, supervisionSources, sync, create, createForBot: bot => create({}, bot), begin, record, finish, send, stop: stopTurn, approval, preferences, remove,
+  return { list, identitiesForBot, detail, notificationSources, supervisionSources, sync, create, createForBot: bot => create({}, bot), begin, record, finish, send, stop: stopTurn, approval, preferences, remove,
     available, capture, has: id => entries.has(id), botId: id => entries.get(id)?.session.preferences?.botId ?? null, isRunning: id => turns.has(id), close() { for (const turn of turns.values()) turn.controller.abort(); flush(); publish(); } };
 }
