@@ -89,3 +89,40 @@ test('old Mac reports upgrade and schemas reject nesting, references, extra inpu
   assert.equal(r.status, 200); assert.equal(r.json.createdToolsSupported, false); assert.deepEqual(r.json.tools, []); assert.match(r.json.reason, /Update Strata/);
   for (const inputSchema of [{ ...schema, $ref: '/private' }, { ...schema, properties: { x: { type: 'object', properties: {} } } }, { ...schema, required: ['missing'] }, { ...schema, properties: { x: { type: 'number', minimum: 2, maximum: 1 } } }]) assert.throws(() => botWorkspaceRequest('/api/bots/tools', 'POST', { ...create, inputSchema }), { status: 403 });
 });
+
+test('paired requirements remain exact reviewable data and the host explicitly advertises readiness support', async t => {
+  const requirements = { platforms: ['darwin', 'linux'], executables: ['python3'], workspaceFiles: ["scripts/it's $(data).py"] };
+  const { bridge, token, calls } = await fixture(t, (path, options) => {
+    if (path === '/api/bots/tools') return options?.method === 'POST' ? { tool: { ...tool, requirements } } : { tools: [{ ...tool, requirements }], createdToolsSupported: true, createdToolReadinessSupported: true };
+    if (path === '/api/bots/tools/' + tool.id && options?.method === 'PATCH') return { tool: { ...tool, requirements: options.body.requirements, revision: 2 } };
+  });
+  const listed = await request(bridge, '/v1/bots/tools', { token });
+  assert.equal(listed.json.createdToolReadinessSupported, true); assert.deepEqual(listed.json.tools[0].requirements, requirements);
+  const created = await request(bridge, '/v1/bots/tools', { token, method: 'POST', body: { ...create, requirements } });
+  assert.equal(created.status, 200); assert.deepEqual(created.json.tool.requirements, requirements);
+  const cleared = await request(bridge, '/v1/bots/tools/' + tool.id, { token, method: 'PATCH', body: { requirements: {}, expectedRevision: 1, expectedDigest: tool.digest } });
+  assert.equal(cleared.status, 200); assert.equal(Object.hasOwn(cleared.json.tool, 'requirements'), false);
+  assert.deepEqual(calls.find(call => call.method === 'POST').body.requirements, requirements);
+  assert.ok(!calls.some(call => /messages|native|serving|\/run|\/test|\/check/.test(call.path)));
+});
+
+test('bridge refuses malformed requirements and readiness does not create an owner execution endpoint', async () => {
+  for (const requirements of [null, { command: 'touch BAD' }, { platforms: ['macos'] }, { executables: ['node --version'] }, { executables: ['/bin/sh'] }, { workspaceFiles: ['../secrets'] }, { workspaceFiles: ['C:secrets'] }, { workspaceFiles: ['a\\b'] }, { workspaceFiles: ['line\nbreak'] }, { workspaceFiles: Array.from({ length: 17 }, (_, i) => `${i}.txt`) }]) {
+    assert.throws(() => botWorkspaceRequest('/api/bots/tools', 'POST', { ...create, requirements }), { status: 403 });
+    assert.throws(() => publicBotWorkspace({ tool: { ...tool, requirements } }, { kind: 'createdTool', toolId: tool.id }), { status: 502 });
+  }
+  assert.equal(botWorkspaceRequest('/api/bots/tools/' + tool.id + '/check', 'POST', {}), null);
+});
+
+test('older hosts can still manage legacy tools but requirements writes fail before mutation', async t => {
+  const { bridge, token, calls } = await fixture(t);
+  assert.equal((await request(bridge, '/v1/bots/tools', { token })).json.createdToolReadinessSupported, false);
+  for (const [path, method, body] of [
+    ['/v1/bots/tools', 'POST', { ...create, requirements: { executables: ['node'] } }],
+    ['/v1/bots/tools/' + tool.id, 'PATCH', { expectedRevision: 1, expectedDigest: tool.digest, requirements: {} }],
+  ]) {
+    const result = await request(bridge, path, { token, method, body }); assert.equal(result.status, 409); assert.match(result.json.error, /Refresh/);
+  }
+  assert.equal(calls.some(call => ['POST', 'PATCH'].includes(call.method)), false);
+  assert.equal((await request(bridge, '/v1/bots/tools', { token, method: 'POST', body: create })).status, 200);
+});

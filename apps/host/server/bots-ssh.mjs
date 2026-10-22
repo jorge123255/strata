@@ -18,7 +18,7 @@ export function botSSHArguments(execution) {
   const { host, user, port } = normalizeBotSSH(execution);
   return ['-T', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=12', '-o', 'ConnectionAttempts=1', '-o', 'ClearAllForwardings=yes', '-o', 'ForwardAgent=no', '-o', 'PermitLocalCommand=no', '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=2', ...(port ? ['-p', String(port)] : []), ...(user ? ['-l', user] : []), '--', host, SSH_BOTS_COMMAND];
 }
-const assetNames = ['bots-runtime/index.mjs', 'bots-runtime/devin.mjs', 'bots-runtime/grok.mjs', 'bots-runtime/process.mjs', 'bots-runtime/tool-bridge.mjs', 'bots-runtime/created-tools.mjs', 'bots-runtime/mcp-stdio.mjs', 'bots-runtime/ssh-worker.mjs', 'bots-runtime/cua-qemu-prepare.py', 'bots-tools.mjs', 'bots-models.mjs', 'bots-cua.mjs', 'bots-cua.py', 'bots-host-folder.mjs', 'bots-host-folder.py', 'bots-host-folder-worker.mjs', 'bots-computer.swift', 'agent/browser-probe.mjs', 'agent/harness-runtime.mjs', 'external-env.mjs', 'powershell-utf8.mjs'];
+const assetNames = ['bots-action-journal.mjs', 'bots-runtime/tool-outcome.mjs', 'bots-runtime/context.mjs', 'bots-runtime/index.mjs', 'bots-runtime/devin.mjs', 'bots-runtime/grok.mjs', 'bots-runtime/process.mjs', 'bots-runtime/tool-bridge.mjs', 'bots-runtime/created-tools.mjs', 'bots-runtime/mcp-stdio.mjs', 'bots-runtime/ssh-worker.mjs', 'bots-runtime/cua-qemu-prepare.py', 'bots-tools.mjs', 'bots-models.mjs', 'bots-cua.mjs', 'bots-cua.py', 'bots-host-folder.mjs', 'bots-host-folder.py', 'bots-host-folder-worker.mjs', 'bots-computer.swift', 'agent/browser-probe.mjs', 'agent/harness-runtime.mjs', 'external-env.mjs', 'powershell-utf8.mjs'];
 export async function botSSHBundle({ readAsset = name => readFile(new URL(name, import.meta.url)) } = {}) {
   const assets = {};
   for (const name of assetNames) assets[`server/${name}`] = Buffer.from(await readAsset(name));
@@ -99,6 +99,7 @@ export function createRemoteBotSSH({ sshPath = '/usr/bin/ssh', spawnProcess = sp
           try {
             let result;
             if (message.type === 'frame') result = options.onFrame?.(message.value);
+            else if (message.type === 'harness-action') result = options.onHarnessAction?.(message.value);
             else if (message.type === 'identity') result = options.onIdentity?.(message.value);
             else if (message.type === 'checkpoint') result = options.onCheckpoint?.(message.value);
             else if (message.type === 'permission' || message.type === 'requestModel' || message.type === 'requestHostTool' || message.type === 'folder-authorize') requestFromWorker(message);
@@ -162,7 +163,7 @@ export function createRemoteBotSSH({ sshPath = '/usr/bin/ssh', spawnProcess = sp
       const hostTools = (input.hostTools ?? []).map(tool => ({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema }));
       let remoteIdentity = input.checkpoint?.remoteIdentity;
       const wrap = value => ({ remoteTarget: target, remoteIdentity, remoteCheckpoint: value });
-      const result = await call('run', execution, { input: { bot, sessionId: input.sessionId, message: input.message, history: input.history ?? [], checkpoint: input.checkpoint?.remoteCheckpoint, expectedIdentity: remoteIdentity, hostTools } }, {
+      const result = await call('run', execution, { input: { bot, sessionId: input.sessionId, message: input.message, history: input.history ?? [], checkpoint: input.checkpoint?.remoteCheckpoint, expectedIdentity: remoteIdentity, hostTools, ...(input.harnessActionScope ? { harnessActionScope: input.harnessActionScope } : {}) } }, {
         ...input, onIdentity: value => { if (!/^[a-f0-9]{64}$/.test(value ?? '') || remoteIdentity && value !== remoteIdentity) throw fault('ssh_session_identity', 'The SSH execution computer or account changed. Start a new bot chat.'); remoteIdentity = value; }, onCheckpoint: checkpoint => input.onCheckpoint?.(wrap(checkpoint)),
       });
       const checkpoint = result.checkpoint ? wrap(result.checkpoint) : null;

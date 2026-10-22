@@ -35,6 +35,7 @@ struct BotSupervisionSession: Decodable, Identifiable, Equatable {
     var teamId: String?
     var parentChatId: String?
     var updatedAt: String?
+    var harness: BotHarnessDiagnostics?
     var needsAttention: Bool { state == .approval || state == .error }
     var isWorking: Bool { state == .working || state == .thinking }
     var context: String {
@@ -50,6 +51,54 @@ struct BotSupervisionSession: Decodable, Identifiable, Equatable {
         case .completed: "Finished"
         }
     }
+}
+
+struct BotHarnessDiagnostics: Decodable, Equatable {
+    struct Timings: Decodable, Equatable {
+        var startingMs: Int; var modelMs: Int; var approvalMs: Int; var toolMs: Int; var cleanupMs: Int
+    }
+    var phase: String
+    var elapsedMs: Int
+    var firstOutputMs: Int?
+    var timings: Timings
+    var toolCalls: Int
+    var toolErrors: Int
+    var contextCompactions: Int
+    var isValid: Bool {
+        let numbers = [elapsedMs, timings.startingMs, timings.modelMs, timings.approvalMs, timings.toolMs, timings.cleanupMs, toolCalls, toolErrors, contextCompactions] + (firstOutputMs.map { [$0] } ?? [])
+        return ["starting", "model", "approval", "tool", "cleanup", "completed", "interrupted", "error"].contains(phase) && numbers.allSatisfy { (0...604_800_000).contains($0) }
+    }
+    var label: String {
+        switch phase {
+        case "starting": "Preparing run"
+        case "model": "Waiting for provider"
+        case "approval": "Waiting for approval"
+        case "tool": "Using tools"
+        case "cleanup": "Finishing cleanup"
+        case "completed": "Run finished"
+        case "interrupted": "Run interrupted"
+        default: "Run needs attention"
+        }
+    }
+    static func seconds(_ ms: Int) -> String { String(format: ms < 10_000 ? "%.1fs" : "%.0fs", Double(max(0, ms)) / 1_000) }
+}
+
+struct BotHarnessAction: Decodable, Equatable, Identifiable {
+    var id: String; var chatId: String; var toolName: String; var state: String
+    var revision: Int; var proof: String; var origin: String; var readOnly: Bool
+    var updatedAt: BotWorkspaceTimestamp?
+    var hasValidProof: Bool {
+        id.count == 67 && id.hasPrefix("ba_") && id.dropFirst(3).utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) } &&
+        proof.count == 64 && proof.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) } &&
+        (1...9_007_199_254_740_991).contains(revision) && CompanionClient.isSafeIdentifier(chatId) &&
+        ["local", "ssh-worker"].contains(origin) && ["pending", "succeeded", "error", "interrupted", "uncertain", "reviewed"].contains(state)
+    }
+    var needsReview: Bool { hasValidProof && (state == "uncertain" || state == "interrupted") }
+    var canReview: Bool { needsReview && origin == "local" && !readOnly }
+    func matches(_ other: Self) -> Bool { id == other.id && chatId == other.chatId && toolName == other.toolName && origin == other.origin && readOnly == other.readOnly && revision == other.revision && proof == other.proof && other.canReview }
+}
+struct BotHarnessActionsSnapshot: Decodable, Equatable {
+    var available: Bool; var actions: [BotHarnessAction]; var counts: [String: Int]; var hasMore: Bool; var reason: String?
 }
 
 enum BotSupervisionFilter: String, CaseIterable, Identifiable {
@@ -519,6 +568,7 @@ struct BotCreatedTool: Decodable, Identifiable, Equatable {
     var botIds: [String]
     var teamIds: [String]
     var provenance: Provenance?
+    var requirements: BotToolRequirements?
     var isEnabled: Bool { status == "enabled" }
     func matchesReview(_ other: Self) -> Bool { id == other.id && revision == other.revision && digest == other.digest }
     var hasValidReview: Bool {
@@ -529,8 +579,46 @@ struct BotCreatedTool: Decodable, Identifiable, Equatable {
 struct BotCreatedToolsSnapshot: Decodable, Equatable {
     var tools: [BotCreatedTool]
     var createdToolsSupported: Bool?
+    var createdToolReadinessSupported: Bool?
     var reason: String?
     var isAvailable: Bool { createdToolsSupported == true && reason == nil }
+}
+
+struct BotToolRequirements: Codable, Equatable {
+    var platforms: [String] = []
+    var executables: [String] = []
+    var workspaceFiles: [String] = []
+    private enum CodingKeys: String, CodingKey { case platforms, executables, workspaceFiles }
+    init(platforms: [String] = [], executables: [String] = [], workspaceFiles: [String] = []) {
+        self.platforms = platforms; self.executables = executables; self.workspaceFiles = workspaceFiles
+    }
+    init(from decoder: Decoder) throws {
+        struct Field: CodingKey {
+            var stringValue: String; var intValue: Int? { nil }
+            init?(stringValue: String) { self.stringValue = stringValue }; init?(intValue: Int) { return nil }
+        }
+        let allFields = try decoder.container(keyedBy: Field.self)
+        guard allFields.allKeys.allSatisfy({ ["platforms", "executables", "workspaceFiles"].contains($0.stringValue) }) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Unsupported tool requirement field."))
+        }
+        let fields = try decoder.container(keyedBy: CodingKeys.self)
+        platforms = fields.contains(.platforms) ? try fields.decode([String].self, forKey: .platforms) : []
+        executables = fields.contains(.executables) ? try fields.decode([String].self, forKey: .executables) : []
+        workspaceFiles = fields.contains(.workspaceFiles) ? try fields.decode([String].self, forKey: .workspaceFiles) : []
+        guard isValid else { throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Invalid tool requirements.")) }
+    }
+    var isValid: Bool {
+        guard platforms.count <= 3, Set(platforms).count == platforms.count, platforms.allSatisfy({ ["darwin", "linux", "win32"].contains($0) }),
+              executables.count <= 16, Set(executables).count == executables.count,
+              executables.allSatisfy({ $0.range(of: "^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$", options: .regularExpression) == $0.startIndex..<$0.endIndex }),
+              workspaceFiles.count <= 16, Set(workspaceFiles).count == workspaceFiles.count else { return false }
+        return workspaceFiles.allSatisfy { path in
+            !path.isEmpty && path.utf16.count <= 240 && !path.contains("\\") &&
+            path.range(of: "^[A-Za-z]:", options: .regularExpression) == nil &&
+            !path.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }) &&
+            path.split(separator: "/", omittingEmptySubsequences: false).allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
+        }
+    }
 }
 
 struct BotCreatedToolDraft: Encodable {
@@ -539,14 +627,15 @@ struct BotCreatedToolDraft: Encodable {
     var command = ""
     var inputSchema: BotToolJSON = .object(["type": .string("object"), "properties": .object([:]), "required": .array([]), "additionalProperties": .bool(false)])
     var timeoutSeconds = 30
+    var requirements: BotToolRequirements?
     init() { }
     init(tool: BotCreatedTool) {
-        name = tool.name; description = tool.description; command = tool.command; inputSchema = tool.inputSchema; timeoutSeconds = tool.timeoutSeconds
+        name = tool.name; description = tool.description; command = tool.command; inputSchema = tool.inputSchema; timeoutSeconds = tool.timeoutSeconds; requirements = tool.requirements
     }
     var isValid: Bool {
         !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && name.utf16.count <= 120 &&
         description.utf16.count <= 2_000 && !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && command.utf16.count <= 32_000 &&
-        ![name, description, command].contains(where: { $0.contains("\0") }) && (1...120).contains(timeoutSeconds) && Self.isSupportedSchema(inputSchema)
+        ![name, description, command].contains(where: { $0.contains("\0") }) && (1...120).contains(timeoutSeconds) && (requirements?.isValid ?? true) && Self.isSupportedSchema(inputSchema)
     }
     /// V1 accepts flat object inputs. The Mac validates the complete definition
     /// again before saving; this check gives immediate feedback on the phone.

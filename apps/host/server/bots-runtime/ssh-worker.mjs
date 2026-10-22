@@ -8,6 +8,7 @@ import { createBotTools } from '../bots-tools.mjs';
 import { findBrowser } from '../agent/browser-probe.mjs';
 import { redact } from './process.mjs';
 import { createCreatedCommandTools } from './created-tools.mjs';
+import { createBotActionJournal, botActionTurnIdentity } from '../bots-action-journal.mjs';
 
 const text = message => ({ content: [{ type: 'text', text: message }], isError: true });
 const identity = () => createHash('sha256').update(JSON.stringify([hostname(), process.getuid?.(), homedir()])).digest('hex');
@@ -85,6 +86,9 @@ export async function startWorker(input, options = {}) {
 }
 async function startWorkerTurn(input, { reader, send, directory, leaseMs = 12000, toolFactory = createBotTools, cuaFactory, runtimeFactory = createBotRuntime } = {}) {
   if (!input?.bot || !input?.sessionId || input.bot.execution?.kind !== 'ssh') throw new Error('A remote bot and conversation are required.');
+  const suppliedScope = input.harnessActionScope;
+  if (suppliedScope !== undefined && (!suppliedScope || Object.keys(suppliedScope).some(key => !['turnId', 'authority'].includes(key)) || !/^[a-f0-9]{64}$/.test(suppliedScope.turnId ?? '') || !/^[a-f0-9]{64}$/.test(suppliedScope.authority ?? ''))) throw new Error('The action recovery scope is invalid.');
+
   if (input.bot.teamConversationOnly !== undefined && typeof input.bot.teamConversationOnly !== 'boolean') throw new Error('The team conversation mode is invalid.');
   // This flag is frozen by the owning host job. A conversation invitation must
   // not reconstruct local tools or acquire/clean up an unrelated CUA desktop.
@@ -126,8 +130,12 @@ async function startWorkerTurn(input, { reader, send, directory, leaseMs = 12000
   let tools, runtime;
   const bot = { ...input.bot, execution: { kind: 'local' }, providerSettings: input.bot.providerSettings?.baseURL ? { baseURL: input.bot.providerSettings.baseURL } : undefined };
   const emit = frame => write({ type: 'frame', value: frame });
+  const mirroredComputerReceipt = value => !(input.hostTools ?? []).some(tool => tool.name === value.toolName);
+  const journal = createBotActionJournal({ directory: join(directory, 'action-receipts'), onRecord: value => { if (mirroredComputerReceipt(value)) write({ type: 'harness-action', value }); } });
+  const actionScope = { chatId: input.sessionId, turnId: suppliedScope?.turnId ?? botActionTurnIdentity({ messages: input.history ?? [] }, input.message), authority: suppliedScope?.authority ?? createHash('sha256').update(JSON.stringify(input.bot)).digest('hex'), signal, origin: 'ssh-worker' };
   let failure, result;
   try {
+    for (const receipt of journal.summary(input.sessionId).actions.filter(mirroredComputerReceipt)) write({ type: 'harness-action', value: receipt });
     if (!conversationOnly) {
       const browser = await browserInfo();
       const createTools = bot.computerMode === 'cua' ? cuaFactory ?? (await import('../bots-cua.mjs')).createBotCUATools : toolFactory;
@@ -144,7 +152,9 @@ async function startWorkerTurn(input, { reader, send, directory, leaseMs = 12000
     const execute = (name, args, toolCallId) => {
       signal.throwIfAborted();
       if (conversationOnly && !hostNames.has(name)) return Promise.reject(new Error('A team conversation cannot use local or computer tools.'));
-      const promise = hostNames.has(name) ? ask('requestHostTool', { name, args, toolCallId }) : tools.execute({ bot, chatId: input.sessionId, name, args, toolCallId, signal, onFrame: emit, requestPermission: allow });
+      let started = false, denied = false;
+      const toolFrame = frame => { if (frame.type === 'agent-tool') { if (frame.tool?.state === 'running') started = true; if (frame.tool?.state === 'denied') denied = true; } emit(frame); };
+      const promise = journal.execute({ ...actionScope, name, args, toolCallId, noEffect: () => !hostNames.has(name) && denied && !started }, () => hostNames.has(name) ? ask('requestHostTool', { name, args, toolCallId }) : tools.execute({ bot, chatId: input.sessionId, name, args, toolCallId, signal, onFrame: toolFrame, requestPermission: allow }));
       inFlight.add(promise); promise.finally(() => inFlight.delete(promise)).catch(() => {}); return promise;
     };
     result = await runtime.run({ bot, sessionId: input.sessionId, message: input.message, history: input.history ?? [], checkpoint: conversationOnly ? null : input.checkpoint, signal, onFrame: frame => { if (frame.type !== 'done' && frame.type !== 'error') emit(frame); },

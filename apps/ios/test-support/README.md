@@ -69,3 +69,13 @@ An inert runtime first writes a real assignment and long report to the private
 fixture journal. The native test expands and collapses their previews, verifies
 the complete text remains accessible, and checks history is unchanged. No external
 provider, SSH, browser or guest computer is involved.
+
+`--test-harness` runs
+`CompanionSmokeTests/testHarnessReadinessDiagnosticsAndReviewWithoutExecutingWork`
+on an explicit scratch simulator. It uses the real private action journal and
+paired TLS bridge. An inert callback creates an uncertain local receipt; an SSH
+receipt is a read-only synthetic mirror. The test inspects timing details,
+acknowledges only the exact local receipt, keeps readable receipts visible when
+the journal is unavailable, and edits and clears reusable-tool requirements.
+Only that acknowledgement and configuration edits may write. No saved tool
+command, provider prompt, SSH connection, CUA guest, retry or task resume runs.

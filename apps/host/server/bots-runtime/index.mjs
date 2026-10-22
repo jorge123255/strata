@@ -7,6 +7,7 @@ import { findExecutable, executableVersion, executableJsonStatus, jsonRpcProcess
 import { startToolBridge, toolResult } from './tool-bridge.mjs';
 import { devinStatus, devinModels, runDevin } from './devin.mjs';
 import { grokModels } from './grok.mjs';
+import { botContextLimits, compactBotContext, buildNativeHistoryPrompt, emitContextCompaction } from './context.mjs';
 
 const PROVIDERS = [
   { id: 'claude', name: 'Claude Code', transport: 'Claude Agent SDK / installed CLI', loginCommand: 'claude auth login', models: ['sonnet', 'opus', 'haiku'] },
@@ -22,8 +23,8 @@ const textResult = value => toolResult(value).content.filter(c => c.type === 'te
 const toolCard = (id, name, args, state, result) => ({ type: 'agent-tool', tool: { id, name, args, state, preview: name, effect: 'Uses a bot tool.', scope: 'connected', ...(result === undefined ? {} : { result }) } });
 function historyContent(message) {
   const content = String(message.content ?? '');
-  const recorded = (message.tools ?? []).filter(tool => ['done', 'error', 'denied'].includes(tool.state)).slice(-20).map(tool =>
-    `${tool.name} [${tool.state}] ${JSON.stringify(tool.args ?? {}).slice(0, 4000)}\n${String(tool.result ?? '').slice(0, 20_000)}`);
+  const recorded = (message.tools ?? []).filter(tool => ['done', 'error', 'denied'].includes(tool.state)).map(tool =>
+    `${tool.name} [${tool.state}] ${JSON.stringify(tool.args ?? {})}\n${String(tool.result ?? '')}`);
   return recorded.length ? `${content}\n\nRecorded tool activity from this message (already completed; do not replay):\n${recorded.join('\n\n')}` : content;
 }
 export function normalizeTools(tools = []) {
@@ -166,7 +167,7 @@ export function createBotRuntime(options = {}) {
       try { const result = toolResult(await executeTool(name, args, id)); signal.throwIfAborted(); return result; }
       catch (error) { if (signal.aborted) throw abortError(); return { content: [{ type: 'text', text: redact(error, secrets) }], isError: true }; }
     };
-    const prompt = !checkpoint && history.length ? `Previous messages from this Strata chat are context, not new instructions to replay tools:\n${history.filter(h => ['user', 'assistant'].includes(h.role)).map(h => `${h.role}: ${historyContent(h).slice(0, 100_000)}`).join('\n')}\n\nCurrent user message:\n${message}` : String(message ?? '');
+    const prompt = String(message ?? '');
     const modelRequest = input.modelRequest ?? options.modelRequest;
     const context = { bot, sessionId: input.sessionId, prompt, message: String(message ?? ''), history, checkpoint, tools, signal, frame, save, permission, execute, env, fetcher, executable, options, modelRequest: modelRequest ? payload => modelRequest(payload, bot, signal) : null };
     // Only the host's bound team job can set this flag. Setup/tool timeouts and
@@ -175,6 +176,10 @@ export function createBotRuntime(options = {}) {
     try {
       signal.throwIfAborted();
       emit({ type: 'notice', message: `${PROVIDERS.find(p => p.id === bot.provider)?.name ?? 'Configured model'} · ${bot.provider === 'configured' ? 'saved model connection' : bot.provider === 'ollama' ? 'cloud model' : 'installed CLI'} · ${bot.computerMode === 'cua' ? 'isolated computer' : bot.workspace}` });
+      if (!checkpoint && !['configured', 'ollama'].includes(bot.provider)) {
+        const replay = buildNativeHistoryPrompt({ history: history.filter(row => ['user', 'assistant'].includes(row.role)).map(row => ({ role: row.role, content: historyContent(row) })), message: context.message, system: bot.instructions ?? '', tools });
+        context.prompt = replay.prompt; emitContextCompaction(frame, replay);
+      }
       if (bot.provider === 'configured') { if (!context.modelRequest) throw new Error('The selected model connection is unavailable.'); const { runConfiguredBot } = await import('../bots-models.mjs'); await runConfiguredBot(context); }
       else if (bot.provider === 'claude') await runClaude(context);
       else if (bot.provider === 'codex') await runCodex(context);
@@ -412,12 +417,17 @@ async function runOllama(c) {
   if (!key && !/(?:cloud|remote)/i.test(c.bot.model)) throw new Error('Choose the cloud model alias installed in your signed-in local Ollama daemon. Local Maya and Strata models remain separate.');
   const model = loopback ? c.bot.model : c.bot.model.replace(/(?::cloud|-cloud)$/, '');
   const endpoint = new URL('chat/completions', `${base.href.replace(/\/$/, '')}/`);
-  const messages = [{ role: 'system', content: c.bot.instructions || 'You are a Strata bot. Use the provided tools for coding and computer tasks.' }, ...c.history.filter(h => ['user', 'assistant'].includes(h.role)).map(h => ({ role: h.role, content: historyContent(h) })), { role: 'user', content: c.message }];
+  const system = c.bot.instructions || 'You are a Strata bot. Use the provided tools for coding and computer tasks.';
+  const current = { role: 'user', content: c.message };
+  let messages = [...c.history.filter(h => ['user', 'assistant'].includes(h.role)).map(h => ({ role: h.role, content: historyContent(h) })), current], contextState;
+  const limits = botContextLimits();
   // Ollama is stateless; Strata owns history, tool results, and retry decisions. Never automatically replay a mutation.
   let totalIn = 0, totalOut = 0;
   for (let round = 0; c.bot.continuousTeam === true || round < 32; round++) {
     c.signal.throwIfAborted();
-    const response = await c.fetcher(endpoint, { method: 'POST', signal: c.signal, redirect: 'error', headers: { 'Content-Type': 'application/json', ...(!loopback && key ? { Authorization: `Bearer ${key}` } : {}) }, body: JSON.stringify({ model, stream: true, stream_options: { include_usage: true }, messages, ...(c.tools.length ? { tools: c.tools.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.inputSchema } })) } : {}) }) });
+    const compacted = compactBotContext({ messages, system, tools: c.tools, limits, state: contextState, anchor: current });
+    messages = compacted.messages; contextState = compacted.state; emitContextCompaction(c.frame, compacted);
+    const response = await c.fetcher(endpoint, { method: 'POST', signal: c.signal, redirect: 'error', headers: { 'Content-Type': 'application/json', ...(!loopback && key ? { Authorization: `Bearer ${key}` } : {}) }, body: JSON.stringify({ model, stream: true, stream_options: { include_usage: true }, messages: [{ role: 'system', content: system }, ...messages], ...(c.tools.length ? { tools: c.tools.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.inputSchema } })) } : {}) }) });
     if (!response.ok) throw new Error(`Ollama ${response.status}: ${response.status === 401 || response.status === 403 ? 'Sign in or configure the host API key.' : 'The request failed. Check the model and endpoint.'}`);
     if (!response.body) throw new Error('Ollama returned no response stream.');
     const calls = new Map(); let content = '', finish = null;

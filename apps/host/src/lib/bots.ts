@@ -98,9 +98,11 @@ export interface BotCreatedTool {
   timeoutSeconds: number; status: 'draft'|'enabled'; revision: number; digest: string;
   botIds: string[]; teamIds: string[]; createdAt: string; updatedAt: string;
   provenance?: { botId: string; chatId: string; turnId: string };
+  requirements?: BotToolRequirements;
 }
-export interface BotCreatedToolsSnapshot { tools: BotCreatedTool[]; createdToolsSupported?: boolean; reason?: string }
-export interface BotCreatedToolDraft { name: string; description: string; command: string; inputSchema: Record<string, unknown>; timeoutSeconds: number }
+export interface BotToolRequirements { platforms?: Array<'darwin'|'linux'|'win32'>; executables?: string[]; workspaceFiles?: string[] }
+export interface BotCreatedToolsSnapshot { tools: BotCreatedTool[]; createdToolsSupported?: boolean; createdToolReadinessSupported?: boolean; reason?: string }
+export interface BotCreatedToolDraft { name: string; description: string; command: string; inputSchema: Record<string, unknown>; timeoutSeconds: number; requirements?: BotToolRequirements }
 export interface BotConnectionTool { id: string; name: string; description: string; inputSchema: unknown; readOnly: boolean }
 export interface BotConnectorFeatures { catalog?: boolean; httpCreation?: boolean; teamAccess?: boolean; oauth?: boolean; iphoneOAuth?: boolean }
 export interface BotConnectorCatalogEntry { id: string; name: string; description: string; category: string; transport: 'http'; url?: string; authTypes: Array<'none'|'bearer'|'oauth'>; documentationURL?: string; setupNote?: string; setupState?: 'ready'|'configuration'|'managed'|'unavailable'; sourceURL?: string; phoneSignIn?: boolean; aliases?: string[] }

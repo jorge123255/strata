@@ -14,6 +14,14 @@ const states = new Set(['queued', 'running', 'completed', 'error', 'cancelled', 
 const limits = { maxParallel: [0, Number.MAX_SAFE_INTEGER], maxDepth: [1, 4], maxHops: [1, 32], maxTurns: [1, 100], maxDurationMs: [60_000, 3_600_000] };
 const continuousLimits = value => isObject(value) && Object.keys(value).length === Object.keys(limits).length && Object.keys(limits).every(key => value[key] === 0);
 const isObject = value => value && typeof value === 'object' && !Array.isArray(value);
+function publicHarness(value) {
+  if (!isObject(value) || !['starting','model','approval','tool','cleanup','completed','interrupted','error'].includes(value.phase)) return {};
+  const number = n => Number.isSafeInteger(n) && n >= 0 && n <= 604800000;
+  if (!number(value.elapsedMs) || !isObject(value.timings) || !['startingMs','modelMs','approvalMs','toolMs','cleanupMs'].every(key => number(value.timings[key])) || !['toolCalls','toolErrors','contextCompactions'].every(key => number(value[key]))) return {};
+  return { harness: { phase: value.phase, elapsedMs: value.elapsedMs, ...(number(value.firstOutputMs) ? {firstOutputMs:value.firstOutputMs} : {}),
+    timings: Object.fromEntries(['startingMs','modelMs','approvalMs','toolMs','cleanupMs'].map(key => [key,value.timings[key]])),
+    ...Object.fromEntries(['toolCalls','toolErrors','contextCompactions'].map(key => [key,value[key]])) } };
+}
 function object(value, keys, status) {
   if (!isObject(value) || Object.keys(value).some(key => !keys.includes(key))) throw error(status, 'Choose only the displayed team, skill or connection settings.');
 }
@@ -83,9 +91,10 @@ function createdToolSchema(value, status) {
   return structuredClone(value);
 }
 function createdToolSettings(body, method, status) {
-  object(body, ['name', 'description', 'command', 'inputSchema', 'timeoutSeconds', ...(method === 'PATCH' ? ['status', 'botIds', 'teamIds', 'expectedRevision', 'expectedDigest'] : [])], status);
+  object(body, ['name', 'description', 'command', 'inputSchema', 'timeoutSeconds', 'requirements', ...(method === 'PATCH' ? ['status', 'botIds', 'teamIds', 'expectedRevision', 'expectedDigest'] : [])], status);
   for (const [key, max] of [['name', 120], ['description', 2000], ['command', 32000]]) if (body[key] !== undefined || method === 'POST' && ['name', 'command'].includes(key)) string(body[key], max, status, key === 'description');
   if (body.inputSchema !== undefined) createdToolSchema(body.inputSchema, status);
+  if (body.requirements !== undefined) createdToolRequirements(body.requirements, status);
   if (body.timeoutSeconds !== undefined && (!Number.isSafeInteger(body.timeoutSeconds) || body.timeoutSeconds < 1 || body.timeoutSeconds > 120)) throw error(status, 'Choose a tool timeout from 1 to 120 seconds.');
   if (method === 'PATCH') {
     if (!Number.isSafeInteger(body.expectedRevision) || body.expectedRevision < 1 || typeof body.expectedDigest !== 'string' || !/^[a-f0-9]{64}$/.test(body.expectedDigest)) throw error(status, 'Review the current tool revision before saving.');
@@ -93,6 +102,19 @@ function createdToolSettings(body, method, status) {
     if (body.botIds !== undefined) ids(body.botIds, status, id, 256);
     if (body.teamIds !== undefined) ids(body.teamIds, status, id, 50);
   }
+}
+function createdToolRequirements(value, status) {
+  object(value, ['platforms', 'executables', 'workspaceFiles'], status);
+  const safe = {};
+  for (const [key, maximum] of [['platforms', 3], ['executables', 16], ['workspaceFiles', 16]]) {
+    const rows = value[key]; if (rows === undefined) continue;
+    if (!Array.isArray(rows) || rows.length > maximum || new Set(rows).size !== rows.length) throw error(status, 'Use unique, bounded tool requirements.');
+    for (const name of rows) {
+      if (typeof name !== 'string' || key === 'platforms' && !['darwin', 'linux', 'win32'].includes(name) || key === 'executables' && !/^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/.test(name) || key === 'workspaceFiles' && (!name || name.length > 240 || /[\\\x00-\x1f\x7f]/.test(name) || name.startsWith('/') || /^[A-Za-z]:/.test(name) || name.split('/').some(part => ['', '.', '..'].includes(part)))) throw error(status, 'Review the required platforms, program names and relative workspace files.');
+    }
+    if (rows.length) safe[key] = [...rows];
+  }
+  return Object.keys(safe).length ? safe : undefined;
 }
 function createdToolProof(body, status) {
   object(body, ['expectedRevision', 'expectedDigest'], status);
@@ -107,6 +129,7 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
   if (p === '/api/bots/provider-models') route = { kind: 'providerModels' };
   else if (p === '/api/bots/activity') route = { kind: 'activity' };
   else if (p === '/api/bots/supervision') route = { kind: 'supervision' };
+  else if (p === '/api/bots/harness/actions') route = { kind: 'harnessActions' };
   else if (p === '/api/bots/teams') route = { kind: 'teams' };
   else if (p === '/api/bots/skills') route = { kind: 'skills' };
   else if (p === '/api/bots/skills/assign') route = { kind: 'assignment' };
@@ -114,13 +137,15 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
   else if (p === '/api/bots/connections') route = { kind: 'connections' };
   else if (p === '/api/bots/connectors/catalog') route = { kind: 'connectorCatalog' };
   else {
+    const harnessReview = /^\/api\/bots\/harness\/actions\/(ba_[a-f0-9]{64})\/review$/.exec(p);
     const channel = /^\/api\/bots\/teams\/([A-Za-z0-9_-]{1,120})\/(channel|messages)$/.exec(p);
     const team = /^\/api\/bots\/teams\/([A-Za-z0-9_-]{1,120})(?:\/runs(?:\/([A-Za-z0-9_-]{1,120})(?:\/(stop))?)?)?$/.exec(p);
     const task = /^\/api\/bots\/teams\/(team_[a-f0-9-]+)\/jobs\/(tj_[a-f0-9-]+)\/(review|recovery|resume)$/.exec(p);
     const skill = /^\/api\/bots\/skills\/([A-Za-z0-9_-]{1,120})$/.exec(p);
     const createdTool = /^\/api\/bots\/tools\/(tool_[a-f0-9-]{1,100})$/.exec(p);
     const connection = /^\/api\/bots\/connections\/([A-Za-z0-9_-]{1,120})(?:\/(check|auth|auth\/complete|auth\/cancel))?$/.exec(p);
-    if (task) route = { kind: 'task', teamId: task[1], jobId: task[2], action: task[3] };
+    if (harnessReview) route = { kind: 'harnessReview', actionId: harnessReview[1] };
+    else if (task) route = { kind: 'task', teamId: task[1], jobId: task[2], action: task[3] };
     else if (channel) route = { kind: channel[2] === 'channel' ? 'channel' : 'channelMessage', teamId: channel[1] };
     else if (team) route = { kind: p.includes('/runs') ? 'run' : 'team', teamId: team[1], runId: team[2], action: team[3] };
     else if (skill) route = { kind: 'skill', skillId: skill[1] };
@@ -138,11 +163,17 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
   } else if (route.kind === 'providerModels') throw error(status, 'Choose a provider.');
   const allowed = { teams: ['GET', 'POST'], team: ['PATCH'], channel: ['GET'], channelMessage: ['POST'], run: route.action === 'stop' ? ['POST'] : route.runId ? ['GET'] : ['POST'], activity: ['GET'], supervision: ['GET'], skills: ['GET', 'POST'], skill: ['PATCH', 'DELETE'], assignment: ['POST'], connections: ['GET', 'POST'], connection: route.action ? ['POST'] : ['PATCH', 'DELETE'], connectionAuth: ['auth/complete', 'auth/cancel'].includes(route.action) ? ['POST'] : ['GET', 'POST', 'DELETE'], connectorCatalog: ['GET'], providerModels: ['GET'] };
   allowed.createdTools = ['GET', 'POST']; allowed.createdTool = ['PATCH', 'DELETE'];
+  allowed.harnessActions = ['GET']; allowed.harnessReview = ['POST'];
   if (!(route.kind === 'task' ? route.action === 'recovery' ? ['GET'] : ['POST'] : allowed[route.kind]).includes(method)) throw error(status, 'This workspace action is unavailable from iPhone.');
   if (!validateBody) return route;
   if (route.kind === 'createdTool' && method === 'DELETE') { createdToolProof(body, status); return route; }
   if (method === 'GET' || method === 'DELETE') {
     if (body !== undefined) throw error(status, 'This action does not accept settings.');
+    return route;
+  }
+  if (route.kind === 'harnessReview') {
+    object(body, ['expectedRevision','expectedProof','decision'], status);
+    if (!Number.isSafeInteger(body.expectedRevision) || body.expectedRevision < 1 || !/^[a-f0-9]{64}$/.test(body.expectedProof ?? '') || body.decision !== 'acknowledge') throw error(status, 'Review the exact interrupted action before acknowledging it.');
     return route;
   }
   if (route.kind === 'task') {
@@ -332,12 +363,27 @@ function createdTool(value) {
   createdToolSchema(value.inputSchema, 502);
   if (!Number.isSafeInteger(value.timeoutSeconds) || value.timeoutSeconds < 1 || value.timeoutSeconds > 120) throw error(502, 'Strata returned an unreadable tool timeout.');
   ids(value.botIds, 502, id, 256); ids(value.teamIds, 502, id, 50);
-  return { id: value.id, name: value.name, description: value.description, command: value.command, inputSchema: structuredClone(value.inputSchema), timeoutSeconds: value.timeoutSeconds, status: value.status, revision: value.revision, digest: value.digest, botIds: [...value.botIds], teamIds: [...value.teamIds], createdAt: date(value.createdAt), updatedAt: date(value.updatedAt), ...(id(value.provenance?.botId) ? { provenance: { botId: value.provenance.botId } } : {}) };
+  const requirements = value.requirements === undefined ? undefined : createdToolRequirements(value.requirements, 502);
+  return { id: value.id, name: value.name, description: value.description, command: value.command, inputSchema: structuredClone(value.inputSchema), timeoutSeconds: value.timeoutSeconds, ...(requirements ? { requirements } : {}), status: value.status, revision: value.revision, digest: value.digest, botIds: [...value.botIds], teamIds: [...value.teamIds], createdAt: date(value.createdAt), updatedAt: date(value.updatedAt), ...(id(value.provenance?.botId) ? { provenance: { botId: value.provenance.botId } } : {}) };
+}
+function harnessAction(value) {
+  if (!isObject(value) || !/^ba_[a-f0-9]{64}$/.test(value.id ?? '') || !id(value.chatId) || !['pending','succeeded','error','interrupted','uncertain','reviewed'].includes(value.state) || !Number.isSafeInteger(value.revision) || value.revision < 1 || typeof value.proof !== 'string' || !/^[a-f0-9]{64}$/.test(value.proof) || !['local','ssh-worker'].includes(value.origin)) throw error(502, 'Strata returned an unreadable action receipt.');
+  return {id:value.id,chatId:value.chatId,toolName:text(value.toolName,120),state:value.state,revision:value.revision,proof:value.proof,startedAt:date(value.startedAt),updatedAt:date(value.updatedAt),origin:value.origin,readOnly:value.origin === 'ssh-worker' || value.readOnly === true};
 }
 export function publicBotWorkspace(body, route) {
+  if (route.kind === 'harnessActions') {
+    if (!isObject(body) || !Array.isArray(body.actions)) throw error(502, 'Strata returned unreadable action receipts.');
+    return {available:body.available === true,actions:body.actions.slice(0,200).map(harnessAction),hasMore:body.hasMore === true,
+      counts:Object.fromEntries(['pending','succeeded','error','interrupted','uncertain','reviewed'].map(key=>[key,Number.isSafeInteger(body.counts?.[key]) && body.counts[key]>=0 ? Math.min(body.counts[key],1000000) : 0]))};
+  }
+  if (route.kind === 'harnessReview') {
+    const action = harnessAction(body?.action);
+    if (body.acknowledged !== true || body.resumed !== false || body.retried !== false || action.id !== route.actionId || action.state !== 'reviewed' || action.origin !== 'local' || action.readOnly) throw error(502,'Strata did not confirm review of this exact action.');
+    return {acknowledged:true,action,resumed:false,retried:false};
+  }
   if (!isObject(body)) throw error(502, 'Strata returned unreadable workspace information.');
   if (['createdTools', 'createdTool'].includes(route.kind)) {
-    if (route.kind === 'createdTools' && Array.isArray(body.tools) && body.tools.length <= 256) return { tools: body.tools.map(createdTool), createdToolsSupported: body.createdToolsSupported === true };
+    if (route.kind === 'createdTools' && Array.isArray(body.tools) && body.tools.length <= 256) return { tools: body.tools.map(createdTool), createdToolsSupported: body.createdToolsSupported === true, createdToolReadinessSupported: body.createdToolReadinessSupported === true };
     if (body.tool && (!route.toolId || body.tool.id === route.toolId)) return { tool: createdTool(body.tool) };
     if (route.kind === 'createdTool' && (body.removed === true || body.deleted === true)) return { deleted: true };
     throw error(502, 'Strata returned unreadable reusable tools.');
@@ -360,7 +406,7 @@ export function publicBotWorkspace(body, route) {
   if (route.kind === 'activity') return { activity: rows('activity', taskActivity), ...(body.teamWorkReviewSupported === true ? {teamWorkReviewSupported:true} : {}) };
   if (route.kind === 'supervision') {
     const count = value => Number.isSafeInteger(value) && value >= 0 ? Math.min(value, 1_000_000) : 0;
-    const sessions = rows('sessions', v => ({ id: v.id, botId: v.botId, name: text(v.name, 120), title: text(v.title, 300), state: v.state, approvalCount: count(v.approvalCount),
+    const sessions = rows('sessions', v => ({ id: v.id, botId: v.botId, name: text(v.name, 120), title: text(v.title, 300), state: v.state, approvalCount: count(v.approvalCount), ...publicHarness(v.harness),
       ...(typeof v.toolName === 'string' ? { toolName: text(v.toolName, 120) } : {}), ...(typeof v.computerName === 'string' ? { computerName: text(v.computerName, 120) } : {}),
       ...Object.fromEntries(['teamId', 'parentChatId'].filter(k => id(v[k])).map(k => [k, v[k]])), updatedAt: date(v.updatedAt) }))
       .filter(v => id(v.botId) && ['approval', 'error', 'working', 'thinking', 'completed'].includes(v.state) && (v.state !== 'approval' || v.approvalCount > 0)).slice(0, 200);
@@ -389,10 +435,16 @@ export async function handleBotWorkspace({ path, method, req, res, session, host
   requireCurrentSession();
   try {
     let teamCatalog;
+    if (route.kind === 'harnessReview') {
+      const catalog = await host.json('/api/bots/harness/actions'); requireCurrentSession();
+      const selected = catalog.available === true && Array.isArray(catalog.actions) && catalog.actions.find(action => action.id === route.actionId);
+      if (!selected || selected.origin !== 'local' || selected.readOnly === true || !['uncertain','interrupted'].includes(selected.state) || selected.revision !== body.expectedRevision || selected.proof !== body.expectedProof) throw error(409, 'Review this action’s current receipt before acknowledging it.');
+    }
     const currentTeams = async () => { if (!teamCatalog) { teamCatalog = await host.json('/api/bots/teams'); requireCurrentSession(); } return teamCatalog; };
     if (['createdTools', 'createdTool'].includes(route.kind) && method !== 'GET') {
       const catalog = await host.json('/api/bots/tools'); requireCurrentSession();
       if (catalog.createdToolsSupported !== true || !Array.isArray(catalog.tools)) throw error(409, 'Update Strata on your Mac before managing reusable tools.');
+      if (body?.requirements !== undefined && catalog.createdToolReadinessSupported !== true) throw error(409, 'Update Strata on your Mac before reviewing tool requirements.');
       if (route.toolId) {
         const selected = catalog.tools.find(tool => tool.id === route.toolId);
         if (!selected) throw error(404, 'This tool is no longer available.');
@@ -478,11 +530,13 @@ export async function handleBotWorkspace({ path, method, req, res, session, host
     requireCurrentSession();
     const result = await host.json(upstreamPath, { method, ...(body !== undefined ? { body } : {}), deviceId: session.id });
     requireCurrentSession();
+    if (route.kind === 'harnessReview' && (result.action?.revision !== body.expectedRevision+1 || result.action.proof === body.expectedProof)) throw error(502, 'Strata did not confirm the next revision of this action receipt.');
     sendJSON(res, 200, publicBotWorkspace(result, route));
     return true;
   } catch (failure) {
     requireCurrentSession();
     if ([404, 405, 501].includes(failure.status) && method === 'GET') {
+      if (route.kind === 'harnessActions') { sendJSON(res,200,{available:false,actions:[],counts:{pending:0,succeeded:0,error:0,interrupted:0,uncertain:0,reviewed:0},hasMore:false,reason:'Update Strata on your Mac to inspect action receipts.'}); return true; }
       const empty = { teams: { teams: [], runs: [] }, channel: { teamId: route.teamId, supported: false, messages: [], activeRuns: [], nextSequence: 0, hasMore: false, hasMoreBefore: false }, activity: { activity: [] }, supervision: { supported: false, sessions: [], counts: { waiting: 0, working: 0, completed: 0, errors: 0 }, hasMore: false }, skills: { skills: [], assignments: [] }, createdTools: { tools: [], createdToolsSupported: false }, connections: { connections: [] }, providerModels: { provider: route.provider, models: [] } }[route.kind];
       if (empty) { sendJSON(res, 200, { ...empty, reason: 'Update Strata on your Mac to use this Bots feature.' }); return true; }
     }

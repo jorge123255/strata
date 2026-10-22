@@ -50,12 +50,13 @@ const lifecycleMode = ['--test-devin-provider', '--test-bot-lifecycle', '--test-
 const directBotsMode = process.argv[2] === '--test-direct-bots';
 const connectorAccountsMode = process.argv[2] === '--test-connector-accounts';
 const connectorMode = connectorAccountsMode || process.argv[2] === '--test-connectors';
-const supervisionMode = process.argv[2] === '--test-supervision';
+const harnessMode = process.argv[2] === '--test-harness';
+const supervisionMode = harnessMode || process.argv[2] === '--test-supervision';
 const unrestrictedTeamsMode = process.argv[2] === '--test-unrestricted-teams';
 const continuousTeamsMode = process.argv[2] === '--test-continuous-teams';
 const compactTeamMode = process.argv[2] === '--test-team-compact';
 const teamWorkToolsMode = process.argv[2] === '--test-team-work-tools';
-const createdToolsMode = process.argv[2] === '--test-created-tools';
+const createdToolsMode = harnessMode || process.argv[2] === '--test-created-tools';
 let teamWorkToolsSupported = true;
 const taskOverviewMode = process.argv[2] === '--test-team-work-overview';
 const teamReviewMode = taskOverviewMode || process.argv[2] === '--test-team-review';
@@ -63,7 +64,7 @@ const compactAssignment = 'Implement a small project improvement and report the 
 const compactReport = 'Implementation and verification report.\n' + 'The isolated fixture preserves the complete report for review, including every verification detail. '.repeat(27) + 'REPORT END MARKER';
 const hostFolderMode = process.argv[2] === '--test-host-folder';
 let sharedHostFolder, folderVersion = '2026-10-21T00:00:00.000Z';
-const workspaceFlags = ['--test-created-tools', '--test-team-work-tools', '--test-team-work-overview', '--test-team-review', '--test-team-compact', '--test-continuous-teams', '--test-unrestricted-teams', '--test-host-folder', '--test-supervision', '--test-connector-accounts', '--test-connectors', '--test-devin-provider', '--test-direct-bots', '--test-team-settings', '--test-team-instructions', '--test-notifications', '--test-group-chat-layout', '--test-team-channel-layout', '--test-team-channel', '--test-bot-photos', '--test-bot-lifecycle', '--test-bot-avatar-states', '--test-workspace-skills', '--test-workspace-connections', '--test-workspace-teams', '--test-facelift'];
+const workspaceFlags = ['--test-harness', '--test-created-tools', '--test-team-work-tools', '--test-team-work-overview', '--test-team-review', '--test-team-compact', '--test-continuous-teams', '--test-unrestricted-teams', '--test-host-folder', '--test-supervision', '--test-connector-accounts', '--test-connectors', '--test-devin-provider', '--test-direct-bots', '--test-team-settings', '--test-team-instructions', '--test-notifications', '--test-group-chat-layout', '--test-team-channel-layout', '--test-team-channel', '--test-bot-photos', '--test-bot-lifecycle', '--test-bot-avatar-states', '--test-workspace-skills', '--test-workspace-connections', '--test-workspace-teams', '--test-facelift'];
 const workspaceMode = workspaceFlags.includes(process.argv[2]);
 let teamConversation, savedTeam, teamRun;
 const teamLimits = { maxParallel: 2, maxDepth: 2, maxHops: 8, maxTurns: 24, maxDurationMs: 600000 };
@@ -71,12 +72,22 @@ const skillDrafts = [];
 const skillAssignments = { 'fixture-bot': ['library.review'] };
 const skillCatalog = () => ({ skills: [{ id: 'library.review', name: 'Library review', description: 'Existing shared library instructions', body: 'Review changes carefully.', triggers: [], source: 'library', status: 'enabled', revision: 'library-digest', digest: 'library-digest' }, ...skillDrafts].map(skill => ({ ...skill, botIds: Object.entries(skillAssignments).filter(([, ids]) => ids.includes(skill.id)).map(([id]) => id) })), assignments: Object.entries(skillAssignments).map(([botId, skillIds]) => ({ botId, skillIds })) });
 // Configuration-only draft storage. No command runner or model is injected.
-const createdToolDigest = tool => createHash('sha256').update(JSON.stringify({ name: tool.name, description: tool.description, command: tool.command, inputSchema: tool.inputSchema, timeoutSeconds: tool.timeoutSeconds })).digest('hex');
+const createdToolDigest = tool => createHash('sha256').update(JSON.stringify({ name: tool.name, description: tool.description, command: tool.command, inputSchema: tool.inputSchema, timeoutSeconds: tool.timeoutSeconds, ...(tool.requirements ? { requirements: tool.requirements } : {}) })).digest('hex');
 const createdTools = [];
 if (createdToolsMode) {
   savedTeam = { id: 'team_tool_fixture', name: 'Tool review team', memberIds: ['fixture-bot', 'fixture-reviewer'], coordinatorId: 'fixture-bot', enabled: true, limits: teamLimits, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
   const draft = { id: 'tool_00000000-0000-4000-8000-000000000001', name: 'Workspace summary', description: 'A bot-created draft to review. This fixture never runs its command.', command: 'python3 summary.py', inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false }, timeoutSeconds: 30, status: 'draft', revision: 1, botIds: [], teamIds: [], provenance: { botId: 'fixture-bot', chatId: 'fixture-mac-research', turnId: 'turn_tool_fixture' } };
   draft.digest = createdToolDigest(draft); createdTools.push(draft);
+}
+// Inert failures exercise the real durable journal, never a command/provider.
+let harnessJournal, harnessDispatches = 0, harnessAvailable = true, harnessFailure = false;
+if (harnessMode) {
+  const { createBotActionJournal } = await import('../../host/server/bots-action-journal.mjs');
+  harnessJournal = createBotActionJournal({ directory: join(root, 'harness-journal') });
+  try {
+    await harnessJournal.execute({ chatId: conversation.id, authority: 'a'.repeat(64), turnId: 'fixture-native-turn', toolCallId: 'fixture-native-call', name: 'run_command', args: { command: 'NEVER_EXECUTED' } }, async () => { harnessDispatches++; throw new Error('Synthetic lost action result; no command was run.'); });
+  } catch { /* Deliberately retain an uncertain receipt for explicit owner review. */ }
+  harnessJournal.observeRemote({ id: 'ba_' + 'b'.repeat(64), chatId: conversation.id, toolName: 'remote_command', state: 'uncertain', revision: 2, proof: 'c'.repeat(64), startedAt: Date.now() - 1000, updatedAt: Date.now() - 1000 }, conversation.id);
 }
 const mcpConnection = { id: 'mcpc_fixture', name: 'Fixture tools', transport: 'stdio', inventoryDigest: 'a'.repeat(64), command: '/fixture/never-executed', args: [], env: { TEST_SECRET: 'PRIVATE-FIXTURE-SECRET' }, apiKey: 'PRIVATE-FIXTURE-KEY', apiKeySet: true, status: 'unchecked', detail: 'Synthetic connection; no program runs.', botIds: ['fixture-bot'], enabledToolIds: ['tool_read'], readOnlyToolIds: ['tool_read'], tools: [{ id: 'tool_read', name: 'Read workspace', description: 'Synthetic read-only inventory', readOnly: true }, { id: 'tool_write', name: 'Write workspace', description: 'Synthetic write inventory; approval policy applies', readOnly: false }] };
 let connectorService;
@@ -378,7 +389,13 @@ const host = {
         return { run: reviewResumedRun, activity: structuredClone(newTask) };
       }
     }
-    if (supervisionMode && path === '/api/bots/supervision') return botSupervisionSnapshot({ bots: botsCatalog().bots, conversations: [conversation, ...supervisionChats].map(chat => ({ ...chat, messages: chat.messages.map(message => ({ ...message, hasContent: !!message.content?.trim() })) })), pendingCount: id => id === conversation.id ? pending.length : 0 });
+    if (harnessMode && path === '/api/bots/harness/actions') { if (harnessFailure) throw Object.assign(new Error('Synthetic initial receipts failure'), { status: 503 }); return { ...harnessJournal.summary(), available: harnessAvailable }; }
+    if (harnessMode && /^\/api\/bots\/harness\/actions\/ba_[a-f0-9]{64}\/review$/.test(path)) return harnessJournal.review(path.split('/')[5], options.body);
+    if (supervisionMode && path === '/api/bots/supervision') {
+      const snapshot = botSupervisionSnapshot({ bots: botsCatalog().bots, conversations: [conversation, ...supervisionChats].map(chat => ({ ...chat, messages: chat.messages.map(message => ({ ...message, hasContent: !!message.content?.trim() })) })), pendingCount: id => id === conversation.id ? pending.length : 0 });
+      if (harnessMode) for (const session of snapshot.sessions) session.harness = { phase: 'model', elapsedMs: 4200, firstOutputMs: 1200, timings: { startingMs: 200, modelMs: 3000, approvalMs: 500, toolMs: 400, cleanupMs: 100 }, toolCalls: 2, toolErrors: 1, contextCompactions: 1, privateMarker: 'PRIVATE-HARNESS-NOT-PROJECTED' };
+      return snapshot;
+    }
     if (supervisionMode && path === '/api/companion/conversations') return { conversations: [conversation, ...supervisionChats], activeChatId: conversation.id };
     if (supervisionMode && supervisionChats.some(chat => path === '/api/companion/conversations/' + chat.id)) return { conversation: supervisionChats.find(chat => path.endsWith(chat.id)), pending: [] };
     if (notificationService) {
@@ -474,7 +491,7 @@ const host = {
         const draft = { ...structuredClone(options.body), id: 'tool_00000000-0000-4000-8000-000000000002', status: 'draft', revision: 1, botIds: [], teamIds: [] };
         draft.digest = createdToolDigest(draft); createdTools.push(draft); return { tool: structuredClone(draft) };
       }
-      return { tools: structuredClone(createdTools), createdToolsSupported: true };
+      return { tools: structuredClone(createdTools), createdToolsSupported: true, ...(harnessMode ? { createdToolReadinessSupported: true } : {}) };
     }
     if (createdToolsMode && path.startsWith('/api/bots/tools/') && ['PATCH', 'DELETE'].includes(options.method)) {
       const tool = createdTools.find(item => path === '/api/bots/tools/' + item.id);
@@ -482,9 +499,10 @@ const host = {
       const body = options.body;
       if (body.expectedRevision !== tool.revision || body.expectedDigest !== tool.digest) throw Object.assign(new Error('Tool changed; review again.'), { status: 409 });
       if (options.method === 'DELETE') { createdTools.splice(createdTools.indexOf(tool), 1); return { removed: true }; }
-      const content = ['name', 'description', 'command', 'inputSchema', 'timeoutSeconds'];
+      const content = ['name', 'description', 'command', 'inputSchema', 'timeoutSeconds', 'requirements'];
       for (const key of [...content, 'status', 'botIds', 'teamIds']) if (Object.hasOwn(body, key)) tool[key] = structuredClone(body[key]);
       if (content.some(key => Object.hasOwn(body, key))) tool.status = 'draft';
+      if (Object.hasOwn(body, 'requirements')) { const { createdToolRequirements } = await import('../../host/server/bots-runtime/created-tools.mjs'); const requirements = createdToolRequirements(body.requirements); if (requirements) tool.requirements = requirements; else delete tool.requirements; }
       tool.revision++; tool.digest = createdToolDigest(tool); return { tool: structuredClone(tool) };
     }
     if (workspaceMode && path === '/api/bots/skills') {
@@ -632,6 +650,14 @@ try {
       const action = request.url;
       if (request.method === 'POST') {
         switch (action) {
+        case '/harness-failure':
+          if (!harnessMode) throw new Error('Harness fixture required'); harnessFailure = true; break;
+        case '/harness-clear-failure':
+          if (!harnessMode) throw new Error('Harness fixture required'); harnessFailure = false; break;
+        case '/harness-unavailable':
+          if (!harnessMode) throw new Error('Harness fixture required'); harnessAvailable = false; break;
+        case '/harness-available':
+          if (!harnessMode) throw new Error('Harness fixture required'); harnessAvailable = true; break;
         case '/team-work-tools-unsupported':
           if (!teamWorkToolsMode) throw new Error('Team work-tools fixture required');
           teamWorkToolsSupported = false;
@@ -757,7 +783,7 @@ try {
         response.writeHead(404).end(); return;
       }
       response.setHeader('Content-Type', 'application/json');
-      response.end(JSON.stringify({ ...(createdToolsMode ? { createdTools } : {}), ...(teamReviewMode ? { reviewTasks, reviewPlan, overviewRequests } : {}), ...(connectorService ? { connectors: connectorService.list(), connectorChecks, connectorToolCalls } : {}), conversation, createdBotConversation, pending, calls, ...(roomBots ? { teamChannel: roomBots.team.channel(roomTeam.id), roomTurns, roomTeam, roomEmptyTeam, ...(compactTeamMode ? { compactAssignment, compactReport } : {}), ...((teamSettingsMode || unrestrictedTeamsMode || continuousTeamsMode) ? { teamSettings: roomBots.team.list(), roomMembers, roomExtraMember, teamSettingsFolder, teamSettingsOtherFolder, teamSettingsActions } : {}) } : {}), ...(lifecycleProfiles ? { lifecycle: await lifecycleProfiles.list() } : {}), computerRunning, computerControlled: !!computerControl, botFace, downloadJobs: Object.fromEntries(downloadJobs), planCount: nextPlan, downloadCount: nextDownload }));
+      response.end(JSON.stringify({ ...(createdToolsMode ? { createdTools } : {}), ...(harnessMode ? { harness: harnessJournal.summary(), harnessDispatches, harnessAvailable } : {}), ...(teamReviewMode ? { reviewTasks, reviewPlan, overviewRequests } : {}), ...(connectorService ? { connectors: connectorService.list(), connectorChecks, connectorToolCalls } : {}), conversation, createdBotConversation, pending, calls, ...(roomBots ? { teamChannel: roomBots.team.channel(roomTeam.id), roomTurns, roomTeam, roomEmptyTeam, ...(compactTeamMode ? { compactAssignment, compactReport } : {}), ...((teamSettingsMode || unrestrictedTeamsMode || continuousTeamsMode) ? { teamSettings: roomBots.team.list(), roomMembers, roomExtraMember, teamSettingsFolder, teamSettingsOtherFolder, teamSettingsActions } : {}) } : {}), ...(lifecycleProfiles ? { lifecycle: await lifecycleProfiles.list() } : {}), computerRunning, computerControlled: !!computerControl, botFace, downloadJobs: Object.fromEntries(downloadJobs), planCount: nextPlan, downloadCount: nextDownload }));
     } catch (error) {
       response.writeHead(500, { 'Content-Type': 'application/json' });
       response.end(JSON.stringify({ error: error.message }));
@@ -779,7 +805,7 @@ try {
         '-project', project, '-scheme', 'StrataMobile', '-destination', destination,
         '-derivedDataPath', derivedData,
         ...(process.env.STRATA_TEST_RESULT_BUNDLE ? ['-resultBundlePath', process.env.STRATA_TEST_RESULT_BUNDLE] : []),
-        '-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test-created-tools': 'testCreatedToolDraftReviewBotAndTeamAccessWithoutExecution', '--test-team-work-tools': 'testTeamWorkIntentRequiresExplicitSendAndKeepsChatCompatible', '--test-team-work-overview': 'testCurrentWorkOverviewKeepsActiveLegacyAndRequiresExplicitHistoryExpansion', '--test-team-review': 'testSubmittedTaskReviewAndExplicitRecoveryWithoutReplayingFinishedWork', '--test-team-compact': 'testCompactTeamAssignmentsAndReportsExpandWithoutChangingHistory', '--test-continuous-teams': 'testContinuousTeamWorkHasNoNumericStopLimits', '--test-unrestricted-teams': 'testLargeTeamCreationUsesAllAvailableTeammates', '--test-host-folder': 'testScopedHostFolderSettingsGrantAndRevokeWithoutStartingWork', '--test-supervision': 'testLiveBotSupervisionFiltersExactConversationAndLargeType', '--test-connector-accounts': 'testConnectorAccountsDiscoverBearerSetupAndMacSignInFallback', '--test-connectors': 'testConnectorsHTTPSetupTeamAccessToolsAndPersistence', '--test-devin-provider': 'testPhoneCreatesDevinBotWithHostModelsAndNoImplicitRun', '--test-direct-bots': 'testDirectBotRosterChatProfileNewConversationAndRelaunch', '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation', '--test-computer': 'testActualSampleAvatarAndIsolatedComputerControl', '--test-bot-photos': 'testPhotoLedBotsCreationAppearanceAndWorkspaceNavigation', '--test-bot-lifecycle': 'testPhoneBotCreationEditingCASAndApprovalModes', '--test-bot-avatar-states': 'testBotAvatarStatesInteractionAndRosterFilters', '--test-facelift': 'testFaceliftPrincipalScreensAndSharedHistory', '--test-workspace-skills': 'testReviewedSkillAssignmentAndWorkspaceNavigation', '--test-workspace-connections': 'testSavedConnectionCheckAndReviewedAccess', '--test-workspace-teams': 'testTeamExplicitTaskSharedThinkingStopAndActivity', '--test-team-channel': 'testNaturalTeamChannelPeersAssignmentsThinkingAndStop', '--test-team-channel-layout': 'testTeamChannelNormalDarkAndLargeTypeLayout', '--test-group-chat-layout': 'testGroupRosterAndRoomPhotoLayoutWithRealMenus', '--test-team-settings': 'testTeamMembershipSharedComputerFoldersConflictAndPersistence', '--test-team-instructions': 'testTeamPublicInstructionsRolesPersistenceAndConflict', '--test-notifications': 'testNotificationPreferencesPrivateInboxRoutingMuteAndRelaunch' })[process.argv[2]],
+        '-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test-harness': 'testHarnessReadinessDiagnosticsAndReviewWithoutExecutingWork', '--test-created-tools': 'testCreatedToolDraftReviewBotAndTeamAccessWithoutExecution', '--test-team-work-tools': 'testTeamWorkIntentRequiresExplicitSendAndKeepsChatCompatible', '--test-team-work-overview': 'testCurrentWorkOverviewKeepsActiveLegacyAndRequiresExplicitHistoryExpansion', '--test-team-review': 'testSubmittedTaskReviewAndExplicitRecoveryWithoutReplayingFinishedWork', '--test-team-compact': 'testCompactTeamAssignmentsAndReportsExpandWithoutChangingHistory', '--test-continuous-teams': 'testContinuousTeamWorkHasNoNumericStopLimits', '--test-unrestricted-teams': 'testLargeTeamCreationUsesAllAvailableTeammates', '--test-host-folder': 'testScopedHostFolderSettingsGrantAndRevokeWithoutStartingWork', '--test-supervision': 'testLiveBotSupervisionFiltersExactConversationAndLargeType', '--test-connector-accounts': 'testConnectorAccountsDiscoverBearerSetupAndMacSignInFallback', '--test-connectors': 'testConnectorsHTTPSetupTeamAccessToolsAndPersistence', '--test-devin-provider': 'testPhoneCreatesDevinBotWithHostModelsAndNoImplicitRun', '--test-direct-bots': 'testDirectBotRosterChatProfileNewConversationAndRelaunch', '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation', '--test-computer': 'testActualSampleAvatarAndIsolatedComputerControl', '--test-bot-photos': 'testPhotoLedBotsCreationAppearanceAndWorkspaceNavigation', '--test-bot-lifecycle': 'testPhoneBotCreationEditingCASAndApprovalModes', '--test-bot-avatar-states': 'testBotAvatarStatesInteractionAndRosterFilters', '--test-facelift': 'testFaceliftPrincipalScreensAndSharedHistory', '--test-workspace-skills': 'testReviewedSkillAssignmentAndWorkspaceNavigation', '--test-workspace-connections': 'testSavedConnectionCheckAndReviewedAccess', '--test-workspace-teams': 'testTeamExplicitTaskSharedThinkingStopAndActivity', '--test-team-channel': 'testNaturalTeamChannelPeersAssignmentsThinkingAndStop', '--test-team-channel-layout': 'testTeamChannelNormalDarkAndLargeTypeLayout', '--test-group-chat-layout': 'testGroupRosterAndRoomPhotoLayoutWithRealMenus', '--test-team-settings': 'testTeamMembershipSharedComputerFoldersConflictAndPersistence', '--test-team-instructions': 'testTeamPublicInstructionsRolesPersistenceAndConflict', '--test-notifications': 'testNotificationPreferencesPrivateInboxRoutingMuteAndRelaunch' })[process.argv[2]],
         '-parallel-testing-enabled', 'NO', 'test',
       ], { stdio: 'inherit', env: { ...process.env,
         TEST_RUNNER_STRATA_TEST_INVITATION: connection.invitation,
@@ -790,7 +816,7 @@ try {
       testProcess.once('exit', code => resolve(code ?? 1));
     });
     process.exitCode = status;
-    if (process.env.STRATA_TEST_STATE_OUTPUT) writeFileSync(process.env.STRATA_TEST_STATE_OUTPUT, JSON.stringify({ ...(createdToolsMode ? { createdTools } : {}), ...(teamReviewMode ? { reviewTasks, reviewPlan, overviewRequests } : {}), ...(connectorService ? { connectors: connectorService.list(), connectorChecks, connectorToolCalls } : {}), calls, ...(directBotsMode || process.argv[2] === '--test-devin-provider' ? { conversation, createdBotConversation, directCreatedConversations, teamConversation, computerRunning, computerControlled: !!computerControl } : {}), ...(roomBots ? { teamChannel: roomBots.team.channel(roomTeam.id), roomTurns, roomTeam, roomEmptyTeam, ...(teamSettingsMode ? { teamSettings: roomBots.team.list(), roomMembers, roomExtraMember, teamSettingsFolder, teamSettingsOtherFolder, teamSettingsActions } : {}) } : {}), ...(lifecycleProfiles ? { lifecycle: await lifecycleProfiles.list() } : {}), savedTeam, teamRun, skillAssignments, skills: skillCatalog(), connectionAccess: { botIds: mcpConnection.botIds, enabledToolIds: mcpConnection.enabledToolIds, readOnlyToolIds: mcpConnection.readOnlyToolIds } }), { mode: 0o600 });
+    if (process.env.STRATA_TEST_STATE_OUTPUT) writeFileSync(process.env.STRATA_TEST_STATE_OUTPUT, JSON.stringify({ ...(createdToolsMode ? { createdTools } : {}), ...(harnessMode ? { harness: harnessJournal.summary(), harnessDispatches, harnessAvailable } : {}), ...(teamReviewMode ? { reviewTasks, reviewPlan, overviewRequests } : {}), ...(connectorService ? { connectors: connectorService.list(), connectorChecks, connectorToolCalls } : {}), calls, ...(directBotsMode || process.argv[2] === '--test-devin-provider' ? { conversation, createdBotConversation, directCreatedConversations, teamConversation, computerRunning, computerControlled: !!computerControl } : {}), ...(roomBots ? { teamChannel: roomBots.team.channel(roomTeam.id), roomTurns, roomTeam, roomEmptyTeam, ...(teamSettingsMode ? { teamSettings: roomBots.team.list(), roomMembers, roomExtraMember, teamSettingsFolder, teamSettingsOtherFolder, teamSettingsActions } : {}) } : {}), ...(lifecycleProfiles ? { lifecycle: await lifecycleProfiles.list() } : {}), savedTeam, teamRun, skillAssignments, skills: skillCatalog(), connectionAccess: { botIds: mcpConnection.botIds, enabledToolIds: mcpConnection.enabledToolIds, readOnlyToolIds: mcpConnection.readOnlyToolIds } }), { mode: 0o600 });
     await close();
   } else {
     if (process.argv.length > 2) throw new Error('Usage: companion-fixture.mjs [--test|--test-downloads|--test-bots|--test-computer|--test-workspace-skills|--test-workspace-connections|--test-workspace-teams|--test-facelift|--test-bot-lifecycle|--test-bot-avatar-states <simulator destination>]');

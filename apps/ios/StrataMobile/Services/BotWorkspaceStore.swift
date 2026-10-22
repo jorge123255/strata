@@ -14,6 +14,8 @@ final class BotWorkspaceStore: ObservableObject {
     @Published private(set) var recoveryPlans: [String: BotTeamRecoveryPlan] = [:]
     @Published private(set) var activityWorkReviewSupported = false
     @Published private(set) var supervision: BotSupervisionSnapshot?
+    @Published private(set) var harnessActions: BotHarnessActionsSnapshot?
+    private var harnessActionsCheckedAt: Date?
     @Published private(set) var skills: BotSkillsSnapshot?
     @Published private(set) var createdTools: BotCreatedToolsSnapshot?
     @Published private(set) var connections: BotConnectionsSnapshot?
@@ -56,6 +58,28 @@ final class BotWorkspaceStore: ObservableObject {
     }
     func refreshSupervision() async {
         await load("supervision", path: "/v1/bots/supervision") { (value: BotSupervisionSnapshot) in if self.supervision != value { self.supervision = value }; self.setMessage("supervision", value.reason) }
+    }
+    func refreshHarnessActions(force: Bool = false) async {
+        if !force, let checked = harnessActionsCheckedAt, Date().timeIntervalSince(checked) < 10 { return }
+        harnessActionsCheckedAt = Date()
+        await load("harnessActions", path: "/v1/bots/harness/actions") { (value: BotHarnessActionsSnapshot) in
+            if self.harnessActions != value { self.harnessActions = value }; self.setMessage("harnessActions", value.reason)
+        }
+    }
+    @discardableResult func reviewHarnessAction(_ action: BotHarnessAction) async -> Bool {
+        guard action.canReview, harnessActions?.available == true, messages["harnessActions"] == nil,
+              action.id.range(of: "^ba_[a-f0-9]{64}$", options: .regularExpression) != nil,
+              let current = harnessActions?.actions.first(where: { $0.id == action.id }), action.matches(current) else { return false }
+        struct Proof: Encodable { var expectedRevision: Int; var expectedProof: String; var decision = "acknowledge" }
+        struct Result: Decodable { var acknowledged: Bool; var action: BotHarnessAction; var resumed: Bool; var retried: Bool }
+        let result: Result? = await change("harnessActions", path: "/v1/bots/harness/actions/\(action.id)/review", body: Proof(expectedRevision: action.revision, expectedProof: action.proof))
+        if let result, result.acknowledged, result.action.hasValidProof, result.action.id == action.id,
+           result.action.chatId == action.chatId, result.action.toolName == action.toolName, result.action.origin == "local", !result.action.readOnly,
+           result.action.revision == action.revision + 1, result.action.proof != action.proof, result.action.state == "reviewed", !result.resumed, !result.retried {
+            await refreshHarnessActions(force: true); return isCurrent()
+        }
+        if result != nil { setMessage("harnessActions", "Strata did not confirm review of this exact action. Refresh its receipt before continuing.") }
+        return false
     }
     func refreshSkills() async {
         await load("skills", path: "/v1/bots/skills") { (value: BotSkillsSnapshot) in if self.skills != value { self.skills = value }; self.setMessage("skills", value.reason) }
@@ -111,6 +135,7 @@ final class BotWorkspaceStore: ObservableObject {
                 else if key == "createdTools" { await refreshCreatedTools() }
                 else if key == "connections" { await refreshConnections() }
                 else if key == "teams" { await refreshTeams() }
+                else if key == "harnessActions" { await refreshHarnessActions(force: true) }
             }
             if isCurrent() { messages[key] = message }
             return nil
@@ -375,6 +400,9 @@ final class BotWorkspaceStore: ObservableObject {
         return current
     }
     @discardableResult func saveCreatedTool(_ draft: BotCreatedToolDraft, reviewing tool: BotCreatedTool? = nil) async -> Bool {
+        guard draft.requirements == nil || createdTools?.createdToolReadinessSupported == true else {
+            setMessage("createdTools", "Update Strata on your Mac before reviewing tool requirements."); return false
+        }
         guard draft.isValid, createdTools?.isAvailable == true,
               tool == nil || currentCreatedTool(tool!) != nil else {
             setMessage("createdTools", "This tool changed or is unavailable. Refresh and review its current definition."); return false
@@ -382,8 +410,8 @@ final class BotWorkspaceStore: ObservableObject {
         struct Result: Decodable { var tool: BotCreatedTool }
         let value: Result?
         if let tool {
-            struct Update: Encodable { var name: String; var description: String; var command: String; var inputSchema: BotToolJSON; var timeoutSeconds: Int; var status = "draft"; var expectedRevision: Int; var expectedDigest: String }
-            value = await change("createdTools", path: "/v1/bots/tools/\(tool.id)", method: "PATCH", body: Update(name: draft.name, description: draft.description, command: draft.command, inputSchema: draft.inputSchema, timeoutSeconds: draft.timeoutSeconds, expectedRevision: tool.revision, expectedDigest: tool.digest))
+            struct Update: Encodable { var name: String; var description: String; var command: String; var inputSchema: BotToolJSON; var timeoutSeconds: Int; var requirements: BotToolRequirements?; var status = "draft"; var expectedRevision: Int; var expectedDigest: String }
+            value = await change("createdTools", path: "/v1/bots/tools/\(tool.id)", method: "PATCH", body: Update(name: draft.name, description: draft.description, command: draft.command, inputSchema: draft.inputSchema, timeoutSeconds: draft.timeoutSeconds, requirements: draft.requirements, expectedRevision: tool.revision, expectedDigest: tool.digest))
         } else { value = await change("createdTools", path: "/v1/bots/tools", body: draft) }
         if value != nil { await refreshCreatedTools() }
         return value != nil && isCurrent()

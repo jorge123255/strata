@@ -1,5 +1,6 @@
 /** Saved model APIs provide inference; tools and credentials retain separate owners. */
 import { randomUUID, createHash } from 'node:crypto';
+import { botContextLimits, compactBotContext, contextLimitsFromResult, emitContextCompaction } from './bots-runtime/context.mjs';
 
 const failure = message => { throw new Error(message); };
 const MAX = 16 * 1024 * 1024;
@@ -19,20 +20,25 @@ function safeResult(value, key) {
   return value;
 }
 function historyText(message) {
-  const tools = (message.tools ?? []).filter(t => ['done', 'error', 'denied'].includes(t.state)).slice(-20).map(t => `${t.name} [${t.state}] ${JSON.stringify(t.args ?? {}).slice(0, 4000)}\n${String(t.result ?? '').slice(0, 20000)}`);
+  const tools = (message.tools ?? []).filter(t => ['done', 'error', 'denied'].includes(t.state)).map(t => `${t.name} [${t.state}] ${JSON.stringify(t.args ?? {})}\n${String(t.result ?? '')}`);
   return `${message.content ?? ''}${tools.length ? `\nRecorded completed tool activity (context only; do not replay):\n${tools.join('\n')}` : ''}`;
 }
 
 /** Native and SSH workers use the same tool loop. The Mac alone resolves saved API credentials. */
 export async function runConfiguredBot(c) {
   if (typeof c.modelRequest !== 'function') failure('Configured model inference is unavailable. Reconnect to the Mac and try again.');
-  const messages = c.history.filter(m => ['user', 'assistant'].includes(m.role)).slice(-40).map(m => ({ role: m.role, content: historyText(m) }));
-  messages.push({ role: 'user', content: c.message });
+  const current = { role: 'user', content: c.message };
+  let messages = [...c.history.filter(m => ['user', 'assistant'].includes(m.role)).map(m => ({ role: m.role, content: historyText(m) })), current];
+  const system = c.bot.instructions || 'You are a Strata bot. Use the provided tools for coding and computer tasks.';
+  let contextState, limits = botContextLimits();
   let tokensIn = 0, tokensOut = 0;
   const executedIds = new Set();
   for (let round = 0; c.bot.continuousTeam === true || round < 32; round++) {
     c.signal.throwIfAborted();
-    const result = await c.modelRequest({ messages, tools: c.tools, system: c.bot.instructions || 'You are a Strata bot. Use the provided tools for coding and computer tasks.' });
+    const compacted = compactBotContext({ messages, system, tools: c.tools, limits, state: contextState, anchor: current });
+    messages = compacted.messages; contextState = compacted.state; emitContextCompaction(c.frame, compacted);
+    const result = await c.modelRequest({ messages, tools: c.tools, system });
+    limits = contextLimitsFromResult(result?.contextBudget) ?? limits;
     c.signal.throwIfAborted();
     if (!result || typeof result.text !== 'string' || !Array.isArray(result.toolCalls)) failure('The configured model returned an unreadable response.');
     if (!result.streamed) {
@@ -70,7 +76,7 @@ function anthropicContent(value, vision) {
     return image && vision !== false ? [{ type: 'image', source: { type: 'base64', media_type: image[1], data: image[2] } }] : [];
   });
 }
-function payloadFor(protocol, model, request, continuousTeam = false) {
+function payloadFor(protocol, model, request, continuousTeam = false, outputReserve = Infinity) {
   const { messages, tools = [], system = '' } = request;
   if (!Array.isArray(messages) || (!continuousTeam && messages.length > 500) || !Array.isArray(tools) || tools.length > 100 || typeof system !== 'string') failure('The bot model request is invalid.');
   if (protocol === 'anthropic') {
@@ -83,7 +89,7 @@ function payloadFor(protocol, model, request, continuousTeam = false) {
       if (!['assistant', 'user'].includes(row.role)) failure('The bot model request has an invalid message.');
       if (rows.at(-1)?.role === row.role) rows.at(-1).content.push(...row.content); else rows.push(row);
     }
-    return { model: model.id, system, messages: rows, stream: true, max_tokens: Math.min(model.maxOutput || 8192, 16384), ...(tools.length ? { tools: tools.map(t => ({ name: t.name, description: t.description, input_schema: t.inputSchema })) } : {}) };
+    return { model: model.id, system, messages: rows, stream: true, max_tokens: Math.min(model.maxOutput || 8192, 16384, outputReserve), ...(tools.length ? { tools: tools.map(t => ({ name: t.name, description: t.description, input_schema: t.inputSchema })) } : {}) };
   }
   if (protocol === 'openai-responses') {
     const input = [];
@@ -128,7 +134,14 @@ export function createBotModelClient({ providers, fetchImpl = fetch }) {
     const { connection, model } = providers.resolve({ connectionId: source.connectionId, modelId: source.model });
     if (bot.modelDestination && bot.modelDestination !== botModelDestination(connection)) failure('This model connection changed its address. Edit the bot and start a new chat to use it.');
     const protocol = connection.protocol;
-    const payload = payloadFor(protocol, model, request, bot.continuousTeam === true), body = JSON.stringify(payload);
+    // Keep existing request-shape gates before compaction; this does not widen
+    // the number of tools or the standalone transport's message allowance.
+    if (!Array.isArray(request.messages) || (bot.continuousTeam !== true && request.messages.length > 500) || !Array.isArray(request.tools) || request.tools.length > 100 || typeof request.system !== 'string') failure('The bot model request is invalid.');
+    const limits = botContextLimits(protocol === 'anthropic' ? { ...model, maxOutput: model.maxOutput || 8192 } : model);
+    const compacted = compactBotContext({ messages: request.messages, system: request.system, tools: request.tools, limits });
+    const boundedRequest = { ...request, messages: compacted.messages };
+    const payload = payloadFor(protocol, model, boundedRequest, bot.continuousTeam === true, limits.outputReserve), body = JSON.stringify(payload);
+    emitContextCompaction(onFrame, compacted);
     if (Buffer.byteLength(body) > MAX) failure('The bot model context exceeded the size limit. Start a new chat.');
     const headers = { 'content-type': 'application/json', ...(protocol === 'anthropic' ? { 'anthropic-version': '2023-06-01', ...(connection.apiKey ? { 'x-api-key': connection.apiKey } : {}) } : connection.apiKey ? { authorization: `Bearer ${connection.apiKey}` } : {}) };
     let response;
@@ -199,7 +212,7 @@ export function createBotModelClient({ providers, fetchImpl = fetch }) {
       return { id: call.id, name: call.name, args };
     });
     // A broken/malicious server must not echo a header credential into history or the worker.
-    return safeResult({ text, reasoning, toolCalls, tokensIn, tokensOut, streamed: true, ...(providerOutput ? { providerOutput } : {}) }, connection.apiKey);
+    return safeResult({ text, reasoning, toolCalls, tokensIn, tokensOut, streamed: true, contextBudget: compacted.budget, ...(providerOutput ? { providerOutput } : {}) }, connection.apiKey);
   };
 }
 

@@ -33,3 +33,9 @@
 .bot-supervision-companion-dot { position: absolute; width: 4px; height: 4px; background: color-mix(in srgb, var(--st-accent) 48%, transparent); border-radius: 50%; right: 8px; bottom: 24px; }
 .bot-supervision-companion[data-state='stale'] .bot-supervision-companion-stage { opacity: .65; }
 @media (max-width: 540px) { .bot-supervision-heading { gap: 12px; } .bot-supervision-companion { width: 90px; } .bot-supervision-companion-stage { width: 90px; } .bot-supervision-companion > span { max-width: 90px; } }
+.bot-harness-details { font-size: 12px; color: var(--st-ink-muted); margin: 8px 0; }
+.bot-harness-details summary { cursor: pointer; color: var(--st-ink); line-height: 1.5; }
+.bot-harness-details dl { display: grid; grid-template-columns: 1fr auto; gap: 5px 14px; margin: 12px 0; }
+.bot-harness-details dl > div { display: contents; }
+.bot-harness-details dd { margin: 0; font-variant-numeric: tabular-nums; }
+.bot-harness-details p { font-size: 11px; max-width: 42ch; }

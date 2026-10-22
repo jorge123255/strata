@@ -795,6 +795,94 @@ final class CompanionSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testHarnessReadinessDiagnosticsAndReviewWithoutExecutingWork() async throws {
+        let control = try pairWorkspaceFixture()
+        let initial = try await fixtureControl(control, action: "state"), initialHarness = try XCTUnwrap(initial["harness"] as? [String: Any])
+        let actions = try XCTUnwrap(initialHarness["actions"] as? [[String: Any]])
+        let local = try XCTUnwrap(actions.first { $0["origin"] as? String == "local" }), localId = try XCTUnwrap(local["id"] as? String)
+        let remote = try XCTUnwrap(actions.first { $0["origin"] as? String == "ssh-worker" }), remoteId = try XCTUnwrap(remote["id"] as? String)
+        _ = try await fixtureControl(control, action: "harness-failure")
+        try selectWorkspace("Activity")
+        try require(app.descendants(matching: .any).matching(identifier: "botSupervisionSummary").firstMatch)
+        let initialFailure = app.descendants(matching: .any).matching(identifier: "harnessRecoveryInitialUnavailable").firstMatch
+        try tapWorkspace(initialFailure, performTap: false)
+        XCTAssertFalse(app.staticTexts["No interrupted actions need review in the retained journal."].exists)
+        XCTAssertFalse(app.buttons["reviewHarnessAction-" + localId].exists)
+        attachScreenshot("Harness — initial failure remains visible without claiming an empty journal")
+        let refreshReceipts = app.buttons["refreshHarnessActionsButton"]
+        try tapWorkspace(refreshReceipts, performTap: false); try waitEnabled(refreshReceipts)
+        _ = try await fixtureControl(control, action: "harness-clear-failure")
+        refreshReceipts.tap()
+        let recovered = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: initialFailure)
+        await fulfillment(of: [recovered], timeout: 12)
+        try selectWorkspace("Skills"); try selectWorkspace("Activity")
+        try require(app.descendants(matching: .any).matching(identifier: "botSupervisionSummary").firstMatch)
+        try tapWorkspace(app.buttons["botSupervisionFilter-Needs you"])
+        let diagnostics = app.descendants(matching: .any).matching(identifier: "botHarnessDetails-fixture-mac-research").firstMatch
+        try require(diagnostics); try tapWorkspace(diagnostics)
+        try tapWorkspace(app.staticTexts["Context compactions"], performTap: false)
+        try require(app.staticTexts["Provider wait"])
+        attachScreenshot("Harness — provider, approval and tool timing details")
+        try tapWorkspace(app.buttons["Inspect conversation"].firstMatch)
+        try require(app.staticTexts["macConversationTitle"])
+        XCTAssertEqual(app.staticTexts["macConversationTitle"].label, "Mac browser research")
+        tapTab("Bots"); try selectWorkspace("Activity")
+        let before = try await fixtureControl(control, action: "state"), beforeCalls = try XCTUnwrap(before["calls"] as? [[String: Any]])
+        XCTAssertTrue(beforeCalls.allSatisfy { $0["method"] as? String == "GET" })
+        XCTAssertFalse(app.buttons["reviewHarnessAction-" + remoteId].exists, "SSH uncertainty remains read-only here.")
+        let review = app.buttons["reviewHarnessAction-" + localId]
+        try tapWorkspace(review)
+        try require(app.buttons["I reviewed the conversation"]); app.buttons["I reviewed the conversation"].tap()
+        let reviewed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: review)
+        await fulfillment(of: [reviewed], timeout: 15)
+        attachScreenshot("Harness — remote uncertainty remains after explicit local acknowledgement")
+        _ = try await fixtureControl(control, action: "harness-unavailable")
+        let warning = app.descendants(matching: .any).matching(identifier: "harnessRecoveryUnavailable").firstMatch
+        XCTAssertTrue(warning.waitForExistence(timeout: 18))
+        try tapWorkspace(warning, performTap: false)
+        try tapWorkspace(app.descendants(matching: .any).matching(identifier: "harnessAction-" + remoteId).firstMatch, performTap: false)
+        XCTAssertTrue(app.buttons["Inspect conversation"].exists, "Readable uncertainty remains available for inspection if another receipt is unavailable.")
+        XCTAssertFalse(app.staticTexts["No interrupted actions need review in the retained journal."].exists)
+        attachScreenshot("Harness — unavailable journal preserves readable uncertainty")
+        try selectWorkspace("Skills")
+        let library = app.segmentedControls["botCapabilitiesLibraryPicker"]; try require(library); library.buttons["Tools"].tap()
+        let toolId = "tool_00000000-0000-4000-8000-000000000001"
+        try tapWorkspace(app.buttons["botTool-" + toolId])
+        func edit() throws { try tapWorkspace(app.buttons["reviewBotToolButton"]); try tapWorkspace(app.buttons["editBotToolButton"]) }
+        func save() async throws {
+            let button = app.buttons["saveBotToolButton"]; try waitEnabled(button); button.tap()
+            let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: button)
+            await fulfillment(of: [closed], timeout: 12)
+        }
+        try edit()
+        try tapSwitch(app.switches["botToolPlatform-darwin"])
+        let programs = app.descendants(matching: .any).matching(identifier: "botToolProgramsInput").firstMatch
+        try tapWorkspace(programs); programs.typeText("node")
+        let files = app.descendants(matching: .any).matching(identifier: "botToolFilesInput").firstMatch
+        try tapWorkspace(files); files.typeText("package.json")
+        attachScreenshot("Reusable tool — selected computer requirements")
+        try await save()
+        let savedState = try await fixtureControl(control, action: "state"), savedTools = try XCTUnwrap(savedState["createdTools"] as? [[String: Any]])
+        let saved = try XCTUnwrap(savedTools.first { $0["id"] as? String == toolId }), requirements = try XCTUnwrap(saved["requirements"] as? [String: Any])
+        XCTAssertEqual(requirements["platforms"] as? [String], ["darwin"]); XCTAssertEqual(requirements["executables"] as? [String], ["node"]); XCTAssertEqual(requirements["workspaceFiles"] as? [String], ["package.json"])
+        XCTAssertEqual(saved["status"] as? String, "draft")
+        try edit(); try tapWorkspace(app.buttons["clearBotToolRequirementsButton"]); try await save()
+        let final = try await fixtureControl(control, action: "state"), finalCalls = try XCTUnwrap(final["calls"] as? [[String: Any]])
+        let writes = finalCalls.filter { $0["method"] as? String != "GET" }
+        XCTAssertEqual(writes.count, 3)
+        let acknowledgement = try XCTUnwrap(writes.first { $0["path"] as? String == "/api/bots/harness/actions/" + localId + "/review" }), proof = try XCTUnwrap(acknowledgement["body"] as? [String: Any])
+        XCTAssertEqual(Set(proof.keys), ["expectedRevision", "expectedProof", "decision"]); XCTAssertEqual(proof["expectedRevision"] as? Int, local["revision"] as? Int); XCTAssertEqual(proof["expectedProof"] as? String, local["proof"] as? String)
+        let finalTools = try XCTUnwrap(final["createdTools"] as? [[String: Any]]), finalTool = try XCTUnwrap(finalTools.first { $0["id"] as? String == toolId })
+        XCTAssertNil(finalTool["requirements"]); XCTAssertEqual(finalTool["revision"] as? Int, 3); XCTAssertEqual(finalTool["status"] as? String, "draft")
+        XCTAssertEqual(final["harnessDispatches"] as? Int, 1, "Only the fixture's initial inert lost-result callback occurred; acknowledgement never dispatched work.")
+        let finalHarness = try XCTUnwrap(final["harness"] as? [String: Any]), finalActions = try XCTUnwrap(finalHarness["actions"] as? [[String: Any]])
+        XCTAssertEqual(finalActions.first { $0["id"] as? String == localId }?["state"] as? String, "reviewed")
+        XCTAssertEqual(finalActions.first { $0["id"] as? String == remoteId }?["state"] as? String, "uncertain")
+        XCTAssertFalse(finalCalls.contains { ($0["path"] as? String)?.hasSuffix("/messages") == true || ($0["path"] as? String)?.contains("/computer/") == true || ($0["path"] as? String)?.hasSuffix("/resume") == true })
+        attachScreenshot("Reusable tool — cleared requirements retain the reviewed draft")
+    }
+
+    @MainActor
     func testCreatedToolDraftReviewBotAndTeamAccessWithoutExecution() async throws {
         let control = try pairWorkspaceFixture()
         try selectWorkspace("Skills")

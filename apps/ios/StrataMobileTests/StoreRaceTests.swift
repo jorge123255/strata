@@ -3516,3 +3516,155 @@ final class TeamWorkOverviewTests: XCTestCase {
         XCTAssertEqual(row.work?.status, .blocked, "Metadata does not rewrite the host's current state.")
     }
 }
+
+@MainActor
+final class BotHarnessClientTests: XCTestCase {
+    private let path = "/v1/bots/harness/actions"
+    private func row(state: String = "uncertain", revision: Int = 2, origin: String = "local", readOnly: Bool = false, proof: String = String(repeating: "a", count: 64)) -> [String: Any] {
+        ["id": "ba_" + String(repeating: "1", count: 64), "chatId": "s_fixture", "toolName": "run_command", "state": state, "revision": revision, "proof": proof, "origin": origin, "readOnly": readOnly]
+    }
+    private func snapshot(_ action: [String: Any], available: Bool = true) -> [String: Any] { ["available": available, "actions": [action], "counts": ["uncertain": 1], "hasMore": false] }
+    private func decode<T: Decodable>(_ value: Any, as: T.Type) throws -> T { try JSONDecoder().decode(T.self, from: JSONSerialization.data(withJSONObject: value)) }
+
+    func testActionReviewabilityRequiresValidProofAndLocalMutableOrigin() throws {
+        XCTAssertTrue(try decode(row(), as: BotHarnessAction.self).canReview)
+        for changed in [row(state: "pending"), row(revision: 0), row(origin: "ssh-worker", readOnly: true), row(origin: "future"), row(readOnly: true), row(proof: "not-a-proof")] {
+            XCTAssertFalse(try decode(changed, as: BotHarnessAction.self).canReview)
+        }
+    }
+    func testRealJournalEpochTimestampAndLegacyStringDecodeWithoutLosingReviewProof() throws {
+        for timestamp in [1_792_621_234_567.0, "2026-10-22T03:00:00Z"] as [Any] {
+            let action = try decode(row().merging(["startedAt": timestamp, "updatedAt": timestamp]) { _, new in new }, as: BotHarnessAction.self)
+            XCTAssertTrue(action.canReview); XCTAssertNotNil(action.updatedAt?.date)
+        }
+    }
+    func testLateReceiptPollAfterPairingRevocationCannotPublishOldJournal() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }; let owner = fixture.makeStore(), workspace = owner.botWorkspaceStore()
+        let held = fixture.hold(path), refresh = Task { await workspace.refreshHarnessActions(force: true) }
+        await fulfillment(of: [held.requested], timeout: 2); owner.forgetMac(); held.finish(snapshot(row())); await refresh.value
+        XCTAssertNil(workspace.harnessActions); XCTAssertNil(workspace.messages["harnessActions"]); XCTAssertFalse(workspace.loading.contains("harnessActions"))
+    }
+    func testAcknowledgementThatClaimsAutomaticRetryOrResumeIsRejected() async throws {
+        for changed in ["resumed", "retried"] {
+            let fixture = StoreTransport(); defer { fixture.close() }
+            fixture.respond { request in
+                if request.httpMethod != "POST" { return self.snapshot(self.row()) }
+                var result: [String: Any] = ["acknowledged": true, "action": self.row(state: "reviewed", revision: 3, proof: String(repeating: "b", count: 64)), "resumed": false, "retried": false]; result[changed] = true; return result
+            }
+            let owner = fixture.makeStore(), workspace = owner.botWorkspaceStore(); await workspace.refreshHarnessActions()
+            let action = try XCTUnwrap(workspace.harnessActions?.actions.first), accepted = await workspace.reviewHarnessAction(action)
+            XCTAssertFalse(accepted); XCTAssertEqual(fixture.requests.filter { $0.method != "GET" }.count, 1); XCTAssertNotNil(workspace.messages["harnessActions"])
+        }
+    }
+    func testDiagnosticsValidateBoundedValuesAndKeepProviderTimingHonest() throws {
+        let value: [String: Any] = ["phase": "model", "elapsedMs": 4200, "firstOutputMs": 1200, "timings": ["startingMs": 200, "modelMs": 3000, "approvalMs": 500, "toolMs": 400, "cleanupMs": 100], "toolCalls": 2, "toolErrors": 1, "contextCompactions": 1]
+        let decoded = try decode(value, as: BotHarnessDiagnostics.self)
+        XCTAssertTrue(decoded.isValid); XCTAssertEqual(decoded.label, "Waiting for provider"); XCTAssertEqual(BotHarnessDiagnostics.seconds(decoded.elapsedMs), "4.2s")
+        for patch in [["phase": "future"], ["elapsedMs": -1], ["toolCalls": 604_800_001]] as [[String: Any]] {
+            XCTAssertFalse(try decode(value.merging(patch) { _, new in new }, as: BotHarnessDiagnostics.self).isValid)
+        }
+    }
+    func testInitialReceiptFailureRemainsUnavailableUntilExplicitReadOnlyRefreshSucceeds() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }; let owner = fixture.makeStore(), workspace = owner.botWorkspaceStore()
+        let held = fixture.hold(path), refreshing = Task { await workspace.refreshHarnessActions(force: true) }
+        await fulfillment(of: [held.requested], timeout: 2); held.finish(["error": "Receipts unavailable"], status: 503); await refreshing.value
+        XCTAssertNil(workspace.harnessActions); XCTAssertNotNil(workspace.messages["harnessActions"])
+        fixture.release(path)
+        fixture.respond { _ in self.snapshot(self.row()) }; await workspace.refreshHarnessActions(force: true)
+        XCTAssertTrue(workspace.harnessActions?.available == true); XCTAssertNil(workspace.messages["harnessActions"]); XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+    }
+    func testReceiptPollingCoalescesUnchangedPublicationsAndOnlyForceBypassesItsReadThrottle() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }; fixture.respond { _ in self.snapshot(self.row()) }
+        let owner = fixture.makeStore(), workspace = owner.botWorkspaceStore(); await workspace.refreshHarnessActions()
+        var publications = 0; let observer = workspace.$harnessActions.dropFirst().sink { _ in publications += 1 }; defer { observer.cancel() }
+        await workspace.refreshHarnessActions(); await workspace.refreshHarnessActions(force: true)
+        XCTAssertEqual(fixture.requests.count, 2); XCTAssertEqual(publications, 0); XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+    }
+    func testExactAcknowledgementSendsOnlyProofThenRefreshesWithoutRetryResumeOrNavigation() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }; var reviewed = false
+        fixture.respond { request in
+            if request.httpMethod == "POST" { reviewed = true; return ["acknowledged": true, "action": self.row(state: "reviewed", revision: 3, proof: String(repeating: "b", count: 64)), "resumed": false, "retried": false] }
+            return self.snapshot(self.row(state: reviewed ? "reviewed" : "uncertain", revision: reviewed ? 3 : 2))
+        }
+        let owner = fixture.makeStore(), workspace = owner.botWorkspaceStore(); await workspace.refreshHarnessActions()
+        let action = try XCTUnwrap(workspace.harnessActions?.actions.first)
+        let accepted = await workspace.reviewHarnessAction(action); XCTAssertTrue(accepted)
+        let writes = fixture.requests.filter { $0.method != "GET" }; XCTAssertEqual(writes.count, 1)
+        XCTAssertEqual(writes.first?.path, path + "/" + action.id + "/review")
+        XCTAssertEqual(Set(writes.first?.jsonBody?.keys.map { $0 } ?? []), ["expectedRevision", "expectedProof", "decision"])
+        XCTAssertEqual(writes.first?.jsonBody?["expectedProof"] as? String, action.proof); XCTAssertEqual(writes.first?.jsonBody?["expectedRevision"] as? Int, 2)
+        XCTAssertEqual(writes.first?.jsonBody?["decision"] as? String, "acknowledge"); XCTAssertEqual(workspace.harnessActions?.actions.first?.state, "reviewed"); XCTAssertNil(owner.currentConversation)
+        let duplicate = await workspace.reviewHarnessAction(action); XCTAssertFalse(duplicate); XCTAssertEqual(fixture.requests.filter { $0.method != "GET" }.count, 1)
+    }
+    func testReadOnlyRemoteReceiptAndUnavailableOldHostCannotBeAcknowledged() async throws {
+        for response in [snapshot(row(origin: "ssh-worker", readOnly: true)), snapshot(row(), available: false)] {
+            let fixture = StoreTransport(); defer { fixture.close() }; fixture.respond { _ in response }
+            let owner = fixture.makeStore(), workspace = owner.botWorkspaceStore(); await workspace.refreshHarnessActions()
+            let action = try XCTUnwrap(workspace.harnessActions?.actions.first), accepted = await workspace.reviewHarnessAction(action)
+            XCTAssertFalse(accepted); XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+        }
+    }
+    func testStaleReviewProofAndConflictRefreshNeverReplayTheAcknowledgement() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }; var response = snapshot(row())
+        fixture.respond { _ in response }; let owner = fixture.makeStore(), workspace = owner.botWorkspaceStore(); await workspace.refreshHarnessActions()
+        let old = try XCTUnwrap(workspace.harnessActions?.actions.first), pending = fixture.hold(path + "/" + old.id + "/review")
+        let reviewing = Task { await workspace.reviewHarnessAction(old) }; await fulfillment(of: [pending.requested], timeout: 2)
+        response = snapshot(row(revision: 3, proof: String(repeating: "b", count: 64))); pending.finish(["error": "Refresh the receipt"], status: 409)
+        let accepted = await reviewing.value; XCTAssertFalse(accepted); XCTAssertEqual(workspace.harnessActions?.actions.first?.revision, 3); XCTAssertNotNil(workspace.messages["harnessActions"])
+        let stale = await workspace.reviewHarnessAction(old); XCTAssertFalse(stale); XCTAssertEqual(fixture.requests.filter { $0.method != "GET" }.count, 1)
+    }
+    func testUnexpectedAckIdentityOriginRevisionOrReplayCannotBeReportedAsAccepted() async throws {
+        for patch in [["revision": 2], ["origin": "ssh-worker", "readOnly": true], ["proof": "invalid"], ["proof": String(repeating: "a", count: 64)], ["chatId": "another_chat"]] as [[String: Any]] {
+            let fixture = StoreTransport(); defer { fixture.close() }
+            fixture.respond { request in request.httpMethod == "POST" ? ["acknowledged": true, "action": self.row(state: "reviewed", revision: 3, proof: String(repeating: "b", count: 64)).merging(patch) { _, new in new }, "resumed": false, "retried": false] : self.snapshot(self.row()) }
+            let owner = fixture.makeStore(), workspace = owner.botWorkspaceStore(); await workspace.refreshHarnessActions()
+            let action = try XCTUnwrap(workspace.harnessActions?.actions.first), accepted = await workspace.reviewHarnessAction(action)
+            XCTAssertFalse(accepted); XCTAssertNotNil(workspace.messages["harnessActions"]); XCTAssertEqual(fixture.requests.filter { $0.method != "GET" }.count, 1)
+        }
+    }
+    func testPairingRevocationDiscardsLateReceiptAndLateAckWithoutPublishingOrRefreshing() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }; fixture.respond { _ in self.snapshot(self.row()) }
+        let owner = fixture.makeStore(), workspace = owner.botWorkspaceStore(); await workspace.refreshHarnessActions()
+        let action = try XCTUnwrap(workspace.harnessActions?.actions.first), pending = fixture.hold(path + "/" + action.id + "/review")
+        let reviewing = Task { await workspace.reviewHarnessAction(action) }; await fulfillment(of: [pending.requested], timeout: 2)
+        owner.forgetMac(); pending.finish(["acknowledged": true, "action": row(state: "reviewed", revision: 3, proof: String(repeating: "b", count: 64)), "resumed": false, "retried": false])
+        let accepted = await reviewing.value; XCTAssertFalse(accepted); XCTAssertEqual(workspace.harnessActions?.actions.first?.state, "uncertain"); XCTAssertEqual(fixture.requests.filter { $0.method == "GET" }.count, 1); XCTAssertNil(workspace.messages["harnessActions"])
+    }
+    func testOlderForcedReceiptPollCannotReplaceNewerReceiptProof() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }; let owner = fixture.makeStore(), workspace = owner.botWorkspaceStore()
+        let first = fixture.hold(path), one = Task { await workspace.refreshHarnessActions(force: true) }; await fulfillment(of: [first.requested], timeout: 2)
+        let second = fixture.hold(path), two = Task { await workspace.refreshHarnessActions(force: true) }; await fulfillment(of: [second.requested], timeout: 2)
+        second.finish(snapshot(row(state: "reviewed", revision: 3, proof: String(repeating: "b", count: 64)))); await two.value
+        first.finish(snapshot(row())); await one.value
+        XCTAssertEqual(workspace.harnessActions?.actions.first?.state, "reviewed"); XCTAssertEqual(workspace.harnessActions?.actions.first?.revision, 3)
+    }
+}
+
+extension BotCreatedToolsTests {
+    func testRequirementsMatchDeclarativeBackendBoundsAndRejectUnknownOrNullFields() throws {
+        let valid: [String: Any] = ["platforms": ["darwin", "linux", "win32"], "executables": ["python3", "clang++", "app.exe"], "workspaceFiles": ["nested/it's $(safe) `data`.txt", String(repeating: "🦊", count: 120)]]
+        XCTAssertTrue(try decode(valid, as: BotToolRequirements.self).isValid)
+        for invalid in [["probe": "touch BAD"], ["executables": NSNull()], ["platforms": ["macos"]], ["platforms": ["linux", "linux"]], ["executables": ["node --version"]], ["executables": ["/bin/sh"]], ["executables": ["node\n"]], ["executables": (0..<17).map { "x\($0)" }], ["workspaceFiles": ["../private"]], ["workspaceFiles": ["a//b"]], ["workspaceFiles": ["C:foo"]], ["workspaceFiles": ["a\\b"]], ["workspaceFiles": ["a\nb"]], ["workspaceFiles": [String(repeating: "🦊", count: 121)]]] as [[String: Any]] {
+            XCTAssertThrowsError(try decode(invalid, as: BotToolRequirements.self), "\(invalid)")
+        }
+    }
+    func testRequirementsEditAndClearUseReviewedProofAndAlwaysDraftWithoutExecuting() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }; var tool = row(status: "enabled"); tool["requirements"] = ["executables": ["node"]]
+        fixture.respond { request in request.httpMethod == "PATCH" ? ["tool": tool] : self.snapshot(tool).merging(["createdToolReadinessSupported": true]) { _, new in new } }
+        let owner = fixture.makeStore(), workspace = owner.botWorkspaceStore(); await workspace.refreshCreatedTools()
+        let reviewed = try XCTUnwrap(workspace.createdTools?.tools.first); var draft = BotCreatedToolDraft(tool: reviewed); draft.requirements = BotToolRequirements()
+        let saved = await workspace.saveCreatedTool(draft, reviewing: reviewed); XCTAssertTrue(saved)
+        let body = try XCTUnwrap(fixture.requests.first { $0.method == "PATCH" }?.jsonBody), requirements = try XCTUnwrap(body["requirements"] as? [String: Any])
+        XCTAssertEqual(body["expectedDigest"] as? String, reviewed.digest); XCTAssertEqual(body["expectedRevision"] as? Int, reviewed.revision); XCTAssertEqual(body["status"] as? String, "draft")
+        XCTAssertEqual(requirements["platforms"] as? [String], []); XCTAssertEqual(requirements["executables"] as? [String], []); XCTAssertEqual(requirements["workspaceFiles"] as? [String], []); XCTAssertNil(body["botIds"]); XCTAssertNil(owner.currentConversation)
+    }
+    func testOldHostAcceptsLegacyDraftButCannotReceiveRequirementsFields() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }; let tool = row()
+        fixture.respond { request in request.httpMethod == "POST" ? ["tool": tool] : self.snapshot(tool) }
+        let owner = fixture.makeStore(), workspace = owner.botWorkspaceStore(); await workspace.refreshCreatedTools()
+        var draft = BotCreatedToolDraft(tool: try decode(tool, as: BotCreatedTool.self)); draft.requirements = BotToolRequirements(executables: ["node"])
+        let unsupported = await workspace.saveCreatedTool(draft); XCTAssertFalse(unsupported); XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+        await workspace.refreshCreatedTools(); draft.requirements = nil
+        let legacy = await workspace.saveCreatedTool(draft); XCTAssertTrue(legacy); XCTAssertNil(fixture.requests.first { $0.method == "POST" }?.jsonBody?["requirements"])
+    }
+}

@@ -8,6 +8,21 @@ import './BotSupervision.css';
 export interface BotSupervisionSession {
   id: string; botId: string; name: string; title: string; state: 'approval'|'error'|'working'|'thinking'|'completed';
   approvalCount: number; toolName?: string; computerName?: string; teamId?: string; parentChatId?: string; updatedAt?: string;
+  harness?: BotHarnessDiagnostics;
+}
+export interface BotHarnessDiagnostics {
+  phase: 'starting'|'model'|'approval'|'tool'|'cleanup'|'completed'|'interrupted'|'error'; elapsedMs: number; firstOutputMs?: number;
+  timings: { startingMs: number; modelMs: number; approvalMs: number; toolMs: number; cleanupMs: number };
+  toolCalls: number; toolErrors: number; contextCompactions: number;
+}
+const seconds = (ms: number) => `${(Math.max(0, ms) / 1000).toFixed(ms < 10000 ? 1 : 0)}s`;
+export function BotHarnessDetails({ value }: { value: BotHarnessDiagnostics }) {
+  const label = { starting: 'Preparing run', model: 'Waiting for provider', approval: 'Waiting for approval', tool: 'Using tools', cleanup: 'Finishing cleanup', completed: 'Run finished', interrupted: 'Run interrupted', error: 'Run needs attention' }[value.phase];
+  return <details className="bot-harness-details"><summary>{label} · {seconds(value.elapsedMs)}</summary><dl>
+    {value.firstOutputMs !== undefined ? <><dt>First response</dt><dd>{seconds(value.firstOutputMs)}</dd></> : null}
+    {Object.entries({ 'Preparation': value.timings.startingMs, 'Provider wait': value.timings.modelMs, 'Approval wait': value.timings.approvalMs, 'Tools': value.timings.toolMs, 'Cleanup': value.timings.cleanupMs }).map(([name, ms]) => <div key={name}><dt>{name}</dt><dd>{seconds(ms)}</dd></div>)}
+    <dt>Tool calls / errors</dt><dd>{value.toolCalls} / {value.toolErrors}</dd><dt>Context compactions</dt><dd>{value.contextCompactions}</dd>
+  </dl><p>Observed for this host session. Provider wait includes connection and startup time. Timings do not verify the task’s result.</p></details>;
 }
 export interface BotSupervisionSnapshot {
   supported: boolean; sessions: BotSupervisionSession[]; counts: { waiting: number; working: number; completed: number; errors: number }; hasMore: boolean;
@@ -35,6 +50,7 @@ export function BotSupervision({ snapshot, bots, stale, onOpen }: { snapshot: Bo
         <div className="bot-supervision-identity"><CuaBotAvatar name={row.name} config={bot?.avatarConfig} size={42} mood={avatarMood(row, stale)}/><div><strong>{row.name}</strong><span>{row.parentChatId ? 'Subagent' : row.teamId ? 'Team conversation' : 'Personal conversation'}{row.computerName ? ` · ${row.computerName}` : ''}</span></div></div>
         <h4>{row.title}</h4><p className="bot-supervision-state">{stale ? 'Last known: ' : ''}{supervisionLabel(row)}</p>
         {row.state === 'working' && row.toolName ? <p className="bot-supervision-tool">{row.toolName.replaceAll('_', ' ')}</p> : null}
+        {row.harness ? <BotHarnessDetails value={row.harness}/> : null}
         <div className="bot-supervision-footer">{row.updatedAt ? <time dateTime={row.updatedAt}>{relTime(row.updatedAt)}</time> : <span/>}<Btn size="sm" onClick={() => onOpen(row.id)}>{row.state === 'approval' ? 'Review approval' : 'Open conversation'}</Btn></div>
       </article>;
     })}</div> : <Empty icon="activity" title={filter === 'attention' ? 'Nothing waiting on you' : filter === 'working' ? 'No bots are working right now' : filter === 'completed' ? 'No finished conversations today' : 'Your next idea starts a new story'} body="Your bots’ live conversations and results from the past 24 hours appear here."/>}

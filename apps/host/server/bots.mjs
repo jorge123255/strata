@@ -13,6 +13,8 @@ import { botWorkAuthorityFingerprint } from './bots-work-authority.mjs';
 import { botSupervisionSnapshot } from './bots-supervision.mjs';
 import { createBotHostFolderTools, botHostFolderAuthority } from './bots-host-folder.mjs';
 import { createCreatedCommandTools } from './bots-runtime/created-tools.mjs';
+import { createBotActionJournal, botActionTurnIdentity } from './bots-action-journal.mjs';
+import { createHarnessObserver } from './bots-harness-observer.mjs';
 
 const fault = (status, message) => Object.assign(new Error(message), { status });
 const ids = new Set(['claude', 'codex', 'grok', 'kimi', 'ollama', 'devin', 'configured']);
@@ -63,6 +65,8 @@ function endpoint(value) {
 
 export function createBots({ directory, runtime, tools, conversations = () => null, defaultWorkspace = () => homedir(), notify = () => {}, now = () => new Date().toISOString(), remoteSSH, modelProviders, modelRequest, cuaTools, skills, mcp, createdTools, python = 'python3' }) {
   if (createdTools) tools = createCreatedCommandTools(tools);
+  const actionJournal = createBotActionJournal({ directory: join(directory, 'bots-action-journal') });
+  const harnessObserver = createHarnessObserver();
   const file = join(directory, 'bots.json'), profiles = new Map(), checkpoints = new Map(), chatProfiles = new Map(), active = new Map(), targets = new Map(), uncertainTargets = new Map(), ownedComputers = new Set();
   const owned = id => conversations()?.botId(id) ?? null;
   const folderKeys = ['hostFolder', 'hostFolderBinding', 'hostFolderRevision', 'hostFolderOwnerId', 'hostFolderRemoteIdentity'];
@@ -488,9 +492,11 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     if (!conversationOnly && resourceBusy(bot, session.id)) throw fault(409, 'Another teammate is using this shared computer. Wait for it to finish.');
     const owner = { botId: bot.id, target, resource: bot.computerMode === 'cua' ? cuaResource(bot) : `host:${target}`, sharedComputer: bot.sharedComputer === true, conversationOnly, controller, pending: new Map(), ended: new Promise(resolve => { ended = resolve; }) };
     active.set(session.id, owner);
+    harnessObserver.start(session.id);
     let terminal = null;
     const emit = frame => {
       if (active.get(session.id) !== owner) return;
+      harnessObserver.frame(session.id, frame);
       if (frame.type === 'done' || frame.type === 'error') { terminal = frame; return; }
       if (bot.computerMode === 'cua' && frame.type === 'agent-tool' && frame.tool?.state === 'running') markOwned(bot);
       work.record(bot.id, frame);
@@ -526,16 +532,17 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     try {
       hostTools = extensions.flatMap(extension => extension.tools(bot, context));
       if (new Set(hostTools.map(tool => tool.name)).size !== hostTools.length || hostTools.some(tool => localTools.some(local => local.name === tool.name))) throw fault(503, 'Bot tool names overlap.');
-    } catch (error) { controller.abort(); active.delete(session.id); ended(); throw error; }
-    const hostNames = new Set(hostTools.map(tool => tool.name)), calls = new Map();
+    } catch (error) { controller.abort(); harnessObserver.finish(session.id, {outcome:'error'}); active.delete(session.id); ended(); throw error; }
+    const hostNames = new Set(hostTools.map(tool => tool.name));
+    const actionAuthority = createHash('sha256').update(JSON.stringify([botWorkAuthorityFingerprint(bot), bot.teamContext ?? null])).digest('hex');
+    const actionTurnId = botActionTurnIdentity(session, message, conversations()?.detail?.(session.id)?.conversation);
+    const actionScope = { chatId: session.id, authority: actionAuthority, turnId: actionTurnId, signal: combined, assertLive };
     const executeHostTool = (name, args = {}, toolCallId) => {
       assertLive();
       if (!hostNames.has(name)) throw fault(403, 'This host tool was not assigned to this bot turn.');
       const id = typeof toolCallId === 'string' && /^[A-Za-z0-9_.:-]{1,160}$/.test(toolCallId) ? toolCallId : `ext_${randomUUID()}`;
-      const digest = createHash('sha256').update(JSON.stringify([name, args])).digest('hex'), old = calls.get(id);
-      if (old) { if (old.digest !== digest) throw fault(409, 'This tool identity already belongs to a different action.'); return old.promise; }
       const extension = extensions.find(value => value.owns(name));
-      const promise = (async () => {
+      return actionJournal.execute({ ...actionScope, name, args, toolCallId: id }, async () => {
         emit({ type: 'agent-tool', tool: { id, name, args, state: 'running', preview: name, effect: 'Uses a Strata bot integration.', scope: 'connected' } });
         try {
           const result = await extension.execute(name, args, { ...context, toolCallId: id }); assertLive();
@@ -543,8 +550,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
           emit({ type: 'agent-tool', tool: { id, name, args, state: value.isError ? 'error' : 'done', result: value.content.filter(part => part.type === 'text').map(part => part.text).join('\n') } });
           return value;
         } catch (error) { if (!combined.aborted) emit({ type: 'agent-tool', tool: { id, name, args, state: 'error', result: String(error.message).slice(0, 2000) } }); throw error; }
-      })();
-      calls.set(id, { digest, promise }); return promise;
+      });
     };
     let runFailure;
     try {
@@ -554,7 +560,9 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
       const runtimeBot = { ...bot, instructions, continuousTeam: team.isContinuousTurn(turnId) };
       if (conversationOnly) delete runtimeBot.extensionSnapshots;
       emit({ type: 'start', agent: true, model: bot.model || bot.provider });
+      harnessObserver.phase(session.id, 'model');
       await runtime.run({ bot: runtimeBot, sessionId: session.id, message, history: session.messages, signal: combined, onFrame: emit, requestPermission, hostTools, executeHostTool,
+        harnessActionScope: { turnId: actionTurnId, authority: actionAuthority }, onHarnessAction: value => actionJournal.observeRemote(value, session.id),
         modelRequest: (payload, botOrSignal, signal) => {
           const transportSignal = signal ?? (botOrSignal && typeof botOrSignal.addEventListener === 'function' && typeof botOrSignal.aborted === 'boolean' ? botOrSignal : null);
           if (active.get(session.id) !== owner || combined.aborted || bot.provider !== 'configured') throw fault(409, 'This bot turn has ended or has no configured model.');
@@ -565,7 +573,10 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
           if (active.get(session.id) !== owner || combined.aborted) throw fault(409, 'This bot turn has ended.');
           if (hostNames.has(name)) return executeHostTool(name, args, toolCallId);
           if (conversationOnly) throw fault(403, 'This team conversation turn cannot execute computer, file, browser or external tools.');
-          return tools.execute({ bot, chatId: session.id, name, args, toolCallId, signal: combined, onFrame: emit, requestPermission, ...(createdTools ? { authorizeCreatedTool: value => { assertLive(); return createdTools.authorize(value, context); } } : {}) });
+          if (!localTools.some(tool => tool.name === name)) throw fault(403, 'This computer tool was not assigned to this bot turn.');
+          let started = false, denied = false;
+          const toolFrame = frame => { if (frame.type === 'agent-tool') { if (frame.tool?.state === 'running') started = true; if (frame.tool?.state === 'denied') denied = true; } emit(frame); };
+          return actionJournal.execute({ ...actionScope, name, args, toolCallId, noEffect: () => denied && !started }, () => tools.execute({ bot, chatId: session.id, name, args, toolCallId, signal: combined, onFrame: toolFrame, requestPermission, ...(createdTools ? { authorizeCreatedTool: value => { assertLive(); return createdTools.authorize(value, context); } } : {}) }));
         },
         checkpoint: !conversationOnly && oldCheckpoint?.fingerprint === fingerprint ? oldCheckpoint.value : null,
         onCheckpoint: value => { if (!conversationOnly && active.get(session.id) === owner) { checkpoints.set(session.id, { fingerprint, value }); save(); } } });
@@ -576,6 +587,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
       else throw failure;
     } finally {
       const cancelledBeforeCleanup = combined.aborted;
+      harnessObserver.phase(session.id, 'cleanup');
       try {
         controller.abort(); // Revoke tool authority before awaiting every owned cleanup.
         for (const request of [...owner.pending.values()]) { try { request.resolve(false); } catch (failure) { owner.cleanupFailure ??= failure; } }
@@ -592,14 +604,17 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
           }
           terminal = { type: 'error', message: owner.cleanupFailure.message ?? 'External bot integration cleanup could not be confirmed.' };
         }
+        if (bot.execution.kind === 'ssh') actionJournal.markRemoteUncertain(session.id);
         if (active.get(session.id) === owner) active.delete(session.id);
         if (terminal) onFrame(terminal);
         team.end(context, { cancelled: cancelledBeforeCleanup, error: owner.cleanupFailure?.message ?? (runFailure && !cancelledBeforeCleanup ? runFailure.message : undefined), ...(typeof terminal?.publicReply === 'string' ? { publicReply: terminal.publicReply } : {}) });
-      } finally { if (active.get(session.id) === owner) active.delete(session.id); ended(); }
+      } finally { harnessObserver.finish(session.id, {outcome: cancelledBeforeCleanup ? 'interrupted' : owner.cleanupFailure || runFailure ? 'error' : 'completed'}); if (active.get(session.id) === owner) active.delete(session.id); ended(); }
     }
   }
   return { list, create, update, saveProfile, setHostFolder, remove, pause, createConversation, computer, work, team, hasBot: id => profiles.has(id), hasTeam: id => team.hasTeam(id), teamConnectorAccess: (teamId, botId, teamRunId) => team.connectorAccess(teamId, botId, teamRunId), providerModels: id => runtime.models?.(id) ?? Promise.resolve({ provider: id, models: [], detail: 'This provider has no verified effort catalog. Use Provider default.' }), prepareCUA, checkComputer: (input, options) => computerAction(input, false, options), prepareComputer: (input, options) => computerAction(input, true, options), validateSelection, run, pending, approve, stop,
-    supervision: () => botSupervisionSnapshot({ bots: [...profiles.values()], conversations: conversations()?.supervisionSources?.() ?? [], pendingCount: id => active.get(id)?.pending.size ?? 0, now: Date.parse(now()) }),
+    harnessActions: chatId => ({ ...actionJournal.summary(chatId), coverage: { local: 'durable', sshHostTools: 'durable', sshComputerTools: 'worker-durable-read-only', identity: 'Exact conversation, authority, turn and provider call identity; anonymous calls and older settled receipts outside retention are not deduplicated.', recovery: 'No automatic retries or resumes. SSH receipt acknowledgement and computer cleanup remain separate.' } }),
+    reviewHarnessAction: (id, input) => actionJournal.review(id, input),
+    supervision: () => { const snapshot = botSupervisionSnapshot({ bots: [...profiles.values()], conversations: conversations()?.supervisionSources?.() ?? [], pendingCount: id => active.get(id)?.pending.size ?? 0, now: Date.parse(now()) }); snapshot.sessions = snapshot.sessions.map(row => { const harness = harnessObserver.snapshot(row.id); return harness ? {...row,harness} : row; }); return snapshot; },
     supervisionProfiles: () => [...profiles.values()].map(({ id, name, avatarConfig }) => ({ id, name, ...(avatarConfig ? { avatarConfig: copy(avatarConfig) } : {}) })),
     notificationApprovals: () => [...active].flatMap(([chatId, run]) => [...run.pending.keys()].map(id => ({ chatId, id, botId: run.botId }))),
     hasProfiles: () => profiles.size > 0, isBotConversation: id => !!owned(id), workspace: id => chatProfiles.get(id)?.execution?.kind === 'local' ? chatProfiles.get(id).workspace : null, isRemoteConversation: id => !!chatProfiles.get(id) && (chatProfiles.get(id).execution?.kind !== 'local' || chatProfiles.get(id).computerMode === 'cua'), activeCount: () => active.size + team.activeCount(),
@@ -621,6 +636,16 @@ export function createBotRoutes({ bots, port }) {
     res.removeHeader('access-control-allow-origin'); res.setHeader('cache-control', 'no-store');
     if (!isLocalCompanionRequest(req, typeof port === 'function' ? port() : port)) return error(res, 403, 'Open Bots in Strata on this computer.');
     try {
+      if (url.pathname === '/api/bots/harness/actions') {
+        if (Number(req.headers['content-length'] ?? 0) > 0 || req.headers['transfer-encoding']) throw fault(400, 'Action receipts do not accept a request body.');
+        if (req.method !== 'GET' || [...url.searchParams].length) throw fault(405, 'This action receipt route is read-only.');
+        return json(res, 200, bots.harnessActions());
+      }
+      const harnessReview = /^\/api\/bots\/harness\/actions\/(ba_[a-f0-9]{64})\/review$/.exec(url.pathname);
+      if (harnessReview) {
+        if (req.method !== 'POST' || [...url.searchParams].length) throw fault(405, 'Use the exact action acknowledgement route.');
+        return json(res, 200, bots.reviewHarnessAction(harnessReview[1], await readBody(req)));
+      }
       if (url.pathname === '/api/bots' && req.method === 'GET') return json(res, 200, await bots.list());
       if (url.pathname === '/api/bots' && req.method === 'POST') return json(res, 201, bots.create(await readBody(req)));
       if (url.pathname === '/api/bots/profile' && req.method === 'POST') return json(res, 201, await bots.saveProfile(await readBody(req)));

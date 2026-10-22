@@ -757,6 +757,7 @@ private struct BotActivityView: View {
     @State private var visible = false
     @State private var supervisionFilter: BotSupervisionFilter = .all
     @State private var supervisionLimit = 12
+    @State private var harnessDetails: Set<String> = []
     @Environment(\.scenePhase) private var scenePhase
     var body: some View {
         List {
@@ -802,6 +803,7 @@ private struct BotActivityView: View {
             if workspace.messages["supervision"] != nil {
                 Section { BotWorkspaceMessage(workspace: workspace, key: "supervision") }
             }
+            BotHarnessRecoverySection(store: store, workspace: workspace, openChat: openChat)
             if workspace.workReviewSupported {
                 let overview = BotTeamWorkOverview(workspace.activity)
                 Section {
@@ -850,7 +852,7 @@ private struct BotActivityView: View {
                 BotTeamTaskReviewView(store: store, workspace: workspace, item: item, openChat: { reviewingWork = nil; openChat() })
                     .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { reviewingWork = nil }.accessibilityIdentifier("closeTeamWorkReviewButton") } }
             } }
-            .refreshable { await workspace.refreshSupervision(); await workspace.refreshActivity(); await workspace.refreshTeams(); await store.refresh(silently: true) }
+            .refreshable { await workspace.refreshSupervision(); await workspace.refreshHarnessActions(force: true); await workspace.refreshActivity(); await workspace.refreshTeams(); await store.refresh(silently: true) }
             .onAppear { visible = true }
             .onDisappear { visible = false }
             .task(id: visible && scenePhase == .active) {
@@ -858,6 +860,7 @@ private struct BotActivityView: View {
                 repeat {
                     if workspace.mutation == nil {
                         if !workspace.loading.contains("supervision") { await workspace.refreshSupervision() }
+                        if !workspace.loading.contains("harnessActions") { await workspace.refreshHarnessActions() }
                         if !workspace.loading.contains("activity") { await workspace.refreshActivity() }
                         if !workspace.loading.contains("teams") { await workspace.refreshTeams() }
                     }
@@ -907,9 +910,38 @@ private struct BotActivityView: View {
             if session.state == .working, let tool = session.toolName {
                 Text(tool.replacingOccurrences(of: "_", with: " ")).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
+            if let value = session.harness, value.isValid {
+                let expanded = harnessDetails.contains(session.id)
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        if expanded { harnessDetails.remove(session.id) } else { harnessDetails.insert(session.id) }
+                    }
+                } label: {
+                    HStack {
+                        Text(value.label + " · " + BotHarnessDiagnostics.seconds(value.elapsedMs))
+                        Spacer()
+                        Image(systemName: expanded ? "chevron.down" : "chevron.right").accessibilityHidden(true)
+                    }.font(.caption).frame(minHeight: 44).contentShape(Rectangle())
+                }.buttonStyle(.borderless).accessibilityIdentifier("botHarnessDetails-" + session.id)
+                    .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+                    .accessibilityHint("Shows provider, approval and tool timing.")
+                if expanded {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if let first = value.firstOutputMs { LabeledContent("First response", value: BotHarnessDiagnostics.seconds(first)) }
+                        LabeledContent("Preparation", value: BotHarnessDiagnostics.seconds(value.timings.startingMs))
+                        LabeledContent("Provider wait", value: BotHarnessDiagnostics.seconds(value.timings.modelMs))
+                        LabeledContent("Approval wait", value: BotHarnessDiagnostics.seconds(value.timings.approvalMs))
+                        LabeledContent("Tools", value: BotHarnessDiagnostics.seconds(value.timings.toolMs))
+                        LabeledContent("Cleanup", value: BotHarnessDiagnostics.seconds(value.timings.cleanupMs))
+                        LabeledContent("Tool calls / errors", value: "\(value.toolCalls) / \(value.toolErrors)")
+                        LabeledContent("Context compactions", value: "\(value.contextCompactions)")
+                        Text("Observed for this host session. Provider wait includes connection and startup time. Timings do not verify the task’s result.").foregroundStyle(.secondary)
+                    }.font(.caption).padding(.top, 6)
+                }
+            }
             BotSharedConversationButton(store: store, chatId: session.id,
                 title: session.state == .approval ? "Review approval" : "Open conversation", openChat: openChat)
-        }.padding(.vertical, 10).accessibilityIdentifier("botSupervision-" + session.id)
+        }.padding(.vertical, 10).accessibilityElement(children: .contain).accessibilityIdentifier("botSupervision-" + session.id)
     }
     private func botName(_ id: String) -> String { store.botCatalog?.bots.first { $0.id == id }?.name ?? "Bot" }
 }
@@ -1001,6 +1033,12 @@ private struct BotCreatedToolDetailView: View {
                 }
                 Section("Inputs") {
                     Text(tool.inputSchema.formatted).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                    if let requirements = tool.requirements {
+                        LabeledContent("Platforms", value: requirements.platforms.isEmpty ? "Any supported platform" : requirements.platforms.joined(separator: ", "))
+                        LabeledContent("Programs", value: requirements.executables.isEmpty ? "None declared" : requirements.executables.joined(separator: ", "))
+                        LabeledContent("Workspace files", value: requirements.workspaceFiles.isEmpty ? "None declared" : requirements.workspaceFiles.joined(separator: ", "))
+                    }
+                    Text("Ask the bot to check this exact tool on its selected computer. Checks use its normal command permission and install nothing. Declared requirements are checked again before execution.").font(.caption).foregroundStyle(.secondary)
                     Text("The command reads inputs from STRATA_TOOL_INPUT as JSON. It runs on the bot’s selected computer, inside that bot’s workspace and tool permissions.").font(.caption).foregroundStyle(.secondary)
                 }
                 Section {
@@ -1051,6 +1089,9 @@ private struct BotCreatedToolEditor: View {
     @ObservedObject var workspace: BotWorkspaceStore
     let tool: BotCreatedTool?
     @State private var draft: BotCreatedToolDraft
+    @State private var requirementPlatforms: [String] = []
+    @State private var requirementPrograms = ""
+    @State private var requirementFiles = ""
     @State private var schemaText: String
     @State private var reviewedTool: BotCreatedTool?
     @State private var ready: Bool
@@ -1059,11 +1100,18 @@ private struct BotCreatedToolEditor: View {
         self.workspace = workspace; self.tool = tool
         let value = tool.map(BotCreatedToolDraft.init(tool:)) ?? BotCreatedToolDraft()
         _draft = State(initialValue: value); _schemaText = State(initialValue: value.inputSchema.formatted)
+        _requirementPlatforms = State(initialValue: value.requirements?.platforms ?? [])
+        _requirementPrograms = State(initialValue: value.requirements?.executables.joined(separator: "\n") ?? "")
+        _requirementFiles = State(initialValue: value.requirements?.workspaceFiles.joined(separator: "\n") ?? "")
         _ready = State(initialValue: tool == nil)
     }
     private var parsedDraft: BotCreatedToolDraft? {
         guard schemaText.utf8.count <= 16_000, let data = schemaText.data(using: .utf8), let schema = try? JSONDecoder().decode(BotToolJSON.self, from: data) else { return nil }
         var value = draft; value.inputSchema = schema
+        if workspace.createdTools?.createdToolReadinessSupported == true {
+            func lines(_ text: String) -> [String] { text.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } }
+            value.requirements = BotToolRequirements(platforms: requirementPlatforms, executables: lines(requirementPrograms), workspaceFiles: lines(requirementFiles))
+        }
         return value.isValid ? value : nil
     }
     var body: some View {
@@ -1083,6 +1131,24 @@ private struct BotCreatedToolEditor: View {
                     Text("Use an object with up to 32 string, number, integer or boolean properties, a required array and additionalProperties: false.").font(.caption).foregroundStyle(.secondary)
                     if parsedDraft == nil { Text("Enter a name, command and supported JSON input schema to save.").font(.caption).foregroundStyle(StrataTheme.warning) }
                 }
+                if workspace.createdTools?.createdToolReadinessSupported == true {
+                    Section("Computer requirements · optional") {
+                        ForEach(["darwin", "linux", "win32"], id: \.self) { platform in
+                            Toggle(platform == "darwin" ? "macOS" : platform == "win32" ? "Windows" : "Linux", isOn: Binding(get: { requirementPlatforms.contains(platform) }, set: { enabled in
+                                requirementPlatforms.removeAll { $0 == platform }; if enabled { requirementPlatforms.append(platform) }
+                            })).accessibilityIdentifier("botToolPlatform-" + platform)
+                        }
+                        TextField("Required programs · one per line", text: $requirementPrograms, axis: .vertical).textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityIdentifier("botToolProgramsInput")
+                        TextField("Workspace files · one relative path per line", text: $requirementFiles, axis: .vertical).textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityIdentifier("botToolFilesInput")
+                        if !requirementPlatforms.isEmpty || !requirementPrograms.isEmpty || !requirementFiles.isEmpty {
+                            Button("Clear requirements") { requirementPlatforms = []; requirementPrograms = ""; requirementFiles = "" }.accessibilityIdentifier("clearBotToolRequirementsButton")
+                        }
+                        Text("Leave platforms off to allow any supported platform. Up to 16 programs and 16 files. Saving installs and executes nothing.").font(.caption).foregroundStyle(.secondary)
+                        if parsedDraft == nil { Text("Use up to 16 unique program names without arguments and 16 relative file paths without traversal.").font(.caption).foregroundStyle(StrataTheme.warning) }
+                    }
+                } else {
+                    Section { Text("Update Strata on your Mac to declare computer requirements.").font(.caption).foregroundStyle(.secondary) }
+                }
                 Section { BotWorkspaceMessage(workspace: workspace, key: "createdTools") }
             }.disabled(!ready || workspace.mutation != nil)
                 .navigationTitle(tool == nil ? "Draft tool" : "Edit tool").navigationBarTitleDisplayMode(.inline)
@@ -1098,6 +1164,7 @@ private struct BotCreatedToolEditor: View {
                         await workspace.refreshCreatedTools()
                         if workspace.messages["createdTools"] == nil, let fresh = workspace.createdTools?.tools.first(where: { $0.id == tool.id }), fresh.matchesReview(tool) {
                             draft = BotCreatedToolDraft(tool: fresh); schemaText = fresh.inputSchema.formatted; reviewedTool = fresh; ready = true
+                            requirementPlatforms = fresh.requirements?.platforms ?? []; requirementPrograms = fresh.requirements?.executables.joined(separator: "\n") ?? ""; requirementFiles = fresh.requirements?.workspaceFiles.joined(separator: "\n") ?? ""
                         }
                     }
                 }
@@ -1473,5 +1540,50 @@ private struct BotTeamTaskReviewView: View {
                     .accessibilityIdentifier("resumeTeamWorkButton")
             }
         } header: { Text("Recovery plan") } footer: { Text("Resume is explicit. Tool approvals and computer permissions still apply.") }
+    }
+}
+
+private struct BotHarnessRecoverySection: View {
+    @ObservedObject var store: CompanionStore
+    @ObservedObject var workspace: BotWorkspaceStore
+    let openChat: () -> Void
+    @State private var reviewing: BotHarnessAction?
+    @State private var expanded = false
+    var body: some View {
+        if let snapshot = workspace.harnessActions {
+            Section {
+                if !snapshot.available {
+                    Text(snapshot.reason ?? "Some action receipts could not be read. Available receipts remain below for inspection; recording review is unavailable.").font(.callout).foregroundStyle(StrataTheme.warning).accessibilityIdentifier("harnessRecoveryUnavailable")
+                }
+                let actions = snapshot.actions.filter(\.needsReview)
+                ForEach(Array(actions.prefix(expanded ? 200 : 6))) { action in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(action.toolName.replacingOccurrences(of: "_", with: " ")).font(.headline)
+                        Text((action.state == "uncertain" ? "Outcome unconfirmed" : "Interrupted") + (action.origin == "ssh-worker" ? " · SSH computer" : " · Host broker")).font(.caption).foregroundStyle(.secondary)
+                        BotSharedConversationButton(store: store, chatId: action.chatId, title: "Inspect conversation", openChat: openChat)
+                        if action.canReview {
+                            Button("Record review…") { reviewing = action }.buttonStyle(.borderless).disabled(!snapshot.available || workspace.mutation != nil || workspace.messages["harnessActions"] != nil).accessibilityIdentifier("reviewHarnessAction-" + action.id)
+                        } else {
+                            Text("Remote receipt is read-only here. Review the selected computer before continuing. Cleanup holds remain in force.").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }.padding(.vertical, 6).accessibilityElement(children: .contain).accessibilityIdentifier("harnessAction-" + action.id)
+                }
+                if actions.isEmpty, snapshot.available { Text("No interrupted actions need review in the retained journal.").font(.callout).foregroundStyle(.secondary) }
+                if actions.count > 6, !expanded { Button("Show more receipts") { expanded = true } }
+                if snapshot.hasMore { Text("Showing up to 200 receipts, with interrupted actions first.").font(.caption).foregroundStyle(.secondary) }
+                BotWorkspaceMessage(workspace: workspace, key: "harnessActions")
+            } header: { Text("Action recovery") } footer: { Text("Inspect the conversation and any changes before continuing. Recording review does not verify success, retry a command or resume a task.") }
+                .confirmationDialog("Have you inspected this action’s conversation and any changes it made?", isPresented: Binding(get: { reviewing != nil }, set: { if !$0 { reviewing = nil } }), titleVisibility: .visible, presenting: reviewing) { action in
+                    Button("I reviewed the conversation") { Task { _ = await workspace.reviewHarnessAction(action); reviewing = nil } }
+                    Button("Cancel", role: .cancel) { reviewing = nil }
+                }
+        } else if workspace.messages["harnessActions"] != nil {
+            Section {
+                Text("Action recovery is unavailable. Refresh to inspect the current receipts before continuing.").font(.callout).foregroundStyle(StrataTheme.warning).accessibilityIdentifier("harnessRecoveryInitialUnavailable")
+                BotWorkspaceMessage(workspace: workspace, key: "harnessActions")
+                Button("Refresh action receipts") { Task { await workspace.refreshHarnessActions(force: true) } }
+                    .disabled(workspace.loading.contains("harnessActions") || workspace.mutation != nil).accessibilityIdentifier("refreshHarnessActionsButton")
+            } header: { Text("Action recovery") }
+        }
     }
 }
