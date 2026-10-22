@@ -574,6 +574,48 @@ struct PairedConnection: Codable, Equatable {
     var macName: String
     var fingerprint: String
     var token: String
+    // Optional for existing Keychain records. Every route belongs to this same
+    // pairing and must present the exact saved certificate before HTTP is sent.
+    var endpoints: [CompanionEndpoint]? = nil
+}
+
+struct CompanionEndpoint: Codable, Equatable {
+    enum Kind: String, Codable, CaseIterable { case lan, tailscale }
+    var kind: Kind
+    var url: URL
+
+    func validated() throws -> CompanionEndpoint {
+        guard url.absoluteString.utf8.count <= 2048 else { throw CompanionError.invalidInvitation("Enter a Mac address of at most 2048 characters.") }
+        let checked = try PairingInvitation.validatedURL(url.absoluteString)
+        var parts = URLComponents(url: checked, resolvingAgainstBaseURL: false)!
+        parts.host = parts.host?.lowercased(); parts.path = ""
+        if parts.port == 443 { parts.port = nil }
+        guard let normalized = parts.url else { throw CompanionError.invalidInvitation("Enter a valid Mac HTTPS address.") }
+        return CompanionEndpoint(kind: kind, url: normalized)
+    }
+
+    static func merged(_ values: [CompanionEndpoint], keeping first: CompanionEndpoint) throws -> [CompanionEndpoint] {
+        var result = [try first.validated()]
+        // Keep the saved route, then reserve space for reachable-away routes
+        // even when DHCP has left an old LAN address outside the new inventory.
+        let checked = try values.map { try $0.validated() }
+        for value in checked.filter({ $0.kind == .tailscale }) + checked.filter({ $0.kind == .lan }) {
+            if !result.contains(where: { $0.url == value.url }) { result.append(value) }
+        }
+        return Array(result.prefix(8))
+    }
+}
+
+struct CompanionConnectionDetails: Decodable {
+    var macName: String
+    var endpoints: [CompanionEndpoint]
+
+    func validatedEndpoints() throws -> [CompanionEndpoint] {
+        guard endpoints.count <= 8 else { throw CompanionError.server("The Mac returned too many connection addresses.") }
+        let result = try endpoints.map { try $0.validated() }
+        guard Set(result.map(\.url)).count == result.count else { throw CompanionError.server("The Mac returned duplicate connection addresses.") }
+        return result
+    }
 }
 
 enum CompanionError: LocalizedError {

@@ -32,13 +32,27 @@ final class PinnedSessionDelegate: NSObject, URLSessionDelegate, URLSessionTaskD
     }
 }
 
-final class CompanionClient {
-    let baseURL: URL
+struct VerifiedCompanionEndpoint {
+    fileprivate let url: URL
+    fileprivate let clientID: UUID
+}
+
+final class CompanionClient: @unchecked Sendable {
+    private let routeLock = NSLock()
+    private var activeURL: URL
+    private var routes: [URL]
+    private var routeEpoch = 0
+    private var mutations = 0
+    private var addressUpdate = false
+    private let clientID = UUID()
+    var baseURL: URL { routeLock.withLock { activeURL } }
     let token: String?
     private let session: URLSession
 
-    init(baseURL: URL, fingerprint: String, token: String? = nil, session: URLSession? = nil) {
-        self.baseURL = baseURL; self.token = token
+    init(baseURL: URL, fingerprint: String, token: String? = nil, endpoints: [CompanionEndpoint] = [], session: URLSession? = nil) {
+        let primary = (try? CompanionEndpoint(kind: .lan, url: baseURL).validated().url) ?? baseURL
+        self.activeURL = primary; self.routes = [primary]; self.token = token
+        if let checked = try? CompanionEndpoint.merged(endpoints, keeping: .init(kind: .lan, url: primary)) { self.routes = checked.map(\.url) }
         if let session { self.session = session; return }
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 20
@@ -50,11 +64,110 @@ final class CompanionClient {
 
     deinit { session.invalidateAndCancel() }
 
+    func updateEndpoints(_ endpoints: [CompanionEndpoint], preferred: URL? = nil) {
+        routeLock.withLock {
+            let selected = (preferred.flatMap { try? CompanionEndpoint(kind: .lan, url: $0).validated().url }) ?? activeURL
+            guard let next = try? CompanionEndpoint.merged(endpoints, keeping: .init(kind: .lan, url: selected)) else { return }
+            routes = next.map(\.url); activeURL = selected; routeEpoch += 1
+        }
+    }
+
+    /// This request contains no pairing code or bearer. The ordinary pinned
+    /// session must accept the original certificate, and redirects remain off.
+    func preflightAddress(_ address: URL) async throws -> VerifiedCompanionEndpoint {
+        let checked = try PairingInvitation.validatedURL(address.absoluteString)
+        var request = URLRequest(url: checked.appendingPathComponent("v1/status"))
+        request.httpMethod = "GET"; request.timeoutInterval = 4
+        let (_, response) = try await session.data(for: request)
+        try Task.checkCancellation()
+        guard let http = response as? HTTPURLResponse, http.statusCode == 401 else {
+            throw CompanionError.server("This address did not answer as your paired Strata Mac. The saved pairing was kept.")
+        }
+        return VerifiedCompanionEndpoint(url: checked, clientID: clientID)
+    }
+
+    func status(at endpoint: VerifiedCompanionEndpoint) async throws -> CompanionStatus {
+        guard endpoint.clientID == clientID else { throw CompanionError.server("Check this address again with the current pairing.") }
+        var req = try rebound(request("/v1/status"), to: endpoint.url)
+        req.timeoutInterval = 4
+        let (data, response) = try await session.data(for: req)
+        try Task.checkCancellation(); try Self.check(response, data: data)
+        return try JSONDecoder().decode(CompanionStatus.self, from: data)
+    }
+
+    private func rebound(_ request: URLRequest, to origin: URL) throws -> URLRequest {
+        _ = try PairingInvitation.validatedURL(origin.absoluteString)
+        guard let original = request.url, var destination = URLComponents(url: origin, resolvingAgainstBaseURL: false),
+              let path = URLComponents(url: original, resolvingAgainstBaseURL: false) else { throw CompanionError.server("Invalid companion address.") }
+        destination.percentEncodedPath = path.percentEncodedPath; destination.percentEncodedQuery = path.percentEncodedQuery
+        guard let url = destination.url else { throw CompanionError.server("Invalid companion request.") }
+        var result = request; result.url = url; return result
+    }
+
+    /// Serializes manual address changes against all clients sharing this
+    /// transport, including computer/workspace mutations outside the dashboard.
+    func beginAddressUpdate() throws {
+        try routeLock.withLock {
+            guard !addressUpdate, mutations == 0 else { throw CompanionError.server("Wait for the current request before changing the Mac address.") }
+            addressUpdate = true
+        }
+    }
+    func endAddressUpdate() { routeLock.withLock { addressUpdate = false } }
+
+    private func beginMutation() throws {
+        try routeLock.withLock {
+            guard !addressUpdate else { throw CompanionError.server("Wait for the Mac address check to finish before sending this request.") }
+            mutations += 1
+        }
+    }
+    private func endMutation() { routeLock.withLock { mutations -= 1 } }
+
+    private static func isTransportFailure(_ error: Error) -> Bool {
+        guard let error = error as? URLError else { return false }
+        return [.cannotFindHost, .cannotConnectToHost, .dnsLookupFailed, .networkConnectionLost, .timedOut, .notConnectedToInternet].contains(error.code)
+    }
+
+    private func data(for original: URLRequest) async throws -> (Data, URLResponse) {
+        let readOnly = original.httpMethod == "GET"
+        if !readOnly { try beginMutation() }
+        defer { if !readOnly { endMutation() } }
+        try Task.checkCancellation()
+        let snapshot = routeLock.withLock { (routeEpoch, activeURL, routes) }
+        var candidates = [snapshot.1] + snapshot.2.filter { $0 != snapshot.1 }
+        if !readOnly { candidates = [snapshot.1] }
+        var lastError: Error = URLError(.cannotConnectToHost)
+        for origin in candidates {
+            try Task.checkCancellation()
+            var request = try rebound(original, to: origin)
+            // Ordinary GETs may quickly fail over. Model operations and writes
+            // keep their existing long timeouts and are dispatched only once.
+            if readOnly, candidates.count > 1, original.timeoutInterval <= 20 { request.timeoutInterval = min(request.timeoutInterval, 4) }
+            do {
+                let result = try await session.data(for: request)
+                try Task.checkCancellation()
+                if let http = result.1 as? HTTPURLResponse, (200..<300).contains(http.statusCode) {
+                    routeLock.withLock {
+                        if routeEpoch == snapshot.0, activeURL == snapshot.1 || activeURL == origin { activeURL = origin }
+                    }
+                }
+                return result
+            } catch {
+                lastError = error
+                // A TLS/pin failure or an HTTP error never selects another trust
+                // identity. A lost write response never causes a second send.
+                guard readOnly, !Task.isCancelled, Self.isTransportFailure(error) else { throw error }
+            }
+        }
+        throw lastError
+    }
+
     func request(_ path: String, method: String = "GET", body: [String: String]? = nil) throws -> URLRequest {
         guard path.hasPrefix("/v1/"), !path.contains(".."), !path.contains("?") else {
             throw CompanionError.server("Invalid companion request.")
         }
-        var req = URLRequest(url: baseURL.appendingPathComponent(String(path.dropFirst())))
+        let address = baseURL
+        _ = try PairingInvitation.validatedURL(address.absoluteString)
+        var req = URLRequest(url: address.appendingPathComponent(String(path.dropFirst())))
         req.httpMethod = method
         req.timeoutInterval = path.hasPrefix("/v1/model-management/") ? 180 : path.hasSuffix("/computer/start") ? 100 : path.hasPrefix("/v1/bots/connections/") && path.hasSuffix("/check") ? 35 : 20
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -72,13 +185,13 @@ final class CompanionClient {
             components.queryItems = [URLQueryItem(name: "after", value: String(after)), URLQueryItem(name: "journalId", value: journalId)]
             request.url = components.url
         }
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await self.data(for: request)
         try Self.check(response, data: data)
         return try JSONDecoder().decode(CompanionNotificationFeed.self, from: data)
     }
 
     func perform<T: Decodable>(_ path: String, method: String = "GET", body: [String: String]? = nil) async throws -> T {
-        let (data, response) = try await session.data(for: request(path, method: method, body: body))
+        let (data, response) = try await self.data(for: request(path, method: method, body: body))
         try Self.check(response, data: data)
         return try JSONDecoder().decode(T.self, from: data)
     }
@@ -90,13 +203,13 @@ final class CompanionClient {
     }
 
     func perform<T: Decodable, Body: Encodable>(_ path: String, method: String, jsonBody: Body) async throws -> T {
-        let (data, response) = try await session.data(for: request(path, method: method, jsonBody: jsonBody))
+        let (data, response) = try await self.data(for: request(path, method: method, jsonBody: jsonBody))
         try Self.check(response, data: data)
         return try JSONDecoder().decode(T.self, from: data)
     }
 
     func discard(_ path: String, method: String = "POST", body: [String: String]? = nil) async throws {
-        let (data, response) = try await session.data(for: request(path, method: method, body: body))
+        let (data, response) = try await self.data(for: request(path, method: method, body: body))
         try Self.check(response, data: data)
     }
 
@@ -110,7 +223,7 @@ final class CompanionClient {
             url.queryItems = [URLQueryItem(name: "chatId", value: chatId)]
             req.url = url.url
         }
-        let (data, response) = try await session.data(for: req)
+        let (data, response) = try await self.data(for: req)
         try Self.check(response, data: data)
         return try JSONDecoder().decode(BotComputerState.self, from: data)
     }
@@ -125,7 +238,7 @@ final class CompanionClient {
         var req = try request("/v1/bots/provider-models")
         var url = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)!
         url.queryItems = [URLQueryItem(name: "provider", value: provider)]; req.url = url.url
-        let (data, response) = try await session.data(for: req)
+        let (data, response) = try await self.data(for: req)
         try Self.check(response, data: data)
         return try JSONDecoder().decode(BotProviderModels.self, from: data)
     }
@@ -143,7 +256,7 @@ final class CompanionClient {
         if let after { query.append(URLQueryItem(name: "after", value: String(after))) }
         if let before { query.append(URLQueryItem(name: "before", value: String(before))) }
         url.queryItems = query; req.url = url.url
-        let (data, response) = try await session.data(for: req)
+        let (data, response) = try await self.data(for: req)
         try Self.check(response, data: data)
         return try JSONDecoder().decode(BotTeamChannel.self, from: data)
     }
@@ -157,7 +270,10 @@ final class CompanionClient {
         if let chatId { body["chatId"] = chatId }
         var streamRequest = try request("/v1/chat", method: "POST", body: body)
         streamRequest.timeoutInterval = 600 // Model prefill can exceed the dashboard's short timeout.
-        let (bytes, response) = try await session.bytes(for: streamRequest)
+        try beginMutation()
+        defer { endMutation() }
+        let selectedRequest = try rebound(streamRequest, to: baseURL)
+        let (bytes, response) = try await session.bytes(for: selectedRequest)
         try Self.check(response)
         var completed = false
         for try await line in bytes.lines {

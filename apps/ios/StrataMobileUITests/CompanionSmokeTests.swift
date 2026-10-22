@@ -18,6 +18,38 @@ final class CompanionSmokeTests: XCTestCase {
         app?.terminate()
     }
 
+    @MainActor
+    func testManualMacAddressUpdatePreservesPairingHistoryAndRelaunch() async throws {
+        let control = try pairWorkspaceFixture()
+        let before = try await fixtureControl(control, action: "state")
+        let addresses = try XCTUnwrap(before["routeAddresses"] as? [String: String])
+        let alias = try XCTUnwrap(addresses["alias"])
+        tapTab("Chat")
+        XCTAssertTrue(app.staticTexts["Earlier Mac history is available on the phone."].waitForExistence(timeout: 10))
+        tapTab("Connection")
+        let update = app.buttons["updateMacAddressButton"]; reveal(update); update.tap()
+        let address = app.textFields["macAddressField"]; XCTAssertTrue(address.waitForExistence(timeout: 5))
+        address.tap(); address.typeText(alias)
+        let done = app.buttons["dismissMacAddressKeyboardButton"]; if done.waitForExistence(timeout: 3) { done.tap() }
+        attachScreenshot("Connection — existing pairing new address")
+        let save = app.buttons["saveMacAddressButton"]; reveal(save); XCTAssertTrue(save.isEnabled); save.tap()
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: save)
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 15), .completed)
+        XCTAssertTrue(app.staticTexts[alias].waitForExistence(timeout: 5))
+        attachScreenshot("Connection — verified alternate route")
+        tapTab("Chat"); XCTAssertTrue(app.staticTexts["Earlier Mac history is available on the phone."].waitForExistence(timeout: 5))
+        app.terminate(); app.launch()
+        tapTab("Connection"); XCTAssertTrue(app.staticTexts[alias].waitForExistence(timeout: 10))
+        tapTab("Chat"); XCTAssertTrue(app.staticTexts["Earlier Mac history is available on the phone."].waitForExistence(timeout: 10))
+        let after = try await fixtureControl(control, action: "state")
+        let requests = try XCTUnwrap(after["routeRequests"] as? [[String: Any]])
+        let aliasRequests = requests.filter { $0["server"] as? String == "alias" }
+        XCTAssertTrue(aliasRequests.contains { $0["bearer"] as? Bool == false && $0["path"] as? String == "/v1/status" })
+        XCTAssertTrue(aliasRequests.contains { $0["bearer"] as? Bool == true && $0["path"] as? String == "/v1/status" })
+        XCTAssertFalse(aliasRequests.contains { $0["path"] as? String == "/v1/pair" }, "Changing the route must never enroll again")
+        XCTAssertTrue(aliasRequests.allSatisfy { $0["method"] as? String == "GET" }, "No model, approval or conversation mutation is part of changing the address")
+    }
+
     func testHomePairingAndUnpairedTabs() throws {
         XCTAssertTrue(app.buttons["pairMacButton"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["connectionStatus"].exists)

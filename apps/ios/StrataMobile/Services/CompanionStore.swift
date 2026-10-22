@@ -59,6 +59,12 @@ final class CompanionStore: ObservableObject {
     @Published private(set) var isSending = false
     @Published var error: String?
     @Published var pendingInvitation: PairingInvitation?
+    @Published private(set) var isUpdatingMacAddress = false
+    @Published private(set) var macAddressError: String?
+    @Published private(set) var connectedAddress: URL?
+    private var addressUpdateOperation: UUID?
+    private var endpointGeneration = UUID()
+    private var lastEndpointDiscovery: Date?
     var isPaired: Bool { connection != nil }
     private var client: CompanionClient?
     private var streamTask: Task<Void, Never>?
@@ -77,9 +83,81 @@ final class CompanionStore: ObservableObject {
         self.deleteConnection = deleteConnection
         if let saved = connection ?? (client == nil ? ConnectionKeychain.load() : nil) {
             self.connection = saved
-            self.client = client ?? CompanionClient(baseURL: saved.baseURL, fingerprint: saved.fingerprint, token: saved.token)
+            self.client = client ?? CompanionClient(baseURL: saved.baseURL, fingerprint: saved.fingerprint, token: saved.token, endpoints: saved.endpoints ?? [])
+            if let client, let endpoints = saved.endpoints { client.updateEndpoints(endpoints) }
         }
         notifications.bind(client: self.client, connection: self.connection, pairingGeneration: connectionGeneration)
+    }
+
+    var canUpdateMacAddress: Bool {
+        isPaired && !isUpdatingMacAddress && !isSending && !isSubmittingMessage && !isModelDownloadBusy &&
+        creatingBotConversationId == nil && !savingBotProfile && savingBotAvatarId == nil && decidingToolId == nil
+    }
+
+    func cancelMacAddressUpdate() {
+        addressUpdateOperation = nil; endpointGeneration = UUID(); isUpdatingMacAddress = false
+    }
+
+    /// This is an address change for the existing pairing, never enrollment.
+    /// No bearer is sent until the pinned, unauthenticated preflight succeeds.
+    func updateMacAddress(_ value: String, kind: CompanionEndpoint.Kind) async -> Bool {
+        guard canUpdateMacAddress, let client, let saved = connection else { return false }
+        let generation = connectionGeneration, operation = UUID()
+        addressUpdateOperation = operation; endpointGeneration = UUID()
+        isUpdatingMacAddress = true; macAddressError = nil
+        defer {
+            if addressUpdateOperation == operation { isUpdatingMacAddress = false; addressUpdateOperation = nil }
+        }
+        do {
+            let address = try PairingInvitation.validatedURL(value.trimmingCharacters(in: .whitespacesAndNewlines))
+            let endpoint = try CompanionEndpoint(kind: kind, url: address).validated()
+            try client.beginAddressUpdate()
+            defer { client.endAddressUpdate() }
+            let checked = try await client.preflightAddress(endpoint.url)
+            guard connectionGeneration == generation, addressUpdateOperation == operation, !Task.isCancelled else { return false }
+            let verifiedStatus = try await client.status(at: checked)
+            guard connectionGeneration == generation, addressUpdateOperation == operation, !Task.isCancelled else { return false }
+            var next = saved
+            next.baseURL = endpoint.url
+            next.endpoints = try CompanionEndpoint.merged((saved.endpoints ?? []) + [CompanionEndpoint(kind: .lan, url: saved.baseURL)], keeping: endpoint)
+            // Saving must succeed before any shared client or view changes. No
+            // suspension separates this final generation check and commit.
+            try saveConnection(next)
+            client.updateEndpoints(next.endpoints ?? [], preferred: endpoint.url)
+            connection = next; status = verifiedStatus; connectedAddress = endpoint.url
+            error = nil; return true
+        } catch is CancellationError { return false }
+        catch {
+            if connectionGeneration == generation, addressUpdateOperation == operation {
+                macAddressError = (error as? CompanionError).map { failure in
+                    if case .keychain = failure { return "The new address could not be saved securely. Your previous address and pairing were kept." }
+                    return friendly(failure)
+                } ?? friendly(error)
+            }
+            return false
+        }
+    }
+
+    private func learnConnectionEndpoints() async {
+        guard let client, let saved = connection, !isUpdatingMacAddress,
+              lastEndpointDiscovery.map({ Date().timeIntervalSince($0) >= 60 }) ?? true else { return }
+        lastEndpointDiscovery = Date()
+        let generation = connectionGeneration, endpointVersion = endpointGeneration
+        do {
+            let details: CompanionConnectionDetails = try await client.perform("/v1/connection")
+            let endpoints = try details.validatedEndpoints()
+            guard connectionGeneration == generation, endpointGeneration == endpointVersion, !isUpdatingMacAddress, !Task.isCancelled else { return }
+            let previous = saved.endpoints?.first { $0.url == saved.baseURL } ?? CompanionEndpoint(kind: .lan, url: saved.baseURL)
+            var next = saved
+            next.endpoints = try CompanionEndpoint.merged(endpoints + (saved.endpoints ?? []), keeping: previous)
+            if next != saved {
+                try saveConnection(next)
+                connection = next; client.updateEndpoints(next.endpoints ?? [])
+            }
+        } catch {
+            // Older hosts have no discovery endpoint. Discovery/save failure
+            // never invalidates a working pairing or its saved route list.
+        }
     }
 
     func computerSession(botId: String, chatId: String? = nil) -> BotComputerSession {
@@ -194,7 +272,7 @@ final class CompanionStore: ObservableObject {
     }
 
     func pair(url: String, code: String, fingerprint: String) async {
-        guard !isLoading, !isSending, !isSubmittingMessage, !isModelDownloadBusy, creatingBotConversationId == nil, !savingBotProfile else { return }
+        guard !isUpdatingMacAddress, !isLoading, !isSending, !isSubmittingMessage, !isModelDownloadBusy, creatingBotConversationId == nil, !savingBotProfile else { return }
         let operation = beginLoading()
         let generation = connectionGeneration
         error = nil
@@ -211,6 +289,7 @@ final class CompanionStore: ObservableObject {
             let saved = PairedConnection(baseURL: address, macName: result.macName, fingerprint: pin, token: result.token)
             try saveConnection(saved)
             connectionGeneration = UUID(); conversationGeneration = UUID()
+            endpointGeneration = UUID(); lastEndpointDiscovery = nil; connectedAddress = nil
             clearModelManagement()
             clearBots()
             connection = saved
@@ -225,29 +304,36 @@ final class CompanionStore: ObservableObject {
     }
 
     func refresh(silently: Bool = false) async {
-        guard isPaired, !isLoading else { return }
+        guard isPaired, !isLoading, !isUpdatingMacAddress else { return }
         let operation = beginLoading()
+        let generation = connectionGeneration, endpointVersion = endpointGeneration
         defer { finishLoading(operation) }
         do { try await fetchState(); if !silently { error = nil } }
         catch is CancellationError { }
-        catch { if loadingOperation == operation { markUnreachable(); if !silently { self.error = friendly(error) } } }
+        catch {
+            if loadingOperation == operation, connectionGeneration == generation, endpointGeneration == endpointVersion, !isUpdatingMacAddress {
+                markUnreachable(); if !silently { self.error = friendly(error) }
+            }
+        }
     }
 
     private func fetchState() async throws {
         guard let client else { throw CompanionError.unpaired }
-        let generation = connectionGeneration
+        let generation = connectionGeneration, endpointVersion = endpointGeneration
         async let fetchedStatus: CompanionStatus = client.perform("/v1/status")
         async let fetchedModels: ModelResult = client.perform("/v1/models")
         async let fetchedChats: ChatListResult = client.perform("/v1/chats")
         async let fetchedConversations: MacConversationList = client.perform("/v1/conversations")
         let (newStatus, newModels, newChats, newConversations) = try await (fetchedStatus, fetchedModels, fetchedChats, fetchedConversations)
-        guard connectionGeneration == generation else { throw CancellationError() }
+        guard connectionGeneration == generation, endpointGeneration == endpointVersion, !isUpdatingMacAddress else { throw CancellationError() }
         status = newStatus; models = newModels.models; chats = newChats.chats
         conversations = newConversations.conversations
+        connectedAddress = client.baseURL
         if !hasChosenConversation, currentConversation == nil, !isSending, !isSubmittingMessage,
            let first = conversations.first(where: { $0.id == newConversations.activeChatId }) ?? conversations.first {
             await selectConversation(first)
         }
+        await learnConnectionEndpoints()
     }
 
     func loadModel(_ id: String) async {
@@ -735,8 +821,8 @@ final class CompanionStore: ObservableObject {
     }
 
     func refreshCurrentConversation() async {
-        guard let client, let selected = currentConversation, !isSubmittingMessage, !isSelectingConversation, decidingToolId == nil else { return }
-        let generation = connectionGeneration
+        guard let client, let selected = currentConversation, !isUpdatingMacAddress, !isSubmittingMessage, !isSelectingConversation, decidingToolId == nil else { return }
+        let generation = connectionGeneration, endpointVersion = endpointGeneration
         let selection = conversationGeneration
         do {
             let detail: MacConversationDetail = try await client.perform(conversationPath(selected.id))
@@ -745,7 +831,7 @@ final class CompanionStore: ObservableObject {
         } catch is CancellationError { }
         catch {
             // Background refresh leaves the conversation readable and retryable.
-            if connectionGeneration == generation { markUnreachable() }
+            if connectionGeneration == generation, endpointGeneration == endpointVersion, !isUpdatingMacAddress { markUnreachable() }
         }
     }
 
@@ -864,6 +950,7 @@ final class CompanionStore: ObservableObject {
 
     private func clearConnection() {
         connectionGeneration = UUID(); conversationGeneration = UUID()
+        cancelMacAddressUpdate(); lastEndpointDiscovery = nil; connectedAddress = nil; macAddressError = nil
         clearModelManagement()
         clearBots()
         loadingOperation = nil; isLoading = false
@@ -875,6 +962,7 @@ final class CompanionStore: ObservableObject {
     }
 
     private func markUnreachable() {
+        connectedAddress = nil
         status?.hostConnected = false
         status?.tokensPerSecond = nil
         status?.activeRequests = 0
@@ -883,10 +971,10 @@ final class CompanionStore: ObservableObject {
     private func friendly(_ error: Error) -> String {
         if let urlError = error as? URLError {
             switch urlError.code {
-            case .serverCertificateUntrusted, .secureConnectionFailed, .cancelled:
-                return "The Mac certificate could not be verified. Scan a fresh pairing QR code from your Mac."
+            case .serverCertificateUntrusted, .secureConnectionFailed, .serverCertificateHasBadDate, .serverCertificateHasUnknownRoot, .serverCertificateNotYetValid:
+                return "This address could not verify your paired Mac’s certificate. Your saved pairing was kept. Check the address on your Mac."
             case .cannotConnectToHost, .cannotFindHost, .timedOut, .notConnectedToInternet:
-                return "Your Mac is unreachable. Keep Strata running with iPhone pairing enabled and connect both devices to the same network."
+                return "Your Mac is unreachable. Keep Strata running with iPhone pairing enabled. Use the same Wi-Fi or connect both devices to Tailscale, then choose Update Mac address."
             default: break
             }
         }

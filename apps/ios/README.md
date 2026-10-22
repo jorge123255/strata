@@ -7,9 +7,15 @@ A native SwiftUI companion for the Strata desktop app. It uses Strata's emerald,
 1. Keep Strata open on your Mac.
 2. In the Mac Strata app, choose **Pair iPhone** in the sidebar, or **Settings → iPhone**, then choose **Enable iPhone pairing**.
 3. Open **Strata** on iPhone, choose **Pair your Mac**, and scan the Mac's QR code. Check the address and choose **Pair with Mac**.
-4. Allow local network access. Keep both devices on the same trusted network.
+4. Allow local network access. Use the same trusted Wi-Fi network, or connect both devices to your Tailscale network and enter the Mac's Tailscale address manually.
 
 Each invitation expires after five minutes and works once. Use **New pairing code** on the Mac for another device. The camera is optional: enter the HTTPS address, six-digit code, and certificate fingerprint manually instead. Strata remembers that pairing is enabled and restores the listener on its next launch. **Disable pairing** closes the listener while preserving paired phones for later.
+
+### Use Strata away from home
+
+Leave the Mac awake with Strata open and Tailscale connected. Connect Tailscale on the iPhone too. The updated app learns this Mac's Wi-Fi and Tailscale addresses while connected, keeping the same certificate and saved pairing. If you are already away, open **Connection → Update Mac address** and enter the HTTPS Tailscale address from the Mac's **Pair iPhone → Connect away from home** section. This updates how you reach the paired Mac; it does not create a new pairing or clear history.
+
+Only read requests can automatically try another saved address after a network failure. Messages, approvals, model controls and computer actions are never automatically resent across addresses. If a connection drops during an action, inspect its current state before trying it again. Both devices must be allowed to connect by your Tailscale policy; Strata does not change VPN, firewall or public-access settings.
 
 ## What it controls
 

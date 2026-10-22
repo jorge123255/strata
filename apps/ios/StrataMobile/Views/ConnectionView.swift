@@ -6,6 +6,7 @@ struct ConnectionView: View {
     @State private var showingDisconnect = false
     @State private var showingForget = false
     @State private var showingNotifications = false
+    @State private var showingMacAddress = false
     @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
@@ -44,7 +45,7 @@ struct ConnectionView: View {
                     .strataCard(padding: 0)
                 }
                 VStack(alignment: .leading, spacing: 22) {
-                    DetailRow(icon: "wifi", title: "One local network", detail: "Keep your iPhone and Mac on the same network while using the companion.")
+                    DetailRow(icon: "network", title: "At home or away", detail: "Use the same Wi-Fi, or connect your iPhone and Mac to Tailscale. Your Mac must stay awake with Strata running.")
                     DetailRow(icon: "lock.shield", title: "A trusted connection", detail: "A one-time code pairs your phone. Your Mac’s certificate is checked on every connection.")
                     DetailRow(icon: "desktopcomputer", title: "Your workspace, connected", detail: "Use models and API connections configured on your Mac. Selected providers may run remotely.")
                 }
@@ -65,6 +66,7 @@ struct ConnectionView: View {
         }
         .background(StrataTheme.background)
         .sheet(isPresented: $showingNotifications) { NotificationsView(notifications: store.notifications) }
+        .sheet(isPresented: $showingMacAddress) { UpdateMacAddressView(store: store) }
         .toolbar(.hidden, for: .navigationBar)
         .confirmationDialog("Disconnect this Mac?", isPresented: $showingDisconnect, titleVisibility: .visible) {
             Button("Disconnect Mac", role: .destructive) { Task { await store.disconnect() } }
@@ -103,7 +105,7 @@ struct ConnectionView: View {
                 if !typeSize.isAccessibilitySize { Spacer(minLength: 0) }
             }
             Divider().overlay(StrataTheme.line)
-            if let address = store.connection?.baseURL.host {
+            if let address = (store.connectedAddress ?? store.connection?.baseURL)?.absoluteString {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("MAC ADDRESS").font(.system(.caption2, weight: .bold)).tracking(1.6)
                     Text(address).font(.subheadline.monospaced()).textSelection(.enabled)
@@ -120,6 +122,12 @@ struct ConnectionView: View {
             .buttonStyle(StrataSecondaryButtonStyle())
             .disabled(store.isLoading)
             .accessibilityIdentifier("refreshConnectionButton")
+            Button { showingMacAddress = true } label: {
+                Label("Update Mac address", systemImage: "network")
+            }
+            .buttonStyle(StrataSecondaryButtonStyle())
+            .disabled(!store.canUpdateMacAddress)
+            .accessibilityIdentifier("updateMacAddressButton")
             Button(action: pair) {
                 Label("Pair again", systemImage: "qrcode.viewfinder")
             }
@@ -136,6 +144,64 @@ struct ConnectionView: View {
                 .accessibilityIdentifier("forgetMacButton")
         }
         .strataCard()
+    }
+}
+
+private struct UpdateMacAddressView: View {
+    @ObservedObject var store: CompanionStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var address = ""
+    @State private var kind = CompanionEndpoint.Kind.tailscale
+    @State private var updateTask: Task<Void, Never>?
+    @FocusState private var addressFocused: Bool
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    PageHeading(eyebrow: "Same Mac, new route", title: "Update Mac address", subtitle: "Keep your pairing and chat history. This address must present your Mac’s existing certificate.")
+                    VStack(alignment: .leading, spacing: 14) {
+                        Picker("Connection type", selection: $kind) {
+                            Text("Tailscale").tag(CompanionEndpoint.Kind.tailscale)
+                            Text("Local Wi-Fi").tag(CompanionEndpoint.Kind.lan)
+                        }.pickerStyle(.segmented).accessibilityIdentifier("macAddressKindPicker")
+                        Text(kind == .tailscale ? "TAILSCALE ADDRESS" : "MAC ADDRESS")
+                            .font(.caption.weight(.semibold)).foregroundStyle(StrataTheme.secondaryInk)
+                        TextField("https://100.x.x.x:8787", text: $address)
+                            .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
+                            .textContentType(.URL).padding(14).background(StrataTheme.grouped, in: RoundedRectangle(cornerRadius: 14))
+                            .focused($addressFocused)
+                            .accessibilityIdentifier("macAddressField")
+                        Text("On your Mac, open Pair iPhone and copy its Tailscale address. Connect both devices to Tailscale first. Include https:// and the port.")
+                            .font(.footnote).foregroundStyle(StrataTheme.secondaryInk)
+                    }.strataCard()
+                    if let message = store.macAddressError {
+                        Text(message).font(.subheadline).foregroundStyle(StrataTheme.warning)
+                            .accessibilityIdentifier("macAddressError")
+                    }
+                    Button {
+                        updateTask = Task {
+                            if await store.updateMacAddress(address, kind: kind) { dismiss() }
+                        }
+                    } label: {
+                        HStack {
+                            if store.isUpdatingMacAddress { ProgressView().controlSize(.small) }
+                            Text(store.isUpdatingMacAddress ? "Checking your Mac…" : "Check and save")
+                        }
+                    }.buttonStyle(StrataPrimaryButtonStyle())
+                        .disabled(!store.canUpdateMacAddress || address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .accessibilityIdentifier("saveMacAddressButton")
+                }.padding(20)
+            }.background(StrataTheme.background)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                    ToolbarItemGroup(placement: .keyboard) {
+                        Spacer()
+                        Button("Done") { addressFocused = false }.accessibilityIdentifier("dismissMacAddressKeyboardButton")
+                    }
+                }
+        }
+        .onDisappear { updateTask?.cancel(); store.cancelMacAddressUpdate() }
     }
 }
 
