@@ -25,8 +25,8 @@ test('paired team room shares real attributed history, semantic invitations, bid
     calls.push({ mode, botId: input.bot.id, model: input.bot.model, policy: input.bot.policy, chatId: input.sessionId });
     if (mode !== 'task') {
       assert.equal(input.bot.teamConversationOnly, true);
-      assert.ok(!input.bot.instructions.includes('PRIVATE_PROFILE_MARKER'));
-      assert.ok(input.tools.every(tool => ['post_team_message', 'read_team_message', 'read_team_results', 'read_team_work', 'invite_teammates', 'assign_team_task', 'update_team_instructions', 'send_to_teammate', 'spawn_subagent', 'list_teammates', 'list_subagents', 'stop_subagent'].includes(tool.name)));
+      assert.equal(input.bot.instructions.includes('PRIVATE_PROFILE_MARKER'), input.bot.id === coordinator.id, 'Each bot retains its own instructions; peers never receive them.');
+      assert.ok(input.tools.every(tool => ['post_team_message', 'read_team_message', 'read_team_results', 'read_team_work', 'read_team_workflow', 'invite_teammates', 'assign_team_task', 'update_team_instructions', 'send_to_teammate', 'spawn_subagent', 'list_teammates', 'list_subagents', 'stop_subagent'].includes(tool.name)));
       await assert.rejects(async () => input.executeTool('write_file', {}, 'forbidden'), /conversation|not assigned|unavailable/i);
     }
     if (mode === 'routing' && input.message.startsWith('[The public conversation invitations')) {

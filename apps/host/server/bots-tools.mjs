@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { findBrowser } from './agent/browser-probe.mjs';
 import { agentEnvironment } from './agent/harness-runtime.mjs';
+import { markProcessExitObserved, markCompletedProcessError } from './bots-runtime/tool-outcome.mjs';
 
 const fail = message => { throw new Error(message); };
 const text = value => ({ content: [{ type: 'text', text: String(value) }] });
@@ -96,7 +97,18 @@ export function runBotProcess(command, args, { cwd, signal, timeout = 30_000, ma
     child.stdout.on('data', collect('out')); child.stderr.on('data', collect('err'));
     const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); };
     child.on('error', error => { cleanup(); reject(error); });
-    child.on('close', async code => { cleanup(); if (stopping) await stopping; if (forced) reject(new Error(forced)); else resolveResult({ code, stdout: output, stderr: errors }); });
+    child.on('close', async (code, terminationSignal) => {
+      cleanup(); if (stopping) await stopping;
+      if (forced) return reject(new Error(forced));
+      const result = { code, stdout: output, stderr: errors };
+      // Only our detached Unix process group has a reliable identity here.
+      // A closed leader with a surviving/background group is not confirmed
+      // cleanup. This is a read-only existence check, never an extra signal.
+      let groupGone = false;
+      if (process.platform !== 'win32' && child.pid) try { process.kill(-child.pid, 0); } catch (error) { groupGone = error.code === 'ESRCH'; }
+      if (Number.isSafeInteger(code) && !terminationSignal && !signal?.aborted && groupGone) markProcessExitObserved(result);
+      resolveResult(result);
+    });
     signal?.addEventListener('abort', abort, { once: true });
     if (signal?.aborted) abort();
   });
@@ -225,7 +237,7 @@ export function createBotTools({ directory, browserProbe = findBrowser, processR
         if (typeof args.command !== 'string' || !args.command.trim() || args.command.length > 32000) fail('Enter a command of at most 32,000 characters.');
         const timeout = Math.min(120, Math.max(1, Number(args.timeoutSeconds) || 30)) * 1000;
         const run = await processRunner(process.platform === 'win32' ? 'powershell.exe' : '/bin/sh', process.platform === 'win32' ? ['-NoProfile', '-NonInteractive', '-Command', args.command] : ['-c', args.command], { cwd: bot.workspace, signal, timeout, env: agentEnvironment(process.env) });
-        result = { ...text(`Exit ${run.code}\n${run.stdout}${run.stderr ? `\n${run.stderr}` : ''}`), isError: run.code !== 0 };
+        result = markCompletedProcessError({ ...text(`Exit ${run.code}\n${run.stdout}${run.stderr ? `\n${run.stderr}` : ''}`), isError: run.code !== 0 }, run);
       } else if (name.startsWith('browser_')) {
         if (bot.policy === 'plan' && !browsers.has(bot.id)) fail('Plan can inspect an existing bot browser. Open it in Manual mode first.');
         const { page } = await pageFor(bot);

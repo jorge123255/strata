@@ -3,7 +3,7 @@ import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readF
 import { createHash, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
-import { BOT_TOOL_NO_EFFECT } from './bots-runtime/tool-outcome.mjs';
+import { BOT_TOOL_NO_EFFECT, BOT_TOOL_COMPLETED_PROCESS_ERROR } from './bots-runtime/tool-outcome.mjs';
 
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const ordered = value => Array.isArray(value) ? value.map(ordered) : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().filter(key => value[key] !== undefined).map(key => [key, ordered(value[key])])) : value;
@@ -11,7 +11,7 @@ const fail = (message, code = 'harness_action_receipt') => Object.assign(new Err
 const ID = /^ba_[a-f0-9]{64}$/, HEX = /^[a-f0-9]{64}$/, STATES = ['pending', 'succeeded', 'error', 'interrupted', 'uncertain', 'reviewed'];
 const unresolved = state => ['pending', 'uncertain', 'interrupted'].includes(state);
 // Exact host-owned read implementations only; never infer safety from an MCP name/prefix.
-const READ_ONLY_TOOLS = new Set(['get_execution_context', 'read_file', 'list_files', 'browser_snapshot', 'computer_screenshot', 'check_created_tool', 'authorize_created_tool', 'list_created_tools', 'read_created_tool', 'list_skills', 'read_skill', 'search_tools', 'list_teammates', 'list_subagents', 'read_team_message', 'read_team_results', 'read_team_work', 'read_team_workflow', 'host_list_files', 'host_read_file']);
+const READ_ONLY_TOOLS = new Set(['get_execution_context', 'read_file', 'list_files', 'browser_snapshot', 'computer_screenshot', 'check_created_tool', 'authorize_created_tool', 'list_created_tools', 'read_created_tool', 'list_skills', 'read_skill', 'search_tools', 'list_teammates', 'list_subagents', 'read_team_message', 'read_team_results', 'read_team_work', 'read_team_workflow', 'read_team_plan', 'host_list_files', 'host_read_file']);
 const readOnly = name => READ_ONLY_TOOLS.has(name);
 const actionGuardKey = row => hash([row.origin, row.scopeHash, row.authorityHash, row.turnHash, row.actionHash]);
 const toolLabel = value => typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,120}$/.test(value) ? value : `tool_${hash(String(value)).slice(0, 16)}`;
@@ -34,6 +34,7 @@ function processIncarnation(pid) {
 }
 const processAlive = pid => { try { process.kill(pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; } };
 const uncertainAdvice = 'This action may have changed the outside world. Do not retry it automatically; inspect its conversation and receipt first.';
+const completedErrorAdvice = 'The command completed with an error. It may have changed files or other state; this is not rollback or verified work. Inspect its output and current state before issuing a new command. This exact call will not be replayed.';
 const message = 'This exact tool call already has a durable receipt. Inspect its conversation and receipt before making a new request. It was not executed again.';
 const replay = () => ({ content: [{ type: 'text', text: message }], isError: true });
 function privateDirectory(directory) {
@@ -162,10 +163,13 @@ export function createBotActionJournal({ directory, now = Date.now, retention = 
         const value = await dispatch();
         let confirmedNoEffect = readOnly(name) || value?.[BOT_TOOL_NO_EFFECT] === true;
         try { confirmedNoEffect ||= noEffect() === true; } catch {}
-        row.state = value?.isError && confirmedNoEffect ? 'error' : signal?.aborted ? 'interrupted' : value?.isError ? 'uncertain' : 'succeeded';
+        const completed = value?.[BOT_TOOL_COMPLETED_PROCESS_ERROR];
+        const confirmedProcessError = name === 'run_command' && value?.isError === true && Number.isSafeInteger(completed?.exitCode) && completed.exitCode > 0 && completed.exitCode <= 0xffffffff;
+        row.state = value?.isError && confirmedNoEffect ? 'error' : signal?.aborted ? 'interrupted' : confirmedProcessError ? 'error' : value?.isError ? 'uncertain' : 'succeeded';
         if (['uncertain', 'interrupted'].includes(row.state) && !readOnly(name)) uncertaintyIndex().add(actionGuardKey(row));
         row.revision++; row.updatedAt = now(); write(row); prune();
-        return row.state === 'uncertain' && Array.isArray(value?.content) ? { ...value, content: [...value.content, { type: 'text', text: uncertainAdvice }] } : value;
+        const advice = row.state === 'uncertain' ? uncertainAdvice : row.state === 'error' && confirmedProcessError ? completedErrorAdvice : null;
+        return advice && Array.isArray(value?.content) ? { ...value, content: [...value.content, { type: 'text', text: advice }] } : value;
       } catch (error) {
         // A thrown callback can have failed after changing the outside world. Never assume rollback.
         if (existsSync(pathFor(id)) && lookup(id)?.ownerNonce === ownerNonce) {

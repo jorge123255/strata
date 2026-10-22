@@ -1771,6 +1771,57 @@ final class BotWorkspaceTests: XCTestCase {
         XCTAssertFalse(fixture.requests.contains { $0.path.hasSuffix("/runs") || $0.path.contains("/computer/") })
     }
 
+    func testDurableTeamPlanIsExplicitWorkOnlyAndOldHostPayloadIsUnchanged() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        var supported = false
+        var ackDefect: String?
+        fixture.respond { request in
+            if request.url!.path.hasSuffix("/channel") { return self.channelSnapshot([self.channelEntry(1)]) }
+            if request.url!.path.hasSuffix("/messages") {
+                var entry = self.channelEntry(2); entry["author"] = ["type": "user", "name": "You"]; entry["content"] = "Do the authorized work"; entry["runId"] = "plan_run"; entry["planId"] = "tp_00000000-0000-4000-8000-000000000001"; entry["workMode"] = ackDefect == "mode" ? "chat" : "work"
+                if ackDefect == "reply" { entry["replyToId"] = "unrequested_reply" }
+                if ackDefect == "recipients" { entry["recipientIds"] = ["bot_reviewer"] }
+                return ["channel": self.channelSnapshot([self.channelEntry(1), entry]), "planId": "tp_00000000-0000-4000-8000-000000000001", "run": ["id": "plan_run", "teamId": "team_fixture", "rootChatId": "plan_chat", "rootBotId": "bot_builder", "state": "queued", "consumedTurns": 0, "planId": "tp_00000000-0000-4000-8000-000000000001"]]
+            }
+            if request.url!.path == "/v1/bots/teams" {
+                var value: [String: Any] = ["teams": [self.team(enabled: true)], "runs": [], "teamCoordinatorWorkToolsSupported": true]
+                if supported { value["teamWorkPlansSupported"] = true }
+                return value
+            }
+            return nil
+        }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore()
+        await workspace.refreshTeams(); await workspace.refreshChannel("team_fixture")
+        let selected = try decode(team(enabled: true), as: BotTeam.self)
+        let work = BotTeamChannelPost(message: "Do the authorized work", requestId: "plan_fixture", workMode: .work, durablePlan: true)
+        let unsupported = await workspace.postTeamMessage(selected, draft: work)
+        XCTAssertFalse(unsupported)
+        supported = true; await workspace.refreshTeams()
+        for mode in [BotTeamMessageWorkMode.chat, nil] {
+            var invalid = work; invalid.workMode = mode
+            let result = await workspace.postTeamMessage(selected, draft: invalid)
+            XCTAssertFalse(result)
+        }
+        var invalid = work; invalid.durablePlan = false
+        let falseFlag = await workspace.postTeamMessage(selected, draft: invalid)
+        XCTAssertFalse(falseFlag)
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+        let sent = await workspace.postTeamMessage(selected, draft: work)
+        XCTAssertTrue(sent)
+        let writes = fixture.requests.filter { $0.method == "POST" }
+        XCTAssertEqual(writes.count, 1)
+        XCTAssertEqual(writes.first?.jsonBody?["durablePlan"] as? Bool, true)
+        var old = work; old.durablePlan = nil
+        let encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(old)) as? [String: Any])
+        XCTAssertNil(encoded["durablePlan"])
+        for defect in ["mode", "reply", "recipients"] {
+            ackDefect = defect
+            let accepted = await workspace.postTeamMessage(selected, draft: work)
+            XCTAssertFalse(accepted, "A different intake acknowledgement must not clear the request: " + defect)
+        }
+        XCTAssertEqual(fixture.requests.filter { $0.method == "POST" }.count, 4, "Each explicitly requested send happens once; acknowledgements never cause a retry.")
+    }
+
     func testBusyChannelPostWindowCannotSkipUnreadGapAndIdsKeepTheirSequences() async throws {
         let fixture = StoreTransport(); defer { fixture.close() }
         var queries: [String] = []
@@ -4060,4 +4111,311 @@ extension TeamWorkflowTests {
         XCTAssertEqual(unavailable, before, "Explaining a saved policy never changes it or grants tool access.")
         XCTAssertTrue(value.roleReadinessNotices(in: []).allSatisfy { $0.contains("unavailable") })
     }
+}
+
+@MainActor
+final class TeamWorkPlanTests: XCTestCase {
+    private var retainedStore: CompanionStore?
+    private let teamID = "team_plan_fixture"
+    private let planID = "tp_00000000-0000-4000-8000-000000000001"
+    private let taskID = "tpt_00000000-0000-4000-8000-000000000001"
+    private let criterionID = "tpc_00000000-0000-4000-8000-000000000001"
+    private var listPath: String { "/v1/bots/teams/\(teamID)/plans" }
+    private var detailPath: String { listPath + "/" + planID }
+    private func teams(capability: Bool? = true, enabled: Bool = true) -> [String: Any] {
+        var result: [String: Any] = ["teams": [["id": teamID, "name": "Plan fixture", "memberIds": ["builder", "reviewer"], "coordinatorId": "builder", "enabled": enabled, "limits": ["maxParallel": 0, "maxDepth": 0, "maxHops": 0, "maxTurns": 0, "maxDurationMs": 0]]], "runs": []]
+        if let capability { result["teamWorkPlansSupported"] = capability }
+        return result
+    }
+    private func task(id: String? = nil, key: String = "build", kind: String = "work", state: String = "ready_for_review") -> [String: Any] {
+        ["id": id ?? taskID, "key": key, "title": "Implement the requested fixture", "instructions": "Inspect and change only the authorized fixture.", "ownerId": kind == "review" ? "reviewer" : "builder", "collaboratorIds": [], "dependsOn": [], "kind": kind,
+         "criteria": [["id": criterionID, "text": "Meaningful fixture checks pass"]], "state": state,
+         "evidence": [["kind": "test", "label": "Fixture-only evidence", "detail": "No real model or command ran in this test."]],
+         "checks": kind == "review" ? [["criterionId": criterionID, "passed": true, "detail": "Independently inspected fixture result."]] : []]
+    }
+    private func plan(phase: String = "awaiting_review", revision: Int = 1) -> [String: Any] {
+        ["id": planID, "teamId": teamID, "parentRunId": "plan_run", "sourceMessageId": "source_message", "goal": "Improve only the authorized fixture", "coordinatorId": "builder", "memberIds": ["builder", "reviewer"], "phase": phase,
+         "revision": revision, "proof": String(repeating: revision == 1 ? "a" : revision == 2 ? "b" : "c", count: 64), "createdAt": "2026-10-22T00:00:00Z", "updatedAt": "2026-10-22T00:00:01Z", "summary": "A reported result awaits the owner.",
+         "participation": [["botId": "builder", "role": "Builder", "reason": "Owns the concrete change"], ["botId": "reviewer", "role": "Reviewer", "reason": "Checks the result independently"]],
+         "tasks": [task()], "counts": ["pending": 0, "queued": 0, "running": 0, "working": 0, "ready_for_review": 1, "blocked": 0, "interrupted": 0, "stopped": 0], "totalTasks": 1, "tasksOffset": 0, "tasksTruncated": false,
+         "attempts": [["id": "tpa_00000000-0000-4000-8000-000000000001", "kind": "synthesis", "botId": "builder", "state": "completed"]], "totalAttempts": 1, "attemptsTruncated": false, "canResume": ["blocked", "interrupted", "stopped"].contains(phase)]
+    }
+    private func list(_ rows: [[String: Any]], available: Bool = true, hasMore: Bool = false) -> [String: Any] { ["teamWorkPlansSupported": true, "available": available, "plans": rows, "hasMore": hasMore, "nextBeforePlanId": hasMore ? (rows.last?["id"] ?? NSNull()) : NSNull()] }
+    private func decode(_ value: [String: Any]) throws -> BotTeamWorkPlan { try JSONDecoder().decode(BotTeamWorkPlan.self, from: JSONSerialization.data(withJSONObject: value)) }
+    private func loaded(_ fixture: StoreTransport, row: [String: Any]? = nil, capability: Bool? = true) async -> (CompanionStore, BotWorkspaceStore) {
+        fixture.respond { request in
+            if request.url!.path == "/v1/bots/teams" { return self.teams(capability: capability) }
+            if request.url!.path == self.listPath { return self.list([row ?? self.plan()]) }
+            if request.url!.path == self.detailPath { return ["plan": row ?? self.plan()] }
+            return nil
+        }
+        let store = fixture.makeStore(); retainedStore = store
+        let workspace = store.botWorkspaceStore(); await workspace.refreshTeams(); await workspace.refreshWorkPlans(teamID)
+        return (store, workspace)
+    }
+    func testReportedResultAndEvaluatorChecksDoNotInventOwnerAcceptance() throws {
+        let pending = try decode(plan()); XCTAssertTrue(pending.hasValidProof); XCTAssertTrue(pending.canReview); XCTAssertEqual(pending.phase.label, "Ready for your review")
+        let accepted = try decode(plan(phase: "completed", revision: 2)); XCTAssertTrue(accepted.hasValidProof); XCTAssertFalse(accepted.canReview); XCTAssertEqual(accepted.phase.label, "Accepted by you")
+        let blocked = try decode(plan(phase: "blocked")); XCTAssertTrue(blocked.canContinue); XCTAssertFalse(blocked.canStop)
+    }
+    func testMalformedIdentityProofCountsEvidenceAndReviewCannotGrantAuthority() throws {
+        for defect in ["id", "proof", "counts", "owner", "review", "dependency", "evidence", "criteria", "participation", "pagination"] {
+            var row = plan(); var task = self.task()
+            switch defect {
+            case "id": row["id"] = "tplan_00000000-0000-4000-8000-000000000001"
+            case "proof": row["proof"] = String(repeating: "z", count: 64)
+            case "counts": row["totalTasks"] = 2
+            case "owner": task["ownerId"] = "outside_team"
+            case "review": task = self.task(kind: "review"); task["checks"] = []
+            case "dependency": task["dependsOn"] = ["build"]
+            case "evidence": task["evidence"] = [["kind": "link", "label": "Secret", "detail": "https://token@invalid.example"]]
+            case "criteria": task["criteria"] = [["id": "outside", "text": "Claim"]]
+            case "participation": row["participation"] = []
+            default: row["nextTaskOffset"] = 0
+            }
+            row["tasks"] = [task]
+            XCTAssertFalse(try decode(row).hasValidProof, defect)
+        }
+    }
+    func testOlderHostReceivesNoPlanRequestsOrMutation() async throws {
+        let f = StoreTransport(); defer { f.close() }
+        let (_, workspace) = await loaded(f, capability: nil)
+        await workspace.refreshWorkPlan(planID, teamId: teamID)
+        let changed = await workspace.changeWorkPlan(try decode(plan()), action: "review", decision: "accept", inspected: true)
+        XCTAssertFalse(changed); XCTAssertNil(workspace.workPlans[teamID]); XCTAssertEqual(f.requests.map(\.path), ["/v1/bots/teams"])
+    }
+    func testUnavailableEmptyAndPartialSnapshotsRemainDistinct() async throws {
+        let f = StoreTransport(); defer { f.close() }; let (_, w) = await loaded(f)
+        f.respond { _ in self.list([], available: false) }; await w.refreshWorkPlans(teamID)
+        XCTAssertFalse(w.workPlans[teamID]!.isAvailable); XCTAssertNotNil(w.messages[BotWorkspaceStore.workPlansKey(teamID)])
+        f.respond { _ in self.list([self.plan()], hasMore: true) }; await w.refreshWorkPlans(teamID)
+        XCTAssertTrue(w.workPlans[teamID]!.hasMore); XCTAssertNil(w.messages[BotWorkspaceStore.workPlansKey(teamID)])
+    }
+    func testTaskPagesPreserveExactRowsAndRevisionChangeClearsOldPages() async throws {
+        var first = plan(phase: "running"); first["totalTasks"] = 2; first["tasksTruncated"] = true; first["nextTaskOffset"] = 1
+        first["counts"] = ["pending": 0, "queued": 0, "running": 0, "working": 0, "ready_for_review": 2, "blocked": 0, "interrupted": 0, "stopped": 0]
+        let f = StoreTransport(); defer { f.close() }; let (_, w) = await loaded(f, row: first)
+        var second = first; second["tasksOffset"] = 1; second.removeValue(forKey: "nextTaskOffset"); second["tasks"] = [task(id: "tpt_00000000-0000-4000-8000-000000000002", key: "check")]
+        var query: String?
+        f.respond { request in query = request.url?.query; return ["plan": second] }; await w.refreshWorkPlan(planID, teamId: teamID, taskOffset: 1)
+        XCTAssertEqual(query, "taskOffset=1")
+        XCTAssertEqual(w.workPlanTasks(planID, teamId: teamID).map(\.key), ["build", "check"])
+        XCTAssertNil(w.nextWorkPlanTaskOffset(planID, teamId: teamID))
+        XCTAssertEqual(f.requests.last?.path, detailPath)
+        var newer = first; newer["revision"] = 2; newer["proof"] = String(repeating: "b", count: 64)
+        f.respond { _ in ["plan": newer] }; await w.refreshWorkPlan(planID, teamId: teamID)
+        XCTAssertEqual(w.workPlanTasks(planID, teamId: teamID).map(\.key), ["build"])
+        XCTAssertNil(w.messages[BotWorkspaceStore.workPlanKey(planID)])
+    }
+    func testSameCheckpointAvailabilityChangesDoNotStickOrAuthorizeResume() async throws {
+        let f = StoreTransport(); defer { f.close() }; let (_, w) = await loaded(f, row: plan(phase: "blocked"))
+        let original = try XCTUnwrap(w.workPlan(planID, teamId: teamID))
+        var unavailable = plan(phase: "blocked"); unavailable["canResume"] = false; unavailable["blockedReason"] = "Saved computer unavailable"
+        f.respond { _ in self.list([unavailable]) }; await w.refreshWorkPlans(teamID)
+        XCTAssertFalse(w.workPlan(planID, teamId: teamID)!.canContinue)
+        let resumed = await w.changeWorkPlan(original, action: "resume", requestId: "resume_fixture", inspected: true)
+        XCTAssertFalse(resumed); XCTAssertTrue(f.requests.allSatisfy { $0.method == "GET" })
+        f.respond { _ in self.list([self.plan(phase: "blocked")]) }; await w.refreshWorkPlans(teamID)
+        XCTAssertTrue(w.workPlan(planID, teamId: teamID)!.canContinue)
+        var forged = plan(phase: "blocked"); forged["proof"] = String(repeating: "c", count: 64)
+        f.respond { _ in self.list([forged]) }; await w.refreshWorkPlans(teamID)
+        XCTAssertNotNil(w.messages[BotWorkspaceStore.workPlansKey(teamID)])
+    }
+    func testReviewNeedsInspectionAndExactFreshAcknowledgement() async throws {
+        let f = StoreTransport(); defer { f.close() }; let (_, w) = await loaded(f)
+        let original = try XCTUnwrap(w.workPlan(planID, teamId: teamID))
+        let uninspected = await w.changeWorkPlan(original, action: "review", decision: "accept")
+        XCTAssertFalse(uninspected); XCTAssertTrue(f.requests.allSatisfy { $0.method == "GET" })
+        let hold = f.hold(detailPath + "/review")
+        let reviewing = Task { await w.changeWorkPlan(original, action: "review", decision: "accept", inspected: true) }
+        await fulfillment(of: [hold.requested], timeout: 2)
+        XCTAssertEqual(w.workPlan(planID, teamId: teamID)?.phase, .awaitingReview)
+        hold.finish(["plan": plan(phase: "completed", revision: 3)])
+        let accepted = await reviewing.value; XCTAssertTrue(accepted); XCTAssertEqual(w.workPlan(planID, teamId: teamID)?.phase, .completed)
+        let post = try XCTUnwrap(f.requests.first { $0.method == "POST" })
+        XCTAssertEqual(post.jsonBody?["expectedProof"] as? String, original.proof); XCTAssertEqual(Set(post.jsonBody!.keys), ["expectedRevision", "expectedProof", "decision"])
+    }
+    func testWrongProofScopeAndPhaseCannotConfirmOwnerReview() async throws {
+        for defect in ["proof", "revision", "teamId", "goal", "parentRunId", "sourceMessageId", "phase"] {
+            let f = StoreTransport(); defer { f.close() }; let (_, w) = await loaded(f)
+            let original = try XCTUnwrap(w.workPlan(planID, teamId: teamID)); var response = plan(phase: "completed", revision: 2)
+            switch defect { case "proof": response[defect] = original.proof; case "revision": response[defect] = 1; case "phase": response[defect] = "awaiting_review"; default: response[defect] = "different" }
+            f.respond { _ in ["plan": response] }
+            let result = await w.changeWorkPlan(original, action: "review", decision: "accept", inspected: true)
+            XCTAssertFalse(result, defect); XCTAssertEqual(w.workPlan(planID, teamId: teamID)?.phase, .awaitingReview, defect)
+            XCTAssertEqual(f.requests.filter { $0.method == "POST" }.count, 1, defect)
+        }
+    }
+    func testLostStopResponseIsNotAutomaticallyRetried() async throws {
+        let f = StoreTransport(); defer { f.close() }; let (_, w) = await loaded(f, row: plan(phase: "running"))
+        let original = try XCTUnwrap(w.workPlan(planID, teamId: teamID)); f.respond { _ in nil }
+        let result = await w.changeWorkPlan(original, action: "stop")
+        XCTAssertFalse(result); XCTAssertEqual(f.requests.filter { $0.method == "POST" }.count, 1); XCTAssertEqual(w.workPlan(planID, teamId: teamID)?.phase, .running)
+    }
+    func testLatePlanReadAndReviewCannotPublishAfterForget() async throws {
+        let f = StoreTransport(); defer { f.close() }; let (store, w) = await loaded(f)
+        let hold = f.hold(detailPath + "/review"), original = try XCTUnwrap(w.workPlan(planID, teamId: teamID))
+        let operation = Task { await w.changeWorkPlan(original, action: "review", decision: "accept", inspected: true) }
+        await fulfillment(of: [hold.requested], timeout: 2); store.forgetMac()
+        hold.finish(["plan": plan(phase: "completed", revision: 2)])
+        let result = await operation.value; XCTAssertFalse(result); XCTAssertEqual(w.workPlan(planID, teamId: teamID)?.phase, .awaitingReview)
+        XCTAssertFalse(store.isPaired)
+    }
+    func testUnfinishedTasksCanResumeWhileSiblingsRemainInMotion() async throws {
+        var row = plan(phase: "running"); row["canResume"] = true
+        row["tasks"] = [task(state: "blocked")]
+        row["counts"] = ["pending": 0, "queued": 0, "running": 0, "working": 0, "ready_for_review": 0, "blocked": 1, "interrupted": 0, "stopped": 0]
+        let f = StoreTransport(); defer { f.close() }; let (_, w) = await loaded(f, row: row)
+        let original = try XCTUnwrap(w.workPlan(planID, teamId: teamID)); XCTAssertTrue(original.canContinue)
+        let uninspected = await w.changeWorkPlan(original, action: "resume", requestId: "resume_explicit")
+        XCTAssertFalse(uninspected); XCTAssertTrue(f.requests.allSatisfy { $0.method == "GET" })
+        f.respond { _ in ["plan": self.plan(phase: "running", revision: 2)] }
+        let resumed = await w.changeWorkPlan(original, action: "resume", requestId: "resume_explicit", inspected: true)
+        XCTAssertTrue(resumed)
+        let resumedRow = try XCTUnwrap(w.workPlan(planID, teamId: teamID))
+        f.respond { _ in ["plan": self.plan(phase: "stopped", revision: 3)] }
+        let stopped = await w.changeWorkPlan(resumedRow, action: "stop")
+        XCTAssertTrue(stopped)
+        let writes = f.requests.filter { $0.method == "POST" }
+        XCTAssertEqual(writes.map(\.path), [detailPath + "/resume", detailPath + "/stop"])
+        XCTAssertEqual(writes.first?.jsonBody?["requestId"] as? String, "resume_explicit")
+        XCTAssertEqual(writes.first?.jsonBody?["inspected"] as? Bool, true)
+    }
+
+    func testLatePlanGetCannotReplaceSavedCheckpointAfterForget() async throws {
+        let f = StoreTransport(); defer { f.close() }; let (store, w) = await loaded(f)
+        let hold = f.hold(detailPath)
+        let operation = Task { await w.refreshWorkPlan(planID, teamId: teamID) }
+        await fulfillment(of: [hold.requested], timeout: 2); store.forgetMac()
+        hold.finish(["plan": plan(phase: "completed", revision: 2)]); await operation.value
+        XCTAssertFalse(store.isPaired); XCTAssertEqual(w.workPlan(planID, teamId: teamID)?.phase, .awaitingReview)
+    }
+
+    func testHigherRevisionCannotChangeOriginalPlanOrTaskScope() async throws {
+        for defect in ["goal", "parentRunId", "sourceMessageId", "createdAt", "coordinatorId", "memberIds", "ownerId", "criteria", "instructions", "workspaceKey", "collaboratorIds", "dependsOn"] {
+            let f = StoreTransport(); defer { f.close() }; let (_, w) = await loaded(f)
+            var row = plan(revision: 2); var changedTask = task()
+            switch defect {
+            case "createdAt": row[defect] = "2026-10-21T00:00:00Z"
+            case "coordinatorId": row[defect] = "reviewer"; row["attempts"] = [["id": "tpa_00000000-0000-4000-8000-000000000001", "kind": "synthesis", "botId": "reviewer", "state": "completed"]]
+            case "memberIds": row[defect] = ["builder", "different"]; row["participation"] = [["botId": "builder", "role": "Builder", "reason": "Builds"], ["botId": "different", "role": "Reviewer", "reason": "Reviews"]]
+            case "ownerId": changedTask[defect] = "reviewer"
+            case "criteria": changedTask[defect] = [["id": criterionID, "text": "A different success criterion"]]
+            case "instructions": changedTask[defect] = "Different instructions"
+            case "workspaceKey": changedTask[defect] = "different_workspace"
+            case "collaboratorIds": changedTask[defect] = ["reviewer"]
+            case "dependsOn": changedTask[defect] = ["other_task"]
+            default: row[defect] = defect == "goal" ? "Different owner scope" : "different_scope"
+            }
+            row["tasks"] = [changedTask]
+            XCTAssertTrue(try decode(row).hasValidProof, defect)
+            f.respond { _ in self.list([row]) }; await w.refreshWorkPlans(teamID)
+            XCTAssertEqual(w.workPlan(planID, teamId: teamID)?.revision, 1, defect)
+            XCTAssertNotNil(w.messages[BotWorkspaceStore.workPlansKey(teamID)], defect)
+        }
+    }
+    func testEarlierPlanCursorLoadsSavedAttentionWithoutArbitraryQueryForwarding() async throws {
+        let f = StoreTransport(); defer { f.close() }; let (_, w) = await loaded(f)
+        f.respond { _ in self.list([self.plan()], hasMore: true) }; await w.refreshWorkPlans(teamID)
+        var older = plan(phase: "blocked"); older["id"] = "tp_00000000-0000-4000-8000-000000000099"; older["parentRunId"] = "older_run"; older["sourceMessageId"] = "older_message"
+        var query: String?
+        f.respond { request in query = request.url?.query; return self.list([older]) }
+        await w.refreshWorkPlans(teamID, beforePlanId: planID)
+        XCTAssertEqual(query, "beforePlanId=" + planID)
+        XCTAssertEqual(w.workPlans[teamID]?.plans.count, 2)
+        XCTAssertEqual(w.workPlans[teamID]?.plans.last?.phase, .blocked)
+        XCTAssertFalse(w.workPlans[teamID]!.hasMore)
+        let count = f.requests.count; await w.refreshWorkPlans(teamID, beforePlanId: "../../other")
+        XCTAssertEqual(f.requests.count, count)
+    }
+
+    func testBudgetedPreviewsKeepTaskAuthorityAndProgressExact() throws {
+        let original = try decode(plan())
+        for limit in [80, 200, 500] {
+            var full = original, clipped = original
+            full.tasks[0].instructions = String(repeating: "x", count: 900)
+            clipped.tasks[0].instructions = String(full.tasks[0].instructions.prefix(limit)); clipped.tasks[0].instructionsTruncated = true
+            full.tasks[0].summary = String(repeating: "s", count: 900); clipped.tasks[0].summary = String(repeating: "s", count: limit)
+            full.tasks[0].nextStep = String(repeating: "n", count: 900); clipped.tasks[0].nextStep = String(repeating: "n", count: limit)
+            full.tasks[0].checks = [.init(criterionId: criterionID, passed: true, detail: String(repeating: "c", count: 900))]
+            clipped.tasks[0].checks = [.init(criterionId: criterionID, passed: true, detail: String(repeating: "c", count: limit))]
+            full.tasks[0].evidence![0].detail = String(repeating: "e", count: 900); clipped.tasks[0].evidence![0].detail = String(repeating: "e", count: limit)
+            full.participation[0].reason = String(repeating: "r", count: 900); clipped.participation[0].reason = String(repeating: "r", count: limit)
+            full.attempts[0].summary = String(repeating: "a", count: 900); clipped.attempts[0].summary = String(repeating: "a", count: limit)
+            XCTAssertTrue(full.hasValidProof); XCTAssertTrue(clipped.hasValidProof)
+            XCTAssertTrue(full.hasSameCheckpoint(as: clipped)); XCTAssertTrue(clipped.hasSameCheckpoint(as: full))
+            XCTAssertTrue(full.tasks[0].hasSameDefinition(as: clipped.tasks[0]))
+            var bad = clipped; bad.tasks[0].instructionsTruncated = nil
+            XCTAssertFalse(full.hasSameScope(as: bad), "A shorter instruction without the core's explicit preview flag is not interchangeable.")
+            bad = clipped; bad.tasks[0].ownerId = "reviewer"; XCTAssertFalse(full.hasSameCheckpoint(as: bad))
+            bad = clipped; bad.tasks[0].state = .blocked; XCTAssertFalse(full.hasSameCheckpoint(as: bad))
+            bad = clipped; bad.tasks[0].checks![0].passed = false; XCTAssertFalse(full.hasSameCheckpoint(as: bad))
+            bad = clipped; bad.tasks[0].criteria[0].text = "Different criterion"; XCTAssertFalse(full.hasSameCheckpoint(as: bad))
+            bad = clipped; bad.participation[0].role = "Different role"; XCTAssertFalse(full.hasSameCheckpoint(as: bad))
+            bad = clipped; bad.tasks[0].summary = String(repeating: "z", count: limit); XCTAssertFalse(full.hasSameCheckpoint(as: bad))
+            bad = clipped; bad.tasks[0].summary = String(repeating: "s", count: limit - 1); XCTAssertFalse(full.hasSameCheckpoint(as: bad))
+            full.tasks[0].evidence = [.init(kind: "link", label: "Exact target", detail: "https://example.invalid/" + String(repeating: "x", count: 600))]
+            clipped.tasks[0].evidence = [.init(kind: "link", label: "Exact target", detail: String(full.tasks[0].evidence![0].detail.prefix(limit)))]
+            XCTAssertFalse(full.hasSameCheckpoint(as: clipped), "URLs must never be treated as shortened reports.")
+        }
+        var full = original, clipped = original
+        full.tasks[0].instructions = String(repeating: "x", count: 79) + "😀" + String(repeating: "x", count: 100)
+        clipped.tasks[0].instructions = String(repeating: "x", count: 79); clipped.tasks[0].instructionsTruncated = true
+        XCTAssertTrue(full.tasks[0].hasSameDefinition(as: clipped.tasks[0]), "The JS core drops a trailing high surrogate at an exact UTF-16 budget.")
+        full.tasks[0].instructions = String(repeating: "x", count: 181)
+        XCTAssertFalse(full.tasks[0].hasSameDefinition(as: clipped.tasks[0]), "An arbitrary one-character-short prefix is not a surrogate clip.")
+        full.tasks[0].instructions = clipped.tasks[0].instructions
+        XCTAssertFalse(full.tasks[0].hasSameDefinition(as: clipped.tasks[0]), "An unchanged instruction cannot silently change from complete to truncated.")
+    }
+
+    func testActualCoreEscapeHeavyPagesExpandPreviewsWithoutDuplicatingOrChangingWork() async throws {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("../../host/tests/fixtures/team-plan-preview-pages.json").standardizedFileURL
+        let fixture = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        let front = try XCTUnwrap(fixture["front"] as? [String: Any]), later = try XCTUnwrap(fixture["later"] as? [String: Any])
+        let first = try decode(front), second = try decode(later)
+        XCTAssertTrue(first.hasValidProof); XCTAssertTrue(second.hasValidProof)
+        XCTAssertEqual(first.revision, second.revision); XCTAssertEqual(first.proof, second.proof)
+        XCTAssertEqual(first.tasks.first { $0.id == second.tasks[0].id }?.instructions.utf16.count, 500)
+        XCTAssertEqual(second.tasks[0].instructions.utf16.count, 1_000)
+        XCTAssertTrue(first.hasSameCheckpoint(as: second)); XCTAssertTrue(second.hasSameCheckpoint(as: first))
+        let path = "/v1/bots/teams/\(first.teamId)/plans", detail = path + "/" + first.id
+        let f = StoreTransport(); defer { f.close() }
+        f.respond { request in
+            if request.url?.path == "/v1/bots/teams" {
+                return ["teamWorkPlansSupported": true, "runs": [], "teams": [["id": first.teamId, "name": "Real core preview fixture", "enabled": true, "coordinatorId": first.coordinatorId, "memberIds": first.memberIds, "limits": ["maxParallel": 0, "maxDepth": 0, "maxHops": 0, "maxTurns": 0, "maxDurationMs": 0]]]]
+            }
+            if request.url?.path == path { return self.list([front]) }
+            if request.url?.path == detail { return ["plan": later] }
+            return nil
+        }
+        let store = f.makeStore(); retainedStore = store
+        let w = store.botWorkspaceStore(); await w.refreshTeams(); await w.refreshWorkPlans(first.teamId)
+        await w.refreshWorkPlan(first.id, teamId: first.teamId, taskOffset: second.tasksOffset)
+        XCTAssertNil(w.messages[BotWorkspaceStore.workPlanKey(first.id)])
+        XCTAssertEqual(w.workPlanTasks(first.id, teamId: first.teamId).map(\.id), first.tasks.map(\.id))
+        XCTAssertEqual(w.workPlanTasks(first.id, teamId: first.teamId).count, first.totalTasks)
+        XCTAssertNil(w.nextWorkPlanTaskOffset(first.id, teamId: first.teamId))
+        await w.refreshWorkPlans(first.teamId)
+        XCTAssertNil(w.messages[BotWorkspaceStore.workPlansKey(first.teamId)])
+        for defect in ["state", "criterion", "owner", "role", "position"] {
+            var forged = later; var tasks = try XCTUnwrap(later["tasks"] as? [[String: Any]])
+            switch defect {
+            case "state": tasks[0]["state"] = "blocked"
+            case "owner": tasks[0]["ownerId"] = first.coordinatorId
+            case "criterion": var criteria = try XCTUnwrap(tasks[0]["criteria"] as? [[String: Any]]); criteria[0]["text"] = "Changed owner criterion"; tasks[0]["criteria"] = criteria
+            case "role": var people = try XCTUnwrap(later["participation"] as? [[String: Any]]); people[0]["role"] = "Changed role"; forged["participation"] = people
+            default: tasks.reverse()
+            }
+            forged["tasks"] = tasks
+            f.respond { _ in ["plan": forged] }; await w.refreshWorkPlan(first.id, teamId: first.teamId, taskOffset: second.tasksOffset)
+            XCTAssertNotNil(w.messages[BotWorkspaceStore.workPlanKey(first.id)], defect)
+            XCTAssertEqual(w.workPlanTasks(first.id, teamId: first.teamId).map(\.id), first.tasks.map(\.id), defect)
+        }
+        var newer = front; newer["revision"] = first.revision + 1; newer["proof"] = String(repeating: first.proof.first == "a" ? "b" : "a", count: 64)
+        f.respond { _ in self.list([newer]) }; await w.refreshWorkPlans(first.teamId)
+        XCTAssertEqual(w.workPlan(first.id, teamId: first.teamId)?.revision, first.revision + 1)
+        XCTAssertNil(w.messages[BotWorkspaceStore.workPlansKey(first.teamId)])
+        XCTAssertTrue(f.requests.allSatisfy { $0.method == "GET" }, "The real projections never authorize a mutation or replay.")
+    }
+
 }

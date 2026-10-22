@@ -1992,7 +1992,7 @@ final class CompanionSmokeTests: XCTestCase {
             let navigation = app.navigationBars.firstMatch
             let top = max(window.minY + 60, navigation.exists ? navigation.frame.maxY + 8 : window.minY + 60)
             var bottom = window.maxY - 24
-            let taskReviewSheet = app.buttons["closeTeamWorkReviewButton"].exists || ["teamWorkflowsView", "teamWorkflowEditor", "teamWorkflowDetailView"].contains { app.descendants(matching: .any).matching(identifier: $0).firstMatch.exists }
+            let taskReviewSheet = app.buttons["closeTeamWorkReviewButton"].exists || ["teamWorkflowsView", "teamWorkflowEditor", "teamWorkflowDetailView", "teamPlanDetailView"].contains { app.descendants(matching: .any).matching(identifier: $0).firstMatch.exists }
             if !taskReviewSheet, app.tabBars.firstMatch.exists { bottom = min(bottom, app.tabBars.firstMatch.frame.minY - 18) }
             if app.keyboards.firstMatch.exists { bottom = min(bottom, app.keyboards.firstMatch.frame.minY - 12) }
             let teamFooter = app.otherElements["teamEditorFooter"]
@@ -2728,5 +2728,60 @@ extension CompanionSmokeTests {
         app.buttons["refreshTeamWorkflowButton"].tap()
         try tapWorkspace(resume, performTap: false); XCTAssertFalse(resume.isEnabled)
         attachScreenshot("Workflow — stopped work retained with read-only capability fallback")
+    }
+}
+
+
+extension CompanionSmokeTests {
+    @MainActor
+    func testDurableTeamPlanShowsRealControllerTasksAndRequiresOwnerReview() async throws {
+        let control = try pairWorkspaceFixture()
+        let teamID = "team_00000000-0000-4000-8000-000000000034"
+        let initial = try await fixtureControl(control, action: "state")
+        let record = try XCTUnwrap(initial["teamPlanRecord"] as? [String: Any])
+        let planID = try XCTUnwrap(record["id"] as? String)
+        let tasks = try XCTUnwrap(record["tasks"] as? [[String: Any]])
+        let buildID = try XCTUnwrap(tasks.first?["id"] as? String)
+        XCTAssertEqual(record["phase"] as? String, "awaiting_review")
+        _ = try await fixtureControl(control, action: "team-plan-failure")
+        try tapWorkspace(app.buttons["team-" + teamID]); try openTeamDetails()
+        let unavailable = app.staticTexts.matching(identifier: "botWorkspaceMessage-workPlans-" + teamID).firstMatch
+        try tapWorkspace(unavailable, performTap: false)
+        attachScreenshot("Team plan — first-load failure remains visible")
+        let before = try await fixtureControl(control, action: "state")
+        XCTAssertTrue((before["calls"] as? [[String: Any]])?.allSatisfy { $0["method"] as? String == "GET" } == true)
+        _ = try await fixtureControl(control, action: "team-plan-clear-failure")
+        try tapWorkspace(app.buttons["refreshTeamPlansButton"])
+        try tapWorkspace(app.buttons["teamPlan-" + planID])
+        try require(app.navigationBars["Team plan"])
+        XCTAssertTrue(app.staticTexts["teamPlanPhase"].label.contains("Ready for your review"))
+        try tapWorkspace(app.descendants(matching: .any).matching(identifier: "teamPlanParticipant-fixture-reviewer").firstMatch, performTap: false)
+        try tapWorkspace(app.staticTexts["After: build"], performTap: false)
+        attachScreenshot("Team plan — real task owners, prerequisites and independent review")
+        let chat = app.buttons["teamPlanTaskChat-" + buildID]
+        try tapWorkspace(chat)
+        try require(app.staticTexts["Earlier Mac history is available on the phone."])
+        attachScreenshot("Team plan — exact saved task conversation")
+        tapTab("Bots")
+        if !app.buttons["teamChannelHeaderButton"].waitForExistence(timeout: 2) { try tapWorkspace(app.buttons["team-" + teamID]) }
+        try openTeamDetails(); try tapWorkspace(app.buttons["teamPlan-" + planID])
+        let accept = app.buttons["acceptTeamPlanButton"]
+        try tapWorkspace(accept, performTap: false); XCTAssertFalse(accept.isEnabled)
+        XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "teamPlanOwnerAccepted").firstMatch.exists)
+        try tapSwitch(app.switches["teamPlanInspectedToggle"])
+        try tapWorkspace(accept, performTap: false); XCTAssertTrue(accept.isEnabled)
+        attachScreenshot("Team plan — explicit inspection before owner acceptance")
+        accept.tap()
+        let confirmation = app.buttons.matching(identifier: "confirmTeamPlanActionButton").firstMatch
+        try require(confirmation); confirmation.tap()
+        try tapWorkspace(app.staticTexts.matching(identifier: "teamPlanOwnerAccepted").firstMatch, performTap: false)
+        attachScreenshot("Team plan — host-confirmed owner acceptance")
+        let final = try await fixtureControl(control, action: "state")
+        XCTAssertEqual((final["teamPlanRecord"] as? [String: Any])?["phase"] as? String, "completed")
+        XCTAssertEqual(final["providerDispatches"] as? Int, 0)
+        XCTAssertEqual(final["pairedDeviceCount"] as? Int, 1)
+        let writes = try XCTUnwrap(final["calls"] as? [[String: Any]]).filter { $0["method"] as? String != "GET" }
+        XCTAssertEqual(writes.compactMap { $0["path"] as? String }, ["/api/bots/teams/\(teamID)/plans/\(planID)/review"])
+        XCTAssertEqual((writes.first?["body"] as? [String: Any])?["expectedProof"] as? String, record["proof"] as? String)
     }
 }

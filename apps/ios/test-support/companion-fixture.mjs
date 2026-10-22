@@ -56,6 +56,7 @@ const directBotsMode = process.argv[2] === '--test-direct-bots';
 const connectorAccountsMode = process.argv[2] === '--test-connector-accounts';
 const connectorMode = connectorAccountsMode || process.argv[2] === '--test-connectors';
 const teamFollowMode = process.argv[2] === '--test-team-follow';
+const teamPlansMode = process.argv[2] === '--test-team-plans';
 const workflowMode = teamFollowMode || process.argv[2] === '--test-team-workflows';
 const harnessMode = process.argv[2] === '--test-harness';
 const supervisionMode = harnessMode || process.argv[2] === '--test-supervision';
@@ -71,7 +72,7 @@ const compactAssignment = 'Implement a small project improvement and report the 
 const compactReport = 'Implementation and verification report.\n' + 'The isolated fixture preserves the complete report for review, including every verification detail. '.repeat(27) + 'REPORT END MARKER';
 const hostFolderMode = process.argv[2] === '--test-host-folder';
 let sharedHostFolder, folderVersion = '2026-10-21T00:00:00.000Z';
-const workspaceFlags = ['--test-connection-routes', '--test-route-tls', '--test-team-follow', '--test-team-workflows', '--test-harness', '--test-created-tools', '--test-team-work-tools', '--test-team-work-overview', '--test-team-review', '--test-team-compact', '--test-continuous-teams', '--test-unrestricted-teams', '--test-host-folder', '--test-supervision', '--test-connector-accounts', '--test-connectors', '--test-devin-provider', '--test-direct-bots', '--test-team-settings', '--test-team-instructions', '--test-notifications', '--test-group-chat-layout', '--test-team-channel-layout', '--test-team-channel', '--test-bot-photos', '--test-bot-lifecycle', '--test-bot-avatar-states', '--test-workspace-skills', '--test-workspace-connections', '--test-workspace-teams', '--test-facelift'];
+const workspaceFlags = ['--test-team-plans', '--test-connection-routes', '--test-route-tls', '--test-team-follow', '--test-team-workflows', '--test-harness', '--test-created-tools', '--test-team-work-tools', '--test-team-work-overview', '--test-team-review', '--test-team-compact', '--test-continuous-teams', '--test-unrestricted-teams', '--test-host-folder', '--test-supervision', '--test-connector-accounts', '--test-connectors', '--test-devin-provider', '--test-direct-bots', '--test-team-settings', '--test-team-instructions', '--test-notifications', '--test-group-chat-layout', '--test-team-channel-layout', '--test-team-channel', '--test-bot-photos', '--test-bot-lifecycle', '--test-bot-avatar-states', '--test-workspace-skills', '--test-workspace-connections', '--test-workspace-teams', '--test-facelift'];
 const workspaceMode = workspaceFlags.includes(process.argv[2]);
 let teamConversation, savedTeam, teamRun;
 const teamLimits = { maxParallel: 2, maxDepth: 2, maxHops: 8, maxTurns: 24, maxDurationMs: 600000 };
@@ -93,7 +94,35 @@ function workflowFixture(body) {
     checks: criteria.map(criterion => ({ criterionId: criterion.id, passed: true, detail: 'Synthetic evaluator finding for native UI coverage; actual verification is tested by backend fixtures.' })), totalSteps: 3, stepsTruncated: false, canResume: false };
   return workflowSeal();
 }
-if (workflowMode) savedTeam = { id: workflowTeamId, name: 'Plan and verify team', memberIds: ['fixture-bot', 'fixture-reviewer'], coordinatorId: 'fixture-bot', enabled: true, limits: { maxParallel: 0, maxDepth: 0, maxHops: 0, maxTurns: 0, maxDurationMs: 0 }, revision: 1, createdAt: new Date().toISOString() };
+if (workflowMode || teamPlansMode) savedTeam = { id: workflowTeamId, name: 'Plan and verify team', memberIds: ['fixture-bot', 'fixture-reviewer'], coordinatorId: 'fixture-bot', enabled: true, limits: { maxParallel: 0, maxDepth: 0, maxHops: 0, maxTurns: 0, maxDurationMs: 0 }, revision: 1, createdAt: new Date().toISOString() };
+
+// Native Team plan UI uses the real durable controller and paired projection,
+// with an isolated scratch store and inert delivery. No model/tool is invoked.
+let teamPlanController, teamPlanRecord, teamPlanFailure = false, teamPlanDispatches = 0;
+if (teamPlansMode) {
+  const { createTeamPlans } = await import('../../host/server/bots-team-plans.mjs');
+  teamPlanController = createTeamPlans({ directory: join(root, 'team-plan-service'), teamFor: id => { if (id !== savedTeam.id) throw Error('Unknown synthetic team'); return savedTeam; },
+    prepare: row => ({ authorities: Object.fromEntries(row.memberIds.map(id => [id, 'a'.repeat(64)])), resourceKeys: Object.fromEntries(row.memberIds.map(id => [id, 'fixture:' + id])) }),
+    ensure() {}, dispatch(_row, attempt) { teamPlanDispatches++; return { chatId: 'fixture-plan-chat-' + attempt.id, jobId: 'fixture-plan-job-' + attempt.id }; }, stopRun: async () => ({ stopped: true }) });
+  const created = teamPlanController.create(savedTeam.id, { requestId: 'native_plan_fixture', goal: 'Build and independently review the synthetic team fixture', sourceMessageId: 'fixture-plan-source' });
+  const id = created.plan.id;
+  const advance = (kind, submission, body) => {
+    teamPlanController.pump(); const attempt = teamPlanController.detail(savedTeam.id, id).plan.attempts.find(a => a.kind === kind && a.state === 'pending');
+    if (!attempt) throw Error('Missing synthetic plan stage: ' + kind);
+    teamPlanController.beforeStart(id, attempt.id, attempt.chatId);
+    teamPlanController.submission(submission, body, { ...teamPlanController.binding(id, attempt.id), chatId: attempt.chatId, botId: attempt.botId, assertLive() {}, hasVerificationEvidence: () => true });
+    teamPlanController.finish(id, attempt.id, {});
+  };
+  advance('planning', 'submit_team_plan', { summary: 'A clearly synthetic two-member plan.', participation: savedTeam.memberIds.map((botId, n) => ({ botId, role: n ? 'Independent evaluator' : 'Builder', reason: n ? 'Inspects the builder result without contributing to its implementation.' : 'Owns the concrete authorized fixture change.' })), tasks: [
+    { key: 'build', title: 'Build the fixture', instructions: 'Work only inside this synthetic test fixture.', ownerId: savedTeam.memberIds[0], dependsOn: [], kind: 'work', criteria: ['The fixture result can be inspected'] },
+    { key: 'review', title: 'Independently review the fixture', instructions: 'Inspect the reported result and exact criterion.', ownerId: savedTeam.memberIds[1], dependsOn: ['build'], kind: 'review', criteria: ['The fixture result can be inspected'] },
+  ] });
+  advance('task', 'checkpoint_team_plan_task', { outcome: 'ready_for_review', summary: 'Synthetic build result, never owner accepted.', evidence: [{ kind: 'note', label: 'Fixture artifact', detail: 'This is synthetic UI evidence; no command or model ran.' }] });
+  const review = teamPlanController.detail(savedTeam.id, id).plan.tasks.find(t => t.key === 'review');
+  advance('task', 'checkpoint_team_plan_task', { outcome: 'ready_for_review', summary: 'Synthetic independent review.', evidence: [{ kind: 'test', label: 'Fixture check', detail: 'The test callback supplies verification evidence; no real command ran.' }], checks: review.criteria.map(c => ({ criterionId: c.id, passed: true, detail: 'Synthetic fixture check only.' })) });
+  advance('synthesis', 'submit_team_plan_summary', { outcome: 'ready_for_review', summary: 'The synthetic team result is ready for your review, not yet accepted.' });
+  teamPlanRecord = teamPlanController.detail(savedTeam.id, id).plan;
+}
 // Public rows only: the follow fixture has no bot runtime or command executor.
 const followMessages = [];
 function appendFollowMessage() {
@@ -394,6 +423,26 @@ const host = {
     calls.push({ path, method: options.method ?? 'GET', body: options.body ?? null });
     // This legacy host fixture ignores the new read-only summary query.
     if (path === '/api/companion/conversations?summary=1') path = '/api/companion/conversations';
+    if (teamPlansMode) {
+      if (path === '/api/bots/teams') return { teams: [structuredClone(savedTeam)], runs: [], channelsSupported: true, teamWorkPlansSupported: true, teamCoordinatorWorkToolsSupported: true, teamWorkReviewSupported: true, teamContinuousSupported: true };
+      if (path === '/api/bots/activity') return { activity: [], teamWorkReviewSupported: true };
+      const url = new URL(path, 'http://isolated-fixture.invalid');
+      if (url.pathname === `/api/bots/teams/${savedTeam.id}/channel`) return { supported: true, teamId: savedTeam.id, messages: [], activeRuns: [], nextSequence: 0, hasMore: false, hasMoreBefore: false };
+      if (url.pathname === '/api/companion/conversations') {
+        const attempts = teamPlanController.detail(savedTeam.id, teamPlanRecord.id).plan.attempts;
+        return { conversations: [conversation, ...attempts.filter(a => a.chatId).map(a => ({ ...structuredClone(conversation), id: a.chatId, title: 'Synthetic plan ' + a.kind, preferences: { botId: a.botId, teamId: savedTeam.id } }))], activeChatId: conversation.id };
+      }
+      if (url.pathname.startsWith('/api/companion/conversations/fixture-plan-chat-')) { const value = detail(); value.conversation.id = url.pathname.split('/').at(-1); return value; }
+      if (url.pathname === `/api/bots/teams/${savedTeam.id}/plans`) {
+        if (teamPlanFailure) throw Object.assign(Error('Synthetic team plan service unavailable'), { status: 503 });
+        return teamPlanController.list(savedTeam.id);
+      }
+      const planRoute = new RegExp(`^/api/bots/teams/${savedTeam.id}/plans/(tp_[a-f0-9-]{36})(?:/(resume|stop|review))?$`).exec(url.pathname);
+      if (planRoute) {
+        if (planRoute[2]) { const result = await teamPlanController[planRoute[2]](savedTeam.id, planRoute[1], options.body); teamPlanRecord = result.plan; return result; }
+        return teamPlanController.detail(savedTeam.id, planRoute[1], { taskOffset: Number(url.searchParams.get('taskOffset') ?? 0) });
+      }
+    }
     if (workflowMode) {
       if (teamFollowMode) {
         if (path === '/api/bots/teams') return { teams: [structuredClone(savedTeam)], runs: [], teamWorkflowsSupported: true, teamWorkReviewSupported: true, teamCoordinatorWorkToolsSupported: true, teamContinuousSupported: true, teamUnrestrictedSupported: true };
@@ -705,6 +754,7 @@ async function close() {
       if (testProcess && testProcess.exitCode === null) testProcess.kill('SIGTERM');
       if (control?.listening) await new Promise(resolve => control.close(resolve));
       for (const server of routeServers) await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });
+      teamPlanController?.close();
       notificationService?.close();
       await bridge?.close();
       await lifecycleProfiles?.close();
@@ -745,6 +795,10 @@ try {
       const action = request.url;
       if (request.method === 'POST') {
         switch (action) {
+        case '/team-plan-failure':
+          if (!teamPlansMode) throw Error('Team plan fixture required'); teamPlanFailure = true; break;
+        case '/team-plan-clear-failure':
+          if (!teamPlansMode) throw Error('Team plan fixture required'); teamPlanFailure = false; break;
         case '/team-follow-append':
           if (!teamFollowMode) throw new Error('Team follow fixture required'); appendFollowMessage(); break;
         case '/workflow-failure':
@@ -888,7 +942,7 @@ try {
         response.writeHead(404).end(); return;
       }
       response.setHeader('Content-Type', 'application/json');
-      response.end(JSON.stringify({ ...(routeMode ? { routeAddresses, routeRequests, pairedDeviceCount: bridge.state().devices.length } : {}), ...(workflowMode ? { workflowRecord, workflowCapability, workflowFailure } : {}), ...(teamFollowMode ? { followMessages, providerDispatches: 0 } : {}), ...(createdToolsMode ? { createdTools } : {}), ...(harnessMode ? { harness: harnessJournal.summary(), harnessDispatches, harnessAvailable } : {}), ...(teamReviewMode ? { reviewTasks, reviewPlan, overviewRequests } : {}), ...(connectorService ? { connectors: connectorService.list(), connectorChecks, connectorToolCalls } : {}), conversation, createdBotConversation, pending, calls, ...(roomBots ? { teamChannel: roomBots.team.channel(roomTeam.id), roomTurns, roomTeam, roomEmptyTeam, ...(compactTeamMode ? { compactAssignment, compactReport } : {}), ...((teamSettingsMode || unrestrictedTeamsMode || continuousTeamsMode) ? { teamSettings: roomBots.team.list(), roomMembers, roomExtraMember, teamSettingsFolder, teamSettingsOtherFolder, teamSettingsActions } : {}) } : {}), ...(lifecycleProfiles ? { lifecycle: await lifecycleProfiles.list() } : {}), computerRunning, computerControlled: !!computerControl, botFace, downloadJobs: Object.fromEntries(downloadJobs), planCount: nextPlan, downloadCount: nextDownload }));
+      response.end(JSON.stringify({ ...(routeMode ? { routeAddresses, routeRequests, pairedDeviceCount: bridge.state().devices.length } : {}), ...(teamPlansMode ? { teamPlanRecord: teamPlanController.detail(savedTeam.id, teamPlanRecord.id).plan, teamPlanDispatches, providerDispatches: 0, pairedDeviceCount: bridge.state().devices.length } : {}), ...(workflowMode ? { workflowRecord, workflowCapability, workflowFailure } : {}), ...(teamFollowMode ? { followMessages, providerDispatches: 0 } : {}), ...(createdToolsMode ? { createdTools } : {}), ...(harnessMode ? { harness: harnessJournal.summary(), harnessDispatches, harnessAvailable } : {}), ...(teamReviewMode ? { reviewTasks, reviewPlan, overviewRequests } : {}), ...(connectorService ? { connectors: connectorService.list(), connectorChecks, connectorToolCalls } : {}), conversation, createdBotConversation, pending, calls, ...(roomBots ? { teamChannel: roomBots.team.channel(roomTeam.id), roomTurns, roomTeam, roomEmptyTeam, ...(compactTeamMode ? { compactAssignment, compactReport } : {}), ...((teamSettingsMode || unrestrictedTeamsMode || continuousTeamsMode) ? { teamSettings: roomBots.team.list(), roomMembers, roomExtraMember, teamSettingsFolder, teamSettingsOtherFolder, teamSettingsActions } : {}) } : {}), ...(lifecycleProfiles ? { lifecycle: await lifecycleProfiles.list() } : {}), computerRunning, computerControlled: !!computerControl, botFace, downloadJobs: Object.fromEntries(downloadJobs), planCount: nextPlan, downloadCount: nextDownload }));
     } catch (error) {
       response.writeHead(500, { 'Content-Type': 'application/json' });
       response.end(JSON.stringify({ error: error.message }));
@@ -910,7 +964,7 @@ try {
         '-project', project, '-scheme', 'StrataMobile', '-destination', destination,
         '-derivedDataPath', derivedData,
         ...(process.env.STRATA_TEST_RESULT_BUNDLE ? ['-resultBundlePath', process.env.STRATA_TEST_RESULT_BUNDLE] : []),
-        ...(process.argv[2] === '--test-route-tls' ? ['-only-testing:StrataMobileTests/ConnectionRoutingTLSTests'] : ['-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test-connection-routes': 'testManualMacAddressUpdatePreservesPairingHistoryAndRelaunch', '--test-team-follow': 'testTeamIncomingRepliesFollowAndUnreadPreservesReadingPosition', '--test-team-workflows': 'testTeamWorkflowRolesEvidenceOwnerReviewAndExplicitContinuation', '--test-harness': 'testHarnessReadinessDiagnosticsAndReviewWithoutExecutingWork', '--test-created-tools': 'testCreatedToolDraftReviewBotAndTeamAccessWithoutExecution', '--test-team-work-tools': 'testTeamWorkIntentRequiresExplicitSendAndKeepsChatCompatible', '--test-team-work-overview': 'testCurrentWorkOverviewKeepsActiveLegacyAndRequiresExplicitHistoryExpansion', '--test-team-review': 'testSubmittedTaskReviewAndExplicitRecoveryWithoutReplayingFinishedWork', '--test-team-compact': 'testCompactTeamAssignmentsAndReportsExpandWithoutChangingHistory', '--test-continuous-teams': 'testContinuousTeamWorkHasNoNumericStopLimits', '--test-unrestricted-teams': 'testLargeTeamCreationUsesAllAvailableTeammates', '--test-host-folder': 'testScopedHostFolderSettingsGrantAndRevokeWithoutStartingWork', '--test-supervision': 'testLiveBotSupervisionFiltersExactConversationAndLargeType', '--test-connector-accounts': 'testConnectorAccountsDiscoverBearerSetupAndMacSignInFallback', '--test-connectors': 'testConnectorsHTTPSetupTeamAccessToolsAndPersistence', '--test-devin-provider': 'testPhoneCreatesDevinBotWithHostModelsAndNoImplicitRun', '--test-direct-bots': 'testDirectBotRosterChatProfileNewConversationAndRelaunch', '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation', '--test-computer': 'testActualSampleAvatarAndIsolatedComputerControl', '--test-bot-photos': 'testPhotoLedBotsCreationAppearanceAndWorkspaceNavigation', '--test-bot-lifecycle': 'testPhoneBotCreationEditingCASAndApprovalModes', '--test-bot-avatar-states': 'testBotAvatarStatesInteractionAndRosterFilters', '--test-facelift': 'testFaceliftPrincipalScreensAndSharedHistory', '--test-workspace-skills': 'testReviewedSkillAssignmentAndWorkspaceNavigation', '--test-workspace-connections': 'testSavedConnectionCheckAndReviewedAccess', '--test-workspace-teams': 'testTeamExplicitTaskSharedThinkingStopAndActivity', '--test-team-channel': 'testNaturalTeamChannelPeersAssignmentsThinkingAndStop', '--test-team-channel-layout': 'testTeamChannelNormalDarkAndLargeTypeLayout', '--test-group-chat-layout': 'testGroupRosterAndRoomPhotoLayoutWithRealMenus', '--test-team-settings': 'testTeamMembershipSharedComputerFoldersConflictAndPersistence', '--test-team-instructions': 'testTeamPublicInstructionsRolesPersistenceAndConflict', '--test-notifications': 'testNotificationPreferencesPrivateInboxRoutingMuteAndRelaunch' })[process.argv[2]]]),
+        ...(process.argv[2] === '--test-route-tls' ? ['-only-testing:StrataMobileTests/ConnectionRoutingTLSTests'] : ['-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test-team-plans': 'testDurableTeamPlanShowsRealControllerTasksAndRequiresOwnerReview', '--test-connection-routes': 'testManualMacAddressUpdatePreservesPairingHistoryAndRelaunch', '--test-team-follow': 'testTeamIncomingRepliesFollowAndUnreadPreservesReadingPosition', '--test-team-workflows': 'testTeamWorkflowRolesEvidenceOwnerReviewAndExplicitContinuation', '--test-harness': 'testHarnessReadinessDiagnosticsAndReviewWithoutExecutingWork', '--test-created-tools': 'testCreatedToolDraftReviewBotAndTeamAccessWithoutExecution', '--test-team-work-tools': 'testTeamWorkIntentRequiresExplicitSendAndKeepsChatCompatible', '--test-team-work-overview': 'testCurrentWorkOverviewKeepsActiveLegacyAndRequiresExplicitHistoryExpansion', '--test-team-review': 'testSubmittedTaskReviewAndExplicitRecoveryWithoutReplayingFinishedWork', '--test-team-compact': 'testCompactTeamAssignmentsAndReportsExpandWithoutChangingHistory', '--test-continuous-teams': 'testContinuousTeamWorkHasNoNumericStopLimits', '--test-unrestricted-teams': 'testLargeTeamCreationUsesAllAvailableTeammates', '--test-host-folder': 'testScopedHostFolderSettingsGrantAndRevokeWithoutStartingWork', '--test-supervision': 'testLiveBotSupervisionFiltersExactConversationAndLargeType', '--test-connector-accounts': 'testConnectorAccountsDiscoverBearerSetupAndMacSignInFallback', '--test-connectors': 'testConnectorsHTTPSetupTeamAccessToolsAndPersistence', '--test-devin-provider': 'testPhoneCreatesDevinBotWithHostModelsAndNoImplicitRun', '--test-direct-bots': 'testDirectBotRosterChatProfileNewConversationAndRelaunch', '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation', '--test-computer': 'testActualSampleAvatarAndIsolatedComputerControl', '--test-bot-photos': 'testPhotoLedBotsCreationAppearanceAndWorkspaceNavigation', '--test-bot-lifecycle': 'testPhoneBotCreationEditingCASAndApprovalModes', '--test-bot-avatar-states': 'testBotAvatarStatesInteractionAndRosterFilters', '--test-facelift': 'testFaceliftPrincipalScreensAndSharedHistory', '--test-workspace-skills': 'testReviewedSkillAssignmentAndWorkspaceNavigation', '--test-workspace-connections': 'testSavedConnectionCheckAndReviewedAccess', '--test-workspace-teams': 'testTeamExplicitTaskSharedThinkingStopAndActivity', '--test-team-channel': 'testNaturalTeamChannelPeersAssignmentsThinkingAndStop', '--test-team-channel-layout': 'testTeamChannelNormalDarkAndLargeTypeLayout', '--test-group-chat-layout': 'testGroupRosterAndRoomPhotoLayoutWithRealMenus', '--test-team-settings': 'testTeamMembershipSharedComputerFoldersConflictAndPersistence', '--test-team-instructions': 'testTeamPublicInstructionsRolesPersistenceAndConflict', '--test-notifications': 'testNotificationPreferencesPrivateInboxRoutingMuteAndRelaunch' })[process.argv[2]]]),
         '-parallel-testing-enabled', 'NO', 'test',
       ], { stdio: 'inherit', env: { ...process.env,
         TEST_RUNNER_STRATA_TEST_INVITATION: connection.invitation,
@@ -922,7 +976,7 @@ try {
       testProcess.once('exit', code => resolve(code ?? 1));
     });
     process.exitCode = status;
-    if (process.env.STRATA_TEST_STATE_OUTPUT) writeFileSync(process.env.STRATA_TEST_STATE_OUTPUT, JSON.stringify({ ...(routeMode ? { routeAddresses, routeRequests, pairedDeviceCount: bridge.state().devices.length } : {}), ...(workflowMode ? { workflowRecord, workflowCapability, workflowFailure } : {}), ...(teamFollowMode ? { followMessages, providerDispatches: 0 } : {}), ...(createdToolsMode ? { createdTools } : {}), ...(harnessMode ? { harness: harnessJournal.summary(), harnessDispatches, harnessAvailable } : {}), ...(teamReviewMode ? { reviewTasks, reviewPlan, overviewRequests } : {}), ...(connectorService ? { connectors: connectorService.list(), connectorChecks, connectorToolCalls } : {}), calls, ...(directBotsMode || process.argv[2] === '--test-devin-provider' ? { conversation, createdBotConversation, directCreatedConversations, teamConversation, computerRunning, computerControlled: !!computerControl } : {}), ...(roomBots ? { teamChannel: roomBots.team.channel(roomTeam.id), roomTurns, roomTeam, roomEmptyTeam, ...(teamSettingsMode ? { teamSettings: roomBots.team.list(), roomMembers, roomExtraMember, teamSettingsFolder, teamSettingsOtherFolder, teamSettingsActions } : {}) } : {}), ...(lifecycleProfiles ? { lifecycle: await lifecycleProfiles.list() } : {}), savedTeam, teamRun, skillAssignments, skills: skillCatalog(), connectionAccess: { botIds: mcpConnection.botIds, enabledToolIds: mcpConnection.enabledToolIds, readOnlyToolIds: mcpConnection.readOnlyToolIds } }), { mode: 0o600 });
+    if (process.env.STRATA_TEST_STATE_OUTPUT) writeFileSync(process.env.STRATA_TEST_STATE_OUTPUT, JSON.stringify({ ...(routeMode ? { routeAddresses, routeRequests, pairedDeviceCount: bridge.state().devices.length } : {}), ...(teamPlansMode ? { teamPlanRecord: teamPlanController.detail(savedTeam.id, teamPlanRecord.id).plan, teamPlanDispatches, providerDispatches: 0, pairedDeviceCount: bridge.state().devices.length } : {}), ...(workflowMode ? { workflowRecord, workflowCapability, workflowFailure } : {}), ...(teamFollowMode ? { followMessages, providerDispatches: 0 } : {}), ...(createdToolsMode ? { createdTools } : {}), ...(harnessMode ? { harness: harnessJournal.summary(), harnessDispatches, harnessAvailable } : {}), ...(teamReviewMode ? { reviewTasks, reviewPlan, overviewRequests } : {}), ...(connectorService ? { connectors: connectorService.list(), connectorChecks, connectorToolCalls } : {}), calls, ...(directBotsMode || process.argv[2] === '--test-devin-provider' ? { conversation, createdBotConversation, directCreatedConversations, teamConversation, computerRunning, computerControlled: !!computerControl } : {}), ...(roomBots ? { teamChannel: roomBots.team.channel(roomTeam.id), roomTurns, roomTeam, roomEmptyTeam, ...(teamSettingsMode ? { teamSettings: roomBots.team.list(), roomMembers, roomExtraMember, teamSettingsFolder, teamSettingsOtherFolder, teamSettingsActions } : {}) } : {}), ...(lifecycleProfiles ? { lifecycle: await lifecycleProfiles.list() } : {}), savedTeam, teamRun, skillAssignments, skills: skillCatalog(), connectionAccess: { botIds: mcpConnection.botIds, enabledToolIds: mcpConnection.enabledToolIds, readOnlyToolIds: mcpConnection.readOnlyToolIds } }), { mode: 0o600 });
     await close();
   } else {
     if (process.argv.length > 2) throw new Error('Usage: companion-fixture.mjs [--test|--test-downloads|--test-bots|--test-computer|--test-workspace-skills|--test-workspace-connections|--test-workspace-teams|--test-facelift|--test-bot-lifecycle|--test-bot-avatar-states <simulator destination>]');

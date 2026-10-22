@@ -17,6 +17,7 @@ import { createBotActionJournal, botActionTurnIdentity } from './bots-action-jou
 import { createHarnessObserver } from './bots-harness-observer.mjs';
 import { botApprovalTarget } from './bots-approval-target.mjs';
 import { botExecutionInstructions } from './bots-tools.mjs';
+import { teamPlanResourceKey } from './bots-team-plan-resources.mjs';
 
 const fault = (status, message) => Object.assign(new Error(message), { status });
 const ids = new Set(['claude', 'codex', 'grok', 'kimi', 'ollama', 'devin', 'configured']);
@@ -201,18 +202,18 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     if (active.has(chatId) || conversations()?.isRunning?.(chatId) || [...active.values()].some(run => run.botId === botId)) throw fault(409, 'This bot is still working. Wait for it to finish.');
     validateSelection({ botId, chatId });
   }
-  function workflowAuthority(botId, shared, teamContext) {
+  function workflowAuthority(botId, shared, teamContext, withPlanResource = false) {
     const current = requireBot(botId), patch = shared ? { execution: shared.execution, computerMode: shared.computerMode, workspace: shared.workspace } : {};
     const fresh = { id: botId, ...validate(patch, current), teamContext: copy(teamContext) };
     if (shared) { for (const key of folderKeys) delete fresh[key]; Object.assign(fresh, copy(shared)); }
     if (skills || mcp || createdTools) fresh.extensionSnapshots = { ...(skills ? { skills: copy(skills.snapshot(fresh)) } : {}), ...(mcp ? { mcp: copy((mcp.recoverySnapshot ?? mcp.snapshot)(fresh)) } : {}), ...(createdTools ? { createdTools: copy(createdTools.recoverySnapshot(fresh)) } : {}) };
-    return { fingerprint: botWorkAuthorityFingerprint(fresh) };
+    return { fingerprint: botWorkAuthorityFingerprint(fresh), ...(withPlanResource ? { resourceKey: teamPlanResourceKey(fresh) } : {}) };
   }
   function assertWorkflowReceipts(chatId) {
     const summary = actionJournal.summary(chatId);
     if (!summary.available || ['pending', 'uncertain', 'interrupted'].some(state => summary.counts[state] > 0)) throw fault(409, 'Inspect unresolved action receipts and computer cleanup before continuing this workflow. No old action will be replayed.');
   }
-  const team = createBotTeams({ directory, requireBot, conversations, createConversation: (id, teamContext) => createConversation(id, {}, teamContext), discardConversation: id => { conversations().remove(id); chatProfiles.delete(id); checkpoints.delete(id); save(); }, notify, workAuthority, assertRecoveryAvailable, workflowAuthority, assertWorkflowReceipts,
+  const team = createBotTeams({ directory, requireBot, conversations, createConversation: (id, teamContext) => createConversation(id, {}, teamContext), discardConversation: id => { conversations().remove(id); chatProfiles.delete(id); checkpoints.delete(id); save(); }, notify, workAuthority, assertRecoveryAvailable, workflowAuthority, planAuthority: (id, shared, context) => workflowAuthority(id, shared, context, true), assertWorkflowReceipts,
     usesComputer: (source, target) => { const bot = typeof source === 'string' ? chatProfiles.get(source) : source; return bot?.computerMode === 'cua' && cuaResource(bot) === cuaResource(target); }, teamComputers: teamComputerRows, resolveExecution: resolveTeamExecution, isChatBusy: chatBusy, isBotBusy: id => [...active.values()].some(run => run.botId === id), stopDirect: id => stop(id, { team: false }) });
   const hasOwnedComputer = id => [...ownedComputers, ...uncertainTargets.keys()].some(key => key.startsWith(`cua:${id}:`));
   const markOwned = bot => { ownedComputers.add(cuaResource(bot)); save(); };
@@ -702,6 +703,22 @@ export function createBotRoutes({ bots, port }) {
         if (req.method === 'GET') return json(res, 200, bots.team.list());
         if (req.method === 'POST') return json(res, 201, bots.team.create(await readBody(req)));
         return error(res, 405, 'This team action is unavailable.');
+      }
+      const planRoute = /^\/api\/bots\/teams\/(team_[a-f0-9-]+)\/plans(?:\/(tp_[a-f0-9-]{36})(?:\/(resume|stop|review))?)?$/.exec(url.pathname);
+      if (planRoute) {
+        const [, teamId, planId, action] = planRoute;
+        const query = [...url.searchParams];
+        const allowed = !planId ? ['beforePlanId'] : !action ? ['taskOffset'] : [];
+        if (query.some(([key]) => !allowed.includes(key)) || new Set(query.map(([key]) => key)).size !== query.length) throw fault(400, 'Choose a supported work-plan page.');
+        const beforePlanId = url.searchParams.get('beforePlanId');
+        const taskOffset = url.searchParams.get('taskOffset');
+        if (beforePlanId !== null && !/^tp_[a-f0-9-]{36}$/.test(beforePlanId) || taskOffset !== null && (!/^(0|[1-9]\d*)$/.test(taskOffset) || !Number.isSafeInteger(Number(taskOffset)))) throw fault(400, 'Choose a valid work-plan page.');
+        if (req.method === 'GET' && !action) {
+          if (req.headers['transfer-encoding'] || Number(req.headers['content-length'] ?? 0) > 0) throw fault(400, 'Work-plan reads take no request body.');
+          return json(res, 200, planId ? bots.team.plans.detail(teamId, planId, { taskOffset: Number(taskOffset ?? 0) }) : bots.team.plans.list(teamId, beforePlanId === null ? {} : { beforePlanId }));
+        }
+        if (req.method === 'POST' && planId && action) return json(res, 200, await bots.team.plans[action](teamId, planId, await readBody(req, 32 * 1024)));
+        return error(res, 405, 'Start a work plan by sending a Work request in the team channel.');
       }
       const workflowRoute = /^\/api\/bots\/teams\/(team_[a-f0-9-]+)\/workflows(?:\/(wf_[a-f0-9-]+)(?:\/(resume|stop|review))?)?$/.exec(url.pathname);
       if (workflowRoute) {

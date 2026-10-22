@@ -261,6 +261,35 @@ final class CompanionClient: @unchecked Sendable {
         return try JSONDecoder().decode(BotTeamChannel.self, from: data)
     }
 
+    /// Only a saved team/plan and a numeric task cursor can become this GET.
+    /// General request paths still reject arbitrary query strings.
+    func teamWorkPlan(teamId: String, planId: String, taskOffset: Int = 0) async throws -> BotTeamWorkPlan {
+        guard Self.isSafeIdentifier(teamId), BotTeamWorkPlan.validID(planId, "tp_"), (0...9_007_199_254_740_991).contains(taskOffset) else {
+            throw CompanionError.server("Choose a saved team plan and valid task position.")
+        }
+        var req = try request("/v1/bots/teams/\(teamId)/plans/\(planId)")
+        if taskOffset > 0 {
+            var components = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)!
+            components.queryItems = [URLQueryItem(name: "taskOffset", value: String(taskOffset))]; req.url = components.url
+        }
+        let (data, response) = try await self.data(for: req)
+        try Self.check(response, data: data)
+        struct Result: Decodable { var plan: BotTeamWorkPlan }
+        return try JSONDecoder().decode(Result.self, from: data).plan
+    }
+
+    func teamWorkPlans(teamId: String, beforePlanId: String? = nil) async throws -> BotTeamWorkPlansSnapshot {
+        guard Self.isSafeIdentifier(teamId), beforePlanId.map({ BotTeamWorkPlan.validID($0, "tp_") }) ?? true else { throw CompanionError.server("Choose a saved team and plan cursor.") }
+        var req = try request("/v1/bots/teams/\(teamId)/plans")
+        if let beforePlanId {
+            var components = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)!
+            components.queryItems = [URLQueryItem(name: "beforePlanId", value: beforePlanId)]; req.url = components.url
+        }
+        let (data, response) = try await self.data(for: req)
+        try Self.check(response, data: data)
+        return try JSONDecoder().decode(BotTeamWorkPlansSnapshot.self, from: data)
+    }
+
     static func isSafeIdentifier(_ value: String) -> Bool {
         !value.isEmpty && value.utf8.count <= 120 && value.utf8.allSatisfy { (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) || $0 == 95 || $0 == 45 }
     }

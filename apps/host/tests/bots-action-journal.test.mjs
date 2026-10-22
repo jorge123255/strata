@@ -204,17 +204,17 @@ test('uncertain same-turn mutations cannot escape with new IDs or acknowledgemen
   await journal.execute(scope({ name: 'read_file', args: { path: 'x' }, toolCallId: 'read_2' }), () => ({}));
 });
 
-test('real shell partial failure becomes uncertain and cannot auto-retry with a replacement native ID', async t => {
+test('observed shell nonzero exit retains side effects as a known error and exact native call cannot replay', async t => {
   let verified = false;
   const f = botsFixture(t, async input => {
     const args = { command: 'printf x >> partial-counter; exit 7' };
-    const value = await input.executeTool('run_command', args, 'partial_1'); assert.equal(value.isError, true); assert.match(value.content.at(-1).text, /Do not retry/);
-    await assert.rejects(input.executeTool('run_command', args, 'partial_2'), { code: 'harness_action_uncertain' }); verified = true;
+    const value = await input.executeTool('run_command', args, 'partial_1'); assert.equal(value.isError, true); assert.match(value.content.at(-1).text, /completed with an error/);
+    const duplicate = await input.executeTool('run_command', args, 'partial_1'); assert.equal(duplicate.isError, true); assert.match(duplicate.content[0].text, /not executed again/); verified = true;
   });
   const bot = f.bots.create({ name: 'Partial', provider: 'codex', policy: 'bypass', capabilities: 'code', workspace: f.directory }).bot;
   const chat = f.bots.createConversation(bot.id).conversation; f.chats.send(chat.id, 'Scratch partial failure');
   for (let attempt = 0; attempt < 200 && !verified; attempt++) await new Promise(resolve => setTimeout(resolve, 5));
-  assert.equal(verified, true); assert.equal(readFileSync(join(f.directory, 'partial-counter'), 'utf8'), 'x'); assert.equal(f.bots.harnessActions(chat.id).counts.uncertain, 1);
+  assert.equal(verified, true); assert.equal(readFileSync(join(f.directory, 'partial-counter'), 'utf8'), 'x'); assert.equal(f.bots.harnessActions(chat.id).counts.uncertain, 0); assert.equal(f.bots.harnessActions(chat.id).counts.error, 1);
 });
 
 test('ordinary denied shell permission is a known error with no effect, not uncertain work', async t => {

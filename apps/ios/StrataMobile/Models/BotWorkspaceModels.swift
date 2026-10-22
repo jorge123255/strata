@@ -205,6 +205,7 @@ struct BotTeamRun: Decodable, Identifiable, Equatable {
     var state: String
     var consumedTurns: Int
     var rosterFanoutTurns: Int?
+    var planId: String?
     var workTurns: Int {
         let total = max(0, consumedTurns)
         return total - min(total, max(0, rosterFanoutTurns ?? 0))
@@ -232,6 +233,7 @@ struct BotTeamsSnapshot: Decodable, Equatable {
     var teamWorkReviewSupported: Bool?
     var teamCoordinatorWorkToolsSupported: Bool?
     var teamWorkflowsSupported: Bool?
+    var teamWorkPlansSupported: Bool?
     var teamComputers: [BotTeamComputer]?
 }
 
@@ -416,6 +418,196 @@ struct BotTeamWorkflowDraft: Encodable, Equatable {
     }
 }
 
+/// A durable team plan is distinct from transport completion. Task reports and
+/// independent checks never record the owner's final acceptance.
+struct BotTeamWorkPlan: Decodable, Identifiable, Equatable {
+    enum Phase: String, Decodable {
+        case planning, running, summarizing, awaitingReview = "awaiting_review", completed, blocked, interrupted, stopping, stopped
+        var label: String {
+            switch self {
+            case .awaitingReview: "Ready for your review"
+            case .completed: "Accepted by you"
+            case .summarizing: "Preparing the team report"
+            case .blocked: "Needs attention"
+            default: rawValue.capitalized
+            }
+        }
+        var isActive: Bool { [.planning, .running, .summarizing, .stopping].contains(self) }
+    }
+    enum TaskState: String, Decodable, CaseIterable {
+        case pending, queued, running, working, readyForReview = "ready_for_review", blocked, interrupted, stopped
+        var label: String {
+            switch self {
+            case .pending: "Waiting for prerequisites"
+            case .queued: "Queued for saved computer"
+            case .working: "Continuing from saved progress"
+            case .readyForReview: "Result reported"
+            default: rawValue.capitalized
+            }
+        }
+    }
+    struct Participation: Decodable, Equatable, Identifiable {
+        var botId: String; var role: String; var reason: String
+        var id: String { botId }
+    }
+    struct Task: Decodable, Equatable, Identifiable {
+        enum Kind: String, Decodable { case work, review }
+        var id: String; var key: String; var title: String; var instructions: String; var ownerId: String
+        var collaboratorIds: [String]; var workspaceKey: String?; var dependsOn: [String]; var kind: Kind
+        var criteria: [BotTeamWorkflow.Criterion]; var state: TaskState; var summary: String?; var nextStep: String?
+        var checks: [BotTeamWorkflow.Check]?; var attemptId: String?; var instructionsTruncated: Bool?; var chatId: String?; var jobId: String?
+        var evidence: [BotTeamEvidence]?
+        func hasSameDefinition(as other: Self) -> Bool {
+            if instructions == other.instructions, (instructionsTruncated == true) != (other.instructionsTruncated == true) { return false }
+            guard BotTeamWorkPlan.samePreview(instructions, other.instructions, limits: [80, 200, 500, 1_000], shorterIsTruncated: instructionsTruncated == true, otherIsTruncated: other.instructionsTruncated == true) else { return false }
+            var left = self, right = other
+            left.instructions = ""; right.instructions = ""; left.instructionsTruncated = nil; right.instructionsTruncated = nil
+            left.state = .pending; right.state = .pending
+            left.summary = nil; right.summary = nil; left.nextStep = nil; right.nextStep = nil
+            left.checks = nil; right.checks = nil; left.evidence = nil; right.evidence = nil
+            left.attemptId = nil; right.attemptId = nil; left.chatId = nil; right.chatId = nil; left.jobId = nil; right.jobId = nil
+            return left == right
+        }
+        func hasSameCheckpoint(as other: Self) -> Bool {
+            guard hasSameDefinition(as: other), BotTeamWorkPlan.sameReport(summary, other.summary), BotTeamWorkPlan.sameReport(nextStep, other.nextStep),
+                  checks?.count == other.checks?.count, evidence?.count == other.evidence?.count else { return false }
+            var left = self, right = other
+            for index in (checks ?? []).indices {
+                guard BotTeamWorkPlan.sameReport(checks![index].detail, other.checks![index].detail) else { return false }
+                left.checks![index].detail = ""; right.checks![index].detail = ""
+            }
+            for index in (evidence ?? []).indices where evidence![index].kind != "link" {
+                guard BotTeamWorkPlan.sameReport(evidence![index].detail, other.evidence![index].detail) else { return false }
+                left.evidence![index].detail = ""; right.evidence![index].detail = ""
+            }
+            left.instructions = ""; right.instructions = ""; left.instructionsTruncated = nil; right.instructionsTruncated = nil
+            left.summary = nil; right.summary = nil; left.nextStep = nil; right.nextStep = nil
+            return left == right
+        }
+    }
+    struct Attempt: Decodable, Equatable, Identifiable {
+        enum Kind: String, Decodable { case planning, task, synthesis }
+        enum State: String, Decodable { case pending, running, completed, blocked, interrupted, stopped }
+        var id: String; var kind: Kind; var taskId: String?; var botId: String; var state: State
+        var chatId: String?; var jobId: String?; var summary: String?
+        var startedAt: BotWorkspaceTimestamp?; var completedAt: BotWorkspaceTimestamp?
+    }
+    struct Counts: Decodable, Equatable {
+        var pending: Int; var queued: Int; var running: Int; var working: Int
+        var ready_for_review: Int; var blocked: Int; var interrupted: Int; var stopped: Int
+        var values: [Int] { [pending, queued, running, working, ready_for_review, blocked, interrupted, stopped] }
+        var total: Int { values.reduce(0, +) }
+        var summary: String { "\(ready_for_review) of \(total) results reported · \(running + queued + working) in motion" }
+    }
+    var id: String; var teamId: String; var parentRunId: String; var sourceMessageId: String?; var goal: String
+    var coordinatorId: String; var memberIds: [String]; var phase: Phase; var revision: Int; var proof: String
+    var createdAt: BotWorkspaceTimestamp; var updatedAt: BotWorkspaceTimestamp; var summary: String?; var blockedReason: String?
+    var participation: [Participation]; var tasks: [Task]; var counts: Counts; var totalTasks: Int; var tasksOffset: Int
+    var nextTaskOffset: Int?; var tasksTruncated: Bool; var attempts: [Attempt]; var totalAttempts: Int; var attemptsTruncated: Bool; var canResume: Bool
+    var canStop: Bool { hasValidProof && phase.isActive }
+    var canReview: Bool { hasValidProof && phase == .awaitingReview }
+    var canContinue: Bool { hasValidProof && canResume && ([.blocked, .interrupted, .stopped].contains(phase) || phase == .running && counts.blocked + counts.interrupted + counts.stopped > 0) }
+    var hasValidProof: Bool {
+        guard Self.validID(id, "tp_"), Self.safe(teamId), Self.safe(parentRunId), sourceMessageId.map(Self.safe) ?? true,
+              Self.safe(coordinatorId), !memberIds.isEmpty, Set(memberIds).count == memberIds.count, memberIds.allSatisfy(Self.safe), memberIds.contains(coordinatorId),
+              (1...9_007_199_254_740_991).contains(revision), proof.utf8.count == 64, proof.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
+              Self.text(goal, 16_000, false), BotTeamWorkflow.validTimestamp(createdAt), BotTeamWorkflow.validTimestamp(updatedAt),
+              summary.map({ Self.text($0, 2_000) }) ?? true, blockedReason.map({ Self.text($0, 2_500) }) ?? true,
+              participation.count <= memberIds.count, Set(participation.map(\.botId)).count == participation.count,
+              participation.allSatisfy({ memberIds.contains($0.botId) && Self.text($0.role, 120, false) && Self.text($0.reason, 1_000, false) }),
+              counts.values.allSatisfy({ (0...9_007_199_254_740_991).contains($0) }), counts.values.reduce(0.0, { $0 + Double($1) }) <= 9_007_199_254_740_991,
+              counts.total == totalTasks, totalTasks >= 0, tasksOffset >= 0, tasksOffset <= totalTasks, tasks.count <= 64, tasks.count <= totalTasks - tasksOffset,
+              Set(tasks.map(\.id)).count == tasks.count, Set(tasks.map(\.key)).count == tasks.count, tasks.allSatisfy(validTask),
+              tasksTruncated == (tasks.count < totalTasks), nextTaskOffset.map({ $0 == tasksOffset + tasks.count && $0 < totalTasks && $0 > tasksOffset }) ?? (tasksOffset + tasks.count == totalTasks),
+              attempts.count <= 12, (attempts.count...9_007_199_254_740_991).contains(totalAttempts), attemptsTruncated == (totalAttempts > attempts.count),
+              Set(attempts.map(\.id)).count == attempts.count, attempts.allSatisfy(validAttempt),
+              !canResume || [.blocked, .interrupted, .stopped].contains(phase) || phase == .running && counts.blocked + counts.interrupted + counts.stopped > 0 else { return false }
+        if phase != .planning && !tasks.isEmpty && participation.count != memberIds.count { return false }
+        if [.running, .summarizing, .awaitingReview, .completed].contains(phase), totalTasks == 0 { return false }
+        if [.awaitingReview, .completed].contains(phase), counts.ready_for_review != totalTasks || attempts.last?.kind != .synthesis || attempts.last?.state != .completed { return false }
+        let observedStates = Dictionary(grouping: tasks, by: \.state).mapValues(\.count)
+        for (state, count) in zip(TaskState.allCases, counts.values) where (observedStates[state] ?? 0) > count { return false }
+        return true
+    }
+    private func validTask(_ task: Task) -> Bool {
+        guard Self.validID(task.id, "tpt_"), Self.key(task.key), Self.text(task.title, 160, false), Self.text(task.instructions, 1_000, false), memberIds.contains(task.ownerId),
+              Set(task.collaboratorIds).count == task.collaboratorIds.count, task.collaboratorIds.allSatisfy({ $0 != task.ownerId && memberIds.contains($0) }),
+              task.workspaceKey.map({ Self.text($0, 160, false) }) ?? true, Set(task.dependsOn).count == task.dependsOn.count, task.dependsOn.allSatisfy({ $0 != task.key && Self.key($0) }),
+              (1...16).contains(task.criteria.count), Set(task.criteria.map(\.id)).count == task.criteria.count,
+              task.criteria.allSatisfy({ Self.validID($0.id, "tpc_") && Self.text($0.text, 1_000, false) }),
+              task.summary.map({ Self.text($0, 1_000) }) ?? true, task.nextStep.map({ Self.text($0, 1_000) }) ?? true,
+              task.attemptId.map({ Self.validID($0, "tpa_") }) ?? true,
+              task.chatId.map(Self.safe) ?? true, task.jobId.map(Self.safe) ?? true,
+              (task.evidence?.count ?? 0) <= 4, (task.evidence ?? []).allSatisfy(Self.validEvidence),
+              (task.checks?.count ?? 0) <= 16, Set((task.checks ?? []).map(\.criterionId)).count == (task.checks?.count ?? 0),
+              (task.checks ?? []).allSatisfy({ check in task.criteria.contains { $0.id == check.criterionId } && Self.text(check.detail, 2_000, false) }) else { return false }
+        if task.state == .readyForReview && task.evidence?.isEmpty != false { return false }
+        if task.kind == .review && task.state == .readyForReview { return task.checks?.count == task.criteria.count && task.checks?.allSatisfy(\.passed) == true }
+        return true
+    }
+    private static func validEvidence(_ row: BotTeamEvidence) -> Bool {
+        guard ["file", "test", "link", "note"].contains(row.kind), text(row.label, 160, false), text(row.detail, 1_000, false) else { return false }
+        if row.kind != "link" { return true }
+        guard let url = URL(string: row.detail), ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host != nil, url.user == nil, url.password == nil else { return false }
+        return true
+    }
+    private func validAttempt(_ attempt: Attempt) -> Bool {
+        Self.validID(attempt.id, "tpa_") && memberIds.contains(attempt.botId) && (attempt.taskId.map({ Self.validID($0, "tpt_") }) ?? true) &&
+        (attempt.kind == .task ? attempt.taskId != nil : attempt.taskId == nil && attempt.botId == coordinatorId) &&
+        (attempt.chatId.map(Self.safe) ?? true) && (attempt.jobId.map(Self.safe) ?? true) && (attempt.summary.map({ Self.text($0, 1_000) }) ?? true) &&
+        (attempt.startedAt.map(BotTeamWorkflow.validTimestamp) ?? true) && (attempt.completedAt.map(BotTeamWorkflow.validTimestamp) ?? true)
+    }
+    /// Core pages can shorten report previews to fit their byte budget. Only
+    /// documented UTF-16 prefix boundaries may vary; saved authority and state stay exact.
+    private static func samePreview(_ lhs: String, _ rhs: String, limits: [Int], shorterIsTruncated: Bool = true, otherIsTruncated: Bool = true) -> Bool {
+        if lhs == rhs { return true }
+        let a = Array(lhs.utf16), b = Array(rhs.utf16)
+        let short = a.count < b.count ? a : b, long = a.count < b.count ? b : a
+        guard a.count != b.count, (a.count < b.count ? shorterIsTruncated : otherIsTruncated), long.starts(with: short) else { return false }
+        return limits.contains(short.count) || limits.contains(short.count + 1) && (0xD800...0xDBFF).contains(long[short.count])
+    }
+    private static func sameReport(_ lhs: String?, _ rhs: String?) -> Bool {
+        guard let lhs, let rhs else { return lhs == rhs }
+        return samePreview(lhs, rhs, limits: [80, 200, 500])
+    }
+    func hasSameCheckpoint(as other: Self) -> Bool {
+        var left = self, right = other
+        for task in tasks { if let previous = other.tasks.first(where: { $0.id == task.id || $0.key == task.key }), !task.hasSameCheckpoint(as: previous) { return false } }
+        guard participation.count == other.participation.count, attempts.count == other.attempts.count else { return false }
+        for index in participation.indices {
+            guard Self.sameReport(participation[index].reason, other.participation[index].reason) else { return false }
+            left.participation[index].reason = ""; right.participation[index].reason = ""
+        }
+        for index in attempts.indices {
+            guard Self.sameReport(attempts[index].summary, other.attempts[index].summary) else { return false }
+            left.attempts[index].summary = nil; right.attempts[index].summary = nil
+        }
+        left.tasks = []; right.tasks = []; left.tasksOffset = 0; right.tasksOffset = 0; left.nextTaskOffset = nil; right.nextTaskOffset = nil
+        left.tasksTruncated = false; right.tasksTruncated = false; left.canResume = false; right.canResume = false; left.blockedReason = nil; right.blockedReason = nil
+        return left == right
+    }
+    func hasSameScope(as other: Self) -> Bool {
+        guard id == other.id, teamId == other.teamId, parentRunId == other.parentRunId, sourceMessageId == other.sourceMessageId,
+              goal == other.goal, coordinatorId == other.coordinatorId, memberIds == other.memberIds, createdAt == other.createdAt,
+              totalTasks >= other.totalTasks else { return false }
+        return tasks.allSatisfy { task in
+            guard let prior = other.tasks.first(where: { $0.id == task.id || $0.key == task.key }) else { return true }
+            return task.hasSameDefinition(as: prior)
+        }
+    }
+    func matches(_ other: Self) -> Bool { hasValidProof && id == other.id && teamId == other.teamId && revision == other.revision && proof == other.proof && hasSameCheckpoint(as: other) }
+    static func validID(_ value: String, _ prefix: String) -> Bool { value == value.lowercased() && BotTeamWorkflow.validID(value, prefix: prefix) }
+    static func safe(_ value: String) -> Bool { CompanionClient.isSafeIdentifier(value) }
+    static func key(_ value: String) -> Bool { value.range(of: "^[A-Za-z0-9_.:-]{1,80}$", options: .regularExpression) != nil }
+    static func text(_ value: String, _ maximum: Int, _ empty: Bool = true) -> Bool { BotTeamWorkflow.validText(value, maximum: maximum, empty: empty) }
+}
+
+struct BotTeamWorkPlansSnapshot: Decodable, Equatable {
+    var teamWorkPlansSupported: Bool; var available: Bool; var plans: [BotTeamWorkPlan]; var hasMore: Bool; var error: String?
+    var nextBeforePlanId: String?
+    var isAvailable: Bool { teamWorkPlansSupported && available && error == nil }
+}
+
 /// Immutable, attributed entries in the shared room. Detailed Thinking and tool
 /// activity stay in the linked bot conversation instead of being duplicated here.
 struct BotTeamChannelAuthor: Decodable, Equatable {
@@ -439,6 +631,7 @@ struct BotTeamChannelMessage: Decodable, Identifiable, Equatable {
     var chatId: String?
     var state: String?
     var workMode: BotTeamMessageWorkMode?
+    var planId: String?
     var usesCompactCard: Bool { kind == "assignment" || kind == "report" && content.count > 1_800 }
     var compactPreview: String {
         let first = content.split(whereSeparator: \.isNewline).first.map(String.init) ?? content
@@ -466,6 +659,7 @@ struct BotTeamChannelPost: Encodable, Equatable {
     var recipientIds: [String]?
     var replyToId: String?
     var workMode: BotTeamMessageWorkMode?
+    var durablePlan: Bool?
 }
 
 struct BotTeamDraft: Encodable {

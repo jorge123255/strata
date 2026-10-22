@@ -3,6 +3,7 @@
 // executes commands; execution stays with the selected bot and its permissions.
 import { botAvatarConfig } from './bots-lifecycle.mjs';
 import { teamWorkflowRoute, workflowRequest, publicWorkflowResponse, confirmWorkflowMutation } from './bots-workflows.mjs';
+import { teamPlanRoute, teamPlanRequest, publicTeamPlanResponse, publicTeamPlan, confirmTeamPlanMutation } from './bots-team-plans.mjs';
 const error = (status, message) => Object.assign(new Error(message), { status });
 const id = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,120}$/.test(value);
 const computerId = value => typeof value === 'string' && /^(host:(local|ssh_[a-f0-9]{32})|cua:bot_[a-f0-9-]+)$/.test(value);
@@ -126,6 +127,8 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
   const url = new URL(path, 'http://loopback.invalid');
   if (!path.startsWith('/api/bots/') || url.hash) return null;
   const p = url.pathname, query = [...url.searchParams];
+  const plan = teamPlanRoute(path);
+  if (plan) return teamPlanRequest(plan, method, body, status, validateBody);
   const workflow = teamWorkflowRoute(p);
   if (workflow) {
     if (query.length) throw error(status, 'Workflow actions take no URL settings.');
@@ -208,12 +211,13 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
       if (!continuousLimits(body.limits)) for (const [key, value] of Object.entries(body.limits)) if (!Number.isSafeInteger(value) || value < limits[key][0] || value > limits[key][1]) throw error(status, 'Choose supported team limits.');
     }
   } else if (route.kind === 'channelMessage') {
-    object(body, ['message', 'requestId', 'recipientIds', 'replyToId', 'workMode'], status);
+    object(body, ['message', 'requestId', 'recipientIds', 'replyToId', 'workMode', 'durablePlan'], status);
     string(body.message, 16_000, status);
     if (!id(body.requestId)) throw error(status, 'Choose a valid team message request.');
     if (body.recipientIds !== undefined) { ids(body.recipientIds, status, id, Infinity); if (!body.recipientIds.length) throw error(status, 'Choose a teammate or send to the team.'); }
     if (body.replyToId !== undefined && !id(body.replyToId)) throw error(status, 'Choose a message from this team.');
     if (body.workMode !== undefined && !['chat', 'work'].includes(body.workMode)) throw error(status, 'Choose Chat or Work for this team message.');
+    if (body.durablePlan !== undefined && (body.durablePlan !== true || body.workMode !== 'work')) throw error(status, 'Durable work plans require an explicit Work request.');
   } else if (route.kind === 'run') {
     object(body, route.action ? [] : ['message', 'requestId'], status);
     if (!route.action) { string(body.message, 16_000, status); if (body.requestId !== undefined && !id(body.requestId)) throw error(status, 'Choose a valid task request.'); }
@@ -280,8 +284,9 @@ function team(value) {
   return { id: value.id, name: text(value.name, 200), memberIds, coordinatorId: id(value.coordinatorId) ? value.coordinatorId : '', enabled: value.enabled === true, limits: continuousLimits(value.limits) ? Object.fromEntries(Object.keys(limits).map(key => [key, 0])) : Object.fromEntries(Object.entries(limits).filter(([k, [low, high]]) => Number.isSafeInteger(value.limits?.[k]) && value.limits[k] >= low && value.limits[k] <= high).map(([k]) => [k, value.limits[k]])), createdAt: date(value.createdAt), updatedAt: date(value.updatedAt), ...(preview ? { channelPreview: preview } : {}), ...(briefing ? { briefing } : {}), ...(Number.isSafeInteger(value.revision) && value.revision > 0 ? { revision: value.revision } : {}), ...(execution(value.execution) ? { execution: execution(value.execution) } : {}) };
 }
 function run(value) {
+  if (value.planId !== undefined && !/^tp_[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value.planId)) throw error(502, 'Strata returned an invalid work-plan reference.');
   const fanout = Number.isSafeInteger(value.consumedTurns) && Number.isSafeInteger(value.rosterFanoutTurns) && value.rosterFanoutTurns >= 0 && value.rosterFanoutTurns <= value.consumedTurns ? { rosterFanoutTurns: value.rosterFanoutTurns } : {};
-  return { id: value.id, teamId: id(value.teamId) ? value.teamId : '', rootChatId: id(value.rootChatId) ? value.rootChatId : '', rootBotId: id(value.rootBotId) ? value.rootBotId : '', state: states.has(value.state) ? value.state : 'interrupted', limits: team(value).limits, consumedTurns: Number.isInteger(value.consumedTurns) ? value.consumedTurns : 0, ...fanout, createdAt: date(value.createdAt), updatedAt: date(value.updatedAt), ...(typeof value.detail === 'string' ? { detail: text(value.detail, 2_000) } : {}) };
+  return { id: value.id, teamId: id(value.teamId) ? value.teamId : '', rootChatId: id(value.rootChatId) ? value.rootChatId : '', rootBotId: id(value.rootBotId) ? value.rootBotId : '', state: states.has(value.state) ? value.state : 'interrupted', limits: team(value).limits, consumedTurns: Number.isInteger(value.consumedTurns) ? value.consumedTurns : 0, ...fanout, ...(value.planId ? { planId: value.planId } : {}), createdAt: date(value.createdAt), updatedAt: date(value.updatedAt), ...(typeof value.detail === 'string' ? { detail: text(value.detail, 2_000) } : {}) };
 }
 function taskText(value, max, empty = false) {
   if (typeof value !== 'string' || value.length > max || value.includes('\0') || !value.isWellFormed() || !empty && !value.trim()) throw error(502, 'Strata returned unreadable task results.');
@@ -324,11 +329,12 @@ function channelSnapshot(value, route) {
     if (!isObject(v) || !id(v.id) || seen.has(v.id) || v.teamId !== route.teamId || !Number.isSafeInteger(v.sequence) || v.sequence <= previous || !['message', 'assignment', 'report', 'status'].includes(v.kind) || !isObject(v.author) || !['user', 'bot', 'system'].includes(v.author.type) || typeof v.author.name !== 'string' || !v.author.name.trim() || v.author.name.length > 200 || typeof v.content !== 'string' || v.content.length > 32_000 || v.content.includes('\0') || date(v.createdAt) === undefined || v.author.type === 'bot' && !id(v.author.botId)) invalid();
     seen.add(v.id); previous = v.sequence;
     for (const key of ['replyToId', 'runId', 'chatId']) if (v[key] !== undefined && !id(v[key])) invalid();
+    if (v.planId !== undefined && !/^tp_[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(v.planId)) invalid();
     if (v.recipientIds !== undefined && (!Array.isArray(v.recipientIds) || v.recipientIds.some(x => !id(x)) || new Set(v.recipientIds).size !== v.recipientIds.length)) invalid();
     if (v.workMode !== undefined && (v.author.type !== 'user' || !['chat', 'work'].includes(v.workMode))) invalid();
     let avatarConfig;
     if (v.author.avatarConfig !== undefined) { try { avatarConfig = botAvatarConfig(v.author.avatarConfig, 502); if (avatarConfig.shape === 'classic') delete avatarConfig.shape; } catch { /* Omit unavailable future artwork; never forward arbitrary assets or fields. */ } }
-    return { id: v.id, sequence: v.sequence, teamId: v.teamId, kind: v.kind, author: { type: v.author.type, name: v.author.name, ...(v.author.type === 'bot' ? { botId: v.author.botId } : {}), ...(avatarConfig ? { avatarConfig } : {}) }, content: v.content, createdAt: date(v.createdAt), ...(v.workMode !== undefined ? { workMode: v.workMode } : {}), ...Object.fromEntries(['replyToId', 'runId', 'chatId'].filter(key => v[key] !== undefined).map(key => [key, v[key]])), ...(v.recipientIds ? { recipientIds: v.recipientIds } : {}), ...(['queued', 'working', 'done', 'error', 'interrupted', 'cancelled'].includes(v.state) ? { state: v.state } : {}) };
+    return { id: v.id, sequence: v.sequence, teamId: v.teamId, kind: v.kind, author: { type: v.author.type, name: v.author.name, ...(v.author.type === 'bot' ? { botId: v.author.botId } : {}), ...(avatarConfig ? { avatarConfig } : {}) }, content: v.content, createdAt: date(v.createdAt), ...(v.workMode !== undefined ? { workMode: v.workMode } : {}), ...(v.planId !== undefined ? { planId: v.planId } : {}), ...Object.fromEntries(['replyToId', 'runId', 'chatId'].filter(key => v[key] !== undefined).map(key => [key, v[key]])), ...(v.recipientIds ? { recipientIds: v.recipientIds } : {}), ...(['queued', 'working', 'done', 'error', 'interrupted', 'cancelled'].includes(v.state) ? { state: v.state } : {}) };
   });
   if (messages.length && value.nextSequence !== messages.at(-1).sequence || value.activeRuns.some(v => !isObject(v) || !id(v.id) || v.teamId !== route.teamId)) invalid();
   return { teamId: value.teamId, supported: true, messages, activeRuns: value.activeRuns.map(run), nextSequence: value.nextSequence, hasMore: value.hasMore, hasMoreBefore: value.hasMoreBefore, ...(messages.length ? { firstSequence: messages[0].sequence } : {}) };
@@ -377,6 +383,7 @@ function harnessAction(value) {
   return {id:value.id,chatId:value.chatId,toolName:text(value.toolName,120),state:value.state,revision:value.revision,proof:value.proof,startedAt:date(value.startedAt),updatedAt:date(value.updatedAt),origin:value.origin,readOnly:value.origin === 'ssh-worker' || value.readOnly === true};
 }
 export function publicBotWorkspace(body, route) {
+  if (route.kind === 'teamPlan') return publicTeamPlanResponse(body, route);
   if (route.kind === 'workflow') return publicWorkflowResponse(body, route);
   if (route.kind === 'harnessActions') {
     if (!isObject(body) || !Array.isArray(body.actions)) throw error(502, 'Strata returned unreadable action receipts.');
@@ -406,8 +413,21 @@ export function publicBotWorkspace(body, route) {
     if (route.action==='review' && body.activity.id!==route.jobId || route.action==='resume' && (body.activity.id===route.jobId || body.activity.work.sourceJobId!==route.jobId || !isObject(body.run) || body.run.teamId!==route.teamId || body.activity.runId!==body.run.id)) throw error(502, 'Strata returned an unrelated task action.');
     return {activity:taskActivity(body.activity),...(route.action==='resume'?{run:run(body.run)}:{})};
   }
-  if (route.kind === 'channelMessage') return { channel: channelSnapshot(body.channel, route), ...(body.run && id(body.run.id) && body.run.teamId === route.teamId ? { run: run(body.run) } : {}) };
-  if (route.kind === 'teams' && Array.isArray(body.teams)) return { teams: rows('teams', team), runs: rows('runs', run, id, Infinity), ...(body.teamWorkflowsSupported === true ? { teamWorkflowsSupported: true } : {}), ...(body.teamUnrestrictedSupported === true ? { teamUnrestrictedSupported: true } : {}), ...(body.teamContinuousSupported === true ? { teamContinuousSupported: true } : {}), ...(body.teamWorkReviewSupported === true ? { teamWorkReviewSupported: true } : {}), ...(body.teamCoordinatorWorkToolsSupported === true ? { teamCoordinatorWorkToolsSupported: true } : {}), ...(body.channelsSupported === true ? { channelsSupported: true } : {}), ...(body.teamInstructionsSupported === true ? { teamInstructionsSupported: true } : {}), ...(body.teamSettingsSupported === true ? { teamSettingsSupported: true, teamComputers: (Array.isArray(body.teamComputers) ? body.teamComputers : []).slice(0, 1000).map(teamComputer).filter(Boolean) } : {}) };
+  if (route.kind === 'channelMessage') {
+    const result = { channel: channelSnapshot(body.channel, route), ...(body.run && id(body.run.id) && body.run.teamId === route.teamId ? { run: run(body.run) } : {}) };
+    if (body.planId !== undefined) {
+      if (!/^tp_[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(body.planId) || result.run?.planId !== body.planId || !id(body.sourceMessageId)) throw error(502, 'Strata did not confirm this work-plan request.');
+      result.planId = body.planId; result.sourceMessageId = body.sourceMessageId;
+      if (body.plan !== undefined) { result.plan = publicTeamPlan(body.plan, route.teamId, body.planId); if (result.plan.parentRunId !== result.run.id || result.plan.sourceMessageId !== body.sourceMessageId) throw error(502, 'Strata returned a different work-plan scope.'); }
+      if (body.sourceMessage !== undefined) {
+        const source = channelSnapshot({ teamId: route.teamId, supported: true, messages: [body.sourceMessage], activeRuns: [], nextSequence: body.sourceMessage.sequence, hasMore: false, hasMoreBefore: false }, route).messages[0];
+        if (source.id !== body.sourceMessageId || source.planId !== body.planId || source.runId !== result.run.id || source.author.type !== 'user' || source.workMode !== 'work') throw error(502, 'Strata returned a different work-plan source message.');
+        result.sourceMessage = source;
+      }
+    }
+    return result;
+  }
+  if (route.kind === 'teams' && Array.isArray(body.teams)) return { teams: rows('teams', team), runs: rows('runs', run, id, Infinity), ...(body.teamWorkflowsSupported === true ? { teamWorkflowsSupported: true } : {}), ...(body.teamWorkPlansSupported === true ? { teamWorkPlansSupported: true } : {}), ...(body.teamUnrestrictedSupported === true ? { teamUnrestrictedSupported: true } : {}), ...(body.teamContinuousSupported === true ? { teamContinuousSupported: true } : {}), ...(body.teamWorkReviewSupported === true ? { teamWorkReviewSupported: true } : {}), ...(body.teamCoordinatorWorkToolsSupported === true ? { teamCoordinatorWorkToolsSupported: true } : {}), ...(body.channelsSupported === true ? { channelsSupported: true } : {}), ...(body.teamInstructionsSupported === true ? { teamInstructionsSupported: true } : {}), ...(body.teamSettingsSupported === true ? { teamSettingsSupported: true, teamComputers: (Array.isArray(body.teamComputers) ? body.teamComputers : []).slice(0, 1000).map(teamComputer).filter(Boolean) } : {}) };
   if (body.team && id(body.team.id)) return { team: team(body.team) };
   if (body.run && id(body.run.id)) return { run: run(body.run) };
   if (route.kind === 'activity') return { activity: rows('activity', taskActivity), ...(body.teamWorkReviewSupported === true ? {teamWorkReviewSupported:true} : {}) };
@@ -441,6 +461,7 @@ export async function handleBotWorkspace({ path, method, req, res, session, host
   botWorkspaceRequest(upstreamPath, method, body, 400);
   requireCurrentSession();
   let workflowSelection;
+  let planSelection;
   try {
     let teamCatalog;
     if (route.kind === 'harnessReview') {
@@ -449,6 +470,14 @@ export async function handleBotWorkspace({ path, method, req, res, session, host
       if (!selected || selected.origin !== 'local' || selected.readOnly === true || !['uncertain','interrupted'].includes(selected.state) || selected.revision !== body.expectedRevision || selected.proof !== body.expectedProof) throw error(409, 'Review this action’s current receipt before acknowledging it.');
     }
     const currentTeams = async () => { if (!teamCatalog) { teamCatalog = await host.json('/api/bots/teams'); requireCurrentSession(); } return teamCatalog; };
+    if (route.kind === 'teamPlan' && method === 'POST') {
+      const catalog = await currentTeams();
+      if (catalog.teamWorkPlansSupported !== true || !(catalog.teams ?? []).some(team => team.id === route.teamId)) throw error(409, 'Update Strata on your Mac and inspect the current team before changing its work plan.');
+      const detail = await host.json(`/api/bots/teams/${route.teamId}/plans/${route.planId}`); requireCurrentSession();
+      const current = publicTeamPlanResponse(detail, route).plan; planSelection = current;
+      if (current.revision !== body.expectedRevision || current.proof !== body.expectedProof) throw error(409, 'This work plan changed. Refresh and inspect its current progress.');
+      if (route.action === 'resume' && !current.canResume || route.action === 'review' && current.phase !== 'awaiting_review') throw error(409, 'Inspect this work plan and resolve its blockers before continuing.');
+    }
     if (route.kind === 'workflow' && method === 'POST') {
       const catalog = await currentTeams();
       if (catalog.teamWorkflowsSupported !== true) throw error(409, 'Update Strata on your Mac before starting a guided team task.');
@@ -498,6 +527,7 @@ export async function handleBotWorkspace({ path, method, req, res, session, host
     }
     if (route.kind === 'channelMessage') {
       const catalog = await currentTeams();
+      if (body.durablePlan === true && catalog.teamWorkPlansSupported !== true) throw error(409, 'Update Strata on your Mac before starting durable team work.');
       if (body.workMode !== undefined && catalog.teamCoordinatorWorkToolsSupported !== true) throw error(409, 'Update Strata on your Mac before choosing Chat or Work for a team message.');
       const selected = (catalog.teams ?? []).find(team => team.id === route.teamId);
       const members = new Set(Array.isArray(selected?.memberIds) ? selected.memberIds : []);
@@ -563,11 +593,17 @@ export async function handleBotWorkspace({ path, method, req, res, session, host
     requireCurrentSession();
     if (route.kind === 'harnessReview' && (result.action?.revision !== body.expectedRevision+1 || result.action.proof === body.expectedProof)) throw error(502, 'Strata did not confirm the next revision of this action receipt.');
     if (route.kind === 'workflow' && method === 'POST') confirmWorkflowMutation(result, route, body, workflowSelection);
+    if (route.kind === 'teamPlan' && method === 'POST') confirmTeamPlanMutation(result, route, body, planSelection);
+    if (route.kind === 'channelMessage' && body?.durablePlan === true) {
+      const safe = publicBotWorkspace(result, route), source = safe.sourceMessage ?? safe.channel.messages.find(row => row.id === safe.sourceMessageId);
+      if (!safe.planId || !source || source.content !== body.message.trim() || source.workMode !== 'work' || source.planId !== safe.planId || source.runId !== safe.run?.id || (source.replyToId ?? null) !== (body.replyToId ?? null) || JSON.stringify([...(source.recipientIds ?? [])].sort()) !== JSON.stringify([...(body.recipientIds ?? [])].sort())) throw error(502, 'Strata did not confirm this exact durable Work request. Refresh the room before trying again.');
+    }
     sendJSON(res, 200, publicBotWorkspace(result, route));
     return true;
   } catch (failure) {
     requireCurrentSession();
     if ([404, 405, 501].includes(failure.status) && method === 'GET') {
+      if (route.kind === 'teamPlan' && !route.planId) { sendJSON(res, 200, { teamWorkPlansSupported: false, available: false, plans: [], hasMore: false, nextBeforePlanId: null, reason: 'Update Strata on your Mac to track durable team work.' }); return true; }
       if (route.kind === 'workflow' && !route.workflowId) { sendJSON(res, 200, { teamWorkflowsSupported: false, available: false, workflows: [], hasMore: false, reason: 'Update Strata on your Mac to plan and verify team tasks.' }); return true; }
       if (route.kind === 'harnessActions') { sendJSON(res,200,{available:false,actions:[],counts:{pending:0,succeeded:0,error:0,interrupted:0,uncertain:0,reviewed:0},hasMore:false,reason:'Update Strata on your Mac to inspect action receipts.'}); return true; }
       const empty = { teams: { teams: [], runs: [] }, channel: { teamId: route.teamId, supported: false, messages: [], activeRuns: [], nextSequence: 0, hasMore: false, hasMoreBefore: false }, activity: { activity: [] }, supervision: { supported: false, sessions: [], counts: { waiting: 0, working: 0, completed: 0, errors: 0 }, hasMore: false }, skills: { skills: [], assignments: [] }, createdTools: { tools: [], createdToolsSupported: false }, connections: { connections: [] }, providerModels: { provider: route.provider, models: [] } }[route.kind];

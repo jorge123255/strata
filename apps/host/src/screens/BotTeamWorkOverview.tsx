@@ -7,8 +7,8 @@ import { BotTaskReview } from './BotTaskReview';
 import { teamEarlierUnverifiedCount, teamTaskEvidence, teamTaskLabel, type TeamWorkGroups } from './botTeamWorkSelectors';
 import './BotTeamWorkOverview.css';
 
-export function TeamWorkCounts({ groups, stale = false, workflows }: { groups: TeamWorkGroups; stale?: boolean; workflows?: { needsYou: number; working: number; unknown?: boolean; partial?: boolean } }) {
-  if (workflows?.unknown) return <span className="bot-work-counts" role="status">Workflow status unavailable{groups.needsYou.length || groups.working.length ? ` · Assigned tasks: ${groups.needsYou.length} need you, ${groups.working.length} working` : ''}</span>;
+export function TeamWorkCounts({ groups, stale = false, workflows }: { groups: TeamWorkGroups; stale?: boolean; workflows?: { needsYou: number; working: number; unknown?: boolean; partial?: boolean; statusLabel?: string } }) {
+  if (workflows?.unknown) return <span className="bot-work-counts" role="status">{workflows.statusLabel ?? 'Workflow status unavailable'}{groups.needsYou.length || groups.working.length ? ` · Assigned tasks: ${groups.needsYou.length} need you, ${groups.working.length} working` : ''}</span>;
   const partial = workflows?.partial ? 'At least ' : '';
   const needsYou = groups.needsYou.length + (workflows?.needsYou ?? 0), working = groups.working.length + (workflows?.working ?? 0);
   return <span className="bot-work-counts" aria-label={`${stale ? 'Last known: ' : ''}${partial}${needsYou} need you, ${working} working`}>
@@ -21,7 +21,7 @@ export function TeamWorkCounts({ groups, stale = false, workflows }: { groups: T
 export function BotTeamWorkOverview({ groups, bots, stale, disabled, workflows, onChanged, onOpenConversation }: {
   groups: TeamWorkGroups; bots: Bot[]; stale: boolean; disabled: boolean;
   onChanged: () => Promise<void>; onOpenConversation: (id: string) => void;
-  workflows?: { needsYou: number; working: number; unknown?: boolean; partial?: boolean };
+  workflows?: { needsYou: number; working: number; unknown?: boolean; partial?: boolean; statusLabel?: string };
 }) {
   const history = useRef<HTMLDetailsElement>(null), earlierUnverified = teamEarlierUnverifiedCount(groups);
   function showEarlierWork() {

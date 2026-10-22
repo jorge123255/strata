@@ -311,6 +311,10 @@ struct BotTeamDetailView: View {
     private var entries: [BotTeamChannelMessage] { channel?.messages ?? [] }
     private var runs: [BotTeamRun] { (workspace.teams?.runs ?? []).filter { $0.teamId == teamId } }
     private var activeRuns: [BotTeamRun] { channel?.supported == true ? channel?.activeRuns ?? [] : runs.filter(\.isActive) }
+    private var ordinaryTeamActivity: [BotWorkspaceActivity] {
+        let planRuns = Set((workspace.workPlans[teamId]?.plans ?? []).map(\.parentRunId) + runs.filter { $0.planId != nil }.map(\.id))
+        return workspace.activity.filter { $0.teamId == teamId && !planRuns.contains($0.runId) }
+    }
     private var latestSequence: Int { entries.last?.sequence ?? 0 }
     private var workSurfaceVisible: Bool { visible && scenePhase == .active && !showingWorkflows && editingTeam == nil && (!showingDetails || detailsVisible) }
     private var workflowSnapshot: BotTeamWorkflowsSnapshot? { workspace.workflows[teamId] }
@@ -325,6 +329,15 @@ struct BotTeamDetailView: View {
         guard snapshot.isAvailable || !snapshot.workflows.isEmpty else { return "Workflows unavailable" }
         let prefix = workspace.messages[key] != nil || !snapshot.isAvailable ? "Last known: " : ""
         return prefix + (snapshot.hasMore ? "Latest workflows: " : "") + workflowWork.summary + (snapshot.hasMore ? " · more saved" : "")
+    }
+    private var planWorkSummary: String {
+        let key = BotWorkspaceStore.workPlansKey(teamId)
+        guard let snapshot = workspace.workPlans[teamId] else { return workspace.messages[key] == nil ? "Checking plans…" : "Plans unavailable" }
+        guard snapshot.isAvailable || !snapshot.plans.isEmpty else { return "Plans unavailable" }
+        let rows = snapshot.plans.map { workspace.workPlan($0.id, teamId: teamId) ?? $0 }
+        let active = rows.filter { $0.phase.isActive }.count
+        let attention = rows.filter { [.awaitingReview, .blocked, .interrupted].contains($0.phase) || $0.phase == .stopping && $0.blockedReason?.isEmpty == false }.count
+        return (workspace.messages[key] != nil || !snapshot.isAvailable ? "Last known: " : "") + (snapshot.hasMore ? "At least " : "") + "\(active) in motion · \(attention) need you"
     }
 
     var body: some View {
@@ -381,7 +394,7 @@ struct BotTeamDetailView: View {
                 }
             }
             .onChange(of: store.pairingGeneration) { _, _ in follow = BotTeamMessageFollowState() }
-            .safeAreaInset(edge: .top, spacing: 0) { if workspace.workReviewSupported || workspace.workflowsSupported { currentWorkButton } }
+            .safeAreaInset(edge: .top, spacing: 0) { if workspace.workReviewSupported || workspace.workflowsSupported || workspace.workPlansSupported { currentWorkButton } }
             .safeAreaInset(edge: .bottom, spacing: 0) { if let team { composer(team) } }
         }
         .navigationTitle("").navigationBarTitleDisplayMode(.inline)
@@ -445,8 +458,10 @@ struct BotTeamDetailView: View {
                     guard !Task.isCancelled, workSurfaceVisible, navigation == generation else { return }
                     if workspace.workReviewSupported, !workspace.loading.contains("activity") { await workspace.refreshActivity() }
                     guard !Task.isCancelled, workSurfaceVisible, navigation == generation else { return }
-                    if workspace.workflowsSupported, lastWorkflowRefresh.map({ Date().timeIntervalSince($0) >= 10 }) ?? true {
-                        await workspace.refreshWorkflows(teamId)
+                    if (workspace.workflowsSupported || workspace.workPlansSupported), lastWorkflowRefresh.map({ Date().timeIntervalSince($0) >= 10 }) ?? true {
+                        if workspace.workPlansSupported { await workspace.refreshWorkPlans(teamId) }
+                        guard !Task.isCancelled, workSurfaceVisible, navigation == generation else { return }
+                        if workspace.workflowsSupported { await workspace.refreshWorkflows(teamId) }
                         guard !Task.isCancelled, workSurfaceVisible, navigation == generation else { return }
                         await workspace.refreshSupervision()
                         guard !Task.isCancelled, workSurfaceVisible, navigation == generation else { return }
@@ -466,29 +481,37 @@ struct BotTeamDetailView: View {
         }
     }
     private var currentWorkButton: some View {
-        let overview = BotTeamWorkOverview(workspace.activity.filter { $0.teamId == teamId })
+        let overview = BotTeamWorkOverview(ordinaryTeamActivity)
         let stale = workspace.messages["activity"] != nil
         let value = workspace.activityLoaded ? (stale ? "Last known: " : "") + "\(overview.attentionCount) need you, \(overview.workingCount) working" : stale ? "Unavailable" : "Checking current work"
+        let taskLabel = workspace.workReviewSupported ? "Tasks: " + value : ""
+        let workflowLabel = workspace.workflowsSupported ? "Workflows: " + workflowWorkSummary : ""
+        let planLabel = workspace.workPlansSupported ? "Plans: " + planWorkSummary : ""
+        let accessibilitySummary = [taskLabel, workflowLabel, planLabel].filter { !$0.isEmpty }.joined(separator: ". ")
         return HStack(spacing: 10) {
             Button {
             taskFocused = false; tasksExpanded = false; showingDetails = true
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: "checklist").foregroundStyle(StrataTheme.accentText)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Team work").font(.caption.weight(.semibold))
-                    if workspace.workReviewSupported { Text("Tasks: " + value).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
-                    if workspace.workflowsSupported { Text("Workflows: " + workflowWorkSummary).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("teamWorkflowWorkSummary") }
-                }
+                currentWorkLabels(task: taskLabel, workflow: workflowLabel, plan: planLabel)
                 Spacer(minLength: 4)
                 Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             }.padding(.vertical, 10)
-        }.buttonStyle(.plain).accessibilityLabel("Team work").accessibilityValue((workspace.workReviewSupported ? "Tasks: " + value : "") + (workspace.workflowsSupported ? ". Workflows: " + workflowWorkSummary : "")).accessibilityIdentifier("teamCurrentWorkButton")
+        }.buttonStyle(.plain).accessibilityLabel("Team work").accessibilityValue(accessibilitySummary).accessibilityIdentifier("teamCurrentWorkButton")
             if workspace.workflowsSupported {
                 Button { taskFocused = false; showingWorkflows = true } label: { Image(systemName: "checkmark.seal").font(.system(size: 20)).frame(width: 44, height: 44).strataChrome() }
                     .accessibilityLabel("Open Plan & verify workflows").accessibilityIdentifier("teamCurrentWorkflowsButton")
             }
         }.padding(.horizontal, 16).background(StrataTheme.background)
+    }
+    private func currentWorkLabels(task: String, workflow: String, plan: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("Team work").font(.caption.weight(.semibold))
+            if !task.isEmpty { Text(task).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+            if !workflow.isEmpty { Text(workflow).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("teamWorkflowWorkSummary") }
+            if !plan.isEmpty { Text(plan).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("teamPlanWorkSummary") }
+        }
     }
     private func members(_ team: BotTeam) -> [CompanionBot] { team.memberIds.compactMap { id in store.botCatalog?.bots.first { $0.id == id } } }
     private func emptyChannel(_ team: BotTeam) -> some View {
@@ -510,6 +533,9 @@ struct BotTeamDetailView: View {
                             Text("\(team.memberIds.count) teammates · \(team.enabled ? "Shared channel" : "Ready for review")").font(.subheadline).foregroundStyle(.secondary)
                         }.frame(maxWidth: .infinity).padding(.vertical, 16)
                     }.listRowBackground(Color.clear)
+                    if workspace.workPlansSupported {
+                        BotTeamPlansSection(store: store, workspace: workspace, teamId: teamId, openChat: { showingDetails = false; openChat() })
+                    }
                     Section {
                         NavigationLink {
                             BotTeamWorkflowsView(store: store, workspace: workspace, teamId: teamId, openChat: { showingDetails = false; openChat() })
@@ -538,7 +564,7 @@ struct BotTeamDetailView: View {
                         if settingsExpanded { teamSettings(team) }
                     }
                     if workspace.workReviewSupported {
-                        let overview = BotTeamWorkOverview(workspace.activity.filter { $0.teamId == teamId })
+                        let overview = BotTeamWorkOverview(ordinaryTeamActivity)
                         Section {
                             if workspace.activityLoaded { BotTeamWorkSummary(overview: overview, stale: workspace.messages["activity"] != nil) }
                             else if workspace.messages["activity"] == nil { ProgressView("Checking current work…") }
@@ -755,7 +781,7 @@ struct BotTeamDetailView: View {
                         Text("Chat").tag(BotTeamMessageWorkMode.chat)
                         Text("Work").tag(BotTeamMessageWorkMode.work)
                     }.pickerStyle(.segmented).disabled(workspace.mutation != nil).accessibilityIdentifier("teamMessageWorkModePicker")
-                    Text(workMode == .work ? "Coordinator and teammates can use their saved tools, approvals and selected team computer/folder." : "Talk with the team. Your coordinator can bring in teammates.")
+                    Text(workMode == .work ? (workspace.workPlansSupported ? "Your coordinator saves a team plan with task owners, dependencies and review. Saved tools, approvals and the team computer/folder stay in force." : "Coordinator and teammates can use their saved tools, approvals and selected team computer/folder.") : "Talk with the team. Your coordinator can bring in teammates.")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("teamMessageWorkModeExplanation")
                 }.onChange(of: workMode) { _, _ in requestId = UUID().uuidString }
@@ -799,7 +825,7 @@ struct BotTeamDetailView: View {
     private func send(_ team: BotTeam) {
         taskFocused = false
         let generation = navigation, text = message, request = requestId
-        let draft = BotTeamChannelPost(message: text, requestId: request, recipientIds: recipient.isEmpty ? nil : recipient == "everyone" ? team.memberIds : [recipient], replyToId: reply?.id, workMode: supportsCoordinatorWork ? workMode : nil)
+        let draft = BotTeamChannelPost(message: text, requestId: request, recipientIds: recipient.isEmpty ? nil : recipient == "everyone" ? team.memberIds : [recipient], replyToId: reply?.id, workMode: supportsCoordinatorWork ? workMode : nil, durablePlan: supportsCoordinatorWork && workspace.workPlansSupported && workMode == .work ? true : nil)
         Task {
             let sent: Bool
             if channel?.supported == true { sent = await workspace.postTeamMessage(team, draft: draft) }
@@ -1696,6 +1722,206 @@ private struct BotHarnessRecoverySection: View {
                     .disabled(workspace.loading.contains("harnessActions") || workspace.mutation != nil).accessibilityIdentifier("refreshHarnessActionsButton")
             } header: { Text("Action recovery") }
         }
+    }
+}
+
+/// A plan belongs to the team Work surface. Opening it only reads saved state.
+private struct BotTeamPlansSection: View {
+    @ObservedObject var store: CompanionStore
+    @ObservedObject var workspace: BotWorkspaceStore
+    let teamId: String
+    let openChat: () -> Void
+    private var key: String { BotWorkspaceStore.workPlansKey(teamId) }
+    private var snapshot: BotTeamWorkPlansSnapshot? { workspace.workPlans[teamId] }
+    var body: some View {
+        Section {
+            ForEach(snapshot?.plans ?? []) { listed in
+                let plan = workspace.workPlan(listed.id, teamId: teamId) ?? listed
+                NavigationLink {
+                    BotTeamWorkPlanDetailView(store: store, workspace: workspace, teamId: teamId, planId: plan.id, openChat: openChat)
+                } label: {
+                    VStack(alignment: .leading, spacing: 7) {
+                        HStack(alignment: .top, spacing: 9) {
+                            AvatarBadge(store.botCatalog?.bots.first { $0.id == plan.coordinatorId }?.face ?? .default(for: "Bot"), size: 30)
+                            Text(plan.goal).font(.headline).lineLimit(3)
+                        }
+                        Text((workspace.messages[key] != nil || snapshot?.isAvailable != true ? "Last known: " : "") + plan.phase.label).font(.caption.weight(.semibold)).foregroundStyle(StrataTheme.accentText)
+                        Text(plan.counts.summary).font(.caption).foregroundStyle(.secondary)
+                        if let reason = plan.blockedReason, !reason.isEmpty { Label(reason, systemImage: "exclamationmark.bubble").font(.caption).foregroundStyle(StrataTheme.warning).lineLimit(3) }
+                    }.padding(.vertical, 5)
+                }.accessibilityIdentifier("teamPlan-" + plan.id)
+            }
+            if snapshot == nil, workspace.messages[key] == nil { ProgressView("Reading saved team plans…") }
+            if snapshot?.isAvailable == true, snapshot?.plans.isEmpty == true, workspace.messages[key] == nil {
+                Text("Choose Work in the team channel to save a plan with owners, prerequisites and review.").font(.callout).foregroundStyle(.secondary).accessibilityIdentifier("teamPlansEmpty")
+            }
+            if snapshot?.hasMore == true {
+                Text("More plans remain saved. Counts in this view cover the loaded plans.").font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("teamPlansPartial")
+                if let cursor = snapshot?.nextBeforePlanId {
+                    Button("Earlier plans", systemImage: "clock.arrow.circlepath") { Task { await workspace.refreshWorkPlans(teamId, beforePlanId: cursor) } }
+                        .disabled(!store.isPaired || snapshot?.isAvailable != true || workspace.messages[key] != nil || workspace.loading.contains(key) || workspace.mutation != nil).accessibilityIdentifier("loadEarlierTeamPlansButton")
+                }
+            }
+            BotWorkspaceMessage(workspace: workspace, key: key)
+            Button("Refresh team plans", systemImage: "arrow.clockwise") { Task { await workspace.refreshWorkPlans(teamId) } }
+                .disabled(!store.isPaired || workspace.mutation != nil || workspace.loading.contains(key)).accessibilityIdentifier("refreshTeamPlansButton")
+        } header: { Text("Team plans") } footer: { Text("Each plan keeps real task owners and conversations. Reported results remain separate from your acceptance.") }
+    }
+}
+
+private struct BotTeamWorkPlanDetailView: View {
+    @ObservedObject var store: CompanionStore
+    @ObservedObject var workspace: BotWorkspaceStore
+    let teamId: String
+    let planId: String
+    let openChat: () -> Void
+    @State private var note = ""
+    @State private var inspected = false
+    @State private var visible = false
+    @State private var resumeRequestId = UUID().uuidString
+    @State private var confirming: Confirmation?
+    @Environment(\.scenePhase) private var scenePhase
+    private struct Confirmation: Identifiable {
+        var value: BotTeamWorkPlan; var action: String; var decision: String?; var note: String; var requestId: String?
+        var id: String { action + (decision ?? "") + value.proof }
+    }
+    private var key: String { BotWorkspaceStore.workPlanKey(planId) }
+    private var listKey: String { BotWorkspaceStore.workPlansKey(teamId) }
+    private var value: BotTeamWorkPlan? { workspace.workPlan(planId, teamId: teamId) }
+    private var tasks: [BotTeamWorkPlan.Task] { workspace.workPlanTasks(planId, teamId: teamId) }
+    private var stale: Bool { workspace.messages[key] != nil || workspace.messages[listKey] != nil || workspace.workPlans[teamId]?.isAvailable != true }
+    private var busy: Bool { !store.isPaired || !workspace.workPlansSupported || workspace.mutation != nil || stale }
+    private var enabled: Bool { workspace.teams?.teams.first { $0.id == teamId }?.enabled == true }
+    var body: some View {
+        List {
+            if let value {
+                Section {
+                    Text(value.goal).font(.title3.weight(.semibold)).textSelection(.enabled).accessibilityIdentifier("teamPlanGoal")
+                    Label((stale ? "Last known: " : "") + value.phase.label, systemImage: value.phase == .completed ? "checkmark.seal" : "point.3.connected.trianglepath.dotted").font(.headline).foregroundStyle(StrataTheme.accentText).accessibilityIdentifier("teamPlanPhase")
+                    Text(value.counts.summary).font(.callout).foregroundStyle(.secondary).accessibilityIdentifier("teamPlanProgress")
+                    member(value.coordinatorId, role: "Coordinator")
+                    if let summary = value.summary, !summary.isEmpty {
+                        Text([.awaitingReview, .completed].contains(value.phase) ? "Team report" : "Last saved report").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                        Text(summary).font(.callout).textSelection(.enabled).accessibilityIdentifier("teamPlanSummary")
+                    }
+                    if let reason = value.blockedReason, !reason.isEmpty { Label(reason, systemImage: "exclamationmark.bubble").font(.callout).foregroundStyle(StrataTheme.warning).accessibilityIdentifier("teamPlanBlocker") }
+                } header: { Text("Saved team plan") }
+                if !value.participation.isEmpty {
+                    Section("Your team") {
+                        ForEach(value.participation) { participant in
+                            VStack(alignment: .leading, spacing: 7) {
+                                member(participant.botId, role: participant.role)
+                                Text(participant.reason).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            }.accessibilityIdentifier("teamPlanParticipant-" + participant.botId)
+                        }
+                    }
+                }
+                Section {
+                    ForEach(tasks) { task in taskRow(task, plan: value) }
+                    if tasks.isEmpty { Text(value.phase == .planning ? "The coordinator is preparing concrete tasks and owners." : "No task page is loaded. Refresh to read the saved work.").font(.callout).foregroundStyle(.secondary) }
+                    if let offset = workspace.nextWorkPlanTaskOffset(planId, teamId: teamId) {
+                        Button("Load more tasks", systemImage: "arrow.down") { Task { await workspace.refreshWorkPlan(planId, teamId: teamId, taskOffset: offset) } }
+                            .disabled(busy || workspace.loading.contains(key)).accessibilityIdentifier("loadMoreTeamPlanTasksButton")
+                    }
+                    if tasks.count < value.totalTasks { Text("Showing \(tasks.count) of \(value.totalTasks) tasks. Counts above include the entire plan.").font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("teamPlanTasksPartial") }
+                } header: { Text("Tasks & prerequisites") } footer: { Text("Prerequisites name saved tasks. A reported result does not imply owner acceptance, and a shared workspace key grants no new folder access.") }
+                Section {
+                    ForEach(value.attempts.filter { $0.kind != .task }) { attempt in
+                        VStack(alignment: .leading, spacing: 7) {
+                            member(attempt.botId, role: attempt.kind == .planning ? "Planning" : "Team report")
+                            Text(attempt.state.rawValue.capitalized).font(.caption).foregroundStyle(.secondary)
+                            if let chatId = attempt.chatId { BotSharedConversationButton(store: store, chatId: chatId, title: "Thinking, tools & approvals", openChat: openChat) }
+                        }
+                    }
+                    if value.attemptsTruncated { Text("Showing the latest \(value.attempts.count) of \(value.totalAttempts) attempts. Earlier conversations remain saved on the Mac.").font(.caption).foregroundStyle(.secondary) }
+                } header: { Text("Coordination") }
+                actions(value)
+            } else if workspace.loading.contains(key) { Section { ProgressView("Reading team plan…") } }
+            else { Section { Text("This team plan is unavailable. Refresh to inspect its saved state.").foregroundStyle(.secondary) } }
+            Section {
+                BotWorkspaceMessage(workspace: workspace, key: key)
+                BotWorkspaceMessage(workspace: workspace, key: listKey)
+                if !workspace.workPlansSupported { Label("Update Strata on your Mac to use saved team plans.", systemImage: "info.circle").font(.callout) }
+            }
+        }.strataList().navigationTitle("Team plan").navigationBarTitleDisplayMode(.inline).accessibilityIdentifier("teamPlanDetailView")
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Refresh", systemImage: "arrow.clockwise") { Task { await refresh() } }.disabled(workspace.mutation != nil || workspace.loading.contains(key)).accessibilityIdentifier("refreshTeamPlanButton") } }
+            .refreshable { await refresh() }
+            .onAppear { visible = true }.onDisappear { visible = false; confirming = nil }
+            .onChange(of: value?.proof) { _, _ in inspected = false; confirming = nil; resumeRequestId = UUID().uuidString }
+            .task(id: visible && scenePhase == .active) {
+                guard visible, scenePhase == .active else { return }
+                await refresh()
+                while !Task.isCancelled, visible, scenePhase == .active {
+                    do { try await Task.sleep(for: .seconds(10)) } catch { return }
+                    guard !Task.isCancelled, visible, scenePhase == .active, store.isPaired else { return }
+                    if workspace.mutation == nil, !workspace.loading.contains(key) { await workspace.refreshWorkPlan(planId, teamId: teamId) }
+                }
+            }
+            .confirmationDialog("Apply this action to the inspected team plan?", isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } })) {
+                if let target = confirming {
+                    Button(target.action == "stop" ? "Stop team plan" : target.action == "resume" ? "Resume inspected plan" : target.decision == "accept" ? "Accept this result" : "Request changes", role: target.action == "stop" ? .destructive : nil) {
+                        confirming = nil
+                        Task { _ = await workspace.changeWorkPlan(target.value, action: target.action, requestId: target.requestId, decision: target.decision, note: target.note, inspected: inspected) }
+                    }.accessibilityIdentifier("confirmTeamPlanActionButton")
+                }
+            } message: { Text("Only this saved revision is targeted. This does not approve tools, change access, or replay an uncertain action.") }
+    }
+    private func member(_ id: String, role: String) -> some View {
+        let bot = store.botCatalog?.bots.first { $0.id == id }
+        return HStack(spacing: 9) {
+            AvatarBadge(bot?.face ?? .default(for: "Bot"), size: 30)
+            VStack(alignment: .leading, spacing: 2) { Text(bot?.name ?? "Saved teammate").font(.subheadline.weight(.semibold)); Text(role).font(.caption).foregroundStyle(.secondary) }
+        }
+    }
+    private func taskRow(_ task: BotTeamWorkPlan.Task, plan: BotTeamWorkPlan) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top) { Text(task.title).font(.headline); Spacer(); Text(task.kind == .review ? "Independent review" : "Work").font(.caption).foregroundStyle(.secondary) }
+            member(task.ownerId, role: task.state.label)
+            Text(task.instructions).font(.callout).textSelection(.enabled)
+            if task.instructionsTruncated == true { Text("Instructions shown in part. The bot receives the exact saved instructions.").font(.caption).foregroundStyle(.secondary) }
+            if !task.dependsOn.isEmpty { Label("After: " + task.dependsOn.joined(separator: ", "), systemImage: "arrow.triangle.branch").font(.caption).foregroundStyle(.secondary) }
+            if !task.collaboratorIds.isEmpty { Text("Contributors: " + task.collaboratorIds.map { id in store.botCatalog?.bots.first { $0.id == id }?.name ?? "Saved teammate" }.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary) }
+            if let workspace = task.workspaceKey { Label("Workspace group: " + workspace, systemImage: "folder").font(.caption).foregroundStyle(.secondary) }
+            if let summary = task.summary, !summary.isEmpty { Text("Reported progress").font(.caption.weight(.semibold)).foregroundStyle(.secondary); Text(summary).font(.callout).textSelection(.enabled) }
+            if let next = task.nextStep, !next.isEmpty { Label(next, systemImage: "arrow.right.circle").font(.callout).foregroundStyle(task.state == .blocked ? StrataTheme.warning : .secondary) }
+            ForEach(task.criteria) { criterion in
+                let check = task.checks?.first { $0.criterionId == criterion.id }
+                VStack(alignment: .leading, spacing: 4) {
+                    Label(criterion.text, systemImage: check?.passed == true && task.state == .readyForReview ? "checkmark.circle" : "circle.dashed").font(.subheadline)
+                    if let check { Text((task.state != .readyForReview ? "Previous finding · recheck pending: " : check.passed ? "Evaluator reports pass: " : "Changes needed: ") + check.detail).font(.caption).foregroundStyle(.secondary) }
+                }
+            }
+            ForEach(Array((task.evidence ?? []).enumerated()), id: \.offset) { _, evidence in
+                VStack(alignment: .leading, spacing: 4) { Label(evidence.label, systemImage: evidence.icon).font(.subheadline); Text(evidence.detail).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
+            }
+            if let chat = task.chatId ?? plan.attempts.first(where: { $0.id == task.attemptId && $0.taskId == task.id && $0.botId == task.ownerId })?.chatId {
+                BotSharedConversationButton(store: store, chatId: chat, title: "Thinking, tools & approvals", openChat: openChat).accessibilityIdentifier("teamPlanTaskChat-" + task.id)
+            } else if task.attemptId != nil { Text("This task’s conversation is outside the latest attempt preview. Earlier history remains saved on the Mac.").font(.caption).foregroundStyle(.secondary) }
+        }.padding(.vertical, 7).accessibilityElement(children: .contain).accessibilityIdentifier("teamPlanTask-" + task.id)
+    }
+    @ViewBuilder private func actions(_ plan: BotTeamWorkPlan) -> some View {
+        if plan.canContinue || plan.canReview {
+            Section {
+                NavigationLink { List { BotHarnessRecoverySection(store: store, workspace: workspace, openChat: openChat) }.strataList().navigationTitle("Action receipts").task { await workspace.refreshHarnessActions(force: true) } } label: { Label("Inspect action receipts", systemImage: "doc.text.magnifyingglass") }
+                Toggle("I inspected the tasks, evidence and action receipts", isOn: $inspected).accessibilityIdentifier("teamPlanInspectedToggle")
+                if plan.canReview {
+                    Text("The team has reported all results. Inspect the deliverables and any independent checks before accepting.").font(.callout).accessibilityIdentifier("teamPlanAwaitingReview")
+                    TextField("Feedback for the team (optional)", text: $note, axis: .vertical).lineLimit(2...6).accessibilityIdentifier("teamPlanReviewNote")
+                    Button("Accept result", systemImage: "checkmark.seal") { confirming = Confirmation(value: plan, action: "review", decision: "accept", note: note) }.disabled(busy || !inspected || !BotTeamWorkPlan.text(note, 4_000)).accessibilityIdentifier("acceptTeamPlanButton")
+                    Button("Request changes", systemImage: "arrow.triangle.2.circlepath") { confirming = Confirmation(value: plan, action: "review", decision: "changes_requested", note: note) }.disabled(busy || !inspected || !enabled || !BotTeamWorkPlan.text(note, 4_000) || note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty).accessibilityIdentifier("repairTeamPlanButton")
+                } else {
+                    Button(plan.phase == .running ? "Resume unfinished tasks" : "Resume plan", systemImage: "play") { confirming = Confirmation(value: plan, action: "resume", note: "", requestId: resumeRequestId) }.disabled(busy || !inspected || !enabled).accessibilityIdentifier("resumeTeamPlanButton")
+                }
+            } header: { Text(plan.canReview ? "Your review" : "Continue deliberately") } footer: { Text("Uncertain actions and computer cleanup retain their own review. A new attempt inspects saved progress instead of replaying old commands.") }
+        } else if plan.phase == .completed { Section("Your review") { Label("You accepted this team result.", systemImage: "person.crop.circle.badge.checkmark").accessibilityIdentifier("teamPlanOwnerAccepted") } }
+        if plan.canStop { Section { Button(plan.phase == .stopping ? "Retry Stop" : "Stop team plan", systemImage: "stop.circle", role: .destructive) { confirming = Confirmation(value: plan, action: "stop", note: "") }.disabled(busy).accessibilityIdentifier("stopTeamPlanButton") } }
+    }
+    private func refresh() async {
+        await workspace.refreshTeams()
+        guard !Task.isCancelled, store.isPaired else { return }
+        await workspace.refreshWorkPlans(teamId)
+        guard !Task.isCancelled, store.isPaired else { return }
+        await workspace.refreshWorkPlan(planId, teamId: teamId)
     }
 }
 

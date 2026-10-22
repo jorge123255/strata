@@ -14,6 +14,9 @@ final class BotWorkspaceStore: ObservableObject {
     @Published private(set) var recoveryPlans: [String: BotTeamRecoveryPlan] = [:]
     @Published private(set) var workflows: [String: BotTeamWorkflowsSnapshot] = [:]
     @Published private(set) var workflowDetails: [String: BotTeamWorkflow] = [:]
+    @Published private(set) var workPlans: [String: BotTeamWorkPlansSnapshot] = [:]
+    @Published private(set) var workPlanDetails: [String: BotTeamWorkPlan] = [:]
+    @Published private(set) var workPlanTaskPages: [String: [Int: [BotTeamWorkPlan.Task]]] = [:]
     @Published private(set) var activityWorkReviewSupported = false
     @Published private(set) var supervision: BotSupervisionSnapshot?
     @Published private(set) var harnessActions: BotHarnessActionsSnapshot?
@@ -40,6 +43,153 @@ final class BotWorkspaceStore: ObservableObject {
     var continuousTeams: Bool { teams?.teamContinuousSupported == true }
     var workReviewSupported: Bool { teams?.teamWorkReviewSupported == true || activityWorkReviewSupported }
     var workflowsSupported: Bool { teams?.teamWorkflowsSupported == true }
+    var workPlansSupported: Bool { teams?.teamWorkPlansSupported == true }
+
+    static func workPlansKey(_ teamId: String) -> String { "workPlans-" + teamId }
+    static func workPlanKey(_ id: String) -> String { "workPlan-" + id }
+    func workPlan(_ id: String, teamId: String) -> BotTeamWorkPlan? {
+        let detail = workPlanDetails[id].flatMap { $0.teamId == teamId ? $0 : nil }
+        let listed = workPlans[teamId]?.plans.first { $0.id == id }
+        if let detail, let listed { return detail.revision >= listed.revision ? detail : listed }
+        return detail ?? listed
+    }
+    func workPlanTasks(_ id: String, teamId: String) -> [BotTeamWorkPlan.Task] {
+        guard workPlan(id, teamId: teamId) != nil else { return [] }
+        var positions: [Int: BotTeamWorkPlan.Task] = [:]
+        for (start, tasks) in (workPlanTaskPages[id] ?? [:]).sorted(by: { $0.key < $1.key }) {
+            for (index, task) in tasks.enumerated() { positions[start + index] = task }
+        }
+        return positions.sorted { $0.key < $1.key }.map(\.value)
+    }
+    func nextWorkPlanTaskOffset(_ id: String, teamId: String) -> Int? {
+        guard let plan = workPlan(id, teamId: teamId) else { return nil }
+        var offset = 0
+        for (start, tasks) in (workPlanTaskPages[id] ?? [:]).sorted(by: { $0.key < $1.key }) {
+            guard start <= offset, !tasks.isEmpty else { break }
+            offset = max(offset, start + tasks.count)
+        }
+        return offset < plan.totalTasks ? offset : nil
+    }
+    private func workPlanTeam(_ teamId: String) -> BotTeam? {
+        guard isCurrent(), workPlansSupported, teams?.reason == nil, CompanionClient.isSafeIdentifier(teamId) else { return nil }
+        return teams?.teams.first { $0.id == teamId }
+    }
+    func refreshWorkPlans(_ teamId: String, beforePlanId: String? = nil) async {
+        let key = Self.workPlansKey(teamId)
+        guard let client, workPlanTeam(teamId) != nil, mutation != key, mutation?.hasPrefix("workPlan-") != true,
+              beforePlanId == nil || beforePlanId == workPlans[teamId]?.nextBeforePlanId else { return }
+        let request = UUID(); requests[key] = request; setLoading(key, true)
+        defer { if requests[key] == request { requests[key] = nil; setLoading(key, false) } }
+        do {
+            var value = try await client.teamWorkPlans(teamId: teamId, beforePlanId: beforePlanId)
+            guard isCurrent(), requests[key] == request, !Task.isCancelled, workPlanTeam(teamId) != nil else { return }
+            guard value.plans.count <= 20, Set(value.plans.map(\.id)).count == value.plans.count,
+                  value.hasMore ? !value.plans.isEmpty && value.nextBeforePlanId == value.plans.last?.id : value.nextBeforePlanId == nil else {
+                throw CompanionError.server("Strata returned an inconsistent team plan list or cursor.")
+            }
+            for row in value.plans { try validateWorkPlan(row, id: row.id, teamId: teamId) }
+            for row in value.plans { try applyWorkPlan(row, id: row.id, teamId: teamId) }
+            if beforePlanId != nil, let previous = workPlans[teamId] {
+                guard previous.nextBeforePlanId == beforePlanId, Set(previous.plans.map(\.id)).isDisjoint(with: value.plans.map(\.id)) else { throw CompanionError.server("The earlier team plan page changed. Refresh before loading it again.") }
+                value.plans = previous.plans + value.plans
+            } else if !value.isAvailable && value.plans.isEmpty, let previous = workPlans[teamId] {
+                value.plans = previous.plans
+            }
+            if workPlans[teamId] != value { workPlans[teamId] = value }
+            setMessage(key, value.error ?? (value.isAvailable ? nil : "Team plans are unavailable. Refresh before changing saved work."))
+        } catch is CancellationError { }
+        catch { if isCurrent(), requests[key] == request, !Task.isCancelled { setMessage(key, error.localizedDescription) } }
+    }
+    private struct WorkPlanResponse: Decodable { var plan: BotTeamWorkPlan }
+    func refreshWorkPlan(_ id: String, teamId: String, taskOffset: Int = 0) async {
+        let key = Self.workPlanKey(id)
+        guard let client, workPlanTeam(teamId) != nil, BotTeamWorkPlan.validID(id, "tp_"), taskOffset >= 0,
+              mutation != key, mutation != Self.workPlansKey(teamId) else { return }
+        let request = UUID(); requests[key] = request; setLoading(key, true)
+        defer { if requests[key] == request { requests[key] = nil; setLoading(key, false) } }
+        do {
+            let value = WorkPlanResponse(plan: try await client.teamWorkPlan(teamId: teamId, planId: id, taskOffset: taskOffset))
+            guard isCurrent(), requests[key] == request, !Task.isCancelled, workPlanTeam(teamId) != nil else { return }
+            guard value.plan.tasksOffset == taskOffset else { throw CompanionError.server("Strata returned a different team task page. Refresh before continuing.") }
+            try applyWorkPlan(value.plan, id: id, teamId: teamId)
+            setMessage(key, nil)
+        } catch is CancellationError { }
+        catch { if isCurrent(), requests[key] == request, !Task.isCancelled { setMessage(key, error.localizedDescription) } }
+    }
+    private func validateWorkPlan(_ value: BotTeamWorkPlan, id: String, teamId: String) throws {
+        guard value.hasValidProof, value.id == id, value.teamId == teamId else { throw CompanionError.server("Strata returned a different or unreadable team plan.") }
+        if let old = workPlan(id, teamId: teamId), value.revision >= old.revision, !value.hasSameScope(as: old) {
+            throw CompanionError.server("This team plan changed its original scope or saved task definitions. Inspect it on the Mac before continuing.")
+        }
+        if let old = workPlan(id, teamId: teamId), value.revision == old.revision, !value.hasSameCheckpoint(as: old) {
+            throw CompanionError.server("This team plan changed without a new checkpoint. Refresh before continuing.")
+        }
+        if let old = workPlan(id, teamId: teamId), value.revision > old.revision, value.proof == old.proof {
+            throw CompanionError.server("This team plan changed without a new proof. Refresh before continuing.")
+        }
+        if let old = workPlan(id, teamId: teamId), value.revision >= old.revision {
+            let saved = workPlanTasks(id, teamId: teamId)
+            for (index, task) in value.tasks.enumerated() {
+                if let previous = saved.first(where: { $0.id == task.id || $0.key == task.key }) {
+                    guard task.hasSameDefinition(as: previous), value.revision != old.revision || task.hasSameCheckpoint(as: previous) else { throw CompanionError.server("A saved team task changed its definition or original checkpoint.") }
+                }
+                if value.revision == old.revision {
+                    let position = value.tasksOffset + index
+                    for (start, page) in workPlanTaskPages[id] ?? [:] where position >= start && position - start < page.count {
+                        guard page[position - start].id == task.id else { throw CompanionError.server("A saved team task changed its original checkpoint position.") }
+                    }
+                }
+            }
+        }
+    }
+    private func applyWorkPlan(_ value: BotTeamWorkPlan, id: String, teamId: String) throws {
+        try validateWorkPlan(value, id: id, teamId: teamId)
+        if let old = workPlan(id, teamId: teamId), value.revision < old.revision { return }
+        if workPlan(id, teamId: teamId)?.revision != value.revision { workPlanTaskPages[id] = [:] }
+        workPlanTaskPages[id, default: [:]][value.tasksOffset] = value.tasks
+        if workPlanDetails[id] != value { workPlanDetails[id] = value }
+    }
+    @discardableResult func changeWorkPlan(_ value: BotTeamWorkPlan, action: String, requestId: String? = nil, decision: String? = nil, note: String = "", inspected: Bool = false) async -> Bool {
+        let key = Self.workPlanKey(value.id), listKey = Self.workPlansKey(value.teamId)
+        guard let client, workPlanTeam(value.teamId) != nil, !Task.isCancelled, mutation == nil,
+              workPlans[value.teamId]?.isAvailable == true, messages[listKey] == nil, messages[key] == nil,
+              workPlan(value.id, teamId: value.teamId).map(value.matches) == true, ["resume", "stop", "review"].contains(action) else { return false }
+        struct Proof: Encodable { var expectedRevision: Int; var expectedProof: String; var requestId: String?; var inspected: Bool?; var decision: String?; var note: String? }
+        var proof = Proof(expectedRevision: value.revision, expectedProof: value.proof)
+        switch action {
+        case "resume":
+            guard workPlanTeam(value.teamId)?.enabled == true, value.canContinue, workPlan(value.id, teamId: value.teamId)?.canContinue == true, inspected, let requestId, BotTeamWorkflow.validRequestID(requestId) else { return false }
+            proof.requestId = requestId; proof.inspected = true
+        case "stop": guard value.canStop else { return false }
+        default:
+            guard inspected, value.canReview, let decision, ["accept", "changes_requested"].contains(decision), BotTeamWorkPlan.text(note, 4_000), decision != "changes_requested" || workPlanTeam(value.teamId)?.enabled == true else { return false }
+            guard decision != "changes_requested" || !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+            proof.decision = decision; proof.note = note.isEmpty ? nil : note
+        }
+        requests[listKey] = nil; setLoading(listKey, false)
+        let request = UUID(); mutation = key; requests[key] = request; setMessage(key, nil)
+        defer { if requests[key] == request { requests[key] = nil }; if mutation == key { mutation = nil } }
+        do {
+            let response: WorkPlanResponse = try await client.perform("/v1/bots/teams/\(value.teamId)/plans/\(value.id)/\(action)", method: "POST", jsonBody: proof)
+            guard isCurrent(), requests[key] == request, !Task.isCancelled, workPlanTeam(value.teamId) != nil, workPlans[value.teamId]?.isAvailable == true else { return false }
+            let next = response.plan
+            guard next.hasValidProof, next.id == value.id, next.teamId == value.teamId, next.parentRunId == value.parentRunId, next.sourceMessageId == value.sourceMessageId,
+                  next.goal == value.goal, next.coordinatorId == value.coordinatorId, next.memberIds == value.memberIds, next.createdAt == value.createdAt,
+                  next.revision > value.revision, next.proof != value.proof,
+                  action != "stop" || [.stopping, .stopped].contains(next.phase),
+                  action != "resume" || ![.completed, .stopped, .stopping].contains(next.phase),
+                  action != "review" || decision != "accept" || next.phase == .completed,
+                  action != "review" || decision != "changes_requested" || next.phase != .completed else { throw CompanionError.server("Strata did not confirm this exact team plan action. Refresh its saved state before continuing.") }
+            try applyWorkPlan(next, id: value.id, teamId: value.teamId)
+            return true
+        } catch is CancellationError { return false }
+        catch {
+            guard isCurrent(), requests[key] == request, !Task.isCancelled else { return false }
+            // A lost reply or conflict is not permission to replay the action.
+            setMessage(key, error.localizedDescription)
+            return false
+        }
+    }
 
     static func workflowsKey(_ teamId: String) -> String { "workflows-" + teamId }
     static func workflowKey(_ id: String) -> String { "workflow-" + id }
@@ -523,14 +673,25 @@ final class BotWorkspaceStore: ObservableObject {
               draft.replyToId == nil || CompanionClient.isSafeIdentifier(draft.replyToId!),
               draft.recipientIds == nil || (!draft.recipientIds!.isEmpty && draft.recipientIds!.count <= team.memberIds.count && Set(draft.recipientIds!).count == draft.recipientIds!.count && draft.recipientIds!.allSatisfy({ team.memberIds.contains($0) })),
               channels[team.id]?.supported == true,
-              draft.workMode == nil || teams?.teamCoordinatorWorkToolsSupported == true else { return false }
-        struct Result: Decodable { var channel: BotTeamChannel; var run: BotTeamRun? }
+              draft.workMode == nil || teams?.teamCoordinatorWorkToolsSupported == true,
+              draft.durablePlan == nil || draft.durablePlan == true && draft.workMode == .work && workPlansSupported else { return false }
+        struct Result: Decodable { var channel: BotTeamChannel; var run: BotTeamRun?; var planId: String?; var sourceMessage: BotTeamChannelMessage?; var sourceMessageId: String? }
         let key = Self.channelKey(team.id)
         let value: Result? = await change(key, path: "/v1/bots/teams/\(team.id)/messages", body: draft)
         guard let value, isCurrent(), !Task.isCancelled else { return false }
         do {
+            if draft.durablePlan == true {
+                let source = value.sourceMessage.map { [$0] } ?? []
+                guard workPlansSupported, let planId = value.planId, BotTeamWorkPlan.validID(planId, "tp_"),
+                      let run = value.run, run.teamId == team.id, run.planId == planId,
+                      value.channel.teamId == team.id, (value.channel.messages + source).contains(where: { $0.teamId == team.id && $0.author.type == "user" && $0.kind == "message" && $0.workMode == .work && $0.content == text && $0.runId == run.id && $0.planId == planId && $0.replyToId == draft.replyToId && ($0.recipientIds ?? []).sorted() == (draft.recipientIds ?? []).sorted() && (value.sourceMessageId == nil || $0.id == value.sourceMessageId) }) else {
+                    throw CompanionError.server("Strata did not confirm this exact team plan request. Refresh the channel before sending again.")
+                }
+            }
             try applyChannel(value.channel, teamId: team.id, replacing: false)
             await refreshTeams()
+            guard isCurrent(), !Task.isCancelled else { return false }
+            if draft.durablePlan == true { await refreshWorkPlans(team.id) }
             return isCurrent()
         } catch { messages[key] = error.localizedDescription; return false }
     }

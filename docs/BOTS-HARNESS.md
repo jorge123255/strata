@@ -20,6 +20,8 @@ A private action journal reserves an identity before dispatch and writes an outc
 
 An unconfirmed mutation is not automatically retried, including the same action with another call ID during the same turn. An error may have happened after partial effects. Inspect the exact conversation and the affected files or service before continuing. Independent actions, bots and computers remain available. Existing uncertain computer-cleanup holds still apply.
 
+For a local or SSH-worker Unix `run_command`, an observed nonzero process exit with confirmed owned-process-group cleanup is a recorded error. It can be an expected failing test before a repair; it is not success or evidence that nothing changed. Interrupted, timed-out, signaled, unconfirmed or background-running errors remain unresolved. The exact call still cannot replay, and existing unresolved receipts remain unchanged. CUA guest adapters and Windows command errors retain conservative unresolved behavior because this runner cannot confirm the equivalent process-group cleanup there. A guest's raw exit-code field alone cannot manufacture that confirmation.
+
 Bots → Activity on either app shows interrupted receipts. Recording review acknowledges inspection of the exact current local receipt. It does not certify success, execute a command, approve an action, resume a task or clear a computer-cleanup hold. SSH receipts remain read-only in this view. A new explicit owner turn is separate work and still needs judgment about partial effects.
 
 Receipts cannot promise business-level exactly-once execution. A provider that changes a call's arguments or loses its native identity can describe a different action. Anonymous calls, explicit new turns and settled identities beyond retention are outside exact-call deduplication. Unresolved receipts are retained; the settled journal retains 1,000 receipts with at most 31 extra entries between pruning passes. Corrupt or unexpectedly public files are left untouched and reported unavailable rather than repaired or hidden.
@@ -45,6 +47,8 @@ Activity has an expandable timing record for each observed conversation: prepara
 Independent team work keeps the existing fair scheduler and unrestricted continuous-team settings. A shared desktop is still exclusive while it is used. A chat-only exchange does not reserve that desktop. This update adds no parallel-team slot cap.
 
 ## Planned work and saved stage checkpoints
+
+Updated team **Work** messages use a [durable task graph](BOTS-TEAM-PLANS.md). The coordinator plans roles and dependencies for the saved roster, workers checkpoint progress, and separate reviewers inspect the results. Independent tasks share the existing scheduler. Interrupted work requires inspection and explicit continuation; a completed model turn alone cannot complete the plan.
 
 Teams can opt into [Plan and verify](BOTS-WORKFLOWS.md): a planner, builder and separate reviewer work against explicit success criteria. Completed stages are saved before the next stage starts. A restart leaves unfinished work for inspection and explicit continuation; it does not replay commands. Reviewer findings can drive repair rounds, while final owner acceptance remains separate from a model's reported pass.
 

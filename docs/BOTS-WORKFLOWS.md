@@ -24,7 +24,7 @@ An interrupted host does not automatically restart model work. Completed stage r
 
 You can Stop and later inspect and continue unfinished work. Unconfirmed cleanup must be resolved before continuation. If the team, model, folder, computer, instructions or granted tools change, restore the original settings or start a fresh task with the new settings.
 
-Action receipts remain a separate safeguard. A failed command may already have changed files or an external service. An unresolved receipt can block automatic progression, including a test command that exited with an error. Inspect its actual effects before acknowledging the exact receipt and choosing a continuation. Acknowledgement itself does not retry, resume or certify success.
+Action receipts remain a separate safeguard. A failed command may already have changed files or an external service. On a local or SSH Unix execution account, Strata can distinguish a command's observed nonzero exit and confirmed process-group cleanup from an interrupted or unconfirmed action. The former is a recorded error, not successful work or rollback; inspect its output before the next command. An unresolved receipt still blocks automatic progression. Inspect its actual effects before acknowledging the exact receipt and choosing a continuation. Acknowledgement itself does not retry, resume or certify success. Existing unresolved receipts are not reclassified by an update.
 
 ## Storage and limits
 
