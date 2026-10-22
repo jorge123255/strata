@@ -265,6 +265,7 @@ if (taskOverviewMode) {
   overviewRequests.push({ id: 'tr_00000000-0000-4000-8000-000000000011', teamId: roomTeam.id, rootChatId: 'fixture-earlier-request', rootBotId: roomMembers[0].id, state: 'completed', consumedTurns: 3 });
 }
 let overviewUnavailable = false;
+let overviewOnlyHistory = false;
 let reviewPlan;
 let reviewResumeKey;
 let reviewResumedRun;
@@ -326,7 +327,8 @@ const host = {
       if (path === '/api/bots/supervision') return { supported: true, sessions: [], counts: { waiting: 0, working: 0, completed: 0, errors: 0 }, hasMore: false };
       if (path === '/api/bots/activity') {
         if (overviewUnavailable) throw Object.assign(new Error('Synthetic activity refresh unavailable.'), { status: 503 });
-        return { activity: structuredClone([...reviewTasks, ...overviewRequests.map(row => ({ ...row, runId: row.id, type: 'run', title: 'Earlier team request', chatId: row.rootChatId }))]), teamWorkReviewSupported: true };
+        const visibleTasks = overviewOnlyHistory ? reviewTasks.filter(task => task.work.status === 'verified' || task.work.legacy === true && !['queued', 'running', 'stopping', 'cleanup_pending'].includes(task.state)) : reviewTasks;
+        return { activity: structuredClone([...visibleTasks, ...overviewRequests.map(row => ({ ...row, runId: row.id, type: 'run', title: 'Earlier team request', chatId: row.rootChatId }))]), teamWorkReviewSupported: true };
       }
       const route = /^\/api\/bots\/teams\/([^/]+)\/jobs\/([^/]+)\/(review|recovery|resume)$/.exec(path);
       if (route) {
@@ -593,6 +595,10 @@ try {
         case '/overview-unavailable':
           if (!taskOverviewMode) throw new Error('Current-work fixture required');
           overviewUnavailable = true;
+          break;
+        case '/overview-history-only':
+          if (!taskOverviewMode) throw new Error('Current-work fixture required');
+          overviewOnlyHistory = true;
           break;
         case '/supervision-complete':
           if (!supervisionMode) throw new Error('Supervision fixture required');

@@ -478,8 +478,7 @@ struct BotTeamDetailView: View {
                             else { Text("Current work is unavailable. Refresh to check your team.").font(.callout).foregroundStyle(.secondary).accessibilityIdentifier("teamCurrentWorkUnavailable") }
                             ForEach(overview.current) { item in taskLink(item) }
                             if workspace.activityLoaded, overview.current.isEmpty {
-                                Text(workspace.messages["activity"] == nil ? "No current tasks. Saved results and earlier work are in History." : "The last update had no current tasks. Refresh to check again.").font(.callout).foregroundStyle(.secondary)
-                                    .accessibilityIdentifier("teamCurrentWorkEmpty")
+                                BotTeamEarlierWorkNotice(overview: overview, stale: workspace.messages["activity"] != nil) { workHistoryExpanded = true }
                             }
                             BotWorkspaceMessage(workspace: workspace, key: "activity")
                         } header: { Text("Current work") } footer: { Text("Review submitted evidence or prepare recovery for one unfinished task.") }
@@ -791,7 +790,7 @@ private struct BotActivityView: View {
                     else if workspace.messages["activity"] == nil { ProgressView("Checking current work…") }
                     else { Text("Current work is unavailable. Refresh to check your team.").font(.callout).foregroundStyle(.secondary).accessibilityIdentifier("teamCurrentWorkUnavailable") }
                     ForEach(overview.current) { item in taskActivityRow(item) }
-                    if workspace.activityLoaded, overview.current.isEmpty { Text(workspace.messages["activity"] == nil ? "No current team tasks. Open History for saved results and earlier work." : "The last update had no current tasks. Refresh to check again.").font(.callout).foregroundStyle(.secondary).accessibilityIdentifier("teamCurrentWorkEmpty") }
+                    if workspace.activityLoaded, overview.current.isEmpty { BotTeamEarlierWorkNotice(overview: overview, stale: workspace.messages["activity"] != nil) { workHistoryExpanded = true } }
                     BotWorkspaceMessage(workspace: workspace, key: "activity")
                 } header: { Text("Current work") }
                 if !overview.history.isEmpty {
@@ -1055,6 +1054,24 @@ private struct BotWorkspaceMessage: View {
 }
 
 
+private struct BotTeamEarlierWorkNotice: View {
+    let overview: BotTeamWorkOverview
+    let stale: Bool
+    let reviewEarlierWork: () -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(stale ? "At the last check, no current tasks were tracked." : "No current tasks are tracked.")
+                .font(.callout).foregroundStyle(.secondary).accessibilityIdentifier("teamCurrentWorkEmpty")
+            if overview.earlierUnverifiedCount > 0 {
+                Text(overview.earlierUnverifiedSummary).font(.callout).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("teamEarlierUnverifiedSummary")
+                Button("Review earlier work", systemImage: "clock.arrow.circlepath", action: reviewEarlierWork)
+                    .buttonStyle(.borderless).accessibilityIdentifier("reviewEarlierTeamWorkButton")
+            }
+        }.fixedSize(horizontal: false, vertical: true)
+    }
+}
+
 private struct BotTeamWorkSummary: View {
     let overview: BotTeamWorkOverview
     var stale = false
@@ -1066,7 +1083,6 @@ private struct BotTeamWorkSummary: View {
                 VStack(alignment: .leading, spacing: 8) { counts }
             }
             if stale { Text("Refresh to check the current status.").font(.caption).foregroundStyle(.secondary) }
-            else if overview.current.isEmpty { Text("Your current team tasks are clear.").font(.caption).foregroundStyle(.secondary) }
         }.padding(.vertical, 6).accessibilityElement(children: .contain).accessibilityIdentifier("teamCurrentWorkSummary")
     }
     @ViewBuilder private var counts: some View {

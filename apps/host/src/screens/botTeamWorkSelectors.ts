@@ -50,3 +50,8 @@ export function teamTaskEvidence(row: BotTeamActivity) {
     return `${count} ${label}${count === 1 ? '' : 's'}`;
   }).join(' · ');
 }
+
+/** Earlier records without a verified result remain distinct from current work. */
+export function teamEarlierUnverifiedCount(groups: TeamWorkGroups) {
+  return groups.history.filter(row => row.work?.legacy === true && row.work.status !== 'verified').length;
+}

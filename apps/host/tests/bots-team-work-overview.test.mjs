@@ -57,6 +57,16 @@ test('evidence counts describe reported items without interpreting success claim
   assert.equal(selectors.teamTaskEvidence(task('No result', 'working')), '');
 });
 
+test('earlier unverified records are counted without promoting history into current work', () => {
+  const earlier = Array.from({ length: 32 }, (_, index) => task(`Earlier turn ${index}`, index === 0 ? 'interrupted' : 'blocked', index === 0 ? 'interrupted' : 'completed', { legacy: true }));
+  const before = structuredClone(earlier), groups = selectors.teamWorkGroups([...earlier, task('Saved verified result', 'verified')], 'team_first');
+  assert.equal(groups.needsYou.length, 0); assert.equal(groups.working.length, 0);
+  assert.equal(groups.history.length, 33); assert.equal(selectors.teamEarlierUnverifiedCount(groups), 32);
+  assert.deepEqual(earlier, before);
+  const current = selectors.teamWorkGroups([task('Modern blocked task', 'blocked'), task('Legacy active', 'working', 'running', { legacy: true })], 'team_first');
+  assert.equal(selectors.teamEarlierUnverifiedCount(current), 0);
+});
+
 const executablePath = [process.env.STRATA_UI_BROWSER, '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/usr/bin/chromium'].find(value => value && existsSync(value));
 test('Team Work counts, current groups, history, stale reads and room resets remain read-only', { skip: executablePath ? false : 'Installed Chromium required.', timeout: 90000 }, async t => {
   const bots = [{ id: 'bot_builder', name: 'Builder with a long readable name', workspace: '/fixture/project', provider: 'codex', avatarConfig: { color: 'sky', eyes: 'round', ears: 'small' } }, { id: 'bot_peer', name: 'Peer', workspace: '/fixture/project', provider: 'codex' }];
@@ -162,6 +172,22 @@ test('Team Work counts, current groups, history, stale reads and room resets rem
   assert.equal(await page.getByText('Nothing needs your attention right now.', { exact: true }).count(), 0);
   failActivity = false; await page.getByRole('button', { name: 'Retry', exact: true }).click();
   await page.getByRole('article', { name: 'Fresh second-room task', exact: true }).waitFor();
+  rows = Array.from({ length: 32 }, (_, index) => task(`Earlier turn ${index + 1}`, index === 0 ? 'interrupted' : 'blocked', index === 0 ? 'interrupted' : 'completed', { legacy: true }));
+  await page.getByRole('navigation', { name: 'Fixture rooms', exact: true }).getByRole('button', { name: 'Fixture studio', exact: true }).click();
+  await page.getByRole('tab', { name: /Work.*0 need you.*0 working/ }).waitFor(); await workTab.click();
+  await current.getByText('No current tasks are tracked.', { exact: true }).waitFor();
+  await current.getByText('32 earlier turns have no verified result.', { exact: true }).waitFor();
+  assert.equal(await current.locator('details.bot-work-history').evaluate(element => element.open), false);
+  assert.equal(await current.getByText('Nothing needs your attention right now.', { exact: true }).count(), 0);
+  await page.setViewportSize({ width: 1440, height: 1100 }); await current.getByText('No current tasks are tracked.', { exact: true }).scrollIntoViewIfNeeded(); await screenshot('earlier-unverified-notice-wide');
+  await page.setViewportSize({ width: 760, height: 1100 }); await current.getByRole('button', { name: 'Review earlier work', exact: true }).scrollIntoViewIfNeeded(); await screenshot('earlier-unverified-notice-compact');
+  await current.getByRole('button', { name: 'Review earlier work', exact: true }).click();
+  assert.equal(await current.locator('details.bot-work-history').evaluate(element => element.open), true);
+  assert.equal(await current.getByRole('article').count(), 32, 'The explicit review entry reveals every retained record without creating current work.');
+  await page.setViewportSize({ width: 1440, height: 1100 }); await screenshot('earlier-unverified-review-entry');
+  failActivity = true; await page.getByText('Fixture work is temporarily unavailable.', { exact: true }).waitFor();
+  await current.getByText('At the last check, no current tasks were tracked.', { exact: true }).waitFor();
+  await current.getByText('32 earlier turns have no verified result.', { exact: true }).waitFor();
   assert.deepEqual(errors, []); assert.deepEqual(blocked, []); assert.deepEqual(unexpected, []); assert.ok(calls.every(call => call.method === 'GET'));
-  if (evidenceDirectory) writeFileSync(join(evidenceDirectory, 'report.json'), JSON.stringify({ passed: true, scope: 'Actual BotTeamPanel and current-work overview with inert HTTP fixture', modelPrompts: 0, ownerMutations: 0, browserErrors: errors, screenshots: 3, requests: calls }, null, 2) + '\n');
+  if (evidenceDirectory) writeFileSync(join(evidenceDirectory, 'report.json'), JSON.stringify({ passed: true, scope: 'Actual BotTeamPanel and current-work overview with inert HTTP fixture', modelPrompts: 0, ownerMutations: 0, browserErrors: errors, screenshots: 6, requests: calls }, null, 2) + '\n');
 });

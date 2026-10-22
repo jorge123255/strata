@@ -1,9 +1,10 @@
+import { useRef } from 'react';
 import { relTime } from '../lib/format';
 import { botTeamRunActive, type Bot, type BotTeamActivity } from '../lib/bots';
 import { CuaBotAvatar } from '../components/CuaBotAvatar';
 import { Btn } from '../components/ui';
 import { BotTaskReview } from './BotTaskReview';
-import { teamTaskEvidence, teamTaskLabel, type TeamWorkGroups } from './botTeamWorkSelectors';
+import { teamEarlierUnverifiedCount, teamTaskEvidence, teamTaskLabel, type TeamWorkGroups } from './botTeamWorkSelectors';
 import './BotTeamWorkOverview.css';
 
 export function TeamWorkCounts({ groups, stale = false }: { groups: TeamWorkGroups; stale?: boolean }) {
@@ -18,6 +19,11 @@ export function BotTeamWorkOverview({ groups, bots, stale, disabled, onChanged, 
   groups: TeamWorkGroups; bots: Bot[]; stale: boolean; disabled: boolean;
   onChanged: () => Promise<void>; onOpenConversation: (id: string) => void;
 }) {
+  const history = useRef<HTMLDetailsElement>(null), earlierUnverified = teamEarlierUnverifiedCount(groups);
+  function showEarlierWork() {
+    const element = history.current;
+    if (element) { element.open = true; element.querySelector('summary')?.focus(); element.scrollIntoView({ block: 'nearest' }); }
+  }
   function task(row: BotTeamActivity) {
     const owner = bots.find(bot => bot.id === row.botId), work = row.work!;
     const active = botTeamRunActive(row.state), legacy = work.legacy === true && !active && work.status !== 'ready_for_review' && work.status !== 'working';
@@ -50,11 +56,14 @@ export function BotTeamWorkOverview({ groups, bots, stale, disabled, onChanged, 
   }
   return <section className="bot-team-work-overview" aria-label="Current team work">
     <div className="bots-section-heading"><h3>Current work</h3><TeamWorkCounts groups={groups} stale={stale}/></div>
-    {!groups.needsYou.length && !groups.working.length ? <p className="small muted">{stale ? 'No tasks needed your attention at the last check.' : 'Nothing needs your attention right now.'}</p> : null}
+    {!groups.needsYou.length && !groups.working.length ? <div className="bot-work-empty" role="status">
+      <p className="small muted">{stale ? 'At the last check, no current tasks were tracked.' : 'No current tasks are tracked.'}</p>
+      {earlierUnverified ? <><p className="small muted">{earlierUnverified} earlier {earlierUnverified === 1 ? 'turn has' : 'turns have'} no verified result.</p><Btn size="sm" onClick={showEarlierWork}>Review earlier work</Btn></> : null}
+    </div> : null}
     {section('Needs you', groups.needsYou, 'Tasks needing you')}
     {section('Working', groups.working, 'Tasks in progress')}
     {section('Earlier results with a continuation', groups.continuing, 'Results with a continuation')}
-    {groups.history.length ? <details className="bot-work-history"><summary>Earlier work <span>{groups.history.length}</span></summary>
+    {groups.history.length ? <details ref={history} className="bot-work-history"><summary>Earlier work <span>{groups.history.length}</span></summary>
       <p className="small muted">Verified results and earlier turns stay available here.</p>
       <div className="bot-work-task-list">{groups.history.map(task)}</div>
     </details> : null}

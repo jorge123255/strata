@@ -345,6 +345,10 @@ struct BotTeamWorkOverview {
     var history: [BotWorkspaceActivity]
     var attentionCount: Int { current.filter(\.needsOwnerAttention).count }
     var workingCount: Int { current.filter(\.isWorkingNow).count }
+    var earlierUnverifiedCount: Int { history.filter { $0.work?.legacy == true && $0.work?.status != .verified }.count }
+    var earlierUnverifiedSummary: String {
+        "\(earlierUnverifiedCount) earlier \(earlierUnverifiedCount == 1 ? "turn has" : "turns have") no verified result."
+    }
     init(_ activity: [BotWorkspaceActivity]) {
         let tasks = activity.enumerated().filter { $0.element.work != nil }
         func order(_ a: (offset: Int, element: BotWorkspaceActivity), _ b: (offset: Int, element: BotWorkspaceActivity), priorities: Bool) -> Bool {

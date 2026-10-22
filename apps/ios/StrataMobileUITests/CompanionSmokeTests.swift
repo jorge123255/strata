@@ -1252,7 +1252,27 @@ final class CompanionSmokeTests: XCTestCase {
         attachScreenshot("Task history — saved results are accessible after expansion")
         try tapWorkspace(app.buttons["earlierTeamActivityDisclosure"])
         try tapWorkspace(app.staticTexts["Turn finished"], performTap: false)
+        // List virtualizes its earlier cells while the retained history is in
+        // view. Return to the current-work section before expecting the new
+        // empty-state cell from the next read-only fixture response.
         let top = app.staticTexts["What needs attention"]
+        for _ in 0..<8 {
+            if top.exists, top.isHittable { break }
+            app.swipeDown()
+        }
+        try require(top); XCTAssertTrue(top.isHittable)
+        _ = try await fixtureControl(control, action: "overview-history-only")
+        let empty = app.staticTexts["teamCurrentWorkEmpty"]; try require(empty)
+        try tapWorkspace(empty, performTap: false)
+        XCTAssertEqual(empty.label, "No current tasks are tracked.")
+        XCTAssertEqual(app.staticTexts["teamEarlierUnverifiedSummary"].label, "1 earlier turn has no verified result.")
+        if history.value as? String == "Expanded" { try tapWorkspace(history) }
+        XCTAssertEqual(history.value as? String, "Collapsed")
+        try tapWorkspace(app.buttons["reviewEarlierTeamWorkButton"])
+        XCTAssertEqual(history.value as? String, "Expanded")
+        try tapWorkspace(app.buttons["openTeamWork-" + historical], performTap: false)
+        try tapWorkspace(app.buttons["openTeamWork-" + verified], performTap: false)
+        attachScreenshot("Earlier work — explicit review entry for unverified records")
         for _ in 0..<8 {
             if top.exists, top.isHittable { break }
             app.swipeDown()

@@ -3136,6 +3136,19 @@ final class TeamWorkOverviewTests: XCTestCase {
         XCTAssertEqual(BotTeamWorkOverview([undated, oldAttention, newAttention]).current.map(\.id), ["newer_attention", "older_attention", "undated"])
         XCTAssertEqual(BotTeamWorkOverview([try task("first"), try task("second")]).current.map(\.id), ["first", "second"])
     }
+    func testEarlierUnverifiedCountDoesNotHideFollowUpOrPromoteHistoryIntoCurrentWork() throws {
+        let earlier = try (0..<32).map { index in try task("earlier_\(index)", status: index == 0 ? "interrupted" : "blocked", legacy: true) }
+        let view = BotTeamWorkOverview(earlier + [try task("verified", status: "verified")])
+        XCTAssertEqual(view.attentionCount, 0); XCTAssertEqual(view.workingCount, 0)
+        XCTAssertTrue(view.current.isEmpty); XCTAssertEqual(view.history.count, 33)
+        XCTAssertEqual(view.earlierUnverifiedCount, 32)
+        XCTAssertEqual(view.earlierUnverifiedSummary, "32 earlier turns have no verified result.")
+        let single = BotTeamWorkOverview([try task("earlier", legacy: true)])
+        XCTAssertEqual(single.earlierUnverifiedSummary, "1 earlier turn has no verified result.")
+        let current = BotTeamWorkOverview([try task("modern", status: "blocked"), try task("active", status: "working", state: "running", legacy: true)])
+        XCTAssertEqual(current.earlierUnverifiedCount, 0)
+        XCTAssertEqual(current.current.count, 2)
+    }
     func testRequestTransportCompletionDoesNotClaimTaskVerification() throws {
         let payload: [String: Any] = ["id": "run_fixture", "teamId": "team_fixture", "rootChatId": "s_fixture", "rootBotId": "bot_fixture", "state": "completed", "consumedTurns": 1]
         let run = try JSONDecoder().decode(BotTeamRun.self, from: JSONSerialization.data(withJSONObject: payload))
