@@ -1221,6 +1221,59 @@ final class CompanionSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testCurrentWorkOverviewKeepsActiveLegacyAndRequiresExplicitHistoryExpansion() async throws {
+        let control = try pairWorkspaceFixture()
+        _ = try await fixtureControl(control, action: "appearance-dark")
+        let initial = try await fixtureControl(control, action: "state")
+        let teamId = try XCTUnwrap((initial["roomTeam"] as? [String: Any])?["id"] as? String)
+        try tapWorkspace(app.buttons["team-" + teamId])
+        let chip = app.buttons["teamCurrentWorkButton"]; try require(chip)
+        let countReady = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "2 need you, 2 working"), object: chip)
+        XCTAssertEqual(XCTWaiter.wait(for: [countReady], timeout: 15), .completed)
+        attachScreenshot("Team channel — current work at a glance")
+        chip.tap(); try require(app.buttons["closeTeamDetailsButton"])
+        XCTAssertFalse(app.staticTexts["Turn finished"].exists, "Earlier request history stays collapsed when opening Current work.")
+        app.buttons["closeTeamDetailsButton"].tap()
+        app.navigationBars.buttons["Bots"].firstMatch.tap()
+        try selectWorkspace("Activity")
+        try require(app.staticTexts["2 need you"]); try require(app.staticTexts["2 working"])
+        let historical = "tj_00000000-0000-4000-8000-000000000005", verified = "tj_00000000-0000-4000-8000-000000000007"
+        XCTAssertFalse(app.buttons["openTeamWork-" + historical].exists)
+        XCTAssertFalse(app.buttons["openTeamWork-" + verified].exists)
+        try tapWorkspace(app.descendants(matching: .any).matching(identifier: "teamWorkRequestedChanges-tj_00000000-0000-4000-8000-000000000001").firstMatch, performTap: false)
+        XCTAssertTrue(app.staticTexts["Confirm that the existing iPhone pairing is retained."].exists)
+        attachScreenshot("Current work — attention, owner and requested changes")
+        try tapWorkspace(app.buttons["openTeamWork-tj_00000000-0000-4000-8000-000000000006"], performTap: false)
+        XCTAssertTrue(app.staticTexts["Earlier task still running"].exists, "An explicitly old task stays current while it is active.")
+        let history = app.buttons["teamWorkHistoryDisclosure"]; try tapWorkspace(history)
+        XCTAssertEqual(history.value as? String, "Expanded")
+        try tapWorkspace(app.buttons["openTeamWork-" + historical], performTap: false)
+        try tapWorkspace(app.buttons["openTeamWork-" + verified], performTap: false)
+        attachScreenshot("Task history — saved results are accessible after expansion")
+        try tapWorkspace(app.buttons["earlierTeamActivityDisclosure"])
+        try tapWorkspace(app.staticTexts["Turn finished"], performTap: false)
+        let top = app.staticTexts["What needs attention"]
+        for _ in 0..<8 {
+            if top.exists, top.isHittable { break }
+            app.swipeDown()
+        }
+        try require(top)
+        _ = try await fixtureControl(control, action: "overview-unavailable")
+        let stale = app.staticTexts["Last known work"]; try require(stale)
+        try tapWorkspace(stale, performTap: false)
+        XCTAssertTrue(app.staticTexts["Refresh to check the current status."].exists)
+        XCTAssertFalse(app.staticTexts["Your current team tasks are clear."].exists)
+        attachScreenshot("Current work — last known status after a failed refresh")
+        let state = try await fixtureControl(control, action: "state")
+        let calls = try XCTUnwrap(state["calls"] as? [[String: Any]])
+        XCTAssertTrue(calls.allSatisfy { $0["method"] as? String == "GET" }, "Overview and history are read-only. Nothing is verified, resumed or prompted by opening them.")
+        let tasks = try XCTUnwrap(state["reviewTasks"] as? [[String: Any]])
+        XCTAssertEqual(tasks.count, 7)
+        XCTAssertEqual((tasks[0]["work"] as? [String: Any])?["status"] as? String, "ready_for_review")
+        XCTAssertFalse(calls.contains { ($0["path"] as? String)?.hasSuffix("/resume") == true || ($0["path"] as? String)?.hasSuffix("/review") == true || ($0["path"] as? String)?.contains("/computer/") == true })
+    }
+
+    @MainActor
     func testSubmittedTaskReviewAndExplicitRecoveryWithoutReplayingFinishedWork() async throws {
         let control = try pairWorkspaceFixture()
         _ = try await fixtureControl(control, action: "appearance-dark")

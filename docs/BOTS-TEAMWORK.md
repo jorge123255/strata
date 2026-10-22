@@ -26,7 +26,9 @@ Assignments appear as compact cards. Open one to read its full instructions. Lon
 
 ## Review results and continue unfinished tasks
 
-In a team's **Work** tab, **Tasks & results** shows the actual bot assignments. **Working** means the task is still running. Bots submit a summary and labeled files, checks, links or notes as evidence. A submitted result becomes **Ready for review**. The evidence is the bot's report; Strata does not claim that a provider ending its response proves the work succeeded.
+In a team's **Work** tab, **Current work** puts tasks needing you and working assignments first. The Work control shows attention and working counts while you read the channel. Each card shows the owner, latest update, reported evidence and requested corrections. **Working** means the task is still running. Bots submit a summary and labeled files, checks, links or notes as evidence. A submitted result becomes **Ready for review**. The evidence is the bot's report; Strata does not claim that a provider ending its response proves the work succeeded.
+
+Verified results and earlier tasks without structured results stay in expandable history. Active tasks and pending cleanup stay visible, including older tasks. A previous result with a continuation is labeled **Continuation created**; that label does not claim its continuation has finished. Team members and earlier team requests can also be expanded. **Turn finished** in request history records that a conversation turn ended; task verification is recorded separately. If a refresh fails, **Last known** labels the saved state and review or recovery actions wait for a successful refresh.
 
 Choose **Review task** to read the complete result. Check the deliverables, then choose **Mark verified**, or **Request changes** with a correction note. Verification records your review of that exact result. It starts no model work. Earlier results and reviews remain attached to the task. You can review a finished task while independent teammates keep working; its own delegated work must finish first.
 

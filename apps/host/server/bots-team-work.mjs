@@ -21,10 +21,15 @@ export function normalizeResult(input) {
 export const initialWork = () => ({ status: 'working', revision: 1, evidence: [], resultHistory: [], reviewHistory: [] });
 export function nextWork(old, patch) { return { ...copy(old), ...copy(patch), revision: old.revision + 1 }; }
 export function publicWork(job) {
-  if (job.work) return copy(job.work);
+  if (job.work) {
+    const work = copy(job.work);
+    // Presentation provenance is derived here, never accepted from saved work.
+    delete work.legacy;
+    return work;
+  }
   // Legacy transport completion did not prove work was delivered. Do not rewrite
   // old journals to invent evidence, verification or a recoverable authority pin.
-  return { ...initialWork(), status: ['queued', 'running', 'stopping'].includes(job.state) ? 'working' : ['cancelled', 'interrupted'].includes(job.state) ? 'interrupted' : 'blocked', summary: 'This older task has no structured result. Review its linked conversation.' };
+  return { ...initialWork(), legacy: true, status: ['queued', 'running', 'stopping'].includes(job.state) ? 'working' : ['cancelled', 'interrupted'].includes(job.state) ? 'interrupted' : 'blocked', summary: 'This older task has no structured result. Review its linked conversation.' };
 }
 export function validateSavedWork(work) {
   if (work === undefined) return;

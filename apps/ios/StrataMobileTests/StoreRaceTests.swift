@@ -3032,3 +3032,126 @@ final class TeamWorkReviewTests: XCTestCase {
         XCTAssertFalse(rejected); XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
     }
 }
+
+@MainActor
+final class TeamWorkOverviewTests: XCTestCase {
+    private func task(_ id: String, status: String = "blocked", state: String = "completed", legacy: Any? = nil, recovery: String? = nil, updatedAt: Any? = nil) throws -> BotWorkspaceActivity {
+        var work: [String: Any] = ["status": status, "revision": 1, "evidence": [], "resultHistory": [], "reviewHistory": []]
+        if let legacy { work["legacy"] = legacy }
+        if let recovery { work["recoveryJobId"] = recovery }
+        var row: [String: Any] = ["id": id, "teamId": "team_fixture", "runId": "run_fixture", "type": "delivery", "title": id, "state": state, "work": work]
+        if let updatedAt { row["updatedAt"] = updatedAt }
+        return try JSONDecoder().decode(BotWorkspaceActivity.self, from: JSONSerialization.data(withJSONObject: row))
+    }
+    func testActivityInitialFailureDoesNotClaimEmptyAndAcceptedSuccessAloneSetsLoaded() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore()
+        let first = fixture.hold("/v1/bots/activity")
+        let failed = Task { await workspace.refreshActivity() }
+        await fulfillment(of: [first.requested], timeout: 2)
+        first.finish(["error": "Activity is unavailable."], status: 503)
+        await failed.value
+        XCTAssertFalse(workspace.activityLoaded); XCTAssertNotNil(workspace.messages["activity"])
+        fixture.release("/v1/bots/activity")
+        fixture.respond { _ in ["activity": [], "teamWorkReviewSupported": true] }
+        await workspace.refreshActivity()
+        XCTAssertTrue(workspace.activityLoaded); XCTAssertTrue(workspace.activity.isEmpty); XCTAssertNil(workspace.messages["activity"])
+        let next = fixture.hold("/v1/bots/activity")
+        let laterFailure = Task { await workspace.refreshActivity() }
+        await fulfillment(of: [next.requested], timeout: 2)
+        next.finish(["error": "Refresh failed."], status: 503)
+        await laterFailure.value
+        XCTAssertTrue(workspace.activityLoaded); XCTAssertNotNil(workspace.messages["activity"])
+    }
+    func testReasonRepliesRemainUnavailableAndCannotEraseEarlierAcceptedRows() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }; var mode = 0
+        fixture.respond { _ in
+            if mode != 1 { return ["activity": [], "reason": "Update Strata to show current work.", "teamWorkReviewSupported": true] }
+            return ["activity": [["id": "row_saved", "teamId": "team_fixture", "runId": "run_fixture", "type": "run", "title": "Saved activity", "state": "completed"]], "teamWorkReviewSupported": true]
+        }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore()
+        await workspace.refreshActivity(); XCTAssertFalse(workspace.activityLoaded)
+        mode = 1; await workspace.refreshActivity()
+        XCTAssertTrue(workspace.activityLoaded); XCTAssertEqual(workspace.activity.first?.id, "row_saved")
+        mode = 2; await workspace.refreshActivity()
+        XCTAssertTrue(workspace.activityLoaded); XCTAssertEqual(workspace.activity.first?.id, "row_saved")
+        XCTAssertNotNil(workspace.messages["activity"])
+    }
+    func testLateActivityAfterRevocationCannotPublishSuccessfulLoadedState() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore(), pending = fixture.hold("/v1/bots/activity")
+        let reading = Task { await workspace.refreshActivity() }
+        await fulfillment(of: [pending.requested], timeout: 2)
+        store.forgetMac(); pending.finish(["activity": [], "teamWorkReviewSupported": true]); await reading.value
+        XCTAssertFalse(workspace.activityLoaded); XCTAssertFalse(workspace.activityWorkReviewSupported)
+        XCTAssertTrue(workspace.activity.isEmpty)
+    }
+    func testOnlyExplicitTerminalLegacyAndVerifiedMoveToHistory() throws {
+        let modernMissingMetadata = try task("modern"), explicitModern = try task("explicit", legacy: false)
+        let legacy = try task("historical", legacy: true), verified = try task("verified", status: "verified")
+        XCTAssertNil(modernMissingMetadata.work?.summary)
+        XCTAssertTrue(modernMissingMetadata.work?.evidence.isEmpty == true)
+        XCTAssertTrue(modernMissingMetadata.isCurrentWork); XCTAssertTrue(explicitModern.isCurrentWork)
+        XCTAssertFalse(legacy.isCurrentWork); XCTAssertFalse(verified.isCurrentWork)
+        XCTAssertEqual(legacy.workStatusLabel, "Earlier turn")
+        let view = BotTeamWorkOverview([legacy, verified, modernMissingMetadata, explicitModern])
+        XCTAssertEqual(view.current.map(\.id), ["modern", "explicit"])
+        XCTAssertEqual(view.history.map(\.id), ["historical", "verified"])
+        XCTAssertEqual(view.attentionCount, 2)
+        for malformed: Any in ["true", 1, [true]] { XCTAssertThrowsError(try task("bad", legacy: malformed)) }
+    }
+    func testReadyForReviewCannotBeHiddenByContradictoryLegacyOrRecoveryMetadata() throws {
+        let ready = try task("ready", status: "ready_for_review", legacy: true, recovery: "recovery_job")
+        XCTAssertTrue(ready.isCurrentWork); XCTAssertTrue(ready.needsOwnerAttention)
+        XCTAssertEqual(ready.workStatusLabel, "Ready for review")
+        let activeReady = try task("active_ready", status: "ready_for_review", state: "running", legacy: true, recovery: "recovery_job")
+        XCTAssertTrue(activeReady.isCurrentWork); XCTAssertTrue(activeReady.isWorkingNow)
+        XCTAssertFalse(activeReady.needsOwnerAttention); XCTAssertEqual(activeReady.workStatusLabel, "Working")
+        XCTAssertEqual(BotTeamWorkOverview([ready, activeReady]).attentionCount, 1)
+        let working = try task("working", status: "working", state: "completed", legacy: true)
+        XCTAssertTrue(working.isCurrentWork); XCTAssertTrue(working.isWorkingNow)
+        XCTAssertFalse(working.isClosedLegacyWork); XCTAssertEqual(working.workStatusLabel, "Working")
+    }
+    func testEveryActiveOrCleanupStateRemainsCurrentEvenLegacyOrVerified() throws {
+        for state in ["queued", "running", "stopping", "cleanup_pending"] {
+            for status in ["working", "blocked", "verified"] {
+                let row = try task("active_" + state, status: status, state: state, legacy: true)
+                XCTAssertTrue(row.isExecutionActive); XCTAssertTrue(row.isCurrentWork)
+                XCTAssertTrue(row.isWorkingNow); XCTAssertFalse(row.needsOwnerAttention)
+                XCTAssertEqual(BotTeamWorkOverview([row]).history.count, 0)
+            }
+        }
+    }
+    func testAttentionThenWorkingThenOtherCurrentPreservesStableOrderAndUsesRealDates() throws {
+        let oldAttention = try task("older_attention", updatedAt: "2026-10-21T01:00:00Z")
+        let newAttention = try task("newer_attention", status: "ready_for_review", updatedAt: "2026-10-21T02:00:00Z")
+        let work = try task("working", status: "working", state: "running", updatedAt: "2026-10-21T03:00:00Z")
+        let continued = try task("continued", recovery: "recovery_job", updatedAt: "2026-10-21T04:00:00Z")
+        let view = BotTeamWorkOverview([continued, work, oldAttention, newAttention])
+        XCTAssertEqual(view.current.map(\.id), ["newer_attention", "older_attention", "working", "continued"])
+        XCTAssertEqual(view.attentionCount, 2); XCTAssertEqual(view.workingCount, 1)
+        XCTAssertEqual(continued.workStatusLabel, "Continuation created")
+        XCTAssertTrue(continued.isCurrentWork); XCTAssertFalse(continued.needsOwnerAttention)
+        let undated = try task("undated")
+        XCTAssertEqual(BotTeamWorkOverview([undated, oldAttention, newAttention]).current.map(\.id), ["newer_attention", "older_attention", "undated"])
+        XCTAssertEqual(BotTeamWorkOverview([try task("first"), try task("second")]).current.map(\.id), ["first", "second"])
+    }
+    func testRequestTransportCompletionDoesNotClaimTaskVerification() throws {
+        let payload: [String: Any] = ["id": "run_fixture", "teamId": "team_fixture", "rootChatId": "s_fixture", "rootBotId": "bot_fixture", "state": "completed", "consumedTurns": 1]
+        let run = try JSONDecoder().decode(BotTeamRun.self, from: JSONSerialization.data(withJSONObject: payload))
+        XCTAssertEqual(run.requestStateLabel(workReviewSupported: true), "Turn finished")
+        XCTAssertEqual(run.requestStateLabel(workReviewSupported: false), "Completed")
+        XCTAssertFalse(run.isActive)
+    }
+    func testEvidenceCountsLatestRequestedChangesAndTimestampRemainSeparateFromStatus() throws {
+        var row = try task("notes", updatedAt: 1_792_540_800_000)
+        row.work?.evidence = [BotTeamEvidence(kind: "file", label: "Source", detail: "/workspace/main.swift"), BotTeamEvidence(kind: "test", label: "Checks", detail: "8 checks passed"), BotTeamEvidence(kind: "test", label: "Regression", detail: "2 checks passed")]
+        row.work?.reviewHistory = [BotTeamOwnerReview(decision: "reject", note: "Keep the existing pairing.", reviewedAt: .iso8601("2026-10-21T00:00:00Z"), resultId: "result_one")]
+        XCTAssertEqual(row.work?.evidenceSummary, "1 file · 2 test results")
+        XCTAssertEqual(row.work?.latestRequestedChanges, "Keep the existing pairing.")
+        XCTAssertNotNil(row.latestWorkDate)
+        row.work?.reviewHistory.append(BotTeamOwnerReview(decision: "accept", reviewedAt: .iso8601("2026-10-21T01:00:00Z"), resultId: "result_one"))
+        XCTAssertNil(row.work?.latestRequestedChanges)
+        XCTAssertEqual(row.work?.status, .blocked, "Metadata does not rewrite the host's current state.")
+    }
+}

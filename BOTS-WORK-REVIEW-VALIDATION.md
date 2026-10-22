@@ -91,10 +91,20 @@ Strata iPhone **0.1.0 (28)** is signed and independently accepted. Its complete
 Existing application identity, signing team, profile and keychain access were
 retained. The QA simulator was returned to its original shutdown state.
 
-Build 28 has **not been installed on the physical iPhone**: the final CoreDevice
-inventory still reported the paired phone's tunnel disconnected. No uninstall,
-pairing reset, physical app launch or claim of device acceptance is made. The
-accepted build is retained for installation when the phone reconnects.
+At Mac activation, build 28 was **not installed on the physical iPhone** because
+the paired phone's tunnel was disconnected. After the owner's subsequent direct
+installation request, CoreDevice acquired the connection and installed the exact
+accepted build. A fresh device inventory confirmed **0.1.0 (28)** on October 21
+at 19:42 CT. The signature, complete bundle hash, profile device eligibility and
+unchanged keychain scope were checked again before installation. No uninstall,
+pairing reset or physical app launch was performed. Installation and inventory
+verification do not claim a live physical-phone UI workflow.
+
+Installation evidence is retained under
+`/Users/gszulc/Projects/Strata-iphone-evidence/strata-task-clarity-vycrb6sm`:
+`phone28-preinstall-r2.json`, `device-install28.json`,
+`device-apps-after28.json` and `phone28-installed.json`. The initial process query
+timed out; the corrected preflight records that running-process state was unknown.
 
 ## Local evidence references
 

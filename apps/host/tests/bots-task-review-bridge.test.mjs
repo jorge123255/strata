@@ -21,6 +21,24 @@ test('paired result projection retains exact evidence and strips unknown private
  assert.throws(()=>publicBotWorkspace({activity:[{...row,work:{...work,status:'verified'}}]},{kind:'activity'}),/unverified/);
  assert.throws(()=>publicBotWorkspace({activity:[{...row,work:{...work,evidence:[{...evidence[0],detail:'x'.repeat(4001)}]}}]},{kind:'activity'}),/unreadable/);
 });
+test('history provenance is explicit, literal and cannot conceal submitted evidence or verification',()=>{
+ const historical={status:'blocked',revision:1,summary:'Earlier untracked task',legacy:true,evidence:[],resultHistory:[],reviewHistory:[]};
+ const project=value=>publicBotWorkspace({activity:[{...row,work:value}]},{kind:'activity'}).activity[0].work;
+ assert.deepEqual(project(historical),historical);
+ assert.equal(project({...historical,legacy:false}).legacy,false);
+ const {legacy,...unknown}=historical;assert.equal(project(unknown).legacy,undefined);
+ for(const value of ['true',1,null,{}]) assert.throws(()=>project({...historical,legacy:value}),/inconsistent/);
+ assert.throws(()=>project({...work,legacy:true}),/inconsistent/);
+ for(const patch of [{sourceJobId:'tj_source'},{recoveryJobId:'tj_next'},{evidence}]) assert.throws(()=>project({...historical,...patch}),/inconsistent/);
+});
+test('public legacy markers are derived without rewriting stored tasks or inventing recovery authority',async()=>{
+ const {initialWork,publicWork}=await import('../server/bots-team-work.mjs');
+ const old={state:'completed'};assert.equal(publicWork(old).legacy,true);assert.deepEqual(old,{state:'completed'});
+ const modern={state:'completed',work:{...initialWork(),status:'blocked',legacy:true}};
+ const before=structuredClone(modern);assert.equal(publicWork(modern).legacy,undefined);assert.deepEqual(modern,before);
+ assert.equal(publicWork({state:'running'}).status,'working');
+ assert.equal(publicWork({state:'interrupted'}).status,'interrupted');
+});
 test('paired owner actions cannot return a different source task or resume an unrelated continuation',()=>{
  const route={kind:'task',action:'review',teamId,jobId};
  assert.equal(publicBotWorkspace({activity:row},route).activity.id,jobId);

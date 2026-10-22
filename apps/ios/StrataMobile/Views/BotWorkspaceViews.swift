@@ -294,6 +294,7 @@ struct BotTeamDetailView: View {
     @State private var editingTeam: BotTeam?
     @State private var settingsExpanded = false
     @State private var tasksExpanded = false
+    @State private var workHistoryExpanded = false
     @State private var initiallyPositioned = false
     @State private var acknowledgedSequence = 0
     @State private var sentScrollRequest: String?
@@ -360,6 +361,7 @@ struct BotTeamDetailView: View {
                     proxy.scrollTo("team-channel-latest", anchor: .bottom)
                 }
             }
+            .safeAreaInset(edge: .top, spacing: 0) { if workspace.workReviewSupported { currentWorkButton } }
             .safeAreaInset(edge: .bottom, spacing: 0) { if let team { composer(team) } }
         }
         .navigationTitle("").navigationBarTitleDisplayMode(.inline)
@@ -379,10 +381,10 @@ struct BotTeamDetailView: View {
                 Menu {
                     Button("Team details", systemImage: "person.3") { taskFocused = false; showingDetails = true }
                         .accessibilityIdentifier("showTeamDetailsButton")
-                    Button(workspace.workReviewSupported ? "Tasks & results" : "Previous tasks", systemImage: "checklist") { taskFocused = false; tasksExpanded = true; showingDetails = true }
+                    Button(workspace.workReviewSupported ? "Tasks & results" : "Previous tasks", systemImage: "checklist") { taskFocused = false; tasksExpanded = !workspace.workReviewSupported; showingDetails = true }
                         .accessibilityIdentifier("showTeamPreviousTasksButton")
                     NotificationMuteButton(notifications: store.notifications, destination: CompanionNotificationDestination(type: "team", id: teamId))
-                    Button("Refresh", systemImage: "arrow.clockwise") { Task { await workspace.refreshTeams(); await workspace.refreshChannel(teamId, reset: true) } }
+                    Button("Refresh", systemImage: "arrow.clockwise") { Task { await workspace.refreshTeams(); if workspace.workReviewSupported { await workspace.refreshActivity() }; await workspace.refreshChannel(teamId, reset: true) } }
                 } label: { Image(systemName: "ellipsis").font(.system(size: 20, weight: .medium)).frame(width: 38, height: 38) }
                     .accessibilityLabel("Team options").accessibilityIdentifier("teamOptionsButton")
             }
@@ -402,7 +404,7 @@ struct BotTeamDetailView: View {
             ToolbarItemGroup(placement: .keyboard) { if taskFocused { Spacer(); Button("Done") { taskFocused = false }.accessibilityIdentifier("dismissBotTeamTaskKeyboardButton") } }
         }
         .sheet(isPresented: $showingDetails) { details }
-        .refreshable { await workspace.refreshTeams(); await workspace.refreshChannel(teamId, reset: true) }
+        .refreshable { await workspace.refreshTeams(); if workspace.workReviewSupported { await workspace.refreshActivity() }; await workspace.refreshChannel(teamId, reset: true) }
         .onAppear { visible = true; store.notifications.focus(CompanionNotificationDestination(type: "team", id: teamId)) }
         .onDisappear { visible = false; navigation = UUID(); if store.notifications.focusedDestination == CompanionNotificationDestination(type: "team", id: teamId) { store.notifications.focus(nil) } }
         .task(id: visible && scenePhase == .active) {
@@ -411,6 +413,7 @@ struct BotTeamDetailView: View {
             repeat {
                 if workspace.mutation == nil {
                     if !workspace.loading.contains("teams") { await workspace.refreshTeams() }
+                    if workspace.workReviewSupported, !workspace.loading.contains("activity") { await workspace.refreshActivity() }
                     if !workspace.loading.contains(channelKey) { await workspace.refreshChannel(teamId) }
                 }
                 do { try await Task.sleep(for: .seconds(3)) } catch { break }
@@ -422,6 +425,24 @@ struct BotTeamDetailView: View {
         .confirmationDialog("Stop this team task and its delegated work?", isPresented: Binding(get: { !showingDetails && confirmingStop != nil }, set: { if !$0 && !showingDetails { confirmingStop = nil } })) {
             if let run = confirmingStop { Button("Stop all team work", role: .destructive) { confirmingStop = nil; Task { await workspace.stopRun(run); await workspace.refreshChannel(teamId) } } }
         }
+    }
+    private var currentWorkButton: some View {
+        let overview = BotTeamWorkOverview(workspace.activity.filter { $0.teamId == teamId })
+        let stale = workspace.messages["activity"] != nil
+        let value = workspace.activityLoaded ? (stale ? "Last known: " : "") + "\(overview.attentionCount) need you, \(overview.workingCount) working" : stale ? "Unavailable" : "Checking current work"
+        return Button {
+            taskFocused = false; tasksExpanded = false; showingDetails = true
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "checklist").foregroundStyle(StrataTheme.accentText)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Current work").font(.caption.weight(.semibold))
+                    Text(value).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            }.padding(.horizontal, 16).padding(.vertical, 10).background(StrataTheme.background)
+        }.buttonStyle(.plain).accessibilityLabel("Current work").accessibilityValue(value).accessibilityIdentifier("teamCurrentWorkButton")
     }
     private func members(_ team: BotTeam) -> [CompanionBot] { team.memberIds.compactMap { id in store.botCatalog?.bots.first { $0.id == id } } }
     private func emptyChannel(_ team: BotTeam) -> some View {
@@ -450,26 +471,36 @@ struct BotTeamDetailView: View {
                         if settingsExpanded { teamSettings(team) }
                     }
                     if workspace.workReviewSupported {
-                        Section("Tasks & results") {
-                            let work = workspace.activity.filter { $0.teamId == teamId && $0.work != nil }
-                            ForEach(work) { item in
-                                NavigationLink {
-                                    BotTeamTaskReviewView(store: store, workspace: workspace, item: item, openChat: { showingDetails = false; openChat() })
-                                } label: { BotTeamTaskLabel(item: item) }
-                                    .accessibilityIdentifier("teamWork-" + item.id)
+                        let overview = BotTeamWorkOverview(workspace.activity.filter { $0.teamId == teamId })
+                        Section {
+                            if workspace.activityLoaded { BotTeamWorkSummary(overview: overview, stale: workspace.messages["activity"] != nil) }
+                            else if workspace.messages["activity"] == nil { ProgressView("Checking current work…") }
+                            else { Text("Current work is unavailable. Refresh to check your team.").font(.callout).foregroundStyle(.secondary).accessibilityIdentifier("teamCurrentWorkUnavailable") }
+                            ForEach(overview.current) { item in taskLink(item) }
+                            if workspace.activityLoaded, overview.current.isEmpty {
+                                Text(workspace.messages["activity"] == nil ? "No current tasks. Saved results and earlier work are in History." : "The last update had no current tasks. Refresh to check again.").font(.callout).foregroundStyle(.secondary)
+                                    .accessibilityIdentifier("teamCurrentWorkEmpty")
                             }
-                            if work.isEmpty { Text("Task results and recovery will appear here. A finished reply still needs a result and your review.").font(.caption).foregroundStyle(.secondary) }
                             BotWorkspaceMessage(workspace: workspace, key: "activity")
+                        } header: { Text("Current work") } footer: { Text("Review submitted evidence or prepare recovery for one unfinished task.") }
+                        if !overview.history.isEmpty {
+                            Section {
+                                Button { workHistoryExpanded.toggle() } label: {
+                                    HStack { Label("History", systemImage: "clock"); Spacer(); Text("\(overview.history.count)").foregroundStyle(.secondary); Image(systemName: workHistoryExpanded ? "chevron.up" : "chevron.down") }
+                                        .contentShape(Rectangle())
+                                }.buttonStyle(.plain).accessibilityValue(workHistoryExpanded ? "Expanded" : "Collapsed").accessibilityIdentifier("teamWorkHistoryDisclosure")
+                                if workHistoryExpanded { ForEach(overview.history) { item in taskLink(item) } }
+                            }
                         }
                     }
                     if !activeRuns.isEmpty { Section("Team work") { ForEach(activeRuns) { run in runRow(run) } } }
                     Section {
                         Button { tasksExpanded.toggle() } label: {
-                            HStack { Text("Previous tasks"); Spacer(); Image(systemName: tasksExpanded ? "chevron.up" : "chevron.down") }.contentShape(Rectangle())
+                            HStack { Text(workspace.workReviewSupported ? "Earlier team requests" : "Previous tasks"); Spacer(); Image(systemName: tasksExpanded ? "chevron.up" : "chevron.down") }.contentShape(Rectangle())
                         }.buttonStyle(.plain).accessibilityIdentifier("botTeamPreviousTasksDisclosure")
                         if tasksExpanded {
                             ForEach(runs.filter { !$0.isActive }) { run in runRow(run) }
-                            if runs.allSatisfy(\.isActive) { Text("Completed team work will appear here.").font(.caption).foregroundStyle(.secondary) }
+                            if runs.allSatisfy(\.isActive) { Text(workspace.workReviewSupported ? "Earlier team requests will appear here. A finished turn is separate from a verified task result." : "Completed team work will appear here.").font(.caption).foregroundStyle(.secondary) }
                         }
                     }
                     BotWorkspaceMessage(workspace: workspace, key: "teams")
@@ -482,6 +513,13 @@ struct BotTeamDetailView: View {
                     if let run = confirmingStop { Button("Stop all team work", role: .destructive) { confirmingStop = nil; Task { await workspace.stopRun(run); await workspace.refreshChannel(teamId) } } }
                 }
         }
+    }
+    private func taskLink(_ item: BotWorkspaceActivity) -> some View {
+        NavigationLink {
+            BotTeamTaskReviewView(store: store, workspace: workspace, item: item, openChat: { showingDetails = false; openChat() })
+        } label: {
+            BotTeamTaskLabel(item: item, stale: workspace.messages["activity"] != nil, ownerName: item.botId.map { id in store.botCatalog?.bots.first { $0.id == id }?.name ?? "Unavailable teammate" })
+        }.accessibilityIdentifier("teamWork-" + item.id)
     }
     @ViewBuilder private func teamSettings(_ team: BotTeam) -> some View {
         NavigationLink {
@@ -622,7 +660,7 @@ struct BotTeamDetailView: View {
     }
     private func runRow(_ run: BotTeamRun) -> some View {
         VStack(alignment: .leading, spacing: 9) {
-            HStack { Text(run.stateLabel).font(.subheadline.weight(.semibold)); Spacer(); Text(run.turnLabel(unrestrictedTeams: workspace.unrestrictedTeams, continuousTeams: workspace.continuousTeams)).font(.caption).foregroundStyle(.secondary) }
+            HStack { Text(run.requestStateLabel(workReviewSupported: workspace.workReviewSupported)).font(.subheadline.weight(.semibold)); Spacer(); Text(run.turnLabel(unrestrictedTeams: workspace.unrestrictedTeams, continuousTeams: workspace.continuousTeams)).font(.caption).foregroundStyle(.secondary) }
             if let detail = run.detail { Text(detail).font(.caption).foregroundStyle(.secondary) }
             BotSharedConversationButton(store: store, chatId: run.rootChatId, title: "Open task conversation", openChat: { showingDetails = false; openChat() })
             if run.isActive { Button("Stop team task", role: .destructive) { confirmingStop = run }.buttonStyle(.borderless).disabled(workspace.mutation != nil).accessibilityIdentifier("stopBotTeamRunDetails-\(run.id)") }
@@ -647,7 +685,7 @@ struct BotTeamDetailView: View {
                 Menu {
                     if channel?.supported == true { recipientPicker(team) }
                     Button("Team details", systemImage: "person.3") { taskFocused = false; showingDetails = true }
-                    Button(workspace.workReviewSupported ? "Tasks & results" : "Previous tasks", systemImage: "checklist") { taskFocused = false; tasksExpanded = true; showingDetails = true }
+                    Button(workspace.workReviewSupported ? "Tasks & results" : "Previous tasks", systemImage: "checklist") { taskFocused = false; tasksExpanded = !workspace.workReviewSupported; showingDetails = true }
                     if reply != nil { Button("Cancel reply", systemImage: "xmark") { reply = nil } }
                 } label: { Image(systemName: "plus").font(.system(size: 24, weight: .medium)).frame(width: 48, height: 48).strataChrome() }
                     .accessibilityLabel("Team message options").accessibilityIdentifier("teamComposerMenuButton")
@@ -695,6 +733,8 @@ private struct BotActivityView: View {
     @ObservedObject var store: CompanionStore
     @ObservedObject var workspace: BotWorkspaceStore
     @State private var reviewingWork: BotWorkspaceActivity?
+    @State private var workHistoryExpanded = false
+    @State private var activityHistoryExpanded = false
     let openChat: () -> Void
     @State private var visible = false
     @State private var supervisionFilter: BotSupervisionFilter = .all
@@ -744,32 +784,43 @@ private struct BotActivityView: View {
             if workspace.messages["supervision"] != nil {
                 Section { BotWorkspaceMessage(workspace: workspace, key: "supervision") }
             }
-            Section {
-                if workspace.activity.isEmpty, !workspace.loading.contains("activity"), workspace.messages["activity"] == nil { Text("Team tasks, bot messages and subagents will appear here.").foregroundStyle(.secondary) }
-                ForEach(workspace.activity) { item in
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(alignment: .top, spacing: 12) {
-                            Image(systemName: item.icon).font(.subheadline).frame(width: 36, height: 36)
-                                .background(StrataTheme.grouped, in: RoundedRectangle(cornerRadius: 12))
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text(item.title).font(.body.weight(.semibold))
-                                StrataStatusPill(title: workspace.workReviewSupported ? item.workStatusLabel : item.state.replacingOccurrences(of: "_", with: " ").capitalized,
-                                    tone: ["running", "working"].contains(item.state) ? .success : ["queued", "pending"].contains(item.state) ? .attention : .neutral)
-                            }
-                        }
-                        if let from = item.fromBotId, let to = item.toBotId { Text(botName(from) + " → " + botName(to)).font(.subheadline) }
-                        if let detail = item.detail { Text(detail).font(.caption).foregroundStyle(.secondary) }
-                        if workspace.workReviewSupported, item.work != nil {
-                            Button("Results & recovery", systemImage: "checklist") { reviewingWork = item }
-                                .buttonStyle(.borderless).accessibilityIdentifier("openTeamWork-" + item.id)
-                        }
-                        if let chatId = item.chatId ?? workspace.teams?.runs.first(where: { $0.id == item.runId })?.rootChatId {
-                            BotSharedConversationButton(store: store, chatId: chatId, title: "Open conversation", openChat: openChat)
-                        }
-                    }.padding(.vertical, 8).accessibilityElement(children: .contain).accessibilityIdentifier("botActivity-\(item.id)")
+            if workspace.workReviewSupported {
+                let overview = BotTeamWorkOverview(workspace.activity)
+                Section {
+                    if workspace.activityLoaded { BotTeamWorkSummary(overview: overview, stale: workspace.messages["activity"] != nil) }
+                    else if workspace.messages["activity"] == nil { ProgressView("Checking current work…") }
+                    else { Text("Current work is unavailable. Refresh to check your team.").font(.callout).foregroundStyle(.secondary).accessibilityIdentifier("teamCurrentWorkUnavailable") }
+                    ForEach(overview.current) { item in taskActivityRow(item) }
+                    if workspace.activityLoaded, overview.current.isEmpty { Text(workspace.messages["activity"] == nil ? "No current team tasks. Open History for saved results and earlier work." : "The last update had no current tasks. Refresh to check again.").font(.callout).foregroundStyle(.secondary).accessibilityIdentifier("teamCurrentWorkEmpty") }
+                    BotWorkspaceMessage(workspace: workspace, key: "activity")
+                } header: { Text("Current work") }
+                if !overview.history.isEmpty {
+                    Section {
+                        Button { workHistoryExpanded.toggle() } label: {
+                            HStack { Label("Task history", systemImage: "clock"); Spacer(); Text("\(overview.history.count)").foregroundStyle(.secondary); Image(systemName: workHistoryExpanded ? "chevron.up" : "chevron.down") }.contentShape(Rectangle())
+                        }.buttonStyle(.plain).accessibilityValue(workHistoryExpanded ? "Expanded" : "Collapsed").accessibilityIdentifier("teamWorkHistoryDisclosure")
+                        if workHistoryExpanded { ForEach(overview.history) { item in taskActivityRow(item) } }
+                    }
                 }
-                BotWorkspaceMessage(workspace: workspace, key: "activity")
-            } header: { Text("Team activity") }
+                let otherActivity = workspace.activity.filter { $0.work == nil }
+                let live = otherActivity.filter(\.isExecutionActive)
+                if !live.isEmpty { Section("Team conversations in motion") { ForEach(live) { item in taskActivityRow(item) } } }
+                let earlier = otherActivity.filter { !$0.isExecutionActive }
+                if !earlier.isEmpty {
+                    Section {
+                        Button { activityHistoryExpanded.toggle() } label: {
+                            HStack { Text("Earlier team activity"); Spacer(); Text("\(earlier.count)").foregroundStyle(.secondary); Image(systemName: activityHistoryExpanded ? "chevron.up" : "chevron.down") }.contentShape(Rectangle())
+                        }.buttonStyle(.plain).accessibilityValue(activityHistoryExpanded ? "Expanded" : "Collapsed").accessibilityIdentifier("earlierTeamActivityDisclosure")
+                        if activityHistoryExpanded { ForEach(earlier) { item in taskActivityRow(item) } }
+                    }
+                }
+            } else {
+                Section {
+                    if workspace.activity.isEmpty, !workspace.loading.contains("activity"), workspace.messages["activity"] == nil { Text("Team tasks, bot messages and subagents will appear here.").foregroundStyle(.secondary) }
+                    ForEach(workspace.activity) { item in taskActivityRow(item) }
+                    BotWorkspaceMessage(workspace: workspace, key: "activity")
+                } header: { Text("Team activity") }
+            }
             Section("Shared work") {
                 ForEach(store.conversations.filter { $0.active }) { conversation in
                     BotSharedConversationButton(store: store, chatId: conversation.id, title: conversation.title, openChat: openChat)
@@ -795,6 +846,29 @@ private struct BotActivityView: View {
                     do { try await Task.sleep(for: .seconds(3)) } catch { break }
                 } while !Task.isCancelled && visible && scenePhase == .active
             }
+    }
+    private func taskActivityRow(_ item: BotWorkspaceActivity) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            if workspace.workReviewSupported, item.work != nil {
+                BotTeamTaskLabel(item: item, stale: workspace.messages["activity"] != nil, ownerName: item.botId.map(botName))
+                Button("Results & recovery", systemImage: "checklist") { reviewingWork = item }
+                    .buttonStyle(.borderless).accessibilityIdentifier("openTeamWork-" + item.id)
+            } else {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: item.icon).font(.subheadline).frame(width: 36, height: 36).background(StrataTheme.grouped, in: RoundedRectangle(cornerRadius: 12))
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(item.title).font(.body.weight(.semibold))
+                        StrataStatusPill(title: workspace.workReviewSupported && item.state == "completed" ? "Turn finished" : item.state.replacingOccurrences(of: "_", with: " ").capitalized,
+                            tone: item.isExecutionActive ? .accent : .neutral)
+                    }
+                }
+                if let from = item.fromBotId, let to = item.toBotId { Text(botName(from) + " → " + botName(to)).font(.subheadline) }
+                if let detail = item.detail { Text(detail).font(.caption).foregroundStyle(.secondary) }
+            }
+            if let chatId = item.chatId ?? workspace.teams?.runs.first(where: { $0.id == item.runId })?.rootChatId {
+                BotSharedConversationButton(store: store, chatId: chatId, title: "Open conversation", openChat: openChat)
+            }
+        }.padding(.vertical, 8).accessibilityElement(children: .contain).accessibilityIdentifier("botActivity-\(item.id)")
     }
     private func supervisionRow(_ session: BotSupervisionSession) -> some View {
         let bot = store.botCatalog?.bots.first { $0.id == session.botId }
@@ -981,13 +1055,49 @@ private struct BotWorkspaceMessage: View {
 }
 
 
+private struct BotTeamWorkSummary: View {
+    let overview: BotTeamWorkOverview
+    var stale = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(stale ? "Last known work" : "What needs attention").font(.headline)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) { counts }
+                VStack(alignment: .leading, spacing: 8) { counts }
+            }
+            if stale { Text("Refresh to check the current status.").font(.caption).foregroundStyle(.secondary) }
+            else if overview.current.isEmpty { Text("Your current team tasks are clear.").font(.caption).foregroundStyle(.secondary) }
+        }.padding(.vertical, 6).accessibilityElement(children: .contain).accessibilityIdentifier("teamCurrentWorkSummary")
+    }
+    @ViewBuilder private var counts: some View {
+        Label("\(overview.attentionCount) need you", systemImage: "hand.raised").foregroundStyle(overview.attentionCount > 0 ? StrataTheme.warning : .secondary)
+        Label("\(overview.workingCount) working", systemImage: "bolt").foregroundStyle(overview.workingCount > 0 ? StrataTheme.accentText : .secondary)
+    }
+}
+
 private struct BotTeamTaskLabel: View {
     let item: BotWorkspaceActivity
     var showSummary = true
+    var stale = false
+    var ownerName: String?
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 8) {
             Text(item.title).font(.body.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
-            StrataStatusPill(title: item.workStatusLabel, tone: item.work?.status == .verified ? .success : item.work?.status == .working ? .accent : .attention)
+            StrataStatusPill(title: (stale ? "Last known: " : "") + item.workStatusLabel, tone: item.work?.status == .verified ? .success : item.isWorkingNow ? .accent : item.needsOwnerAttention ? .attention : .neutral)
+            if let ownerName { Label(ownerName, systemImage: "person.crop.circle").font(.caption).foregroundStyle(.secondary) }
+            if let date = item.latestWorkDate {
+                Text("Updated " + date.formatted(date: .abbreviated, time: .shortened)).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            if let work = item.work {
+                Label(item.isClosedLegacyWork ? "Earlier activity · no saved task result" : work.evidenceSummary, systemImage: item.isClosedLegacyWork ? "clock" : "paperclip").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("teamWorkEvidenceCount-" + item.id)
+                if let changes = work.latestRequestedChanges {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Requested changes").font(.caption.weight(.semibold))
+                        Text(changes).font(.caption).lineLimit(3).fixedSize(horizontal: false, vertical: true)
+                    }.foregroundStyle(StrataTheme.warning).accessibilityIdentifier("teamWorkRequestedChanges-" + item.id)
+                }
+            }
             if showSummary, let summary = item.work?.summary, !summary.isEmpty { Text(summary).font(.caption).foregroundStyle(.secondary).lineLimit(3) }
         }.padding(.vertical, 5)
     }
@@ -1019,7 +1129,7 @@ private struct BotTeamTaskReviewView: View {
         List {
             if let current, let work {
                 Section {
-                    BotTeamTaskLabel(item: current, showSummary: false)
+                    BotTeamTaskLabel(item: current, showSummary: false, stale: workspace.messages["activity"] != nil)
                     if let summary = work.summary, !summary.isEmpty { Text(summary).textSelection(.enabled).fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("teamWorkSummary") }
                     if work.status == .readyForReview {
                         Text("The bot submitted these results. Review the evidence before marking the task verified.").font(.callout).foregroundStyle(.secondary)

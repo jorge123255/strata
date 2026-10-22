@@ -1,0 +1,35 @@
+.bot-team-work-overview { display: grid; gap: 16px; min-width: 0; }
+.bot-team-work-overview > .bots-section-heading { flex-wrap: wrap; gap: 10px; }
+.bot-work-counts { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--st-ink-muted); font-size: 11px; font-weight: 500; }
+.bot-work-counts > span { white-space: nowrap; }
+.bot-work-counts > span[data-attention] { color: var(--st-ink); }
+.bot-room-tabs .bot-work-counts { margin-left: 8px; }
+.bot-room-tabs .bot-work-counts > span { border-radius: 5px; padding: 2px 5px; background: var(--st-surface-2); }
+.bot-work-group { display: grid; gap: 10px; min-width: 0; }
+.bot-work-group .bots-section-heading { margin: 0; }
+.bot-work-group h4 { margin: 0; font-size: 12px; font-weight: 600; }
+.bot-work-task-list { display: grid; gap: 10px; min-width: 0; }
+.bot-work-task { min-width: 0; display: grid; gap: 10px; border: 1px solid var(--st-line-soft); border-radius: var(--st-r-md); padding: 15px 16px; background: var(--st-surface); }
+.bot-work-task-heading { display: flex; align-items: flex-start; gap: 10px; min-width: 0; flex-wrap: wrap; }
+.bot-work-task-heading > div { flex: 1; min-width: 130px; }
+.bot-work-task-heading h4 { margin: 0; font-size: 13px; font-weight: 600; line-height: 1.45; overflow-wrap: anywhere; }
+.bot-work-task-heading p { margin: 4px 0 0; font-size: 11px; color: var(--st-ink-muted); overflow-wrap: anywhere; }
+.bot-work-task-heading .bots-state { flex: none; font-size: 10px; }
+.bot-work-task-summary, .bot-work-task-reason p { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; overflow-wrap: anywhere; white-space: pre-wrap; }
+.bot-work-task p { margin: 0; font-size: 12px; line-height: 1.6; }
+.bot-work-task-reason { border-left: 2px solid var(--st-line); padding-left: 10px; min-width: 0; }
+.bot-work-task-reason strong { font-size: 11px; font-weight: 600; }
+.bot-work-task-evidence, .bot-work-task-context { color: var(--st-ink-muted); font-size: 11px !important; overflow-wrap: anywhere; }
+.bot-work-task-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.bot-work-history, .bot-work-disclosure { min-width: 0; border-top: 1px solid var(--st-line-soft); padding-top: 14px; }
+.bot-work-history > summary, .bot-work-disclosure > summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--st-ink-muted); padding: 3px 0; }
+.bot-work-history > summary span, .bot-work-disclosure > summary span { font-weight: 400; margin-left: 7px; }
+.bot-work-history[open] > summary, .bot-work-disclosure[open] > summary { margin-bottom: 12px; color: var(--st-ink); }
+.bot-work-disclosure > summary h3 { display: inline; margin: 0; font-size: 12px; }
+.bot-work-disclosure > .bots-team-members { margin-bottom: 0; }
+@media (max-width: 520px) {
+  .bot-room-tabs .bot-work-counts { margin-left: 5px; font-size: 10px; gap: 3px; }
+  .bot-room-tabs .bot-work-counts > span { padding-inline: 3px; }
+  .bot-work-task { padding: 12px; }
+  .bot-work-task-heading .bots-state { margin-left: 42px; }
+}

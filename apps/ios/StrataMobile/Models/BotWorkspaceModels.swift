@@ -167,6 +167,9 @@ struct BotTeamRun: Decodable, Identifiable, Equatable {
     var detail: String?
     var isActive: Bool { ["queued", "running", "stopping", "cleanup_pending"].contains(state) }
     var stateLabel: String { state.replacingOccurrences(of: "_", with: " ").capitalized }
+    func requestStateLabel(workReviewSupported: Bool) -> String {
+        workReviewSupported && state == "completed" ? "Turn finished" : stateLabel
+    }
 }
 
 struct BotTeamsSnapshot: Decodable, Equatable {
@@ -263,8 +266,35 @@ struct BotWorkspaceActivity: Decodable, Identifiable, Equatable {
     var toBotId: String?
     var detail: String?
     var work: BotTeamWork?
+    var createdAt: BotWorkspaceTimestamp?
+    var updatedAt: BotWorkspaceTimestamp?
     var isExecutionActive: Bool { ["queued", "running", "stopping", "cleanup_pending"].contains(state) }
-    var workStatusLabel: String { work?.status.label ?? state.replacingOccurrences(of: "_", with: " ").capitalized }
+    var workStatusLabel: String {
+        if isExecutionActive {
+            switch state { case "queued": return "Queued"; case "stopping": return "Stopping"; case "cleanup_pending": return "Finishing cleanup"; default: return "Working" }
+        }
+        if work?.status == .readyForReview { return "Ready for review" }
+        if work?.status == .working { return "Working" }
+        if isClosedLegacyWork { return "Earlier turn" }
+        if work?.recoveryJobId != nil { return "Continuation created" }
+        return work?.status.label ?? state.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+    /// History is explicit: missing evidence, a missing summary and an older
+    /// result shape never imply that a modern task can be hidden.
+    var isClosedLegacyWork: Bool { work?.legacy == true && !isExecutionActive && work?.status != .readyForReview && work?.status != .working }
+    var isCurrentWork: Bool {
+        guard let work else { return false }
+        if isExecutionActive || [.readyForReview, .working].contains(work.status) { return true }
+        return work.status != .verified && work.legacy != true
+    }
+    var needsOwnerAttention: Bool {
+        guard let work else { return false }
+        guard isCurrentWork, !isExecutionActive else { return false }
+        return work.status == .readyForReview || work.recoveryJobId == nil && [.blocked, .interrupted].contains(work.status)
+    }
+    var isWorkingNow: Bool { isCurrentWork && (isExecutionActive || work?.status == .working) }
+    var currentWorkPriority: Int { needsOwnerAttention ? 0 : isWorkingNow ? 1 : 2 }
+    var latestWorkDate: Date? { updatedAt?.date ?? createdAt?.date }
     var icon: String { type == "subagent" ? "arrow.triangle.branch" : type == "delivery" ? "bubble.left.and.bubble.right" : "person.3.sequence" }
 }
 
@@ -284,6 +314,8 @@ struct BotTeamWork: Decodable, Equatable {
         }
     }
     var status: Status
+    /// True only when the host explicitly identifies a pre-result task.
+    var legacy: Bool?
     var revision: Int
     var summary: String?
     var evidence: [BotTeamEvidence]
@@ -291,9 +323,41 @@ struct BotTeamWork: Decodable, Equatable {
     var reviewHistory: [BotTeamOwnerReview]
     var sourceJobId: String?
     var recoveryJobId: String?
+    var evidenceSummary: String {
+        let kinds = [("file", "file", "files"), ("test", "test result", "test results"), ("link", "link", "links"), ("note", "note", "notes")]
+        let groups = kinds.compactMap { kind, single, plural -> String? in
+            let count = evidence.filter { $0.kind == kind }.count
+            return count > 0 ? "\(count) \(count == 1 ? single : plural)" : nil
+        }
+        return groups.isEmpty ? "No evidence yet" : groups.joined(separator: " · ")
+    }
+    var latestRequestedChanges: String? {
+        guard let latest = reviewHistory.last, latest.decision == "reject" else { return nil }
+        return latest.note?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? latest.note : "Review the earlier result and address the unfinished work."
+    }
     var canReview: Bool { status == .readyForReview && revision > 0 }
     var canPlanRecovery: Bool { [.blocked, .interrupted].contains(status) && revision > 0 && recoveryJobId == nil }
 }
+/// Keeps action-bearing current work ahead of saved history without changing
+/// the host's saved task state or issuing any requests.
+struct BotTeamWorkOverview {
+    var current: [BotWorkspaceActivity]
+    var history: [BotWorkspaceActivity]
+    var attentionCount: Int { current.filter(\.needsOwnerAttention).count }
+    var workingCount: Int { current.filter(\.isWorkingNow).count }
+    init(_ activity: [BotWorkspaceActivity]) {
+        let tasks = activity.enumerated().filter { $0.element.work != nil }
+        func order(_ a: (offset: Int, element: BotWorkspaceActivity), _ b: (offset: Int, element: BotWorkspaceActivity), priorities: Bool) -> Bool {
+            if priorities, a.element.currentWorkPriority != b.element.currentWorkPriority { return a.element.currentWorkPriority < b.element.currentWorkPriority }
+            let left = a.element.latestWorkDate ?? .distantPast, right = b.element.latestWorkDate ?? .distantPast
+            if left != right { return left > right }
+            return a.offset < b.offset
+        }
+        current = tasks.filter { $0.element.isCurrentWork }.sorted { order($0, $1, priorities: true) }.map(\.element)
+        history = tasks.filter { !$0.element.isCurrentWork }.sorted { order($0, $1, priorities: false) }.map(\.element)
+    }
+}
+
 struct BotTeamEvidence: Decodable, Equatable {
     var kind: String
     var label: String

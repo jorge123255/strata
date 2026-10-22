@@ -185,6 +185,6 @@ test('legacy task history remains exact and cannot gain an invented recovery pin
   const { writeFileSync } = await import('node:fs'); writeFileSync(journal, JSON.stringify(saved), { mode: 0o600 });
   const restored = createBotTeams(f.options); t.after(() => restored.close());
   const after = JSON.parse(readFileSync(journal)); assert.deepEqual(after.jobs, saved.jobs); assert.deepEqual(after.runs, saved.runs); assert.deepEqual(after.teams, saved.teams); assert.deepEqual(after.recoveryKeys, []);
-  const row = restored.activity().activity.find(row => row.id === a.row.id); assert.equal(row.work.status, 'blocked'); assert.deepEqual(row.work.resultHistory, []);
+  const row = restored.activity().activity.find(row => row.id === a.row.id); assert.equal(row.work.status, 'blocked'); assert.deepEqual(row.work.resultHistory, []); assert.equal(row.work.legacy, true);
   const plan = restored.recoveryPlan(f.team.id, a.row.id).plan; assert.equal(plan.canResume, false); assert.match(plan.blockedReason, /team instructions|snapshot/);
 });

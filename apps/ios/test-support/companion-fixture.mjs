@@ -16,7 +16,7 @@ const root = mkdtempSync(join(tmpdir(), 'strata-ios-ui-'));
 chmodSync(root, 0o700);
 
 const calls = [];
-const photoSimulator = ['--test-team-review', '--test-team-compact', '--test-supervision', '--test-direct-bots', '--test-team-settings', '--test-team-instructions', '--test-bot-photos', '--test-team-channel-layout', '--test-group-chat-layout'].includes(process.argv[2]) ? /(?:^|,)id=([A-Fa-f0-9-]{36})(?:,|$)/.exec(process.argv[3] ?? '')?.[1] : undefined;
+const photoSimulator = ['--test-team-work-overview', '--test-team-review', '--test-team-compact', '--test-supervision', '--test-direct-bots', '--test-team-settings', '--test-team-instructions', '--test-bot-photos', '--test-team-channel-layout', '--test-group-chat-layout'].includes(process.argv[2]) ? /(?:^|,)id=([A-Fa-f0-9-]{36})(?:,|$)/.exec(process.argv[3] ?? '')?.[1] : undefined;
 let originalSimulatorAppearance;
 if (photoSimulator) {
   const appearance = execFileSync('/usr/bin/xcrun', ['simctl', 'ui', photoSimulator, 'appearance'], { encoding: 'utf8' }).trim().toLowerCase();
@@ -53,12 +53,13 @@ const supervisionMode = process.argv[2] === '--test-supervision';
 const unrestrictedTeamsMode = process.argv[2] === '--test-unrestricted-teams';
 const continuousTeamsMode = process.argv[2] === '--test-continuous-teams';
 const compactTeamMode = process.argv[2] === '--test-team-compact';
-const teamReviewMode = process.argv[2] === '--test-team-review';
+const taskOverviewMode = process.argv[2] === '--test-team-work-overview';
+const teamReviewMode = taskOverviewMode || process.argv[2] === '--test-team-review';
 const compactAssignment = 'Implement a small project improvement and report the verified result.\n' + 'Keep the workspace scoped and preserve existing features. '.repeat(25) + 'ASSIGNMENT END MARKER';
 const compactReport = 'Implementation and verification report.\n' + 'The isolated fixture preserves the complete report for review, including every verification detail. '.repeat(27) + 'REPORT END MARKER';
 const hostFolderMode = process.argv[2] === '--test-host-folder';
 let sharedHostFolder, folderVersion = '2026-10-21T00:00:00.000Z';
-const workspaceFlags = ['--test-team-review', '--test-team-compact', '--test-continuous-teams', '--test-unrestricted-teams', '--test-host-folder', '--test-supervision', '--test-connector-accounts', '--test-connectors', '--test-devin-provider', '--test-direct-bots', '--test-team-settings', '--test-team-instructions', '--test-notifications', '--test-group-chat-layout', '--test-team-channel-layout', '--test-team-channel', '--test-bot-photos', '--test-bot-lifecycle', '--test-bot-avatar-states', '--test-workspace-skills', '--test-workspace-connections', '--test-workspace-teams', '--test-facelift'];
+const workspaceFlags = ['--test-team-work-overview', '--test-team-review', '--test-team-compact', '--test-continuous-teams', '--test-unrestricted-teams', '--test-host-folder', '--test-supervision', '--test-connector-accounts', '--test-connectors', '--test-devin-provider', '--test-direct-bots', '--test-team-settings', '--test-team-instructions', '--test-notifications', '--test-group-chat-layout', '--test-team-channel-layout', '--test-team-channel', '--test-bot-photos', '--test-bot-lifecycle', '--test-bot-avatar-states', '--test-workspace-skills', '--test-workspace-connections', '--test-workspace-teams', '--test-facelift'];
 const workspaceMode = workspaceFlags.includes(process.argv[2]);
 let teamConversation, savedTeam, teamRun;
 const teamLimits = { maxParallel: 2, maxDepth: 2, maxHops: 8, maxTurns: 24, maxDurationMs: 600000 };
@@ -146,7 +147,7 @@ if (lifecycleMode) {
 // The new room acceptance uses the real durable bot/team/conversation services.
 // Only model output is scripted. No provider, shell, SSH, browser or VM exists.
 const teamSettingsMode = ['--test-team-settings', '--test-team-instructions'].includes(process.argv[2]);
-const teamChannelMode = ['--test-team-review', '--test-team-compact', '--test-continuous-teams', '--test-unrestricted-teams', '--test-team-settings', '--test-team-instructions', '--test-team-channel', '--test-team-channel-layout', '--test-group-chat-layout'].includes(process.argv[2]);
+const teamChannelMode = ['--test-team-work-overview', '--test-team-review', '--test-team-compact', '--test-continuous-teams', '--test-unrestricted-teams', '--test-team-settings', '--test-team-instructions', '--test-team-channel', '--test-team-channel-layout', '--test-group-chat-layout'].includes(process.argv[2]);
 let roomBots, roomChats, roomTeam, roomEmptyTeam, roomExtraMember, roomMembers = [], roomTurns = [];
 let settingsHold;
 const teamSettingsActions = [];
@@ -249,6 +250,21 @@ const reviewTasks = teamReviewMode ? ['ready', 'interrupted'].map((state, index)
   work: { status: index ? 'interrupted' : 'ready_for_review', revision: 1, summary: index ? 'Finish the renderer using the retained parser result.' : 'The parser fix is ready for your review.',
     evidence: index ? [] : reviewEvidence, resultHistory: index ? [] : [{ id: 'result_review_fixture', summary: 'The parser fix is ready for your review.', evidence: reviewEvidence, submittedAt: '2026-10-21T00:00:00.000Z', botId: roomMembers[1].id }], reviewHistory: [] },
 })) : [];
+const overviewRequests = [];
+if (taskOverviewMode) {
+  const at = '2026-10-21T20:00:00.000Z';
+  for (const task of reviewTasks) { task.createdAt = at; task.updatedAt = at; }
+  reviewTasks[0].work.reviewHistory = [{ decision: 'reject', note: 'Confirm that the existing iPhone pairing is retained.', reviewedAt: at, resultId: reviewTasks[0].work.resultHistory[0].id }];
+  const extra = (suffix, title, state, status, fields = {}) => ({ id: 'tj_00000000-0000-4000-8000-' + suffix.padStart(12, '0'), type: 'delivery', teamId: roomTeam.id, runId: 'tr_00000000-0000-4000-8000-000000000010', botId: roomMembers[1].id, chatId: 'fixture-overview-' + suffix, title, state, createdAt: at, updatedAt: at,
+    work: { status, revision: 1, evidence: [], resultHistory: [], reviewHistory: [], ...fields } });
+  reviewTasks.push(extra('4', 'Modern task working', 'running', 'working'));
+  reviewTasks.push(extra('5', 'Earlier task without saved result', 'completed', 'blocked', { legacy: true, summary: 'Earlier activity is preserved in history.' }));
+  reviewTasks.push(extra('6', 'Earlier task still running', 'running', 'working', { legacy: true }));
+  reviewTasks.push(extra('7', 'Verified saved result', 'completed', 'verified', { evidence: reviewEvidence, resultHistory: structuredClone(reviewTasks[0].work.resultHistory), reviewHistory: [{ decision: 'accept', reviewedAt: at, resultId: reviewTasks[0].work.resultHistory[0].id }] }));
+  reviewTasks.push(extra('8', 'Earlier continuation source', 'cancelled', 'interrupted', { recoveryJobId: reviewTasks[2].id }));
+  overviewRequests.push({ id: 'tr_00000000-0000-4000-8000-000000000011', teamId: roomTeam.id, rootChatId: 'fixture-earlier-request', rootBotId: roomMembers[0].id, state: 'completed', consumedTurns: 3 });
+}
+let overviewUnavailable = false;
 let reviewPlan;
 let reviewResumeKey;
 let reviewResumedRun;
@@ -308,7 +324,10 @@ const host = {
     calls.push({ path, method: options.method ?? 'GET', body: options.body ?? null });
     if (teamReviewMode) {
       if (path === '/api/bots/supervision') return { supported: true, sessions: [], counts: { waiting: 0, working: 0, completed: 0, errors: 0 }, hasMore: false };
-      if (path === '/api/bots/activity') return { activity: structuredClone(reviewTasks), teamWorkReviewSupported: true };
+      if (path === '/api/bots/activity') {
+        if (overviewUnavailable) throw Object.assign(new Error('Synthetic activity refresh unavailable.'), { status: 503 });
+        return { activity: structuredClone([...reviewTasks, ...overviewRequests.map(row => ({ ...row, runId: row.id, type: 'run', title: 'Earlier team request', chatId: row.rootChatId }))]), teamWorkReviewSupported: true };
+      }
       const route = /^\/api\/bots\/teams\/([^/]+)\/jobs\/([^/]+)\/(review|recovery|resume)$/.exec(path);
       if (route) {
         const task = reviewTasks.find(task => task.id === route[2] && task.teamId === route[1]);
@@ -355,6 +374,7 @@ const host = {
         if (options.method === 'POST') return roomBots.team.create(options.body);
         const snapshot = structuredClone(roomBots.team.list());
         if (teamReviewMode) snapshot.teamWorkReviewSupported = true;
+        if (taskOverviewMode) snapshot.runs.push(...structuredClone(overviewRequests));
         if (!continuousTeamsMode) {
           delete snapshot.teamContinuousSupported;
           for (const team of snapshot.teams) for (const key of ['maxDepth', 'maxHops', 'maxTurns', 'maxDurationMs']) if (team.limits[key] === 0) team.limits[key] = teamLimits[key];
@@ -570,6 +590,10 @@ try {
       const action = request.url;
       if (request.method === 'POST') {
         switch (action) {
+        case '/overview-unavailable':
+          if (!taskOverviewMode) throw new Error('Current-work fixture required');
+          overviewUnavailable = true;
+          break;
         case '/supervision-complete':
           if (!supervisionMode) throw new Error('Supervision fixture required');
           pending.length = 0; conversation.active = false; assistant.streaming = false;
@@ -683,7 +707,7 @@ try {
         response.writeHead(404).end(); return;
       }
       response.setHeader('Content-Type', 'application/json');
-      response.end(JSON.stringify({ ...(teamReviewMode ? { reviewTasks, reviewPlan } : {}), ...(connectorService ? { connectors: connectorService.list(), connectorChecks, connectorToolCalls } : {}), conversation, createdBotConversation, pending, calls, ...(roomBots ? { teamChannel: roomBots.team.channel(roomTeam.id), roomTurns, roomTeam, roomEmptyTeam, ...(compactTeamMode ? { compactAssignment, compactReport } : {}), ...((teamSettingsMode || unrestrictedTeamsMode || continuousTeamsMode) ? { teamSettings: roomBots.team.list(), roomMembers, roomExtraMember, teamSettingsFolder, teamSettingsOtherFolder, teamSettingsActions } : {}) } : {}), ...(lifecycleProfiles ? { lifecycle: await lifecycleProfiles.list() } : {}), computerRunning, computerControlled: !!computerControl, botFace, downloadJobs: Object.fromEntries(downloadJobs), planCount: nextPlan, downloadCount: nextDownload }));
+      response.end(JSON.stringify({ ...(teamReviewMode ? { reviewTasks, reviewPlan, overviewRequests } : {}), ...(connectorService ? { connectors: connectorService.list(), connectorChecks, connectorToolCalls } : {}), conversation, createdBotConversation, pending, calls, ...(roomBots ? { teamChannel: roomBots.team.channel(roomTeam.id), roomTurns, roomTeam, roomEmptyTeam, ...(compactTeamMode ? { compactAssignment, compactReport } : {}), ...((teamSettingsMode || unrestrictedTeamsMode || continuousTeamsMode) ? { teamSettings: roomBots.team.list(), roomMembers, roomExtraMember, teamSettingsFolder, teamSettingsOtherFolder, teamSettingsActions } : {}) } : {}), ...(lifecycleProfiles ? { lifecycle: await lifecycleProfiles.list() } : {}), computerRunning, computerControlled: !!computerControl, botFace, downloadJobs: Object.fromEntries(downloadJobs), planCount: nextPlan, downloadCount: nextDownload }));
     } catch (error) {
       response.writeHead(500, { 'Content-Type': 'application/json' });
       response.end(JSON.stringify({ error: error.message }));
@@ -705,7 +729,7 @@ try {
         '-project', project, '-scheme', 'StrataMobile', '-destination', destination,
         '-derivedDataPath', derivedData,
         ...(process.env.STRATA_TEST_RESULT_BUNDLE ? ['-resultBundlePath', process.env.STRATA_TEST_RESULT_BUNDLE] : []),
-        '-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test-team-review': 'testSubmittedTaskReviewAndExplicitRecoveryWithoutReplayingFinishedWork', '--test-team-compact': 'testCompactTeamAssignmentsAndReportsExpandWithoutChangingHistory', '--test-continuous-teams': 'testContinuousTeamWorkHasNoNumericStopLimits', '--test-unrestricted-teams': 'testLargeTeamCreationUsesAllAvailableTeammates', '--test-host-folder': 'testScopedHostFolderSettingsGrantAndRevokeWithoutStartingWork', '--test-supervision': 'testLiveBotSupervisionFiltersExactConversationAndLargeType', '--test-connector-accounts': 'testConnectorAccountsDiscoverBearerSetupAndMacSignInFallback', '--test-connectors': 'testConnectorsHTTPSetupTeamAccessToolsAndPersistence', '--test-devin-provider': 'testPhoneCreatesDevinBotWithHostModelsAndNoImplicitRun', '--test-direct-bots': 'testDirectBotRosterChatProfileNewConversationAndRelaunch', '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation', '--test-computer': 'testActualSampleAvatarAndIsolatedComputerControl', '--test-bot-photos': 'testPhotoLedBotsCreationAppearanceAndWorkspaceNavigation', '--test-bot-lifecycle': 'testPhoneBotCreationEditingCASAndApprovalModes', '--test-bot-avatar-states': 'testBotAvatarStatesInteractionAndRosterFilters', '--test-facelift': 'testFaceliftPrincipalScreensAndSharedHistory', '--test-workspace-skills': 'testReviewedSkillAssignmentAndWorkspaceNavigation', '--test-workspace-connections': 'testSavedConnectionCheckAndReviewedAccess', '--test-workspace-teams': 'testTeamExplicitTaskSharedThinkingStopAndActivity', '--test-team-channel': 'testNaturalTeamChannelPeersAssignmentsThinkingAndStop', '--test-team-channel-layout': 'testTeamChannelNormalDarkAndLargeTypeLayout', '--test-group-chat-layout': 'testGroupRosterAndRoomPhotoLayoutWithRealMenus', '--test-team-settings': 'testTeamMembershipSharedComputerFoldersConflictAndPersistence', '--test-team-instructions': 'testTeamPublicInstructionsRolesPersistenceAndConflict', '--test-notifications': 'testNotificationPreferencesPrivateInboxRoutingMuteAndRelaunch' })[process.argv[2]],
+        '-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test-team-work-overview': 'testCurrentWorkOverviewKeepsActiveLegacyAndRequiresExplicitHistoryExpansion', '--test-team-review': 'testSubmittedTaskReviewAndExplicitRecoveryWithoutReplayingFinishedWork', '--test-team-compact': 'testCompactTeamAssignmentsAndReportsExpandWithoutChangingHistory', '--test-continuous-teams': 'testContinuousTeamWorkHasNoNumericStopLimits', '--test-unrestricted-teams': 'testLargeTeamCreationUsesAllAvailableTeammates', '--test-host-folder': 'testScopedHostFolderSettingsGrantAndRevokeWithoutStartingWork', '--test-supervision': 'testLiveBotSupervisionFiltersExactConversationAndLargeType', '--test-connector-accounts': 'testConnectorAccountsDiscoverBearerSetupAndMacSignInFallback', '--test-connectors': 'testConnectorsHTTPSetupTeamAccessToolsAndPersistence', '--test-devin-provider': 'testPhoneCreatesDevinBotWithHostModelsAndNoImplicitRun', '--test-direct-bots': 'testDirectBotRosterChatProfileNewConversationAndRelaunch', '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation', '--test-computer': 'testActualSampleAvatarAndIsolatedComputerControl', '--test-bot-photos': 'testPhotoLedBotsCreationAppearanceAndWorkspaceNavigation', '--test-bot-lifecycle': 'testPhoneBotCreationEditingCASAndApprovalModes', '--test-bot-avatar-states': 'testBotAvatarStatesInteractionAndRosterFilters', '--test-facelift': 'testFaceliftPrincipalScreensAndSharedHistory', '--test-workspace-skills': 'testReviewedSkillAssignmentAndWorkspaceNavigation', '--test-workspace-connections': 'testSavedConnectionCheckAndReviewedAccess', '--test-workspace-teams': 'testTeamExplicitTaskSharedThinkingStopAndActivity', '--test-team-channel': 'testNaturalTeamChannelPeersAssignmentsThinkingAndStop', '--test-team-channel-layout': 'testTeamChannelNormalDarkAndLargeTypeLayout', '--test-group-chat-layout': 'testGroupRosterAndRoomPhotoLayoutWithRealMenus', '--test-team-settings': 'testTeamMembershipSharedComputerFoldersConflictAndPersistence', '--test-team-instructions': 'testTeamPublicInstructionsRolesPersistenceAndConflict', '--test-notifications': 'testNotificationPreferencesPrivateInboxRoutingMuteAndRelaunch' })[process.argv[2]],
         '-parallel-testing-enabled', 'NO', 'test',
       ], { stdio: 'inherit', env: { ...process.env,
         TEST_RUNNER_STRATA_TEST_INVITATION: connection.invitation,
@@ -716,7 +740,7 @@ try {
       testProcess.once('exit', code => resolve(code ?? 1));
     });
     process.exitCode = status;
-    if (process.env.STRATA_TEST_STATE_OUTPUT) writeFileSync(process.env.STRATA_TEST_STATE_OUTPUT, JSON.stringify({ ...(teamReviewMode ? { reviewTasks, reviewPlan } : {}), ...(connectorService ? { connectors: connectorService.list(), connectorChecks, connectorToolCalls } : {}), calls, ...(directBotsMode || process.argv[2] === '--test-devin-provider' ? { conversation, createdBotConversation, directCreatedConversations, teamConversation, computerRunning, computerControlled: !!computerControl } : {}), ...(roomBots ? { teamChannel: roomBots.team.channel(roomTeam.id), roomTurns, roomTeam, roomEmptyTeam, ...(teamSettingsMode ? { teamSettings: roomBots.team.list(), roomMembers, roomExtraMember, teamSettingsFolder, teamSettingsOtherFolder, teamSettingsActions } : {}) } : {}), ...(lifecycleProfiles ? { lifecycle: await lifecycleProfiles.list() } : {}), savedTeam, teamRun, skillAssignments, skills: skillCatalog(), connectionAccess: { botIds: mcpConnection.botIds, enabledToolIds: mcpConnection.enabledToolIds, readOnlyToolIds: mcpConnection.readOnlyToolIds } }), { mode: 0o600 });
+    if (process.env.STRATA_TEST_STATE_OUTPUT) writeFileSync(process.env.STRATA_TEST_STATE_OUTPUT, JSON.stringify({ ...(teamReviewMode ? { reviewTasks, reviewPlan, overviewRequests } : {}), ...(connectorService ? { connectors: connectorService.list(), connectorChecks, connectorToolCalls } : {}), calls, ...(directBotsMode || process.argv[2] === '--test-devin-provider' ? { conversation, createdBotConversation, directCreatedConversations, teamConversation, computerRunning, computerControlled: !!computerControl } : {}), ...(roomBots ? { teamChannel: roomBots.team.channel(roomTeam.id), roomTurns, roomTeam, roomEmptyTeam, ...(teamSettingsMode ? { teamSettings: roomBots.team.list(), roomMembers, roomExtraMember, teamSettingsFolder, teamSettingsOtherFolder, teamSettingsActions } : {}) } : {}), ...(lifecycleProfiles ? { lifecycle: await lifecycleProfiles.list() } : {}), savedTeam, teamRun, skillAssignments, skills: skillCatalog(), connectionAccess: { botIds: mcpConnection.botIds, enabledToolIds: mcpConnection.enabledToolIds, readOnlyToolIds: mcpConnection.readOnlyToolIds } }), { mode: 0o600 });
     await close();
   } else {
     if (process.argv.length > 2) throw new Error('Usage: companion-fixture.mjs [--test|--test-downloads|--test-bots|--test-computer|--test-workspace-skills|--test-workspace-connections|--test-workspace-teams|--test-facelift|--test-bot-lifecycle|--test-bot-avatar-states <simulator destination>]');

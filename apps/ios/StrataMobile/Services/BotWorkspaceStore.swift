@@ -10,6 +10,7 @@ final class BotWorkspaceStore: ObservableObject {
     @Published private(set) var teams: BotTeamsSnapshot?
     @Published private(set) var channels: [String: BotTeamChannel] = [:]
     @Published private(set) var activity: [BotWorkspaceActivity] = []
+    @Published private(set) var activityLoaded = false
     @Published private(set) var recoveryPlans: [String: BotTeamRecoveryPlan] = [:]
     @Published private(set) var activityWorkReviewSupported = false
     @Published private(set) var supervision: BotSupervisionSnapshot?
@@ -40,7 +41,9 @@ final class BotWorkspaceStore: ObservableObject {
     func refreshActivity() async {
         struct Snapshot: Decodable { var activity: [BotWorkspaceActivity]; var reason: String?; var teamWorkReviewSupported: Bool? }
         await load("activity", path: "/v1/bots/activity") { (value: Snapshot) in
-            self.activity = value.activity; self.messages["activity"] = value.reason
+            self.messages["activity"] = value.reason
+            guard value.reason == nil else { return }
+            self.activity = value.activity; self.activityLoaded = true
             self.activityWorkReviewSupported = value.teamWorkReviewSupported == true
             self.recoveryPlans = self.recoveryPlans.filter { id, plan in
                 value.activity.contains { $0.id == id && $0.work?.revision == plan.expectedRevision && $0.work?.canPlanRecovery == true }

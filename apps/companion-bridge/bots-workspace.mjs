@@ -226,7 +226,8 @@ function taskWork(value) {
   });
   const evidence = taskEvidence(value.evidence);
   if (value.status==='verified' && (!resultHistory.length || reviewHistory.at(-1)?.decision!=='accept' || reviewHistory.at(-1).resultId!==resultHistory.at(-1).id)) throw error(502, 'Strata returned an unverified task result.');
-  return {status:value.status,revision:value.revision,evidence,resultHistory,reviewHistory,...(value.summary!==undefined?{summary:taskText(value.summary,8000)}:{}),...Object.fromEntries(['sourceJobId','recoveryJobId'].filter(key=>id(value[key])).map(key=>[key,value[key]]))};
+  if (value.legacy!==undefined && typeof value.legacy!=='boolean' || value.legacy===true && (['ready_for_review','verified'].includes(value.status) || resultHistory.length || reviewHistory.length || evidence.length || value.sourceJobId!==undefined || value.recoveryJobId!==undefined)) throw error(502, 'Strata returned inconsistent task history information.');
+  return {status:value.status,revision:value.revision,evidence,resultHistory,reviewHistory,...(value.legacy!==undefined?{legacy:value.legacy}:{}),...(value.summary!==undefined?{summary:taskText(value.summary,8000)}:{}),...Object.fromEntries(['sourceJobId','recoveryJobId'].filter(key=>id(value[key])).map(key=>[key,value[key]]))};
 }
 function taskActivity(v) {
   return { id: v.id, type: ['run','delivery','subagent'].includes(v.type) ? v.type : 'run', teamId:id(v.teamId)?v.teamId:'',runId:id(v.runId)?v.runId:'',title:text(v.title,300),state:text(v.state,60),...Object.fromEntries(['botId','chatId','parentChatId','fromBotId','toBotId'].filter(k=>id(v[k])).map(k=>[k,v[k]])),createdAt:date(v.createdAt),updatedAt:date(v.updatedAt),...(typeof v.detail==='string'?{detail:text(v.detail,2000)}:{}),...(v.work!==undefined?{work:taskWork(v.work)}:{}) };
