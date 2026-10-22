@@ -36,3 +36,36 @@ Private evidence directory:
 `/Users/gszulc/Projects/Strata-iphone-evidence/strata-durable-team-plans-20261022T221125Z-79d28ffc`
 
 Source design: [Durable team work plans](BOTS-TEAM-PLANS.md).
+
+## Final committed artifacts
+
+The controller source is **38312b48fb851f93e91ac8c389807009a65c0ca7**, pushed to the fork's `feature/iphone-companion` branch. A separate clean checkout compiled the Mac package; another clean checkout compiled iPhone build **37**. No provider, model, team-specific instruction or Maya setting was changed for this increment.
+
+- Final frozen-source host regression: **411/411 passed**, no skips, with bundled Node 24.12.0. This includes five independently authored command-outcome cases and five public-preview regression cases added after the earlier 401-check run.
+- Companion bridge regression: **150/150 passed**, no skips. Mac browser controls: **7/7 passed**, with actual loaded source and styles bound to the committed blobs. Five pure preview cases also passed independently.
+- Native iPhone suite: **301 passed, two explicit TLS fixture skips, zero failures**. The final native plan workflow passed **1/1**, using an actual isolated pinned-TLS bridge and controller with inert provider callbacks. Exact compiled inputs and screenshots are retained.
+- Fresh Mac native compilation: **29/29 Rust checks passed** and the locked production release build succeeded. An independent reviewer checked all **75 native inputs**, **67 generated UI files**, exact compiler arguments and binary, and the retained previous compilers.
+- Independent source, client, command-outcome, helper, compiler and signed-artifact reviews reported **zero remaining P1/P2** within their recorded scopes.
+
+The large-plan regression comes from two real core projections of one checkpoint. Their byte budgets produce 500-character and 1,000-character previews for overlapping tasks. Both clients now accept only compatible known clipping boundaries, while retaining exact state, owner, criterion, dependency and URL checks. The native task cache merges overlapping pages by absolute position, preventing duplicate rows.
+
+The signed Mac artifact contains **42,695 resource entries**. Its resource manifest is `b2f219513aa2d9c54b35d7a56b743ab66c35854c16ab01e303b930ed58b7bb9d`; its full application aggregate is `c4402088fb33832fa3eb0e5d16b5910081c2188805c025d2b5c5ff98a1dd56a7`. Exact host, bridge, Control, lifecycle and UI payloads were checked independently. Strict recursive signatures passed before installation and after launch.
+
+Two Mac build preflights failed safely and their evidence remains separate. The signed runtime Node could not load the development Rollup addon, so the UI was built with the development Node toolchain; runtime checks still used bundled Node. The first native clean command removed only debug outputs, and the release-absence guard refused to compile against a retained release output. The private helper was corrected to select `--release` explicitly and independently checked before the fresh successful build. No signed Node protections or accepted previous compiler were changed.
+
+iPhone build **37** was installed successfully, and a fresh device inventory reports bundle `com.strata.companion.ios`, installed build **37**. The app was not running before replacement and was not launched by the agent. Its exact accepted build-36 profile, signing leaf, entitlements and Keychain scope remain unchanged. Actual physical-phone runtime and cellular/offsite Tailscale acceptance are not claimed.
+
+## Mac activation
+
+Two successful complete idle snapshots were taken more than ten seconds apart, followed by an immediate prequit recheck. All **13 checks** passed, including every conversation goal and the saved team/workflow inventory. The retained old host lacked the new plan capability and the plan store was confirmed absent. Only `/Applications/Strata.app` was quit through its native UI.
+
+The old app and verified owner data were preserved in the unique backup:
+`/Users/gszulc/Projects/Strata-iphone-evidence/backups/strata-team-plans-20261022T230541Z-627f3c2d`.
+
+The accepted staged app was atomically moved into `/Applications/Strata.app` and reopened. The postlaunch resource/native/signature gate passed with no changed resources. Before/after preservation matched **173 conversations, 644 messages, three paired devices, nine model connections and five durable pairing files**, plus bot files/profiles, team history, workflows, tools, skills, connectors/OAuth, notifications, action receipts and plan-store absence. No schema migration occurred. Maya's saved connection and service were kept separate. The unsent team draft was preserved privately for restoration without sending it.
+
+The final independent postactivation review passed **33/33 checks**, with zero P1/P2 findings in its operational scope. It independently confirmed the exact committed package/compiler chain, strict recursive signatures, every installed resource, all saved conversations and latest history, pairing, model connections, action receipts, workflows and all 13 idle checks. Read-only plan pagination for all three teams advertised support and retained the optional plan store's absence. The review did not send a model prompt or mutate owner state.
+
+The installed native Mac interface visibly shows **Work plans** with the expected empty state. The original **Project Openflix and Tunner** channel was reopened in Chat mode and its exact 54-character unsent draft restored through the native text field. No message was sent, no plan created or resumed, and no historical blocked task was restarted. Private final receipts are `independent-activation-acceptance.json` and `final-native-ui-and-draft-restoration.json` in the evidence directory above.
+
+This controller applies to new explicit **Work** requests from updated clients. Existing stopped work and uncertain actions retain their original state. Restart recovery requires inspection and an explicit resume; provider completion alone does not complete a task, and task results do not replace the owner's final acceptance. The controller adds no fixed task, turn or parallel-work cap; actual provider limits and conflicting execution resources still apply.

@@ -1,5 +1,15 @@
 # Shared Mac conversations on iPhone
 
+## Durable team work plans activated (October 22, 2026)
+
+Mac source **38312b48fb851f93e91ac8c389807009a65c0ca7** is active in `/Applications/Strata.app`, and signed iPhone build **37** is installed with fresh device-inventory verification. New explicit team **Work** requests use saved task owners, dependencies, checkpoints, independent review and owner acceptance. Both clients expose the saved plan and proof-bound controls. This is a general controller; no team-specific instruction or Maya setting was changed. Existing Chat and older workflows remain available.
+
+Final frozen-source checks passed **411/411 host**, **150/150 bridge**, **7/7 Mac browser**, **301 native iPhone checks with two explicit fixture skips**, **1/1 native iPhone workflow** and **29/29 Rust checks**. A real disposable four-bot Codex group wrote two modules, independently passed all eight unchanged tests and reached owner review in 88 seconds. That bounded result is not all-provider or long-project acceptance.
+
+After two complete idle snapshots and a final prequit check, only Strata was quit normally, uniquely backed up, atomically replaced and reopened. Strict recursive signatures and exact installed resources passed after launch. Independent operational verification passed **33/33 checks** and preserved all **173 conversations, 644 messages, three paired devices and nine model connections**, including Maya. The original team channel and exact unsent draft were restored without sending anything. Existing blocked work was not automatically resumed. The phone was left closed; physical runtime and cellular/offsite Tailscale acceptance remain unverified.
+
+Detailed design, test scopes, artifact hashes, backup and receipts: [Durable team plans validation](docs/BOTS-TEAM-PLANS-VALIDATION-20261022.md).
+
 
 ## CUA Bots inside the main Strata window (October 20, 2026)
 
