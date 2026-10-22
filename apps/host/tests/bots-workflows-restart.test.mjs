@@ -1,0 +1,29 @@
+/** A real disposable Node process exits after a saved build claim, before turn settlement. */
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { createBots } from '../server/bots.mjs';
+import { createConversations } from '../server/conversations.mjs';
+const botsURL=new URL('../server/bots.mjs',import.meta.url).href,chatsURL=new URL('../server/conversations.mjs',import.meta.url).href;
+const sharedSource=`
+const counter=join(directory,'counter.txt');let chats,bots,meta;
+const tools={definitions:()=>[{name:'read_file',description:'Scratch read',inputSchema:{type:'object'}},{name:'write_file',description:'Scratch increment',inputSchema:{type:'object'}}],execute:async({name})=>{if(name==='write_file')writeFileSync(counter,String(Number(readFileSync(counter,'utf8'))+1));return {content:[{type:'text',text:readFileSync(counter,'utf8')}]};},finish:async()=>{}};
+const create=runtime=>{bots=createBots({directory,runtime,tools,defaultWorkspace:()=>directory,conversations:()=>chats});chats=createConversations({directory,enabled:()=>bots.hasProfiles(),pending:id=>bots.pending(id),stop:id=>bots.stop(id),approve:v=>bots.approve(v),validateSelection:v=>bots.validateSelection(v),execute:v=>bots.run(v)});};
+`;
+test('real process loss never replays, then owner-inspected continuation skips completed plan and inspects partial effect',async t=>{
+ const directory=mkdtempSync(join(tmpdir(),'strata-workflow-crash-'));writeFileSync(join(directory,'counter.txt'),'0');let bots,chats;
+ t.after(async()=>{await bots?.close();chats?.close();rmSync(directory,{recursive:true,force:true});});
+ const child=`import {readFileSync,writeFileSync} from 'node:fs';import {join} from 'node:path';import {createBots} from ${JSON.stringify(botsURL)};import {createConversations} from ${JSON.stringify(chatsURL)};const directory=${JSON.stringify(directory)};${sharedSource}
+ create({providers:async()=>[],close(){},async run(input){if(input.message.includes('role planning.'))await input.executeTool('submit_workflow_plan',{summary:'Completed plan',items:['Inspect workspace','Build scoped feature']},'plan');else{await input.executeTool('write_file',{},'effect');await input.executeTool('submit_workflow_build',{summary:'Partial effect saved before crash',evidence:[{kind:'file',label:'Counter',detail:'counter.txt'}]},'build');process.exit(0);}}});
+ const make=name=>bots.create({name,provider:'codex',policy:'bypass',workspace:directory}).bot;const a=make('Planner'),b=make('Builder'),c=make('Evaluator');const team=bots.team.create({name:'Crash fixture',enabled:true,memberIds:[a.id,b.id,c.id],coordinatorId:a.id}).team;const workflow=bots.team.workflows.create(team.id,{requestId:'crash-request',goal:'Build once without repeating existing work',plannerId:a.id,builderId:b.id,evaluatorId:c.id,criteria:['Inspect actual scratch output']}).workflow;writeFileSync(join(directory,'child-meta.json'),JSON.stringify({teamId:team.id,id:workflow.id}));setTimeout(()=>process.exit(2),5000);`;
+ execFileSync(process.execPath,['--input-type=module','-e',child],{timeout:10000,stdio:'pipe'});const meta=JSON.parse(readFileSync(join(directory,'child-meta.json'))),before=readFileSync(join(directory,'bot-workflows.json'));assert.equal(readFileSync(join(directory,'counter.txt'),'utf8'),'1');
+ const calls=[];const tools={definitions:()=>[{name:'read_file',description:'Scratch read',inputSchema:{type:'object'}},{name:'write_file',description:'Scratch increment',inputSchema:{type:'object'}}],execute:async({name})=>{if(name==='write_file')writeFileSync(join(directory,'counter.txt'),'DUPLICATED');return {content:[{type:'text',text:readFileSync(join(directory,'counter.txt'),'utf8')}]};},finish:async()=>{}};
+ bots=createBots({directory,tools,defaultWorkspace:()=>directory,conversations:()=>chats,runtime:{providers:async()=>[],close(){},async run(input){calls.push(input);assert.match(input.message,/FIRST inspect|role evaluating/);await input.executeTool('read_file',{},'inspect-existing');if(input.message.includes('role building.'))await input.executeTool('submit_workflow_build',{summary:'Inspected existing effect; no duplicate write',evidence:[{kind:'file',label:'Existing result',detail:'counter.txt is already 1'}]},'new-build');else{const row=bots.team.workflows.detail(meta.teamId,meta.id).workflow;await input.executeTool('submit_workflow_review',{decision:'pass',summary:'Read actual retained output',checks:row.criteria.map(c=>({criterionId:c.id,passed:true,detail:'Actual counter is 1'}))},'review');}}}});
+ chats=createConversations({directory,enabled:()=>bots.hasProfiles(),pending:id=>bots.pending(id),stop:id=>bots.stop(id),approve:v=>bots.approve(v),validateSelection:v=>bots.validateSelection(v),execute:v=>bots.run(v)});
+ let current=bots.team.workflows.detail(meta.teamId,meta.id).workflow;assert.equal(current.phase,'interrupted');assert.deepEqual(readFileSync(join(directory,'bot-workflows.json')),before);await new Promise(r=>setTimeout(r,30));assert.equal(calls.length,0);assert.equal(current.steps[0].state,'completed');
+ bots.team.workflows.resume(meta.teamId,meta.id,{requestId:'owner-inspected',expectedRevision:current.revision,expectedProof:current.proof,inspected:true});const at=Date.now();while((current=bots.team.workflows.detail(meta.teamId,meta.id).workflow).phase!=='awaiting_review'){if(Date.now()-at>6000)throw new Error(JSON.stringify(current));await new Promise(r=>setImmediate(r));}
+ assert.equal(calls.length,2);assert.equal(readFileSync(join(directory,'counter.txt'),'utf8'),'1');assert.equal(current.steps.filter(s=>s.phase==='planning').length,1);
+});

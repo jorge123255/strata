@@ -2,6 +2,7 @@
 // connections and reviewable bot-created command tools. Tool configuration never
 // executes commands; execution stays with the selected bot and its permissions.
 import { botAvatarConfig } from './bots-lifecycle.mjs';
+import { teamWorkflowRoute, workflowRequest, publicWorkflowResponse, confirmWorkflowMutation } from './bots-workflows.mjs';
 const error = (status, message) => Object.assign(new Error(message), { status });
 const id = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,120}$/.test(value);
 const computerId = value => typeof value === 'string' && /^(host:(local|ssh_[a-f0-9]{32})|cua:bot_[a-f0-9-]+)$/.test(value);
@@ -125,6 +126,11 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
   const url = new URL(path, 'http://loopback.invalid');
   if (!path.startsWith('/api/bots/') || url.hash) return null;
   const p = url.pathname, query = [...url.searchParams];
+  const workflow = teamWorkflowRoute(p);
+  if (workflow) {
+    if (query.length) throw error(status, 'Workflow actions take no URL settings.');
+    return workflowRequest(workflow, method, body, status, validateBody);
+  }
   let route;
   if (p === '/api/bots/provider-models') route = { kind: 'providerModels' };
   else if (p === '/api/bots/activity') route = { kind: 'activity' };
@@ -371,6 +377,7 @@ function harnessAction(value) {
   return {id:value.id,chatId:value.chatId,toolName:text(value.toolName,120),state:value.state,revision:value.revision,proof:value.proof,startedAt:date(value.startedAt),updatedAt:date(value.updatedAt),origin:value.origin,readOnly:value.origin === 'ssh-worker' || value.readOnly === true};
 }
 export function publicBotWorkspace(body, route) {
+  if (route.kind === 'workflow') return publicWorkflowResponse(body, route);
   if (route.kind === 'harnessActions') {
     if (!isObject(body) || !Array.isArray(body.actions)) throw error(502, 'Strata returned unreadable action receipts.');
     return {available:body.available === true,actions:body.actions.slice(0,200).map(harnessAction),hasMore:body.hasMore === true,
@@ -400,7 +407,7 @@ export function publicBotWorkspace(body, route) {
     return {activity:taskActivity(body.activity),...(route.action==='resume'?{run:run(body.run)}:{})};
   }
   if (route.kind === 'channelMessage') return { channel: channelSnapshot(body.channel, route), ...(body.run && id(body.run.id) && body.run.teamId === route.teamId ? { run: run(body.run) } : {}) };
-  if (route.kind === 'teams' && Array.isArray(body.teams)) return { teams: rows('teams', team), runs: rows('runs', run, id, Infinity), ...(body.teamUnrestrictedSupported === true ? { teamUnrestrictedSupported: true } : {}), ...(body.teamContinuousSupported === true ? { teamContinuousSupported: true } : {}), ...(body.teamWorkReviewSupported === true ? { teamWorkReviewSupported: true } : {}), ...(body.teamCoordinatorWorkToolsSupported === true ? { teamCoordinatorWorkToolsSupported: true } : {}), ...(body.channelsSupported === true ? { channelsSupported: true } : {}), ...(body.teamInstructionsSupported === true ? { teamInstructionsSupported: true } : {}), ...(body.teamSettingsSupported === true ? { teamSettingsSupported: true, teamComputers: (Array.isArray(body.teamComputers) ? body.teamComputers : []).slice(0, 1000).map(teamComputer).filter(Boolean) } : {}) };
+  if (route.kind === 'teams' && Array.isArray(body.teams)) return { teams: rows('teams', team), runs: rows('runs', run, id, Infinity), ...(body.teamWorkflowsSupported === true ? { teamWorkflowsSupported: true } : {}), ...(body.teamUnrestrictedSupported === true ? { teamUnrestrictedSupported: true } : {}), ...(body.teamContinuousSupported === true ? { teamContinuousSupported: true } : {}), ...(body.teamWorkReviewSupported === true ? { teamWorkReviewSupported: true } : {}), ...(body.teamCoordinatorWorkToolsSupported === true ? { teamCoordinatorWorkToolsSupported: true } : {}), ...(body.channelsSupported === true ? { channelsSupported: true } : {}), ...(body.teamInstructionsSupported === true ? { teamInstructionsSupported: true } : {}), ...(body.teamSettingsSupported === true ? { teamSettingsSupported: true, teamComputers: (Array.isArray(body.teamComputers) ? body.teamComputers : []).slice(0, 1000).map(teamComputer).filter(Boolean) } : {}) };
   if (body.team && id(body.team.id)) return { team: team(body.team) };
   if (body.run && id(body.run.id)) return { run: run(body.run) };
   if (route.kind === 'activity') return { activity: rows('activity', taskActivity), ...(body.teamWorkReviewSupported === true ? {teamWorkReviewSupported:true} : {}) };
@@ -430,9 +437,10 @@ export async function handleBotWorkspace({ path, method, req, res, session, host
   if (!route) return false;
   const toolDeletion = route.kind === 'createdTool' && method === 'DELETE';
   if (['GET', 'DELETE'].includes(method) && !toolDeletion && (Number(req.headers['content-length'] ?? 0) > 0 || req.headers['transfer-encoding'])) throw error(400, 'This action does not accept settings.');
-  const body = ['POST', 'PATCH'].includes(method) || toolDeletion ? await readBody(req, ['createdTools', 'createdTool'].includes(route.kind) ? 256_000 : ['teams', 'team'].includes(route.kind) ? 240_000 : 70_000) : undefined;
+  const body = ['POST', 'PATCH'].includes(method) || toolDeletion ? await readBody(req, ['createdTools', 'createdTool', 'workflow'].includes(route.kind) ? 256_000 : ['teams', 'team'].includes(route.kind) ? 240_000 : 70_000) : undefined;
   botWorkspaceRequest(upstreamPath, method, body, 400);
   requireCurrentSession();
+  let workflowSelection;
   try {
     let teamCatalog;
     if (route.kind === 'harnessReview') {
@@ -441,6 +449,29 @@ export async function handleBotWorkspace({ path, method, req, res, session, host
       if (!selected || selected.origin !== 'local' || selected.readOnly === true || !['uncertain','interrupted'].includes(selected.state) || selected.revision !== body.expectedRevision || selected.proof !== body.expectedProof) throw error(409, 'Review this action’s current receipt before acknowledging it.');
     }
     const currentTeams = async () => { if (!teamCatalog) { teamCatalog = await host.json('/api/bots/teams'); requireCurrentSession(); } return teamCatalog; };
+    if (route.kind === 'workflow' && method === 'POST') {
+      const catalog = await currentTeams();
+      if (catalog.teamWorkflowsSupported !== true) throw error(409, 'Update Strata on your Mac before starting a guided team task.');
+      const selected = (catalog.teams ?? []).find(team => team.id === route.teamId);
+      if (!selected) throw error(404, 'This team is no longer available.');
+      if (!route.workflowId) {
+        const members = new Set(selected.memberIds ?? []);
+        if (!selected.enabled || ['plannerId', 'builderId', 'evaluatorId'].some(key => !members.has(body[key]))) throw error(409, 'Choose current members of this enabled team.');
+        const bots = await host.json('/api/bots'); requireCurrentSession();
+        for (const key of ['plannerId', 'builderId', 'evaluatorId']) {
+          const bot = (bots.bots ?? []).find(row => row.id === body[key]);
+          if (!bot || bot.paused || key !== 'plannerId' && bot.policy === 'plan') throw error(409, 'Choose available teammates who can perform their selected roles.');
+        }
+      } else {
+        const detail = await host.json(`/api/bots/teams/${route.teamId}/workflows/${route.workflowId}`); requireCurrentSession();
+        const current = publicWorkflowResponse(detail, route).workflow;
+        workflowSelection = current;
+        if (current.revision !== body.expectedRevision || current.proof !== body.expectedProof) throw error(409, 'This workflow changed. Refresh its current checkpoint.');
+        if (route.action === 'resume' && (!selected.enabled || !current.canResume || !['blocked', 'interrupted', 'stopped'].includes(current.phase))) throw error(409, 'Inspect this task and resolve its blockers before continuing.');
+        if (route.action === 'review' && current.phase !== 'awaiting_review') throw error(409, 'Wait for the independent evaluation before reviewing this task.');
+        if (route.action === 'review' && body.decision === 'changes_requested' && !selected.enabled) throw error(409, 'Enable this team before requesting more work.');
+      }
+    }
     if (['createdTools', 'createdTool'].includes(route.kind) && method !== 'GET') {
       const catalog = await host.json('/api/bots/tools'); requireCurrentSession();
       if (catalog.createdToolsSupported !== true || !Array.isArray(catalog.tools)) throw error(409, 'Update Strata on your Mac before managing reusable tools.');
@@ -531,11 +562,13 @@ export async function handleBotWorkspace({ path, method, req, res, session, host
     const result = await host.json(upstreamPath, { method, ...(body !== undefined ? { body } : {}), deviceId: session.id });
     requireCurrentSession();
     if (route.kind === 'harnessReview' && (result.action?.revision !== body.expectedRevision+1 || result.action.proof === body.expectedProof)) throw error(502, 'Strata did not confirm the next revision of this action receipt.');
+    if (route.kind === 'workflow' && method === 'POST') confirmWorkflowMutation(result, route, body, workflowSelection);
     sendJSON(res, 200, publicBotWorkspace(result, route));
     return true;
   } catch (failure) {
     requireCurrentSession();
     if ([404, 405, 501].includes(failure.status) && method === 'GET') {
+      if (route.kind === 'workflow' && !route.workflowId) { sendJSON(res, 200, { teamWorkflowsSupported: false, available: false, workflows: [], hasMore: false, reason: 'Update Strata on your Mac to plan and verify team tasks.' }); return true; }
       if (route.kind === 'harnessActions') { sendJSON(res,200,{available:false,actions:[],counts:{pending:0,succeeded:0,error:0,interrupted:0,uncertain:0,reviewed:0},hasMore:false,reason:'Update Strata on your Mac to inspect action receipts.'}); return true; }
       const empty = { teams: { teams: [], runs: [] }, channel: { teamId: route.teamId, supported: false, messages: [], activeRuns: [], nextSequence: 0, hasMore: false, hasMoreBefore: false }, activity: { activity: [] }, supervision: { supported: false, sessions: [], counts: { waiting: 0, working: 0, completed: 0, errors: 0 }, hasMore: false }, skills: { skills: [], assignments: [] }, createdTools: { tools: [], createdToolsSupported: false }, connections: { connections: [] }, providerModels: { provider: route.provider, models: [] } }[route.kind];
       if (empty) { sendJSON(res, 200, { ...empty, reason: 'Update Strata on your Mac to use this Bots feature.' }); return true; }

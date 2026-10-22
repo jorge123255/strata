@@ -3668,3 +3668,311 @@ extension BotCreatedToolsTests {
         let legacy = await workspace.saveCreatedTool(draft); XCTAssertTrue(legacy); XCTAssertNil(fixture.requests.first { $0.method == "POST" }?.jsonBody?["requirements"])
     }
 }
+
+@MainActor
+final class TeamWorkflowTests: XCTestCase {
+    private var retainedStore: CompanionStore?
+    private let teamID = "team_workflow_fixture"
+    private let workflowID = "wf_00000000-0000-4000-8000-000000000001"
+    private let criterionID = "wc_00000000-0000-4000-8000-000000000001"
+    private var listPath: String { "/v1/bots/teams/\(teamID)/workflows" }
+    private var detailPath: String { listPath + "/" + workflowID }
+    private func teamSnapshot(capability: Bool? = true) -> [String: Any] {
+        var value: [String: Any] = ["teams": [["id": teamID, "name": "Workflow team", "memberIds": ["bot_builder", "bot_evaluator"], "coordinatorId": "bot_builder", "enabled": true, "limits": ["maxParallel": 0, "maxDepth": 0, "maxHops": 0, "maxTurns": 0, "maxDurationMs": 0]]], "runs": []]
+        if let capability { value["teamWorkflowsSupported"] = capability }
+        return value
+    }
+    private func workflow(phase: String = "awaiting_review", revision: Int = 1, proof: String? = nil) -> [String: Any] {
+        ["id": workflowID, "teamId": teamID, "goal": "Improve the fixture", "plannerId": "bot_builder", "builderId": "bot_builder", "evaluatorId": "bot_evaluator",
+         "criteria": [["id": criterionID, "text": "The meaningful checks pass"]], "phase": phase, "revision": revision, "proof": proof ?? String(repeating: revision == 1 ? "a" : "b", count: 64), "round": 1,
+         "summary": "The evaluator inspected the result.", "createdAt": "2026-10-22T00:00:00Z", "updatedAt": "2026-10-22T00:00:01Z",
+         "steps": [["id": "ws_00000000-0000-4000-8000-000000000001", "phase": "evaluating", "botId": "bot_evaluator", "chatId": "saved_step_chat", "state": "completed", "summary": "Built the requested change.", "evidence": [["kind": "test", "label": "Fixture check", "detail": "Saved evidence, no command was run by this unit test."]]]],
+         "checks": [["criterionId": criterionID, "passed": true, "detail": "The evaluator checked this criterion."]], "canResume": ["blocked", "interrupted", "stopped"].contains(phase), "totalSteps": 1, "stepsTruncated": false]
+    }
+    private func list(_ rows: [[String: Any]], available: Bool = true) -> [String: Any] { ["teamWorkflowsSupported": true, "available": available, "workflows": rows, "hasMore": false] }
+    private func decode(_ value: [String: Any]) throws -> BotTeamWorkflow { try JSONDecoder().decode(BotTeamWorkflow.self, from: JSONSerialization.data(withJSONObject: value)) }
+    private func draft() -> BotTeamWorkflowDraft { BotTeamWorkflowDraft(requestId: "request_fixture", goal: "Improve the fixture", plannerId: "bot_builder", builderId: "bot_builder", evaluatorId: "bot_evaluator", criteria: ["The meaningful checks pass"]) }
+    private func loaded(_ fixture: StoreTransport, row: [String: Any]? = nil, capability: Bool? = true) async -> (CompanionStore, BotWorkspaceStore) {
+        fixture.respond { request in
+            if request.url!.path == "/v1/bots/teams" { return self.teamSnapshot(capability: capability) }
+            if request.url!.path == self.listPath { return self.list([row ?? self.workflow()]) }
+            if request.url!.path == self.detailPath { return ["workflow": row ?? self.workflow()] }
+            return nil
+        }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore()
+        retainedStore = store
+        await workspace.refreshTeams(); await workspace.refreshWorkflows(teamID)
+        return (store, workspace)
+    }
+    func testWorkflowModelSeparatesEvaluatorPassFromOwnerAcceptance() throws {
+        let ready = try decode(workflow()); XCTAssertTrue(ready.hasValidProof); XCTAssertTrue(ready.canReview)
+        XCTAssertTrue(ready.checks.first?.passed == true); XCTAssertEqual(ready.phase.label, "Ready for your review")
+        let accepted = try decode(workflow(phase: "completed", revision: 2)); XCTAssertEqual(accepted.phase.label, "Accepted by you"); XCTAssertFalse(accepted.canReview)
+        let interrupted = try decode(workflow(phase: "interrupted")); XCTAssertTrue(interrupted.canContinue); XCTAssertFalse(interrupted.canStop)
+        let active = try decode(workflow(phase: "repairing")); XCTAssertTrue(active.canStop); XCTAssertFalse(active.canContinue)
+    }
+    func testInvalidProofRolesUnknownCriteriaAndStepIdentitiesHaveNoAuthority() throws {
+        for key in ["proof", "evaluatorId", "criteria", "checks", "steps", "totalSteps"] {
+            var row = workflow()
+            switch key {
+            case "proof": row[key] = "not-a-proof"
+            case "evaluatorId": row[key] = "bot_builder"
+            case "criteria": row[key] = []
+            case "checks": row[key] = [["criterionId": "outside", "passed": true, "detail": "unrelated"]]
+            case "steps": row[key] = [["id": "../outside", "phase": "building", "botId": "bot_builder", "state": "completed"]]
+            default: row[key] = 0
+            }
+            XCTAssertFalse(try decode(row).hasValidProof, key)
+        }
+    }
+    func testDraftRequiresSavedDistinctEvaluatorAndUTF16BoundsWithoutRoundLimits() {
+        let members = ["bot_builder", "bot_evaluator"]
+        var value = draft(); XCTAssertTrue(value.isValid(memberIds: members))
+        value.evaluatorId = value.builderId; XCTAssertFalse(value.isValid(memberIds: members))
+        value = draft(); value.plannerId = "outside"; XCTAssertFalse(value.isValid(memberIds: members))
+        value = draft(); value.criteria = []; XCTAssertFalse(value.isValid(memberIds: members))
+        value = draft(); value.criteria = Array(repeating: "Check", count: 17); XCTAssertFalse(value.isValid(memberIds: members))
+        value = draft(); value.criteria = [String(repeating: "😀", count: 501)]; XCTAssertFalse(value.isValid(memberIds: members))
+        value = draft(); value.goal = String(repeating: "😀", count: 8_001); XCTAssertFalse(value.isValid(memberIds: members))
+        value = draft(); value.criteria = ["unsafe\0criterion"]; XCTAssertFalse(value.isValid(memberIds: members))
+        XCTAssertEqual(BotTeamWorkflowDraft.criteria(from: " First check \n\n Second check\r\n"), ["First check", "Second check"])
+    }
+    func testOlderHostDoesNotReceiveWorkflowRequestsOrMutation() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let (_, workspace) = await loaded(fixture, capability: nil)
+        XCTAssertFalse(workspace.workflowsSupported); XCTAssertNil(workspace.workflows[teamID])
+        let created = await workspace.createWorkflow(teamId: teamID, draft: draft()); XCTAssertNil(created)
+        XCTAssertEqual(fixture.requests.map(\.path), ["/v1/bots/teams"])
+    }
+    func testUnavailableCapabilityAndInvalidRowsKeepMutationDisabled() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let (_, workspace) = await loaded(fixture)
+        fixture.respond { request in request.url!.path == self.listPath ? self.list([], available: false) : nil }
+        await workspace.refreshWorkflows(teamID)
+        let created = await workspace.createWorkflow(teamId: teamID, draft: draft()); XCTAssertNil(created)
+        XCTAssertNotNil(workspace.messages[BotWorkspaceStore.workflowsKey(teamID)])
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+    }
+    func testCreationUsesOnlySavedRolesGoalCriteriaAndStableRequestID() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let (_, workspace) = await loaded(fixture)
+        var createdRow = workflow(phase: "planning"); createdRow["id"] = "wf_00000000-0000-4000-8000-000000000002"
+        fixture.respond { request in
+            if request.url!.path == self.listPath, request.httpMethod == "POST" { return ["workflow": createdRow] }
+            if request.url!.path == self.listPath { return self.list([createdRow]) }
+            return nil
+        }
+        let created = await workspace.createWorkflow(teamId: teamID, draft: draft())
+        XCTAssertEqual(created?.phase, .planning)
+        let post = try XCTUnwrap(fixture.requests.first { $0.method == "POST" })
+        XCTAssertEqual(Set(post.jsonBody!.keys), ["requestId", "goal", "plannerId", "builderId", "evaluatorId", "criteria"])
+        XCTAssertEqual(post.jsonBody?["requestId"] as? String, "request_fixture")
+        XCTAssertEqual(post.jsonBody?["criteria"] as? [String], ["The meaningful checks pass"])
+        XCTAssertFalse(fixture.requests.contains { $0.path.contains("/models") || $0.path.contains("/connections") || $0.path.contains("/computer") })
+    }
+    func testResumeRequiresInspectionAndExactCurrentProof() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let (_, workspace) = await loaded(fixture, row: workflow(phase: "interrupted"))
+        let current = try XCTUnwrap(workspace.workflow(workflowID, teamId: teamID))
+        let uninspected = await workspace.changeWorkflow(current, action: "resume", requestId: "resume_fixture"); XCTAssertFalse(uninspected)
+        var stale = current; stale.proof = String(repeating: "c", count: 64)
+        let staleResult = await workspace.changeWorkflow(stale, action: "resume", requestId: "resume_fixture", inspected: true); XCTAssertFalse(staleResult)
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+        fixture.respond { request in ["workflow": self.workflow(phase: "building", revision: 3)] }
+        let resumed = await workspace.changeWorkflow(current, action: "resume", requestId: "resume_fixture", inspected: true); XCTAssertTrue(resumed)
+        let post = try XCTUnwrap(fixture.requests.first { $0.method == "POST" })
+        XCTAssertEqual(post.path, detailPath + "/resume"); XCTAssertEqual(post.jsonBody?["expectedRevision"] as? Int, 1)
+        XCTAssertEqual(post.jsonBody?["expectedProof"] as? String, current.proof); XCTAssertEqual(post.jsonBody?["inspected"] as? Bool, true)
+        XCTAssertEqual(post.jsonBody?["requestId"] as? String, "resume_fixture")
+        XCTAssertEqual(Set(post.jsonBody!.keys), ["expectedRevision", "expectedProof", "requestId", "inspected"])
+    }
+    func testOwnerAcceptanceWaitsForExactAcknowledgedCompletedRevision() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let (_, workspace) = await loaded(fixture); let original = try XCTUnwrap(workspace.workflow(workflowID, teamId: teamID))
+        let held = fixture.hold(detailPath + "/review")
+        let reviewing = Task { await workspace.changeWorkflow(original, action: "review", decision: "accept", note: "Reviewed the evidence") }
+        await fulfillment(of: [held.requested], timeout: 2)
+        XCTAssertEqual(workspace.workflow(workflowID, teamId: teamID)?.phase, .awaitingReview)
+        fixture.respond { _ in ["workflow": self.workflow(phase: "completed", revision: 4)] }
+        held.finish(["workflow": workflow(phase: "completed", revision: 4)])
+        let confirmed = await reviewing.value; XCTAssertTrue(confirmed); XCTAssertEqual(workspace.workflow(workflowID, teamId: teamID)?.phase, .completed)
+        let post = try XCTUnwrap(fixture.requests.first { $0.method == "POST" })
+        XCTAssertEqual(post.jsonBody?["expectedProof"] as? String, original.proof); XCTAssertEqual(post.jsonBody?["decision"] as? String, "accept")
+        XCTAssertEqual(Set(post.jsonBody!.keys), ["expectedRevision", "expectedProof", "decision", "note"])
+    }
+    func testSameProofWrongRevisionOrWrongIdentityCannotConfirmAcceptance() async throws {
+        for defect in ["proof", "revision", "id", "phase"] {
+            let fixture = StoreTransport(); defer { fixture.close() }
+            let (_, workspace) = await loaded(fixture); let original = try XCTUnwrap(workspace.workflow(workflowID, teamId: teamID))
+            var response = workflow(phase: "completed", revision: 2)
+            if defect == "proof" { response["proof"] = original.proof }
+            if defect == "revision" { response["revision"] = 1 }
+            if defect == "id" { response["id"] = "wf_00000000-0000-4000-8000-000000000099" }
+            if defect == "phase" { response["phase"] = "awaiting_review" }
+            fixture.respond { _ in ["workflow": response] }
+            let accepted = await workspace.changeWorkflow(original, action: "review", decision: "accept"); XCTAssertFalse(accepted, defect)
+            XCTAssertEqual(workspace.workflow(workflowID, teamId: teamID)?.phase, .awaitingReview, defect)
+            XCTAssertNotNil(workspace.messages[BotWorkspaceStore.workflowKey(workflowID)])
+        }
+    }
+    func testChangesRequestedAreEvaluatorRepairsNotOwnerCompletion() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let (_, workspace) = await loaded(fixture); let original = try XCTUnwrap(workspace.workflow(workflowID, teamId: teamID))
+        fixture.respond { _ in ["workflow": self.workflow(phase: "repairing", revision: 2)] }
+        let changed = await workspace.changeWorkflow(original, action: "review", decision: "changes_requested", note: "Please verify the second case")
+        XCTAssertTrue(changed); XCTAssertEqual(workspace.workflow(workflowID, teamId: teamID)?.phase, .repairing)
+    }
+    func testConflictRefreshesReadOnlyAndNeverReplaysResume() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let (_, workspace) = await loaded(fixture, row: workflow(phase: "interrupted")); let original = try XCTUnwrap(workspace.workflow(workflowID, teamId: teamID))
+        let held = fixture.hold(detailPath + "/resume")
+        let resuming = Task { await workspace.changeWorkflow(original, action: "resume", requestId: "stable_resume", inspected: true) }
+        await fulfillment(of: [held.requested], timeout: 2)
+        fixture.respond { _ in ["workflow": self.workflow(phase: "building", revision: 2)] }
+        held.finish(["error": "Workflow changed"], status: 409)
+        let confirmed = await resuming.value; XCTAssertFalse(confirmed)
+        XCTAssertEqual(fixture.requests.filter { $0.method == "POST" }.count, 1)
+        XCTAssertEqual(fixture.requests.last?.path, detailPath); XCTAssertEqual(fixture.requests.last?.method, "GET")
+        XCTAssertEqual(workspace.workflow(workflowID, teamId: teamID)?.phase, .building)
+        XCTAssertNotNil(workspace.messages[BotWorkspaceStore.workflowKey(workflowID)])
+    }
+    func testLateDetailAndMutationCannotPublishAfterPairingIsForgotten() async throws {
+        for mutation in [false, true] {
+            let fixture = StoreTransport(); defer { fixture.close() }
+            let (store, workspace) = await loaded(fixture)
+            let original = try XCTUnwrap(workspace.workflow(workflowID, teamId: teamID))
+            let held = fixture.hold(detailPath + (mutation ? "/review" : ""))
+            let operation = Task { if mutation { _ = await workspace.changeWorkflow(original, action: "review", decision: "accept") } else { await workspace.refreshWorkflow(self.workflowID, teamId: self.teamID) } }
+            await fulfillment(of: [held.requested], timeout: 2)
+            store.forgetMac(); held.finish(["workflow": workflow(phase: "completed", revision: 2)])
+            await operation.value
+            XCTAssertEqual(workspace.workflow(workflowID, teamId: teamID)?.phase, .awaitingReview)
+            XCTAssertFalse(store.isPaired); XCTAssertNil(workspace.messages[BotWorkspaceStore.workflowKey(workflowID)])
+        }
+    }
+    func testNewerMutationInvalidatesAnOlderListResponse() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let (_, workspace) = await loaded(fixture); let original = try XCTUnwrap(workspace.workflow(workflowID, teamId: teamID))
+        let old = fixture.hold(listPath); let refreshing = Task { await workspace.refreshWorkflows(self.teamID) }
+        await fulfillment(of: [old.requested], timeout: 2); fixture.release(listPath)
+        fixture.respond { request in
+            if request.url!.path == self.listPath { return self.list([self.workflow(phase: "completed", revision: 2)]) }
+            return ["workflow": self.workflow(phase: "completed", revision: 2)]
+        }
+        let accepted = await workspace.changeWorkflow(original, action: "review", decision: "accept"); XCTAssertTrue(accepted)
+        old.finish(list([workflow()])); await refreshing.value
+        XCTAssertEqual(workspace.workflow(workflowID, teamId: teamID)?.phase, .completed)
+        XCTAssertEqual(workspace.workflow(workflowID, teamId: teamID)?.revision, 2)
+    }
+}
+
+extension TeamWorkflowTests {
+    func testWorkflowRequiresCompleteIndependentFinalEvaluationAndBoundedEvidence() throws {
+        var valid = workflow(); valid["round"] = 100_000
+        XCTAssertTrue(try decode(valid).hasValidProof, "Rounds are observed progress, never a product stop limit.")
+        for defect in ["stageRole", "lastStage", "failedCheck", "missingCheck", "evidenceCount", "evidenceDetail", "plan", "timestamp"] {
+            var row = workflow()
+            var steps = try XCTUnwrap(row["steps"] as? [[String: Any]])
+            switch defect {
+            case "stageRole": steps[0]["botId"] = "bot_builder"; row["steps"] = steps
+            case "lastStage": steps[0]["state"] = "running"; row["steps"] = steps
+            case "failedCheck": row["checks"] = [["criterionId": criterionID, "passed": false, "detail": "Unfinished"]]
+            case "missingCheck": row["checks"] = []
+            case "evidenceCount": steps[0]["evidence"] = Array(repeating: ["kind": "note", "label": "Note", "detail": "Details"], count: 5); row["steps"] = steps
+            case "evidenceDetail": steps[0]["evidence"] = [["kind": "note", "label": "Note", "detail": String(repeating: "x", count: 1_001)]]; row["steps"] = steps
+            case "plan": row["plan"] = ["summary": "Plan", "items": []]
+            default: row["updatedAt"] = 12345
+            }
+            XCTAssertFalse(try decode(row).hasValidProof, defect)
+        }
+        let stopped = try decode(workflow(phase: "stopped")); XCTAssertTrue(stopped.canContinue); XCTAssertFalse(stopped.canStop)
+        let stopping = try decode(workflow(phase: "stopping")); XCTAssertFalse(stopping.canContinue); XCTAssertTrue(stopping.canStop)
+    }
+    func testDisabledTeamCanAcceptOrStopButCannotStartRepairOrResume() async throws {
+        for action in ["accept", "stop", "changes_requested", "resume"] {
+            let fixture = StoreTransport(); defer { fixture.close() }
+            let phase = action == "stop" ? "building" : action == "resume" ? "stopped" : "awaiting_review"
+            let (_, workspace) = await loaded(fixture, row: workflow(phase: phase))
+            let original = try XCTUnwrap(workspace.workflow(workflowID, teamId: teamID))
+            var disabled = teamSnapshot(); var rows = try XCTUnwrap(disabled["teams"] as? [[String: Any]]); rows[0]["enabled"] = false; disabled["teams"] = rows
+            fixture.respond { request in
+                if request.url!.path == "/v1/bots/teams" { return disabled }
+                return ["workflow": self.workflow(phase: action == "stop" ? "stopping" : "completed", revision: 2)]
+            }
+            await workspace.refreshTeams()
+            let changed = await workspace.changeWorkflow(original, action: action == "stop" ? "stop" : action == "resume" ? "resume" : "review", requestId: "explicit_resume", decision: action, inspected: true)
+            XCTAssertEqual(changed, ["accept", "stop"].contains(action), action)
+            XCTAssertEqual(fixture.requests.filter { $0.method == "POST" }.count, ["accept", "stop"].contains(action) ? 1 : 0, action)
+        }
+    }
+    func testCancellationDoesNotPublishLateWorkflowDetails() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let (_, workspace) = await loaded(fixture)
+        let held = fixture.hold(detailPath)
+        let reading = Task { await workspace.refreshWorkflow(self.workflowID, teamId: self.teamID) }
+        await fulfillment(of: [held.requested], timeout: 2)
+        reading.cancel(); held.finish(["workflow": workflow(phase: "completed", revision: 2)])
+        await reading.value
+        XCTAssertEqual(workspace.workflow(workflowID, teamId: teamID)?.phase, .awaitingReview)
+        XCTAssertNil(workspace.messages[BotWorkspaceStore.workflowKey(workflowID)])
+    }
+}
+
+extension TeamWorkflowTests {
+    func testSameCheckpointTracksLiveContinuationAvailabilityWithoutBecomingStale() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        let (_, workspace) = await loaded(fixture, row: workflow(phase: "interrupted"))
+        let original = try XCTUnwrap(workspace.workflow(workflowID, teamId: teamID))
+        var projected = workflow(phase: "interrupted"); projected["canResume"] = false; projected["blockedReason"] = "The saved computer is temporarily unavailable."
+        fixture.respond { request in request.url!.path == self.listPath ? self.list([projected]) : ["workflow": projected] }
+        await workspace.refreshWorkflows(teamID)
+        let unavailable = try XCTUnwrap(workspace.workflow(workflowID, teamId: teamID))
+        XCTAssertFalse(unavailable.canContinue); XCTAssertEqual(unavailable.proof, original.proof); XCTAssertEqual(unavailable.revision, original.revision)
+        XCTAssertNil(workspace.messages[BotWorkspaceStore.workflowsKey(teamID)])
+        projected = workflow(phase: "interrupted")
+        await workspace.refreshWorkflow(workflowID, teamId: teamID)
+        XCTAssertTrue(workspace.workflow(workflowID, teamId: teamID)?.canContinue == true)
+        XCTAssertNil(workspace.messages[BotWorkspaceStore.workflowKey(workflowID)])
+        XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+    }
+    func testSameRevisionProofOrCheckpointChangesStayReadOnlyAndRejected() async throws {
+        for defect in ["proof", "goal", "summary", "plan", "steps"] {
+            let fixture = StoreTransport(); defer { fixture.close() }
+            let (_, workspace) = await loaded(fixture, row: workflow(phase: "interrupted"))
+            let original = try XCTUnwrap(workspace.workflow(workflowID, teamId: teamID))
+            var changed = workflow(phase: "interrupted")
+            switch defect {
+            case "proof": changed["proof"] = String(repeating: "c", count: 64)
+            case "goal": changed["goal"] = "Another task"
+            case "summary": changed["summary"] = "A different result"
+            case "plan": changed["plan"] = ["summary": "Changed plan", "items": ["Changed step"]]
+            default: changed["steps"] = []; changed["totalSteps"] = 0
+            }
+            fixture.respond { request in request.url!.path == self.listPath ? self.list([changed]) : ["workflow": changed] }
+            await workspace.refreshWorkflow(workflowID, teamId: teamID)
+            XCTAssertEqual(workspace.workflow(workflowID, teamId: teamID), original, defect)
+            XCTAssertNotNil(workspace.messages[BotWorkspaceStore.workflowKey(workflowID)], defect)
+            XCTAssertTrue(fixture.requests.allSatisfy { $0.method == "GET" })
+        }
+    }
+}
+
+extension TeamWorkflowTests {
+    func testRoleReadinessExplainsPausedBotsAndAllowsPlanOnlyForPlanner() throws {
+        func bot(_ id: String, policy: String = "manual", paused: Bool = false) throws -> CompanionBot {
+            let row: [String: Any] = ["id": id, "name": id, "provider": "codex", "model": "Fixture model", "capabilities": "code", "policy": policy, "execution": ["kind": "local"], "paused": paused]
+            return try JSONDecoder().decode(CompanionBot.self, from: JSONSerialization.data(withJSONObject: row))
+        }
+        var value = draft(); value.plannerId = "bot_planner"
+        let ready = try [bot("bot_planner", policy: "plan"), bot("bot_builder"), bot("bot_evaluator")]
+        XCTAssertTrue(value.roleReadinessNotices(in: ready).isEmpty)
+        var unavailable = ready; unavailable[1].policy = "plan"; unavailable[2].paused = true
+        let before = unavailable
+        let notices = value.roleReadinessNotices(in: unavailable)
+        XCTAssertEqual(notices.count, 2)
+        XCTAssertTrue(notices.contains { $0.hasPrefix("Builder:") && $0.contains("Plan mode") })
+        XCTAssertTrue(notices.contains { $0.hasPrefix("Evaluator:") && $0.contains("paused") })
+        XCTAssertEqual(unavailable, before, "Explaining a saved policy never changes it or grants tool access.")
+        XCTAssertTrue(value.roleReadinessNotices(in: []).allSatisfy { $0.contains("unavailable") })
+    }
+}

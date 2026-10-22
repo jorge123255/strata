@@ -44,7 +44,7 @@ test('a bot in multiple teams reads only the active team briefing in a shared ch
 test('channel catalog and cursor reads start no models and create no channel journal', async t => {
   const f = fixture(t, async () => { throw new Error('Read must not run'); });
   assert.equal(f.bots.team.list().channelsSupported, true);
-  assert.deepEqual(f.bots.team.channel(f.team.id), { teamId: f.team.id, supported: true, messages: [], activeRuns: [], nextSequence: 0, hasMore: false, hasMoreBefore: false, teamWorkReviewSupported: true });
+  assert.deepEqual(f.bots.team.channel(f.team.id), { teamId: f.team.id, supported: true, messages: [], activeRuns: [], nextSequence: 0, hasMore: false, hasMoreBefore: false, teamWorkReviewSupported: true, teamWorkflowsSupported: true });
   assert.equal(existsSync(join(f.directory, 'bot-team-channels.json')), false);
   assert.equal(f.seen.length, 0);
 });

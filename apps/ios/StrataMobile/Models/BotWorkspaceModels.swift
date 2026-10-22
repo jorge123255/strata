@@ -231,7 +231,142 @@ struct BotTeamsSnapshot: Decodable, Equatable {
     var teamContinuousSupported: Bool?
     var teamWorkReviewSupported: Bool?
     var teamCoordinatorWorkToolsSupported: Bool?
+    var teamWorkflowsSupported: Bool?
     var teamComputers: [BotTeamComputer]?
+}
+
+/// Saved workflow state is authoritative. Evaluator checks are separate from
+/// the owner's explicit acceptance, and a finished bot turn is never completion.
+struct BotTeamWorkflow: Decodable, Identifiable, Equatable {
+    enum Phase: String, Decodable {
+        case planning, building, evaluating, repairing, awaitingReview = "awaiting_review"
+        case completed, blocked, interrupted, stopping, stopped
+        var label: String {
+            switch self {
+            case .awaitingReview: "Ready for your review"
+            case .completed: "Accepted by you"
+            case .repairing: "Addressing evaluator feedback"
+            case .blocked: "Needs attention"
+            default: rawValue.capitalized
+            }
+        }
+        var isActive: Bool { [.planning, .building, .evaluating, .repairing, .stopping].contains(self) }
+    }
+    struct Criterion: Decodable, Identifiable, Equatable { var id: String; var text: String }
+    struct Check: Decodable, Equatable { var criterionId: String; var passed: Bool; var detail: String }
+    struct Plan: Decodable, Equatable { var summary: String; var items: [String] }
+    struct Step: Decodable, Identifiable, Equatable {
+        enum State: String, Decodable { case pending, running, completed, blocked, interrupted, stopped }
+        var id: String; var phase: Phase; var botId: String; var state: State
+        var chatId: String?; var runId: String?; var summary: String?; var evidence: [BotTeamEvidence]?
+        var startedAt: BotWorkspaceTimestamp?; var completedAt: BotWorkspaceTimestamp?
+    }
+    var id: String; var teamId: String; var goal: String
+    var plannerId: String; var builderId: String; var evaluatorId: String
+    var criteria: [Criterion]; var phase: Phase; var revision: Int; var proof: String; var round: Int
+    var summary: String?; var createdAt: BotWorkspaceTimestamp; var updatedAt: BotWorkspaceTimestamp
+    var plan: Plan?; var steps: [Step]; var checks: [Check]; var canResume: Bool; var blockedReason: String?
+    var totalSteps: Int; var stepsTruncated: Bool
+    var canStop: Bool { hasValidProof && phase.isActive }
+    var canReview: Bool { hasValidProof && phase == .awaitingReview }
+    var canContinue: Bool { hasValidProof && canResume && [.blocked, .interrupted, .stopped].contains(phase) }
+    var hasValidProof: Bool {
+        guard Self.validID(id, prefix: "wf_"), CompanionClient.isSafeIdentifier(teamId),
+              [plannerId, builderId, evaluatorId].allSatisfy(CompanionClient.isSafeIdentifier), builderId != evaluatorId,
+              (1...9_007_199_254_740_991).contains(revision), (0...9_007_199_254_740_991).contains(round),
+              proof.utf8.count == 64, proof.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
+              Self.validText(goal, maximum: 16_000, empty: false), Self.validTimestamp(createdAt), Self.validTimestamp(updatedAt),
+              summary.map({ Self.validText($0, maximum: 8_000) }) ?? true,
+              blockedReason.map({ Self.validText($0, maximum: 2_500) }) ?? true,
+              (1...16).contains(criteria.count), Set(criteria.map(\.id)).count == criteria.count,
+              criteria.allSatisfy({ Self.validID($0.id, prefix: "wc_") && Self.validText($0.text, maximum: 1_000, empty: false) }),
+              steps.count <= 12, (steps.count...9_007_199_254_740_991).contains(totalSteps), stepsTruncated == (totalSteps > steps.count),
+              Set(steps.map(\.id)).count == steps.count, steps.allSatisfy(validStep),
+              checks.count <= 16, Set(checks.map(\.criterionId)).count == checks.count,
+              checks.allSatisfy({ check in criteria.contains { $0.id == check.criterionId } && Self.validText(check.detail, maximum: 2_000, empty: false) }),
+              !canResume || [.blocked, .interrupted, .stopped].contains(phase) else { return false }
+        if let plan {
+            guard Self.validText(plan.summary, maximum: 2_000, empty: false), (1...16).contains(plan.items.count),
+                  plan.items.allSatisfy({ Self.validText($0, maximum: 1_000, empty: false) }) else { return false }
+        }
+        if [.awaitingReview, .completed].contains(phase) {
+            return checks.count == criteria.count && checks.allSatisfy(\.passed) && steps.last?.phase == .evaluating && steps.last?.state == .completed
+        }
+        return true
+    }
+    private func validStep(_ step: Step) -> Bool {
+        let expectedBot = step.phase == .planning ? plannerId : step.phase == .evaluating ? evaluatorId : builderId
+        guard Self.validID(step.id, prefix: "ws_"), [.planning, .building, .evaluating, .repairing].contains(step.phase), step.botId == expectedBot,
+              step.chatId.map(CompanionClient.isSafeIdentifier) ?? true, step.runId.map(CompanionClient.isSafeIdentifier) ?? true,
+              step.summary.map({ Self.validText($0, maximum: 1_000) }) ?? true,
+              step.startedAt.map(Self.validTimestamp) ?? true, step.completedAt.map(Self.validTimestamp) ?? true,
+              (step.evidence?.count ?? 0) <= 4 else { return false }
+        return (step.evidence ?? []).allSatisfy { row in
+            guard ["file", "test", "link", "note"].contains(row.kind), Self.validText(row.label, maximum: 160, empty: false), Self.validText(row.detail, maximum: 1_000, empty: false) else { return false }
+            if row.kind != "link" { return true }
+            guard let url = URL(string: row.detail), ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.user == nil, url.password == nil, url.host != nil else { return false }
+            return true
+        }
+    }
+    static func validTimestamp(_ value: BotWorkspaceTimestamp) -> Bool {
+        guard case .iso8601(let text) = value, text.range(of: "^\\d{4}-\\d{2}-\\d{2}T[\\d:.]+Z$", options: .regularExpression) != nil else { return false }
+        return value.date != nil
+    }
+    static func validRequestID(_ value: String) -> Bool { value.range(of: "^[A-Za-z0-9_.:-]{1,160}$", options: .regularExpression) != nil }
+    func matches(_ other: Self) -> Bool { id == other.id && teamId == other.teamId && revision == other.revision && proof == other.proof && self == other && hasValidProof }
+    /// Availability is a fresh read of saved profiles/computers, not a new
+    /// durable checkpoint. Every other field must retain the exact proof.
+    func hasSameCheckpoint(as other: Self) -> Bool {
+        var left = self, right = other
+        left.canResume = false; right.canResume = false
+        left.blockedReason = nil; right.blockedReason = nil
+        return left == right
+    }
+    static func validID(_ value: String, prefix: String) -> Bool {
+        value.hasPrefix(prefix) && UUID(uuidString: String(value.dropFirst(prefix.count))) != nil && value.count == prefix.count + 36
+    }
+    static func validText(_ value: String, maximum: Int, empty: Bool = true) -> Bool {
+        value.utf16.count <= maximum && !value.contains("\0") && (empty || !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+}
+
+struct BotTeamWorkflowsSnapshot: Decodable, Equatable {
+    var teamWorkflowsSupported: Bool
+    var available: Bool
+    var workflows: [BotTeamWorkflow]
+    var hasMore: Bool
+    var error: String?
+    var isAvailable: Bool { teamWorkflowsSupported && available && error == nil }
+}
+
+struct BotTeamWorkflowDraft: Encodable, Equatable {
+    var requestId: String
+    var goal: String
+    var plannerId: String
+    var builderId: String
+    var evaluatorId: String
+    var criteria: [String]
+    /// Read-only, local guidance. The host still revalidates saved bot policies
+    /// and computers when creating or continuing actual work.
+    func roleReadinessNotices(in bots: [CompanionBot]) -> [String] {
+        [("Planner", plannerId), ("Builder", builderId), ("Evaluator", evaluatorId)].compactMap { role, id in
+            guard !id.isEmpty else { return nil }
+            guard let bot = bots.first(where: { $0.id == id }) else { return "\(role): this saved bot is unavailable. Refresh saved bots before starting." }
+            if bot.paused == true { return "\(role): \(bot.name) is paused. Resume it in bot settings or choose another teammate." }
+            if role != "Planner", bot.policy == "plan" { return "\(role): \(bot.name) uses Plan mode. Choose another bot for this role, or review its policy in bot settings." }
+            return nil
+        }
+    }
+    func isValid(memberIds: [String]) -> Bool {
+        BotTeamWorkflow.validRequestID(requestId) &&
+        BotTeamWorkflow.validText(goal, maximum: 16_000, empty: false) &&
+        [plannerId, builderId, evaluatorId].allSatisfy { memberIds.contains($0) && CompanionClient.isSafeIdentifier($0) } &&
+        builderId != evaluatorId && (1...16).contains(criteria.count) &&
+        criteria.allSatisfy { BotTeamWorkflow.validText($0, maximum: 1_000, empty: false) }
+    }
+    static func criteria(from lines: String) -> [String] {
+        lines.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+    }
 }
 
 /// Immutable, attributed entries in the shared room. Detailed Thinking and tool

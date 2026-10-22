@@ -34,7 +34,12 @@ Activity has an expandable timing record for each observed conversation: prepara
 
 Independent team work keeps the existing fair scheduler and unrestricted continuous-team settings. A shared desktop is still exclusive while it is used. A chat-only exchange does not reserve that desktop. This update adds no parallel-team slot cap.
 
+## Planned work and saved stage checkpoints
+
+Teams can opt into [Plan and verify](BOTS-WORKFLOWS.md): a planner, builder and separate reviewer work against explicit success criteria. Completed stages are saved before the next stage starts. A restart leaves unfinished work for inspection and explicit continuation; it does not replay commands. Reviewer findings can drive repair rounds, while final owner acceptance remains separate from a model's reported pass.
+
 ## References
 
 - [Anthropic: effective harnesses for long-running agents](https://www.anthropic.com/research/effective-harnesses-for-long-running-agents): persistent progress and explicit completion checks.
+- [Anthropic: harness design for long-running applications](https://www.anthropic.com/research/harness-design-long-running-apps): planning, independent evaluation and testable success criteria.
 - [LangGraph persistence](https://docs.langchain.com/oss/javascript/langgraph/persistence): durable checkpoints and shared stores. Strata does not add this framework as a dependency in this update.

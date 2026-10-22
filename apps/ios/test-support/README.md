@@ -79,3 +79,16 @@ acknowledges only the exact local receipt, keeps readable receipts visible when
 the journal is unavailable, and edits and clears reusable-tool requirements.
 Only that acknowledgement and configuration edits may write. No saved tool
 command, provider prompt, SSH connection, CUA guest, retry or task resume runs.
+
+`--test-team-workflows` runs
+`CompanionSmokeTests/testTeamWorkflowRolesEvidenceOwnerReviewAndExplicitContinuation`
+on an explicit disposable iOS simulator. It exercises the actual native workflow
+form and paired TLS boundary: saved planner/builder/evaluator roles, observable
+criteria, first-load errors, stage evidence, evaluator findings separate from
+owner acceptance, exact revision/proof writes, inspected continuation, Stop and
+older-host read-only fallback. Workflow stage records are explicit synthetic UI
+fixtures; no provider, verification command, browser, SSH connection or guest
+computer runs. Backend workflow tests separately validate real stage execution
+and evaluator verification requirements. The only host mutations in this native
+scenario are one workflow creation and explicit owner review, resume and stop.
+Pairing is changed only inside the named disposable simulator.

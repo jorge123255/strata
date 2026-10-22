@@ -199,7 +199,18 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     if (active.has(chatId) || conversations()?.isRunning?.(chatId) || [...active.values()].some(run => run.botId === botId)) throw fault(409, 'This bot is still working. Wait for it to finish.');
     validateSelection({ botId, chatId });
   }
-  const team = createBotTeams({ directory, requireBot, conversations, createConversation: (id, teamContext) => createConversation(id, {}, teamContext), discardConversation: id => { conversations().remove(id); chatProfiles.delete(id); checkpoints.delete(id); save(); }, notify, workAuthority, assertRecoveryAvailable,
+  function workflowAuthority(botId, shared, teamContext) {
+    const current = requireBot(botId), patch = shared ? { execution: shared.execution, computerMode: shared.computerMode, workspace: shared.workspace } : {};
+    const fresh = { id: botId, ...validate(patch, current), teamContext: copy(teamContext) };
+    if (shared) { for (const key of folderKeys) delete fresh[key]; Object.assign(fresh, copy(shared)); }
+    if (skills || mcp || createdTools) fresh.extensionSnapshots = { ...(skills ? { skills: copy(skills.snapshot(fresh)) } : {}), ...(mcp ? { mcp: copy((mcp.recoverySnapshot ?? mcp.snapshot)(fresh)) } : {}), ...(createdTools ? { createdTools: copy(createdTools.recoverySnapshot(fresh)) } : {}) };
+    return { fingerprint: botWorkAuthorityFingerprint(fresh) };
+  }
+  function assertWorkflowReceipts(chatId) {
+    const summary = actionJournal.summary(chatId);
+    if (!summary.available || ['pending', 'uncertain', 'interrupted'].some(state => summary.counts[state] > 0)) throw fault(409, 'Inspect unresolved action receipts and computer cleanup before continuing this workflow. No old action will be replayed.');
+  }
+  const team = createBotTeams({ directory, requireBot, conversations, createConversation: (id, teamContext) => createConversation(id, {}, teamContext), discardConversation: id => { conversations().remove(id); chatProfiles.delete(id); checkpoints.delete(id); save(); }, notify, workAuthority, assertRecoveryAvailable, workflowAuthority, assertWorkflowReceipts,
     usesComputer: (source, target) => { const bot = typeof source === 'string' ? chatProfiles.get(source) : source; return bot?.computerMode === 'cua' && cuaResource(bot) === cuaResource(target); }, teamComputers: teamComputerRows, resolveExecution: resolveTeamExecution, isChatBusy: chatBusy, isBotBusy: id => [...active.values()].some(run => run.botId === id), stopDirect: id => stop(id, { team: false }) });
   const hasOwnedComputer = id => [...ownedComputers, ...uncertainTargets.keys()].some(key => key.startsWith(`cua:${id}:`));
   const markOwned = bot => { ownedComputers.add(cuaResource(bot)); save(); };
@@ -480,6 +491,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     const current = requireBot(session.preferences?.botId);
     const bot = copy(chatProfiles.get(session.id) ?? current);
     validateSelection({ botId: bot.id, chatId: session.id });
+    team.assertWorkflowSelection(bot.id, session.id);
     const roomMode = team.modeForChat(session.id, bot);
     // This internal frozen flag comes only from the team scheduler, never a profile/client patch.
     const conversationOnly = ['routing', 'conversation', 'bid'].includes(roomMode);
@@ -525,7 +537,13 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     const turnId = `turn_${randomUUID()}`;
     const assertLive = () => { combined.throwIfAborted(); if (active.get(session.id) !== owner || !team.isLive(turnId)) throw fault(409, 'This bot turn has ended.'); };
     const requestPermission = request => conversationOnly ? Promise.resolve(false) : requestPolicyPermission(request);
-    const context = { bot, chatId: session.id, turnId, signal: combined, requestPermission, requestTeamPermission: requestPolicyPermission, roomMode, assertLive, onFrame: emit };
+    let verifiedActions = 0;
+    const recordVerification = (name, args, result) => {
+      const safeMCP = name === 'call_tool' && bot.extensionSnapshots?.mcp?.assignments?.connections?.some(c => c.readOnlyToolIds?.includes(args?.toolId));
+      if (result && result.isError !== true && result.denied !== true && (['read_file', 'host_read_file', 'browser_snapshot', 'computer_screenshot', 'run_command'].includes(name) || safeMCP)) verifiedActions++;
+      return result;
+    };
+    const context = { hasVerificationEvidence: () => verifiedActions > 0, bot, chatId: session.id, turnId, signal: combined, requestPermission, requestTeamPermission: requestPolicyPermission, roomMode, assertLive, onFrame: emit };
     const extensions = (conversationOnly ? [team] : [team, skills, mcp, createdTools, hostFolders]).filter(Boolean);
     const localTools = conversationOnly ? [] : tools.definitions(bot);
     let hostTools;
@@ -545,7 +563,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
       return actionJournal.execute({ ...actionScope, name, args, toolCallId: id }, async () => {
         emit({ type: 'agent-tool', tool: { id, name, args, state: 'running', preview: name, effect: 'Uses a Strata bot integration.', scope: 'connected' } });
         try {
-          const result = await extension.execute(name, args, { ...context, toolCallId: id }); assertLive();
+          const result = await extension.execute(name, args, { ...context, toolCallId: id }); assertLive(); recordVerification(name, args, result);
           const value = result?.content ? result : { content: [{ type: 'text', text: JSON.stringify(result) }] };
           emit({ type: 'agent-tool', tool: { id, name, args, state: value.isError ? 'error' : 'done', result: value.content.filter(part => part.type === 'text').map(part => part.text).join('\n') } });
           return value;
@@ -562,7 +580,11 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
       emit({ type: 'start', agent: true, model: bot.model || bot.provider });
       harnessObserver.phase(session.id, 'model');
       await runtime.run({ bot: runtimeBot, sessionId: session.id, message, history: session.messages, signal: combined, onFrame: emit, requestPermission, hostTools, executeHostTool,
-        harnessActionScope: { turnId: actionTurnId, authority: actionAuthority }, onHarnessAction: value => actionJournal.observeRemote(value, session.id),
+        harnessActionScope: { turnId: actionTurnId, authority: actionAuthority }, onHarnessAction: value => {
+          actionJournal.observeRemote(value, session.id);
+          const scopeProof = createHash('sha256').update(JSON.stringify([session.id, actionTurnId, actionAuthority])).digest('hex');
+          if (value.executionScopeProof === scopeProof && value.state === 'succeeded' && ['read_file', 'host_read_file', 'browser_snapshot', 'computer_screenshot', 'run_command'].includes(value.toolName)) verifiedActions++;
+        },
         modelRequest: (payload, botOrSignal, signal) => {
           const transportSignal = signal ?? (botOrSignal && typeof botOrSignal.addEventListener === 'function' && typeof botOrSignal.aborted === 'boolean' ? botOrSignal : null);
           if (active.get(session.id) !== owner || combined.aborted || bot.provider !== 'configured') throw fault(409, 'This bot turn has ended or has no configured model.');
@@ -576,7 +598,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
           if (!localTools.some(tool => tool.name === name)) throw fault(403, 'This computer tool was not assigned to this bot turn.');
           let started = false, denied = false;
           const toolFrame = frame => { if (frame.type === 'agent-tool') { if (frame.tool?.state === 'running') started = true; if (frame.tool?.state === 'denied') denied = true; } emit(frame); };
-          return actionJournal.execute({ ...actionScope, name, args, toolCallId, noEffect: () => denied && !started }, () => tools.execute({ bot, chatId: session.id, name, args, toolCallId, signal: combined, onFrame: toolFrame, requestPermission, ...(createdTools ? { authorizeCreatedTool: value => { assertLive(); return createdTools.authorize(value, context); } } : {}) }));
+          return actionJournal.execute({ ...actionScope, name, args, toolCallId, noEffect: () => denied && !started }, () => tools.execute({ bot, chatId: session.id, name, args, toolCallId, signal: combined, onFrame: toolFrame, requestPermission, ...(createdTools ? { authorizeCreatedTool: value => { assertLive(); return createdTools.authorize(value, context); } } : {}) })).then(result => recordVerification(name, args, result));
         },
         checkpoint: !conversationOnly && oldCheckpoint?.fingerprint === fingerprint ? oldCheckpoint.value : null,
         onCheckpoint: value => { if (!conversationOnly && active.get(session.id) === owner) { checkpoints.set(session.id, { fingerprint, value }); save(); } } });
@@ -671,6 +693,17 @@ export function createBotRoutes({ bots, port }) {
         if (req.method === 'GET') return json(res, 200, bots.team.list());
         if (req.method === 'POST') return json(res, 201, bots.team.create(await readBody(req)));
         return error(res, 405, 'This team action is unavailable.');
+      }
+      const workflowRoute = /^\/api\/bots\/teams\/(team_[a-f0-9-]+)\/workflows(?:\/(wf_[a-f0-9-]+)(?:\/(resume|stop|review))?)?$/.exec(url.pathname);
+      if (workflowRoute) {
+        const [, teamId, workflowId, action] = workflowRoute;
+        if ([...url.searchParams].length) throw fault(400, 'Workflow actions take no URL settings.');
+        if (req.method === 'GET' && !action) {
+          if (req.headers['transfer-encoding'] || Number(req.headers['content-length'] ?? 0) > 0) throw fault(400, 'Workflow reads take no request body.');
+          return json(res, 200, workflowId ? bots.team.workflows.detail(teamId, workflowId) : bots.team.workflows.list(teamId));
+        }
+        if (req.method === 'POST' && (!workflowId || action)) return json(res, workflowId ? 200 : 201, await (workflowId ? bots.team.workflows[action](teamId, workflowId, await readBody(req, 256 * 1024)) : bots.team.workflows.create(teamId, await readBody(req, 256 * 1024))));
+        return error(res, 405, 'This workflow action is unavailable.');
       }
       const jobRoute = /^\/api\/bots\/teams\/(team_[a-f0-9-]+)\/jobs\/(tj_[a-f0-9-]+)\/(review|recovery|resume)$/.exec(url.pathname);
       if (jobRoute) {

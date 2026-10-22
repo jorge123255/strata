@@ -12,6 +12,8 @@ final class BotWorkspaceStore: ObservableObject {
     @Published private(set) var activity: [BotWorkspaceActivity] = []
     @Published private(set) var activityLoaded = false
     @Published private(set) var recoveryPlans: [String: BotTeamRecoveryPlan] = [:]
+    @Published private(set) var workflows: [String: BotTeamWorkflowsSnapshot] = [:]
+    @Published private(set) var workflowDetails: [String: BotTeamWorkflow] = [:]
     @Published private(set) var activityWorkReviewSupported = false
     @Published private(set) var supervision: BotSupervisionSnapshot?
     @Published private(set) var harnessActions: BotHarnessActionsSnapshot?
@@ -37,6 +39,146 @@ final class BotWorkspaceStore: ObservableObject {
     var unrestrictedTeams: Bool { teams?.teamUnrestrictedSupported == true }
     var continuousTeams: Bool { teams?.teamContinuousSupported == true }
     var workReviewSupported: Bool { teams?.teamWorkReviewSupported == true || activityWorkReviewSupported }
+    var workflowsSupported: Bool { teams?.teamWorkflowsSupported == true }
+
+    static func workflowsKey(_ teamId: String) -> String { "workflows-" + teamId }
+    static func workflowKey(_ id: String) -> String { "workflow-" + id }
+    func workflow(_ id: String, teamId: String) -> BotTeamWorkflow? {
+        let detail = workflowDetails[id].flatMap { $0.teamId == teamId ? $0 : nil }
+        let listed = workflows[teamId]?.workflows.first { $0.id == id }
+        if let detail, let listed { return detail.revision >= listed.revision ? detail : listed }
+        return detail ?? listed
+    }
+    private func workflowTeam(_ id: String) -> BotTeam? {
+        guard isCurrent(), workflowsSupported, teams?.reason == nil, CompanionClient.isSafeIdentifier(id) else { return nil }
+        return teams?.teams.first { $0.id == id }
+    }
+    func refreshWorkflows(_ teamId: String) async {
+        guard workflowTeam(teamId) != nil, mutation != Self.workflowsKey(teamId), mutation?.hasPrefix("workflow-") != true else { return }
+        let key = Self.workflowsKey(teamId)
+        await load(key, path: "/v1/bots/teams/\(teamId)/workflows") { (value: BotTeamWorkflowsSnapshot) in
+            guard self.workflowTeam(teamId) != nil else { return }
+            guard value.workflows.count <= 20, Set(value.workflows.map(\.id)).count == value.workflows.count,
+                  value.workflows.allSatisfy({ $0.teamId == teamId && $0.hasValidProof }) else {
+                self.setMessage(key, "Strata returned inconsistent workflow state. Refresh before making changes."); return
+            }
+            for row in value.workflows {
+                if let old = self.workflow(row.id, teamId: teamId), row.revision < old.revision { continue }
+                if let old = self.workflow(row.id, teamId: teamId), row.revision == old.revision, !row.hasSameCheckpoint(as: old) {
+                    self.setMessage(key, "A workflow changed without a new revision. Refresh its details before continuing."); return
+                }
+                self.workflowDetails[row.id] = row
+            }
+            if self.workflows[teamId] != value { self.workflows[teamId] = value }
+            self.setMessage(key, value.error ?? (value.isAvailable ? nil : "Update Strata on your Mac to start or change saved workflows."))
+        }
+    }
+    private struct WorkflowResponse: Decodable { var workflow: BotTeamWorkflow }
+    func refreshWorkflow(_ id: String, teamId: String) async {
+        guard let client, workflowTeam(teamId) != nil, BotTeamWorkflow.validID(id, prefix: "wf_"), mutation != Self.workflowKey(id) else { return }
+        let key = Self.workflowKey(id), request = UUID()
+        requests[key] = request; setLoading(key, true)
+        defer { if requests[key] == request { requests[key] = nil; setLoading(key, false) } }
+        do {
+            let value: WorkflowResponse = try await client.perform("/v1/bots/teams/\(teamId)/workflows/\(id)")
+            guard isCurrent(), requests[key] == request, !Task.isCancelled, workflowTeam(teamId) != nil else { return }
+            try applyWorkflow(value.workflow, id: id, teamId: teamId)
+            setMessage(key, nil)
+        } catch is CancellationError { }
+        catch { if isCurrent(), requests[key] == request, !Task.isCancelled { setMessage(key, error.localizedDescription) } }
+    }
+    private func applyWorkflow(_ value: BotTeamWorkflow, id: String, teamId: String) throws {
+        guard value.hasValidProof, value.id == id, value.teamId == teamId else { throw CompanionError.server("The Mac returned a different or unreadable workflow. Refresh before continuing.") }
+        if let old = workflow(id, teamId: teamId) {
+            guard value.revision >= old.revision else { return }
+            guard value.revision != old.revision || value.hasSameCheckpoint(as: old) else { throw CompanionError.server("The workflow changed without a new revision. Refresh before continuing.") }
+        }
+        if workflowDetails[id] != value { workflowDetails[id] = value }
+        if let index = workflows[teamId]?.workflows.firstIndex(where: { $0.id == id }), workflows[teamId]?.workflows[index] != value {
+            workflows[teamId]?.workflows[index] = value
+        }
+    }
+    private func workflowMutation<Body: Encodable>(_ key: String, teamId: String, path: String, body: Body) async -> BotTeamWorkflow? {
+        guard let client, isCurrent(), !Task.isCancelled, mutation == nil, workflowTeam(teamId) != nil,
+              workflows[teamId]?.isAvailable == true, messages[Self.workflowsKey(teamId)] == nil else { return nil }
+        requests[Self.workflowsKey(teamId)] = nil; setLoading(Self.workflowsKey(teamId), false)
+        let request = UUID(); mutation = key; requests[key] = request; setMessage(key, nil)
+        defer { if requests[key] == request { requests[key] = nil }; if mutation == key { mutation = nil } }
+        do {
+            let value: WorkflowResponse = try await client.perform(path, method: "POST", jsonBody: body)
+            guard isCurrent(), requests[key] == request, !Task.isCancelled, workflowTeam(teamId) != nil,
+                  workflows[teamId]?.isAvailable == true else { return nil }
+            return value.workflow
+        } catch is CancellationError { return nil }
+        catch {
+            guard isCurrent(), requests[key] == request, !Task.isCancelled else { return nil }
+            setMessage(key, error.localizedDescription)
+            return nil
+        }
+    }
+    @discardableResult func createWorkflow(teamId: String, draft: BotTeamWorkflowDraft) async -> BotTeamWorkflow? {
+        let key = Self.workflowsKey(teamId)
+        guard let team = workflowTeam(teamId), team.enabled, draft.isValid(memberIds: team.memberIds),
+              currentBotIds().map({ Set([draft.plannerId, draft.builderId, draft.evaluatorId]).isSubset(of: $0) }) != false else { return nil }
+        let value = await workflowMutation(key, teamId: teamId, path: "/v1/bots/teams/\(teamId)/workflows", body: draft)
+        guard isCurrent(), !Task.isCancelled else { return nil }
+        guard let value else { return nil }
+        guard value.hasValidProof, value.teamId == teamId, value.goal == draft.goal, value.plannerId == draft.plannerId,
+              value.builderId == draft.builderId, value.evaluatorId == draft.evaluatorId, value.criteria.map(\.text) == draft.criteria else {
+            setMessage(key, "Strata did not confirm this exact workflow. Refresh before making another request."); return nil
+        }
+        do { try applyWorkflow(value, id: value.id, teamId: teamId) }
+        catch { setMessage(key, error.localizedDescription); return nil }
+        await refreshWorkflows(teamId)
+        guard isCurrent(), !Task.isCancelled else { return nil }
+        return workflow(value.id, teamId: teamId)
+    }
+    private func currentWorkflow(_ value: BotTeamWorkflow) -> Bool {
+        workflowTeam(value.teamId) != nil && workflows[value.teamId]?.isAvailable == true &&
+        messages[Self.workflowsKey(value.teamId)] == nil && messages[Self.workflowKey(value.id)] == nil &&
+        workflow(value.id, teamId: value.teamId).map(value.matches) == true
+    }
+    @discardableResult func changeWorkflow(_ value: BotTeamWorkflow, action: String, requestId: String? = nil, decision: String? = nil, note: String = "", inspected: Bool = false) async -> Bool {
+        guard currentWorkflow(value), ["resume", "stop", "review"].contains(action) else { return false }
+        struct Proof: Encodable { var expectedRevision: Int; var expectedProof: String; var requestId: String?; var inspected: Bool?; var decision: String?; var note: String? }
+        var proof = Proof(expectedRevision: value.revision, expectedProof: value.proof)
+        switch action {
+        case "resume":
+            guard teams?.teams.first(where: { $0.id == value.teamId })?.enabled == true, value.canContinue, inspected, let requestId, BotTeamWorkflow.validRequestID(requestId) else { return false }
+            proof.requestId = requestId; proof.inspected = true
+        case "stop": guard value.canStop else { return false }
+        default:
+            guard value.canReview, let decision, ["accept", "changes_requested"].contains(decision), BotTeamWorkflow.validText(note, maximum: 2_500) else { return false }
+            if decision == "changes_requested", teams?.teams.first(where: { $0.id == value.teamId })?.enabled != true { return false }
+            proof.decision = decision; proof.note = note.isEmpty ? nil : note
+        }
+        let key = Self.workflowKey(value.id)
+        let response = await workflowMutation(key, teamId: value.teamId, path: "/v1/bots/teams/\(value.teamId)/workflows/\(value.id)/\(action)", body: proof)
+        guard isCurrent(), !Task.isCancelled else { return false }
+        guard let response else {
+            let message = messages[key]
+            // Reconcile only by reading. A conflict or lost reply never replays
+            // resume, stop or owner acceptance automatically.
+            await refreshWorkflow(value.id, teamId: value.teamId)
+            guard isCurrent(), !Task.isCancelled else { return false }
+            setMessage(key, message); return false
+        }
+        guard response.hasValidProof, response.id == value.id, response.teamId == value.teamId,
+              response.goal == value.goal, response.plannerId == value.plannerId, response.builderId == value.builderId,
+              response.evaluatorId == value.evaluatorId, response.criteria == value.criteria, response.createdAt == value.createdAt,
+              response.revision > value.revision, response.proof != value.proof,
+              action != "stop" || [.stopping, .stopped].contains(response.phase),
+              action != "resume" || ![.completed, .stopping, .stopped].contains(response.phase),
+              action != "review" || decision != "accept" || response.phase == .completed,
+              action != "review" || decision != "changes_requested" || response.phase != .completed else {
+            setMessage(key, "Strata did not confirm this exact workflow action. Refresh its saved state before continuing."); return false
+        }
+        do { try applyWorkflow(response, id: value.id, teamId: value.teamId) }
+        catch { setMessage(key, error.localizedDescription); return false }
+        await refreshWorkflow(value.id, teamId: value.teamId)
+        guard isCurrent(), !Task.isCancelled else { return false }
+        return true
+    }
 
     func refreshTeams() async {
         await load("teams", path: "/v1/bots/teams") { (value: BotTeamsSnapshot) in if self.teams != value { self.teams = value }; self.setMessage("teams", value.reason) }
@@ -113,7 +255,7 @@ final class BotWorkspaceStore: ObservableObject {
             guard isCurrent(), requests[key] == request, !Task.isCancelled else { return }
             apply(value)
         } catch is CancellationError { }
-        catch { if isCurrent(), requests[key] == request { setMessage(key, error.localizedDescription) } }
+        catch { if isCurrent(), requests[key] == request, !Task.isCancelled { setMessage(key, error.localizedDescription) } }
     }
     private func change<T: Decodable, Body: Encodable>(_ key: String, path: String, method: String = "POST", body: Body) async -> T? {
         guard let client, isCurrent(), mutation == nil else { return nil }

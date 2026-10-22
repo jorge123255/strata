@@ -66,8 +66,24 @@ export interface BotTaskResult { id: string; summary: string; evidence: BotTaskE
 export interface BotTaskWork { status: 'working'|'ready_for_review'|'verified'|'blocked'|'interrupted'; revision: number; summary?: string; evidence: BotTaskEvidence[]; resultHistory: BotTaskResult[]; reviewHistory: {decision:'accept'|'reject'; note?:string; reviewedAt:string; resultId:string}[]; sourceJobId?: string; recoveryJobId?: string; legacy?: boolean }
 export interface BotTaskRecoveryPlan { id: string; jobId: string; sourceRunId: string; expectedRevision: number; expiresAt: string; canResume: boolean; blockedReason?: string; botId: string; botName: string; provider: string; model: string; computerLabel: string; workspace: string; summary: string; completedReports: {jobId: string; chatId: string; reportId?: string; summary: string}[]; steps: string[] }
 export interface BotTeamActivity { id: string; type: 'run'|'delivery'|'subagent'; teamId: string; runId: string; botId?: string; chatId?: string; parentChatId?: string; title: string; state: string; fromBotId?: string; toBotId?: string; createdAt: string; updatedAt: string; detail?: string; work?: BotTaskWork }
-export interface BotTeamsSnapshot { teams: BotTeam[]; runs: BotTeamRun[]; channelsSupported?: boolean; teamSettingsSupported?: boolean; teamInstructionsSupported?: boolean; teamUnrestrictedSupported?: boolean; teamContinuousSupported?: boolean; teamWorkReviewSupported?: boolean; teamCoordinatorWorkToolsSupported?: boolean; teamComputers?: BotTeamComputer[] }
+export interface BotTeamsSnapshot { teams: BotTeam[]; runs: BotTeamRun[]; channelsSupported?: boolean; teamSettingsSupported?: boolean; teamInstructionsSupported?: boolean; teamUnrestrictedSupported?: boolean; teamContinuousSupported?: boolean; teamWorkReviewSupported?: boolean; teamCoordinatorWorkToolsSupported?: boolean; teamWorkflowsSupported?: boolean; teamComputers?: BotTeamComputer[] }
 export interface BotTeamActivitySnapshot { activity: BotTeamActivity[]; teamWorkReviewSupported?: boolean }
+/** Opt-in, durable team workflows. Model checks remain reports until owner review. */
+export type BotTeamWorkflowPhase = 'planning'|'building'|'evaluating'|'repairing'|'awaiting_review'|'completed'|'blocked'|'interrupted'|'stopping'|'stopped';
+export type BotTeamWorkflowStepPhase = 'planning'|'building'|'evaluating'|'repairing';
+export interface BotTeamWorkflowStep {
+  id: string; phase: BotTeamWorkflowStepPhase; botId: string; chatId?: string; runId?: string;
+  state: 'pending'|'running'|'completed'|'blocked'|'interrupted'|'stopped'; summary?: string;
+  evidence?: BotTaskEvidence[]; startedAt?: string; completedAt?: string;
+}
+export interface BotTeamWorkflow {
+  id: string; teamId: string; goal: string; plannerId: string; builderId: string; evaluatorId: string;
+  criteria: {id: string; text: string}[]; phase: BotTeamWorkflowPhase; revision: number; proof: string;
+  round: number; summary?: string; createdAt: string; updatedAt: string; steps: BotTeamWorkflowStep[];
+  checks: {criterionId: string; passed: boolean; detail: string}[]; canResume: boolean; blockedReason?: string;
+  plan?: {summary: string; items: string[]}; totalSteps: number; stepsTruncated: boolean;
+}
+export interface BotTeamWorkflowsSnapshot { teamWorkflowsSupported: boolean; available: boolean; workflows: BotTeamWorkflow[]; hasMore: boolean; error?: string }
 export function botTaskWorkLabel(status: string) { return ({working:'Working',ready_for_review:'Ready for review',verified:'Verified',blocked:'Blocked',interrupted:'Interrupted'} as Record<string,string>)[status] ?? 'Needs review'; }
 /** Public, durable room messages are separate from each bot's private work chat. */
 export interface BotTeamChannelAuthor { type: 'user'|'bot'|'system'; botId?: string; name: string; avatarConfig?: Bot['avatarConfig'] }

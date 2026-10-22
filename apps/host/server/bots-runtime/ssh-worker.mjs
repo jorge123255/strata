@@ -131,7 +131,7 @@ async function startWorkerTurn(input, { reader, send, directory, leaseMs = 12000
   const bot = { ...input.bot, execution: { kind: 'local' }, providerSettings: input.bot.providerSettings?.baseURL ? { baseURL: input.bot.providerSettings.baseURL } : undefined };
   const emit = frame => write({ type: 'frame', value: frame });
   const mirroredComputerReceipt = value => !(input.hostTools ?? []).some(tool => tool.name === value.toolName);
-  const journal = createBotActionJournal({ directory: join(directory, 'action-receipts'), onRecord: value => { if (mirroredComputerReceipt(value)) write({ type: 'harness-action', value }); } });
+  const journal = createBotActionJournal({ directory: join(directory, 'action-receipts'), onRecord: value => { if (mirroredComputerReceipt(value)) write({ type: 'harness-action', value: { ...value, executionScopeProof: createHash('sha256').update(JSON.stringify([input.sessionId, suppliedScope?.turnId ?? botActionTurnIdentity({ messages: input.history ?? [] }, input.message), suppliedScope?.authority ?? createHash('sha256').update(JSON.stringify(input.bot)).digest('hex')])).digest('hex') } }); } });
   const actionScope = { chatId: input.sessionId, turnId: suppliedScope?.turnId ?? botActionTurnIdentity({ messages: input.history ?? [] }, input.message), authority: suppliedScope?.authority ?? createHash('sha256').update(JSON.stringify(input.bot)).digest('hex'), signal, origin: 'ssh-worker' };
   let failure, result;
   try {

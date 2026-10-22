@@ -1958,7 +1958,7 @@ final class CompanionSmokeTests: XCTestCase {
             let navigation = app.navigationBars.firstMatch
             let top = max(window.minY + 60, navigation.exists ? navigation.frame.maxY + 8 : window.minY + 60)
             var bottom = window.maxY - 24
-            let taskReviewSheet = app.buttons["closeTeamWorkReviewButton"].exists
+            let taskReviewSheet = app.buttons["closeTeamWorkReviewButton"].exists || ["teamWorkflowsView", "teamWorkflowEditor", "teamWorkflowDetailView"].contains { app.descendants(matching: .any).matching(identifier: $0).firstMatch.exists }
             if !taskReviewSheet, app.tabBars.firstMatch.exists { bottom = min(bottom, app.tabBars.firstMatch.frame.minY - 18) }
             if app.keyboards.firstMatch.exists { bottom = min(bottom, app.keyboards.firstMatch.frame.minY - 12) }
             let teamFooter = app.otherElements["teamEditorFooter"]
@@ -2533,5 +2533,96 @@ final class ExistingPairingComputerAcceptanceTests: XCTestCase {
 
     private func screenshot(_ name: String) {
         let image = XCTAttachment(screenshot: app.screenshot()); image.name = name; image.lifetime = .keepAlways; add(image)
+    }
+}
+
+extension CompanionSmokeTests {
+    @MainActor
+    func testTeamWorkflowRolesEvidenceOwnerReviewAndExplicitContinuation() async throws {
+        let control = try pairWorkspaceFixture()
+        let teamID = "team_00000000-0000-4000-8000-000000000034"
+        let workflowID = "wf_00000000-0000-4000-8000-000000000034"
+        _ = try await fixtureControl(control, action: "workflow-failure")
+        try tapWorkspace(app.buttons["team-" + teamID])
+        try openTeamDetails()
+        try tapWorkspace(app.buttons["teamWorkflowsLink"])
+        try require(app.navigationBars["Plan & verify"])
+        let error = app.descendants(matching: .any).matching(identifier: "botWorkspaceMessage-workflows-" + teamID).firstMatch
+        try require(error)
+        XCTAssertFalse(app.buttons["newTeamWorkflowButton"].isEnabled)
+        attachScreenshot("Workflow — first load failure stays visible")
+        let before = try await fixtureControl(control, action: "state")
+        XCTAssertTrue((before["calls"] as? [[String: Any]])?.allSatisfy { $0["method"] as? String == "GET" } == true)
+        _ = try await fixtureControl(control, action: "workflow-clear-failure")
+        app.buttons["refreshTeamWorkflowsButton"].tap()
+        try waitEnabled(app.buttons["newTeamWorkflowButton"])
+        try tapWorkspace(app.buttons["newTeamWorkflowButton"])
+        let goal = app.descendants(matching: .any).matching(identifier: "workflowGoalInput").firstMatch
+        try tapWorkspace(goal); goal.typeText("Build a polished workflow fixture")
+        let criteria = app.descendants(matching: .any).matching(identifier: "workflowCriteriaInput").firstMatch
+        try tapWorkspace(criteria); criteria.typeText("The saved result can be inspected\nThe evaluator is independent")
+        if app.keyboards.firstMatch.exists, app.buttons["Done"].exists { app.buttons["Done"].tap() }
+        try tapWorkspace(app.buttons["workflowEvaluatorPicker"], performTap: false)
+        XCTAssertFalse(app.staticTexts["workflowEvaluatorConflict"].exists)
+        attachScreenshot("Workflow — clear goal, criteria and saved roles")
+        let start = app.buttons["startTeamWorkflowButton"]
+        try tapWorkspace(start, performTap: false); try waitEnabled(start); start.tap()
+        try require(app.navigationBars["Workflow"])
+        try tapWorkspace(app.staticTexts["workflowPhase"], performTap: false)
+        XCTAssertTrue(app.staticTexts["workflowPhase"].label.contains("Ready for your review"))
+        XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "workflowOwnerAccepted").firstMatch.exists)
+        try tapWorkspace(app.descendants(matching: .any).matching(identifier: "workflowIndependentEvaluator").firstMatch, performTap: false)
+        let evaluatorChat = app.buttons.matching(identifier: "workflowStepChat-ws_00000000-0000-4000-8000-000000000003").firstMatch
+        try tapWorkspace(evaluatorChat)
+        try require(app.staticTexts["Earlier Mac history is available on the phone."])
+        let thinking = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "thinkingDisclosure-")).firstMatch
+        try require(thinking); thinking.tap()
+        try require(app.staticTexts["thinkingContent-fixture-assistant"])
+        attachScreenshot("Workflow — exact saved stage conversation and Thinking")
+        tapTab("Bots")
+        if !app.buttons["teamChannelHeaderButton"].waitForExistence(timeout: 2) { try tapWorkspace(app.buttons["team-" + teamID]) }
+        try openTeamDetails(); try tapWorkspace(app.buttons["teamWorkflowsLink"])
+        try tapWorkspace(app.buttons["workflow-" + workflowID])
+        try tapWorkspace(app.buttons["acceptTeamWorkflowButton"], performTap: false)
+        attachScreenshot("Workflow — evaluator findings and owner review remain separate")
+        let created = try await fixtureControl(control, action: "state")
+        let createdCalls = try XCTUnwrap(created["calls"] as? [[String: Any]])
+        XCTAssertEqual(createdCalls.filter { $0["method"] as? String != "GET" }.count, 1)
+        let createdRecord = try XCTUnwrap(created["workflowRecord"] as? [String: Any])
+        XCTAssertNotEqual(createdRecord["builderId"] as? String, createdRecord["evaluatorId"] as? String)
+        XCTAssertEqual(createdRecord["phase"] as? String, "awaiting_review")
+        app.buttons["acceptTeamWorkflowButton"].tap()
+        try require(app.buttons.matching(identifier: "confirmTeamWorkflowActionButton").firstMatch); app.buttons.matching(identifier: "confirmTeamWorkflowActionButton").firstMatch.tap()
+        try tapWorkspace(app.staticTexts["You accepted this result."], performTap: false)
+        attachScreenshot("Workflow — acceptance confirmed by the saved host result")
+        _ = try await fixtureControl(control, action: "workflow-interrupt")
+        app.buttons["refreshTeamWorkflowButton"].tap()
+        let resume = app.buttons["resumeTeamWorkflowButton"]
+        try tapWorkspace(resume, performTap: false); XCTAssertFalse(resume.isEnabled)
+        try tapSwitch(app.switches["workflowInspectedToggle"])
+        try tapWorkspace(resume, performTap: false); XCTAssertTrue(resume.isEnabled)
+        attachScreenshot("Workflow — explicit inspection before continuation")
+        resume.tap()
+        try require(app.buttons.matching(identifier: "confirmTeamWorkflowActionButton").firstMatch); app.buttons.matching(identifier: "confirmTeamWorkflowActionButton").firstMatch.tap()
+        let stop = app.buttons["stopTeamWorkflowButton"]
+        try tapWorkspace(stop, performTap: false); try waitEnabled(stop); stop.tap()
+        try require(app.buttons.matching(identifier: "confirmTeamWorkflowActionButton").firstMatch); app.buttons.matching(identifier: "confirmTeamWorkflowActionButton").firstMatch.tap()
+        for _ in 0..<8 { if app.staticTexts["workflowPhase"].isHittable { break }; app.swipeDown() }
+        try tapWorkspace(app.staticTexts["workflowPhase"], performTap: false)
+        XCTAssertTrue(app.staticTexts["workflowPhase"].label.contains("Stopped"))
+        try tapWorkspace(resume, performTap: false); XCTAssertFalse(resume.isEnabled)
+        let final = try await fixtureControl(control, action: "state")
+        let calls = try XCTUnwrap(final["calls"] as? [[String: Any]])
+        let writes = calls.filter { $0["method"] as? String != "GET" }
+        XCTAssertEqual(writes.count, 4)
+        XCTAssertEqual(writes.compactMap { $0["path"] as? String }, ["/api/bots/teams/\(teamID)/workflows", "/api/bots/teams/\(teamID)/workflows/\(workflowID)/review", "/api/bots/teams/\(teamID)/workflows/\(workflowID)/resume", "/api/bots/teams/\(teamID)/workflows/\(workflowID)/stop"])
+        let resumeBody = try XCTUnwrap(writes[2]["body"] as? [String: Any])
+        XCTAssertEqual(resumeBody["inspected"] as? Bool, true)
+        XCTAssertEqual((resumeBody["expectedProof"] as? String)?.count, 64)
+        XCTAssertFalse(calls.contains { ($0["path"] as? String)?.contains("/computer/") == true || ($0["path"] as? String)?.contains("/connections/") == true || ($0["path"] as? String)?.contains("/models/") == true || ($0["path"] as? String)?.hasSuffix("/messages") == true })
+        _ = try await fixtureControl(control, action: "workflow-unsupported")
+        app.buttons["refreshTeamWorkflowButton"].tap()
+        try tapWorkspace(resume, performTap: false); XCTAssertFalse(resume.isEnabled)
+        attachScreenshot("Workflow — stopped work retained with read-only capability fallback")
     }
 }
