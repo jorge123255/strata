@@ -44,8 +44,15 @@ test('explicit Work coordinator really reads/writes, runs the inert command/brow
     if (input.message === 'Inspect this project with a helper') {
       assert.equal(input.bot.teamContext.channelMode, 'task'); assert.equal(input.bot.teamConversationOnly, undefined);
       assert.equal(input.bot.model, f.a.model); assert.equal(input.bot.workspace, f.workspace); assert.equal(input.bot.computerMode, 'host');
-      for (const name of ['read_file', 'write_file', 'run_command', 'browser_open', 'assign_team_task', 'submit_team_result']) assert.ok(input.tools.some(tool => tool.name === name), name);
+      for (const name of ['get_execution_context', 'read_file', 'write_file', 'run_command', 'browser_open', 'assign_team_task', 'submit_team_result']) assert.ok(input.tools.some(tool => tool.name === name), name);
       assert.match(input.bot.instructions, /also this team’s coordinator/); assert.match(input.bot.instructions, /Native provider shell, browser, MCP and subagent tools remain disabled/);
+      assert.match(input.bot.instructions, /dirty\/conflicted checkout does not prove the entire computer is read-only/);
+      assert.match(input.bot.instructions, /uniquely named clean task checkout inside the selected workspace/);
+      const execution = JSON.parse((await input.executeTool('get_execution_context', {}, 'execution-context')).content[0].text);
+      assert.equal(execution.workspace.selectedRoot, f.workspace);
+      assert.equal(execution.savedPolicy, 'bypass');
+      assert.equal(execution.operations.writeFile.assigned, true);
+      await assert.rejects(input.executeTool('read_file', { path: join(f.directory, 'outside.txt') }, 'outside-read'), /outside.*workspace/);
       assert.match((await input.executeTool('read_file', { path: 'marker.txt' }, 'read')).content[0].text, /disposable marker/);
       await input.executeTool('write_file', { path: 'out.txt', content: 'written in the disposable selected folder' }, 'write');
       assert.match((await input.executeTool('run_command', { command: 'INERT_FIXTURE_COMMAND' }, 'command')).content[0].text, /inert command passed/);

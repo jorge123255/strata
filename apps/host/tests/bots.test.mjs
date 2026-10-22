@@ -145,6 +145,28 @@ test('existing chats retain their execution profile; new chats get edited model 
   assert.deepEqual(models, ['', '', '', 'different']);
 });
 
+test('native checkpoints refresh on tool catalog changes while saved chat history remains intact', async t => {
+  const received = [], histories = [];
+  const { bots, chats, create, tools } = fixture(t, async input => {
+    received.push(input.checkpoint); histories.push(input.history.map(row => row.content));
+    await input.onCheckpoint({ nativeSessionId: `native-${received.length}` });
+    input.onFrame({ type: 'delta', text: `Reply ${received.length}` });
+  });
+  let catalog = [{ name: 'read_file', description: 'Read the selected file', inputSchema: { type: 'object', properties: {} } }];
+  tools.definitions = () => catalog;
+  const bot = create(), id = bots.createConversation(bot.id).conversation.id;
+  chats.send(id, 'First'); await tick();
+  chats.send(id, 'Same tools'); await tick();
+  catalog = [...catalog, { name: 'get_execution_context', description: 'Read the assigned execution context', inputSchema: { type: 'object', properties: {} } }];
+  chats.send(id, 'New tools'); await tick();
+  chats.send(id, 'Same new tools'); await tick();
+  catalog = catalog.filter(tool => tool.name !== 'read_file');
+  chats.send(id, 'Removed tools'); await tick();
+  assert.deepEqual(received, [null, { nativeSessionId: 'native-1' }, null, { nativeSessionId: 'native-3' }, null]);
+  assert.ok(histories[2].includes('First') && histories[2].includes('Reply 1'));
+  assert.equal(chats.detail(id).conversation.messages.filter(row => row.role === 'user').length, 5);
+});
+
 test('renderer snapshots cannot change bot ownership or turn bot chat into ordinary inference', t => {
   const { bots, chats, create } = fixture(t);
   const bot = create(), initial = bots.createConversation(bot.id).conversation;

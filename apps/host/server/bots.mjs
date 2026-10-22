@@ -16,6 +16,7 @@ import { createCreatedCommandTools } from './bots-runtime/created-tools.mjs';
 import { createBotActionJournal, botActionTurnIdentity } from './bots-action-journal.mjs';
 import { createHarnessObserver } from './bots-harness-observer.mjs';
 import { botApprovalTarget } from './bots-approval-target.mjs';
+import { botExecutionInstructions } from './bots-tools.mjs';
 
 const fault = (status, message) => Object.assign(new Error(message), { status });
 const ids = new Set(['claude', 'codex', 'grok', 'kimi', 'ollama', 'devin', 'configured']);
@@ -554,6 +555,10 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
       if (new Set(hostTools.map(tool => tool.name)).size !== hostTools.length || hostTools.some(tool => localTools.some(local => local.name === tool.name))) throw fault(503, 'Bot tool names overlap.');
     } catch (error) { controller.abort(); harnessObserver.finish(session.id, {outcome:'error'}); active.delete(session.id); ended(); throw error; }
     const hostNames = new Set(hostTools.map(tool => tool.name));
+    // Native sessions retain their original dynamic-tool catalog. Rebuild a
+    // session when that catalog or the execution contract changes; replaying
+    // Strata's saved messages preserves history without reviving stale tools.
+    const runtimeFingerprint = createHash('sha256').update(JSON.stringify([fingerprint, 'execution-context-v1', localTools, hostTools])).digest('hex');
     const actionAuthority = createHash('sha256').update(JSON.stringify([botWorkAuthorityFingerprint(bot), bot.teamContext ?? null])).digest('hex');
     const actionTurnId = botActionTurnIdentity(session, message, conversations()?.detail?.(session.id)?.conversation);
     const actionScope = { chatId: session.id, authority: actionAuthority, turnId: actionTurnId, signal: combined, assertLive };
@@ -578,7 +583,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
       const folderInstructions = hostFolders.tools(bot).length ? `An explicit ${bot.hostFolder.access === 'read' ? 'read-only' : 'read/write'} host-folder share is available at ${JSON.stringify(bot.hostFolder.path)}. Use host_list_files, host_read_file${bot.hostFolder.access === 'read-write' && bot.policy !== 'plan' ? ' and host_write_file' : ''} with paths relative to that folder. Normal file, command and browser tools stay inside the isolated computer. This share is file access, not a mounted folder or host shell.` : '';
       // Keep this bot's saved identity in public conversation turns, without
       // sharing peer profiles or loading private work/extension context or tools.
-      const instructions = (conversationOnly ? [bot.instructions, team.instructions(context)] : [bot.instructions, work.instructions(bot.id), bot.extensionSnapshots?.skills?.instructions, bot.extensionSnapshots?.mcp?.instructions, bot.extensionSnapshots?.createdTools?.instructions, team.instructions(context), folderInstructions]).filter(Boolean).join('\n\n');
+      const instructions = (conversationOnly ? [bot.instructions, team.instructions(context)] : [bot.instructions, work.instructions(bot.id), bot.extensionSnapshots?.skills?.instructions, bot.extensionSnapshots?.mcp?.instructions, bot.extensionSnapshots?.createdTools?.instructions, team.instructions(context), folderInstructions, bot.execution.kind === 'ssh' ? '' : botExecutionInstructions(bot, localTools)]).filter(Boolean).join('\n\n');
       const runtimeBot = { ...bot, instructions, continuousTeam: team.isContinuousTurn(turnId) };
       if (conversationOnly) delete runtimeBot.extensionSnapshots;
       emit({ type: 'start', agent: true, model: bot.model || bot.provider });
@@ -602,10 +607,10 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
           if (!localTools.some(tool => tool.name === name)) throw fault(403, 'This computer tool was not assigned to this bot turn.');
           let started = false, denied = false;
           const toolFrame = frame => { if (frame.type === 'agent-tool') { if (frame.tool?.state === 'running') started = true; if (frame.tool?.state === 'denied') denied = true; } emit(frame); };
-          return actionJournal.execute({ ...actionScope, name, args, toolCallId, noEffect: () => denied && !started }, () => tools.execute({ bot, chatId: session.id, name, args, toolCallId, signal: combined, onFrame: toolFrame, requestPermission, ...(createdTools ? { authorizeCreatedTool: value => { assertLive(); return createdTools.authorize(value, context); } } : {}) })).then(result => recordVerification(name, args, result));
+          return actionJournal.execute({ ...actionScope, name, args, toolCallId, noEffect: () => denied && !started }, () => tools.execute({ bot, chatId: session.id, name, args, toolCallId, toolDefinitions: localTools, signal: combined, onFrame: toolFrame, requestPermission, ...(createdTools ? { authorizeCreatedTool: value => { assertLive(); return createdTools.authorize(value, context); } } : {}) })).then(result => recordVerification(name, args, result));
         },
-        checkpoint: !conversationOnly && oldCheckpoint?.fingerprint === fingerprint ? oldCheckpoint.value : null,
-        onCheckpoint: value => { if (!conversationOnly && active.get(session.id) === owner) { checkpoints.set(session.id, { fingerprint, value }); save(); } } });
+        checkpoint: !conversationOnly && oldCheckpoint?.fingerprint === runtimeFingerprint ? oldCheckpoint.value : null,
+        onCheckpoint: value => { if (!conversationOnly && active.get(session.id) === owner) { checkpoints.set(session.id, { fingerprint: runtimeFingerprint, value }); save(); } } });
     } catch (failure) {
       runFailure = failure;
       if (failure.code === 'ssh_cleanup_unconfirmed' || failure.cleanupUnconfirmed) { uncertainTargets.set(failure.code === 'cua_cleanup_unconfirmed' || failure.cleanupUnconfirmed && failure.code !== 'ssh_cleanup_unconfirmed' ? cuaResource(bot) : target, 'Remote cleanup could not be confirmed. Use Check SSH computer on the Mac before starting another turn.'); save(); owner.cleanupFailure = failure; terminal = { type: 'error', message: failure.message }; throw failure; }

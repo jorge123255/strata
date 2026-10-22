@@ -11,7 +11,7 @@ const fail = (message, code = 'harness_action_receipt') => Object.assign(new Err
 const ID = /^ba_[a-f0-9]{64}$/, HEX = /^[a-f0-9]{64}$/, STATES = ['pending', 'succeeded', 'error', 'interrupted', 'uncertain', 'reviewed'];
 const unresolved = state => ['pending', 'uncertain', 'interrupted'].includes(state);
 // Exact host-owned read implementations only; never infer safety from an MCP name/prefix.
-const READ_ONLY_TOOLS = new Set(['read_file', 'list_files', 'browser_snapshot', 'computer_screenshot', 'check_created_tool', 'authorize_created_tool', 'list_created_tools', 'read_created_tool', 'list_skills', 'read_skill', 'search_tools', 'list_teammates', 'list_subagents', 'read_team_message', 'read_team_results', 'read_team_work', 'read_team_workflow', 'host_list_files', 'host_read_file']);
+const READ_ONLY_TOOLS = new Set(['get_execution_context', 'read_file', 'list_files', 'browser_snapshot', 'computer_screenshot', 'check_created_tool', 'authorize_created_tool', 'list_created_tools', 'read_created_tool', 'list_skills', 'read_skill', 'search_tools', 'list_teammates', 'list_subagents', 'read_team_message', 'read_team_results', 'read_team_work', 'read_team_workflow', 'host_list_files', 'host_read_file']);
 const readOnly = name => READ_ONLY_TOOLS.has(name);
 const actionGuardKey = row => hash([row.origin, row.scopeHash, row.authorityHash, row.turnHash, row.actionHash]);
 const toolLabel = value => typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,120}$/.test(value) ? value : `tool_${hash(String(value)).slice(0, 16)}`;

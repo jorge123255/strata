@@ -298,7 +298,7 @@ test('forged JSON no-effect flags and a saved body printing a later false prefli
 
 test('verified pure host lookups can recover normally while unknown integrations stay quarantined', async t => {
   const journal = createBotActionJournal({ directory: folder(t) });
-  const names = ['authorize_created_tool', 'list_created_tools', 'read_created_tool', 'list_skills', 'read_skill', 'search_tools', 'list_teammates', 'list_subagents', 'read_team_message', 'read_team_results', 'read_team_work', 'host_list_files', 'host_read_file'];
+  const names = ['get_execution_context', 'authorize_created_tool', 'list_created_tools', 'read_created_tool', 'list_skills', 'read_skill', 'search_tools', 'list_teammates', 'list_subagents', 'read_team_message', 'read_team_results', 'read_team_work', 'host_list_files', 'host_read_file'];
   for (const name of names) {
     await assert.rejects(journal.execute(scope({ name, toolCallId: `${name}_missing` }), () => { throw Error('Missing assigned lookup'); }), error => error.message === 'Missing assigned lookup');
     const result = await journal.execute(scope({ name, toolCallId: `${name}_retry` }), () => ({ isError: true, content: [{ type: 'text', text: 'Read unavailable' }] }));

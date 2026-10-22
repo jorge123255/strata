@@ -17,10 +17,11 @@ const str = description => ({ type: 'string', description });
 const num = description => ({ type: 'number', description });
 const tool = (name, description, properties = {}, required = []) => ({ name, description, inputSchema: schema(properties, required) });
 const coding = [
+  tool('get_execution_context', 'Read the selected workspace, saved Strata policy and exact selected-computer tool inventory. A native provider sandbox restriction does not disable separately supplied Strata tools. This does not test OS write access or change permissions.'),
   tool('read_file', 'Read a UTF-8 file inside the selected workspace.', { path: str('Workspace-relative file path') }, ['path']),
   tool('list_files', 'List one directory inside the selected workspace.', { path: str('Workspace-relative directory, defaults to .') }),
-  tool('write_file', 'Replace or create a UTF-8 file inside the selected workspace. Requires permission in Manual mode.', { path: str('Workspace-relative file path'), content: str('Complete file content') }, ['path', 'content']),
-  tool('run_command', 'Run a shell command in the selected workspace. Requires permission in Manual mode; unavailable in Plan mode.', { command: str('Shell command'), timeoutSeconds: num('Maximum 120 seconds; default 30') }, ['command']),
+  tool('write_file', 'Replace or create a UTF-8 file inside the selected workspace through the Strata host, even when native provider tools are read-only. Uses the saved Strata policy and OS permissions. Requires permission in Manual mode; unavailable in Plan mode.', { path: str('Workspace-relative file path'), content: str('Complete file content') }, ['path', 'content']),
+  tool('run_command', 'Run a host-owned shell command with the selected workspace as its working directory, even when native provider tools are read-only. Uses the saved Strata policy and OS permissions. Requires permission in Manual mode; unavailable in Plan mode. The working directory is not a filesystem sandbox; stay within the owner-authorized task.', { command: str('Shell command'), timeoutSeconds: num('Maximum 120 seconds; default 30') }, ['command']),
 ];
 const computer = [
   tool('browser_open', 'Open a URL in this bot’s separate browser. Returns a screenshot and visible page text.', { url: str('HTTP or HTTPS URL') }, ['url']),
@@ -34,24 +35,42 @@ const computer = [
   tool('computer_key', 'Press a Mac key or shortcut, such as Return or Command+L.', { key: str('Key or shortcut') }, ['key']),
 ];
 
+const nativeProviderBoundary = 'A native provider sandbox restriction applies to its built-in tools. Separately supplied Strata tools execute through the selected computer under the saved Strata policy and OS permissions. Native read-only restrictions are not evidence that Strata write_file or run_command is unavailable.';
+const operatingSystemAccess = 'Not probed. Tool assignment and saved policy do not prove OS filesystem access or command success.';
+const inventoryNames = definitions => {
+  if (!Array.isArray(definitions) || definitions.length > 128 || definitions.some(t => typeof t?.name !== 'string' || !/^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(t.name)) || new Set(definitions.map(t => t.name)).size !== definitions.length) fail('The selected-computer tool inventory is invalid.');
+  return definitions.map(t => t.name);
+};
+const permissionFor = (assigned, policy) => !assigned ? 'not-assigned' : policy === 'manual' ? 'approval-required' : policy === 'bypass' ? 'saved-bypass-policy' : 'unavailable-in-plan';
+
+/** Factual coding context only; callers must supply this turn's selected-computer catalog. */
+export function botExecutionInstructions(bot, definitions) {
+  const names = inventoryNames(definitions);
+  if (!names.some(name => coding.some(t => t.name === name))) return '';
+  const mutation = name => names.includes(name) && bot.policy !== 'plan';
+  return `Selected-computer coding context: workspace ${JSON.stringify(bot.workspace)}; computer mode ${JSON.stringify(bot.computerMode ?? 'host')}; saved Strata policy ${JSON.stringify(bot.policy)}. Exact selected-computer tools: ${JSON.stringify(names)}. write_file assignment: ${permissionFor(mutation('write_file'), bot.policy)}; run_command assignment: ${permissionFor(mutation('run_command'), bot.policy)}. ${nativeProviderBoundary} ${operatingSystemAccess} File tools are confined to the selected workspace, including symlink targets. A shell command uses that folder as its working directory, not as a filesystem sandbox; do only owner-authorized work. ${bot.policy === 'plan' ? 'Plan permits only the assigned read/context tools; it does not permit file writes or commands.' : 'A workspace-boundary error concerns that path; it is not proof that all tools or the filesystem are read-only.'}${names.includes('get_execution_context') ? ' If access is unclear, call get_execution_context before claiming a tool is missing or the filesystem is read-only.' : ''}`;
+}
+
+const boundaryMessage = (root, linked = false) => `${linked ? 'This file points outside' : 'This file is outside'} the bot’s workspace. Current file-tool root: ${JSON.stringify(root)}. Use a workspace-relative path inside this root. If an already-authorized coding task permits a clean task checkout, keep it inside this root and use the normal file tools. If the task requires another selected folder, ask the owner to select that working folder for a new authorized run; do not bypass this file-tool boundary.`;
+
 export async function botWorkspacePath(workspace, input = '.', { writing = false } = {}) {
   if (typeof input !== 'string' || input.length > 4000 || input.includes('\0')) fail('Enter a valid workspace path.');
   const root = await realpath(workspace), target = resolve(root, input);
   const within = value => { const rel = relative(root, value); return !rel || !isAbsolute(rel) && rel !== '..' && !rel.startsWith('../') && !rel.startsWith('..\\'); };
-  if (!within(target)) fail('This file is outside the bot’s workspace.');
+  if (!within(target)) fail(boundaryMessage(root));
   let actual = target;
   try { actual = await realpath(target); }
   catch (error) {
     if (!writing || error.code !== 'ENOENT') throw error;
     let parent = dirname(target);
     while (true) {
-      try { const resolved = await realpath(parent); if (!within(resolved)) fail('This file points outside the bot’s workspace.'); break; }
+      try { const resolved = await realpath(parent); if (!within(resolved)) fail(boundaryMessage(root, true)); break; }
       catch (failure) { if (failure.code !== 'ENOENT') throw failure; const next = dirname(parent); if (next === parent) throw failure; parent = next; }
     }
     // A dangling symlink must never be followed by a write.
-    try { if ((await lstat(target)).isSymbolicLink()) fail('Choose a regular file inside the bot’s workspace.'); } catch (failure) { if (failure.code !== 'ENOENT') throw failure; }
+    try { if ((await lstat(target)).isSymbolicLink()) fail(`Choose a regular file inside the bot’s workspace. Current file-tool root: ${JSON.stringify(root)}. Do not write through a dangling symlink.`); } catch (failure) { if (failure.code !== 'ENOENT') throw failure; }
   }
-  if (!within(actual)) fail('This file points outside the bot’s workspace.');
+  if (!within(actual)) fail(boundaryMessage(root, true));
   return actual;
 }
 
@@ -88,7 +107,7 @@ export function createBotTools({ directory, browserProbe = findBrowser, processR
   let helperPromise = null;
   function definitions(bot) {
     const chosen = [...(bot.capabilities !== 'computer' ? coding : []), ...(bot.capabilities !== 'code' ? computer : [])];
-    return bot.policy === 'plan' ? chosen.filter(t => ['read_file', 'list_files', 'browser_snapshot'].includes(t.name)) : chosen;
+    return bot.policy === 'plan' ? chosen.filter(t => ['get_execution_context', 'read_file', 'list_files', 'browser_snapshot'].includes(t.name)) : chosen;
   }
   async function pageFor(bot) {
     if (browsers.has(bot.id)) return browsers.get(bot.id);
@@ -127,15 +146,16 @@ export function createBotTools({ directory, browserProbe = findBrowser, processR
     })().catch(error => { helperPromise = null; throw error; });
     return helperPromise;
   }
-  async function executeOne({ bot, chatId, name, args = {}, toolCallId, signal, onFrame = () => {}, requestPermission }) {
-    if (!definitions(bot).some(t => t.name === name)) fail('This tool is not enabled for this bot’s capabilities or permission mode.');
+  async function executeOne({ bot, chatId, name, args = {}, toolCallId, signal, onFrame = () => {}, requestPermission, toolDefinitions }) {
+    const enabled = definitions(bot), selectedNames = inventoryNames(toolDefinitions ?? enabled);
+    if (!enabled.some(t => t.name === name) || !selectedNames.includes(name)) fail('This tool is not enabled for this bot’s capabilities, permission mode or selected turn inventory.');
     if (bot.execution.kind !== 'local') fail('This execution computer is not configured.');
     if (signal?.aborted) fail('The bot was stopped.');
     const id = toolCallId ?? `tool_${randomUUID()}`, started = Date.now();
     const requireRunning = () => { if (signal?.aborted) fail('The bot was stopped.'); };
     const card = { id, name, args, preview: name.replaceAll('_', ' '), effect: 'Bot tool', scope: 'connected' };
     const emit = (state, result) => onFrame({ type: 'agent-tool', tool: { ...card, state, ...(result ? { result } : {}), durationMs: Date.now() - started } });
-    const readOnly = ['read_file', 'list_files', 'browser_snapshot'].includes(name);
+    const readOnly = ['get_execution_context', 'read_file', 'list_files', 'browser_snapshot'].includes(name);
     if (!readOnly && bot.policy !== 'bypass') {
       if (bot.policy === 'plan' || !await requestPermission({ id, name, args, reason: `Allow ${name.replaceAll('_', ' ')} on ${bot.name}’s computer?` })) { emit('denied', 'The action was not allowed.'); return { ...text('The action was not allowed. Do not retry it.'), isError: true }; }
     }
@@ -162,7 +182,29 @@ export function createBotTools({ directory, browserProbe = findBrowser, processR
         requireRunning();
       }
       let result;
-      if (name === 'read_file') {
+      if (name === 'get_execution_context') {
+        const enabledNames = new Set(enabled.map(t => t.name));
+        const operation = toolName => {
+          const assigned = selectedNames.includes(toolName) && enabledNames.has(toolName);
+          return { assigned, permission: permissionFor(assigned, bot.policy) };
+        };
+        let fileToolsRoot = null;
+        try { fileToolsRoot = await realpath(bot.workspace); } catch {}
+        result = text(JSON.stringify({
+          workspace: { selectedRoot: bot.workspace, fileToolsRoot, status: fileToolsRoot ? 'resolved' : 'unavailable' },
+          computer: { scope: 'selected-execution-computer', mode: bot.computerMode ?? 'host', executor: 'this-process' },
+          savedPolicy: bot.policy,
+          toolInventoryScope: 'selected-computer', tools: selectedNames,
+          operations: { writeFile: operation('write_file'), runCommand: operation('run_command') },
+          nativeProviderBoundary, osAccess: operatingSystemAccess,
+          guidance: [
+            'This inventory excludes separately assigned host, team and connector extensions. It grants no new access.',
+            'File tools enforce the resolved workspace root, including symlink targets. A boundary error concerns the requested path, not all filesystem access.',
+            'Commands use the selected workspace as their working directory, not a filesystem sandbox. Stay within the owner-authorized task.',
+            bot.policy === 'plan' ? 'Plan exposes read/context tools only. File writes and commands are unavailable.' : 'Use an assigned tool under the saved policy; report any actual OS or approval failure separately.',
+          ],
+        }));
+      } else if (name === 'read_file') {
         const file = await botWorkspacePath(bot.workspace, args.path);
         if ((await stat(file)).size > 1024 * 1024) fail('This file is too large. Read a smaller file.');
         result = text(await readFile(file, 'utf8'));

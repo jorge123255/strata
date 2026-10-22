@@ -34,6 +34,12 @@ Approval cards show a target for recognized file, command and browser actions, s
 
 ## Understanding slow or blocked work
 
+Coding bots receive the selected folder, saved approval policy and assigned coding tools on each work turn. `get_execution_context` reports those facts without testing a write or granting access. It runs on the selected computer, including an SSH execution account. The native provider's read-only sandbox controls its built-in tools; supplied Strata tools use Strata's saved policy and the execution account's OS permissions. Assignment alone does not prove that a file can be written or a command will succeed.
+
+File tools stay inside the selected folder, including symlink targets. A boundary error identifies that folder. A conflicted repository is a separate issue: preserve it and, when the authorized task has a verified committed base, prepare a clean task checkout inside the selected folder. Keep task-relevant uncommitted work and all release holds. Report an actual failed operation or an unclear base instead of declaring the entire computer read-only after inspection alone.
+
+When the dynamic-tool catalog changes, Strata starts a fresh native provider session with the current tools and saved chat context. Conversation history remains in Strata; an old native session cannot silently retain a removed or missing tool.
+
 Activity has an expandable timing record for each observed conversation: preparation, provider wait, approvals, tools, cleanup, time to first output, tool calls/errors and context compactions. Provider wait includes startup and connection time. These are measured host-session timings, not generated thinking, completion verification or a claim about model quality. They reset when the host restarts; durable action receipts do not. Timing counters keep a bounded recent-ID window, so a very late repeated display event can be counted again; these counters never authorize or deduplicate execution.
 
 Independent team work keeps the existing fair scheduler and unrestricted continuous-team settings. A shared desktop is still exclusive while it is used. A chat-only exchange does not reserve that desktop. This update adds no parallel-team slot cap.

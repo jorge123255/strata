@@ -4,7 +4,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { hostname, homedir } from 'node:os';
 import { createBotRuntime, normalizeTools } from './index.mjs';
-import { createBotTools } from '../bots-tools.mjs';
+import { botExecutionInstructions, createBotTools } from '../bots-tools.mjs';
 import { findBrowser } from '../agent/browser-probe.mjs';
 import { redact } from './process.mjs';
 import { createCreatedCommandTools } from './created-tools.mjs';
@@ -148,16 +148,21 @@ async function startWorkerTurn(input, { reader, send, directory, leaseMs = 12000
     const hostTools = normalizeTools(input.hostTools ?? []);
     const localDefinitions = conversationOnly ? [] : tools.definitions(bot).filter(tool => bot.computerMode === 'cua' || process.platform === 'darwin' || !tool.name.startsWith('computer_'));
     if (hostTools.length > 32 || hostTools.some(tool => localDefinitions.some(local => local.name === tool.name))) throw new Error('The host tool catalog is invalid.');
+    // Describe the actual worker catalog, including this platform's desktop
+    // filter, rather than the host Mac's catalog. Conversation-only turns must
+    // keep their existing tool-less computer boundary.
+    const executionInstructions = conversationOnly ? '' : botExecutionInstructions(bot, localDefinitions);
+    const runtimeBot = executionInstructions ? { ...bot, instructions: [bot.instructions, executionInstructions].filter(Boolean).join('\n\n') } : bot;
     const hostNames = new Set(hostTools.map(tool => tool.name));
     const execute = (name, args, toolCallId) => {
       signal.throwIfAborted();
       if (conversationOnly && !hostNames.has(name)) return Promise.reject(new Error('A team conversation cannot use local or computer tools.'));
       let started = false, denied = false;
       const toolFrame = frame => { if (frame.type === 'agent-tool') { if (frame.tool?.state === 'running') started = true; if (frame.tool?.state === 'denied') denied = true; } emit(frame); };
-      const promise = journal.execute({ ...actionScope, name, args, toolCallId, noEffect: () => !hostNames.has(name) && denied && !started }, () => hostNames.has(name) ? ask('requestHostTool', { name, args, toolCallId }) : tools.execute({ bot, chatId: input.sessionId, name, args, toolCallId, signal, onFrame: toolFrame, requestPermission: allow }));
+      const promise = journal.execute({ ...actionScope, name, args, toolCallId, noEffect: () => !hostNames.has(name) && denied && !started }, () => hostNames.has(name) ? ask('requestHostTool', { name, args, toolCallId }) : tools.execute({ bot, chatId: input.sessionId, name, args, toolCallId, signal, onFrame: toolFrame, requestPermission: allow, toolDefinitions: localDefinitions }));
       inFlight.add(promise); promise.finally(() => inFlight.delete(promise)).catch(() => {}); return promise;
     };
-    result = await runtime.run({ bot, sessionId: input.sessionId, message: input.message, history: input.history ?? [], checkpoint: conversationOnly ? null : input.checkpoint, signal, onFrame: frame => { if (frame.type !== 'done' && frame.type !== 'error') emit(frame); },
+    result = await runtime.run({ bot: runtimeBot, sessionId: input.sessionId, message: input.message, history: input.history ?? [], checkpoint: conversationOnly ? null : input.checkpoint, signal, onFrame: frame => { if (frame.type !== 'done' && frame.type !== 'error') emit(frame); },
       tools: [...localDefinitions, ...hostTools], executeTool: execute, requestPermission: allow,
       modelRequest: payload => ask('requestModel', payload), onCheckpoint: checkpoint => { if (!conversationOnly) write({ type: 'checkpoint', value: checkpoint }); } });
   } catch (error) { failure = error; }
