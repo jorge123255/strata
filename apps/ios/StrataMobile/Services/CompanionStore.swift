@@ -118,6 +118,7 @@ final class CompanionStore: ObservableObject {
             let verifiedStatus = try await client.status(at: checked)
             guard connectionGeneration == generation, addressUpdateOperation == operation, !Task.isCancelled else { return false }
             var next = saved
+            next.originalPairingURL = saved.originalPairingURL ?? saved.baseURL
             next.baseURL = endpoint.url
             next.endpoints = try CompanionEndpoint.merged((saved.endpoints ?? []) + [CompanionEndpoint(kind: .lan, url: saved.baseURL)], keeping: endpoint)
             // Saving must succeed before any shared client or view changes. No

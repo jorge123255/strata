@@ -142,6 +142,38 @@ final class NotificationsTests: XCTestCase {
         XCTAssertTrue(service.isMuted(.init(type: "chat", id: "chat_1")))
         XCTAssertTrue(service.events.isEmpty); XCTAssertEqual(alerts, 0)
     }
+    func testChangedAddressKeepsOriginalInboxAndReadStateButDifferentCredentialsStayIsolated() async throws {
+        let transport = NotificationTransport(); defer { transport.close() }
+        let suite = "strata-notification-route-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!; defer { defaults.removePersistentDomain(forName: suite) }
+        let first = CompanionNotifications(defaults: defaults, deliver: { _ in })
+        first.bind(client: transport.client, connection: transport.connection, pairingGeneration: transport.generation)
+        transport.respond = { _ in self.json(cursor: 1) }; await first.refresh()
+        transport.respond = { _ in self.json(cursor: 2, rows: [self.event()]) }; await first.refresh()
+        first.markAllRead()
+        XCTAssertEqual(first.events.count, 1); XCTAssertEqual(first.readIds, ["event-2"]); XCTAssertTrue(first.settings.enabled)
+        var changed = transport.connection
+        changed.originalPairingURL = changed.baseURL
+        changed.baseURL = URL(string: "https://100.64.0.1:8787")!
+        let restoredRecord = try JSONDecoder().decode(PairedConnection.self, from: JSONEncoder().encode(changed))
+        let restored = CompanionNotifications(defaults: defaults, deliver: { _ in XCTFail("Restoring an inbox must not replay alerts") })
+        restored.bind(client: transport.client, connection: restoredRecord, pairingGeneration: UUID())
+        XCTAssertEqual(restored.events.map(\.id), ["event-2"]); XCTAssertEqual(restored.readIds, ["event-2"])
+        XCTAssertEqual(restored.unreadCount, 0)
+        first.bind(client: transport.client, connection: restoredRecord, pairingGeneration: transport.generation)
+        XCTAssertEqual(first.events.map(\.id), ["event-2"]); XCTAssertEqual(first.readIds, ["event-2"]); XCTAssertTrue(first.settings.enabled)
+        await restored.refresh()
+        XCTAssertTrue(restored.settings.enabled); XCTAssertTrue(restored.canOpenInbox)
+        XCTAssertEqual(restored.events.map(\.id), ["event-2"]); XCTAssertEqual(restored.readIds, ["event-2"])
+        for changePin in [false, true] {
+            var other = restoredRecord
+            if changePin { other.fingerprint = String(repeating: "0", count: 64) } else { other.token = "different-fixture-token" }
+            let isolated = CompanionNotifications(defaults: defaults, deliver: { _ in })
+            isolated.bind(client: transport.client, connection: other, pairingGeneration: UUID())
+            XCTAssertTrue(isolated.events.isEmpty); XCTAssertTrue(isolated.readIds.isEmpty)
+        }
+    }
+
     func testRestoredInboxIsDiscardedWhenSamePairedMacReplacesJournal() async throws {
         let transport = NotificationTransport(); defer { transport.close() }
         let suite = "strata-notification-journal-" + UUID().uuidString

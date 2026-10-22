@@ -7,7 +7,7 @@ final class ConnectionRoutingTests: XCTestCase {
         let f = RouteFixture(); defer { f.close() }
         let old = try JSONEncoder().encode(f.connection)
         let decoded = try JSONDecoder().decode(PairedConnection.self, from: old)
-        XCTAssertNil(decoded.endpoints); XCTAssertEqual(decoded.token, f.connection.token)
+        XCTAssertNil(decoded.endpoints); XCTAssertNil(decoded.originalPairingURL); XCTAssertEqual(decoded.token, f.connection.token)
         for raw in ["http://mac.invalid:8787", "https://token@mac.invalid", "https://mac.invalid/v1/status", "https://mac.invalid?x=1", "https://mac.invalid/#x"] {
             XCTAssertThrowsError(try CompanionEndpoint(kind: .tailscale, url: URL(string: raw)!).validated())
         }
@@ -39,6 +39,10 @@ final class ConnectionRoutingTests: XCTestCase {
         XCTAssertEqual(f.requests.last?.url?.host, f.b.host, "Existing computer/workspace holders keep the same client object.")
         XCTAssertEqual(f.saves.count, 1); XCTAssertTrue(store.connection?.endpoints?.contains(where: { $0.url == f.a }) == true)
         XCTAssertTrue(f.requests.allSatisfy { $0.httpMethod == "GET" })
+        XCTAssertEqual(store.connection?.originalPairingURL, f.a)
+        let returned = await store.updateMacAddress(f.a.absoluteString, kind: .lan)
+        XCTAssertTrue(returned); XCTAssertEqual(store.connection?.originalPairingURL, f.a)
+        XCTAssertEqual(store.messages.first?.content, "Retained history")
     }
 
     func testFailedSecureSaveKeepsOldRoutePairingAndHistory() async throws {

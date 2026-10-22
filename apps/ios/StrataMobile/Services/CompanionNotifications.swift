@@ -57,7 +57,7 @@ final class CompanionNotifications: ObservableObject {
     init(defaults: UserDefaults = .standard, deliver: ((CompanionNotificationEvent) -> Void)? = nil) { self.defaults = defaults; self.deliverForTesting = deliver }
 
     func bind(client: CompanionClient?, connection: PairedConnection?, pairingGeneration: UUID) {
-        let next = connection.map { PinnedSessionDelegate.digest(Data(($0.baseURL.absoluteString + ":" + $0.fingerprint + ":" + $0.token).utf8)) }
+        let next = connection.map { PinnedSessionDelegate.digest(Data((($0.originalPairingURL ?? $0.baseURL).absoluteString + ":" + $0.fingerprint + ":" + $0.token).utf8)) }
         guard next != scope || self.pairingGeneration != pairingGeneration else { self.client = client; return }
         // Cancel the old application registration ownership before adopting a
         // new pairing. Apple's token is app-wide; it grants no Mac access by

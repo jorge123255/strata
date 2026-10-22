@@ -42,6 +42,8 @@ final class CompanionSmokeTests: XCTestCase {
         tapTab("Connection"); XCTAssertTrue(app.staticTexts[alias].waitForExistence(timeout: 10))
         tapTab("Chat"); XCTAssertTrue(app.staticTexts["Earlier Mac history is available on the phone."].waitForExistence(timeout: 10))
         let after = try await fixtureControl(control, action: "state")
+        XCTAssertEqual(before["pairedDeviceCount"] as? Int, 1)
+        XCTAssertEqual(after["pairedDeviceCount"] as? Int, 1)
         let requests = try XCTUnwrap(after["routeRequests"] as? [[String: Any]])
         let aliasRequests = requests.filter { $0["server"] as? String == "alias" }
         XCTAssertTrue(aliasRequests.contains { $0["bearer"] as? Bool == false && $0["path"] as? String == "/v1/status" })

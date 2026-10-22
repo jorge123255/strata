@@ -577,6 +577,9 @@ struct PairedConnection: Codable, Equatable {
     // Optional for existing Keychain records. Every route belongs to this same
     // pairing and must present the exact saved certificate before HTTP is sent.
     var endpoints: [CompanionEndpoint]? = nil
+    // Notification inboxes were historically scoped to the enrollment URL.
+    // Keep that exact spelling when the saved connection address later changes.
+    var originalPairingURL: URL? = nil
 }
 
 struct CompanionEndpoint: Codable, Equatable {
