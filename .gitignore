@@ -83,9 +83,13 @@ node_modules/
 # the Control component (bundled CPython + wheels + strata_control) is built by apps/desktop/scripts/stage-control.py
 /apps/desktop/src-tauri/resources/control/*
 !/apps/desktop/src-tauri/resources/control/.gitignore
-# the pruned DeepSeek Harness (MIT) is built by apps/desktop/scripts/stage-harness.mjs
+# the pruned DeepSeek Harness (MIT) is staged by apps/desktop/scripts/stage-bundle.mjs
 /apps/desktop/src-tauri/resources/harness/*
 !/apps/desktop/src-tauri/resources/harness/.gitignore
+# production host dependencies (npm ci --omit=dev). Never commit.
+/apps/desktop/src-tauri/resources/host/*
+!/apps/desktop/src-tauri/resources/host/.gitignore
+/apps/desktop/.cache/
 # screenshots and checkpoints from the Mac rebuild live outside git (StrataSplit\evidence-archive)
 /apps/host/docs/evidence/
 /apps/host/docs/checkpoints/
