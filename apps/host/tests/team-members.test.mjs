@@ -28,7 +28,6 @@ const limits = { ...bots.DEFAULT_BOT_TEAM_LIMITS };
 
 test('member removal and team delete use one roster patch and a bodyless delete', () => {
   assert.equal(members.DELETED_BOT_NAME, 'Deleted bot');
-  assert.equal(members.teamCapMessage(17), 'This team has 17 of 12 members; remove some to save changes');
   const team = { id: 'team id/1', memberIds: ['ava', 'bolt', 'gone'], coordinatorId: 'ava', revision: 4 };
   assert.deepEqual(members.teamMemberRemovalRequest(team, 'gone'), {
     path: '/api/bots/teams/team%20id%2F1',
@@ -42,9 +41,6 @@ test('member removal and team delete use one roster patch and a bodyless delete'
   assert.equal(members.teamMemberRemovalRequest({ ...team, memberIds: ['ava'], coordinatorId: 'ava' }, 'ava'), null);
   assert.equal(members.teamMemberRemovalRequest({ ...team, revision: 1.5 }, 'bolt').body.expectedRevision, undefined);
   assert.deepEqual(members.teamDeleteRequest('team id/1'), { method: 'DELETE', path: '/api/bots/teams/team%20id%2F1' });
-  assert.equal(members.teamDeleteUnsupported(404), true);
-  assert.equal(members.teamDeleteUnsupported(405), true);
-  assert.equal(members.teamDeleteUnsupported(500), false);
   globalThis.__teamToasts = [];
   members.reportTeamMemberError('Choose from 2 to 12 team members.');
   assert.deepEqual(globalThis.__teamToasts, [{ tone: 'error', title: 'Choose from 2 to 12 team members.' }]);
@@ -55,6 +51,7 @@ test('a saved roster can shrink while a new or larger roster stays capped', () =
   const draft = { name: 'Crew', memberIds: ids, coordinatorId: ids[0], limits };
   assert.ok(bots.botTeamDraftError(draft, ids.map(id => ({ id }))));
   assert.equal(bots.botTeamDraftError(draft, [], undefined, false, false, ids), null);
+  assert.equal(bots.botTeamDraftError({ ...draft, memberIds: [...ids, 'fresh'], coordinatorId: ids[0] }, [...ids.map(id => ({ id })), { id: 'fresh' }], undefined, false, false, ids), 'Remove members until this team has 12 or fewer before adding anyone.');
   assert.equal(bots.botTeamDraftError({ ...draft, memberIds: ['m0', 'gone'], coordinatorId: 'm0' }, [{ id: 'm0' }], undefined, false, false, ['m0', 'm1', 'gone']), null);
   assert.ok(bots.botTeamDraftError({ ...draft, memberIds: ['m0', 'm1', 'fresh'], coordinatorId: 'm0' }, [{ id: 'm0' }, { id: 'm1' }], undefined, false, false, ['m0', 'm1', 'gone']));
   assert.ok(bots.botTeamDraftError({ ...draft, memberIds: [...ids, 'fresh'] }, [...ids.map(id => ({ id })), { id: 'fresh' }], undefined, true, false, ids));
@@ -73,26 +70,27 @@ test('desktop and iPhone member editing keep the remove, cap, and delete afforda
   assert.match(row, /Deleted bot|DELETED_BOT_NAME/);
   assert.match(workspace, /api\.patch\(request\.path, request\.body\)/);
   assert.match(workspace, /reportTeamMemberError/);
-  assert.match(editor, /api\.del\(teamDeleteRequest/);
-  assert.match(editor, /teamDeleteUnsupported/);
-  assert.match(helper, /status === 404 \|\| status === 405/);
+  assert.match(editor, /deleteBotTeam\(base\.id\)/);
+  assert.doesNotMatch(editor, /teamDeleteUnsupported/);
+  assert.doesNotMatch(editor, /not available on this host yet/);
   assert.match(helper, /pushToast\('error', message\)/);
   assert.match(editor, /Delete team/);
+  assert.doesNotMatch(workspace, /teamCapMessage/);
   assert.match(iosViews, /swipeActions/);
   assert.match(iosViews, /deletedBotName/);
-  assert.match(iosViews, /teamCapMessage/);
+  assert.doesNotMatch(iosViews, /teamCapMessage/);
+  assert.doesNotMatch(iosStore, /teamCapMessage/);
   assert.match(iosStore, /\/v1\/bots\/teams\/\\?\(team\.id\)/);
   assert.match(iosStore, /retainedMemberIds/);
   assert.match(iosStore, /func removeTeamMember/);
 });
 
 const executablePath = [process.env.STRATA_UI_BROWSER, '/usr/bin/google-chrome', '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(path => path && existsSync(path));
-test('team member remove rolls back, and team delete hides when the route is missing', { skip: executablePath ? false : 'Installed Chromium required.', timeout: 90000 }, async t => {
+test('team member remove saves an over-cap roster, and team delete stays available', { skip: executablePath ? false : 'Installed Chromium required.', timeout: 90000 }, async t => {
   const at = '2026-10-23T12:00:00Z';
   const rosterLimits = { maxParallel: 2, maxDepth: 2, maxHops: 8, maxTurns: 24, maxDurationMs: 600000 };
   const bots = ['Ava', 'Bolt', 'Iris'].map((name, index) => ({ id: name.toLowerCase(), name, provider: 'codex', model: 'fixture', policy: 'manual', capabilities: 'both', instructions: '', workspace: '/fixture', execution: { kind: 'local' }, computerMode: 'host', avatarConfig: { color: ['cloud', 'sky', 'violet'][index], shape: 'orb', eyes: 'round', ears: 'small' }, createdAt: at, updatedAt: at }));
   let revision = 4;
-  let rejectNext = true;
   let deleteStatus = 500;
   let team = { id: 'crew', name: 'Product studio', memberIds: ['ava', 'bolt', 'iris', 'gone'], coordinatorId: 'ava', enabled: true, revision, limits: rosterLimits, createdAt: at, updatedAt: at };
   const calls = [], errors = [], unexpected = [];
@@ -118,7 +116,6 @@ test('team member remove rolls back, and team delete hides when the route is mis
     if (path === '/api/bots/teams' && req.method === 'GET') return reply(res, { teams: [team], runs: [], channelsSupported: true, teamSettingsSupported: true });
     if (path === '/api/bots/teams/crew/channel' && req.method === 'GET') return reply(res, { teamId: 'crew', supported: true, messages: [], activeRuns: [], nextSequence: 0, hasMore: false, hasMoreBefore: false });
     if (path === '/api/bots/teams/crew' && req.method === 'PATCH') {
-      if (rejectNext) { rejectNext = false; return reply(res, { error: 'Choose available bots for this team.' }, 400); }
       if (!Array.isArray(body.memberIds) || body.memberIds.length < 2) return reply(res, { error: 'Choose at least two different bots.' }, 400);
       team = { ...team, ...body, revision: ++revision, updatedAt: at };
       delete team.expectedRevision;
@@ -154,9 +151,6 @@ test('team member remove rolls back, and team delete hides when the route is mis
   await shot('team_member_deleted');
   await details.getByRole('button', { name: 'Done', exact: true }).click();
   await work.getByRole('button', { name: 'Remove Deleted bot', exact: true }).click();
-  await page.waitForFunction(() => window.teamToasts.some(toast => toast.tone === 'error' && toast.title === 'Choose available bots for this team.'));
-  await work.getByText('Deleted bot', { exact: true }).waitFor();
-  await work.getByRole('button', { name: 'Remove Deleted bot', exact: true }).click();
   await page.waitForFunction(() => !document.body.textContent.includes('Deleted bot'));
   const iris = work.locator('[data-bot-id="iris"]');
   await iris.hover();
@@ -174,14 +168,22 @@ test('team member remove rolls back, and team delete hides when the route is mis
   await work.locator('[data-bot-id="bolt"]').waitFor();
   team = { ...team, memberIds: Array.from({ length: 17 }, (_, index) => `m${index}`), coordinatorId: 'm0', revision: team.revision };
   await page.evaluate(() => window.refreshTeam());
-  await page.getByRole('note').getByText('This team has 17 of 12 members; remove some to save changes', { exact: true }).waitFor();
+  await page.getByText('17 members', { exact: false }).first().waitFor();
+  assert.equal(await page.getByText('This team has 17 of 12 members; remove some to save changes', { exact: true }).count(), 0);
   await shot('team_over_cap');
-  await page.getByRole('button', { name: 'Remove members', exact: true }).click();
+  await page.getByRole('button', { name: 'Team details', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Product studio', exact: true }).getByRole('button', { name: 'Team settings', exact: true }).click();
   const editor = page.getByRole('dialog', { name: 'Product studio settings', exact: true });
-  await editor.getByRole('status').getByText('This team has 17 of 12 members; remove some to save changes', { exact: true }).waitFor();
+  assert.equal(await editor.getByText('This team has 17 of 12 members; remove some to save changes', { exact: true }).count(), 0);
   assert.equal(await editor.getByRole('button', { name: 'Save team', exact: true }).isEnabled(), true);
   await editor.getByRole('button', { name: 'Save team', exact: true }).click();
   await editor.waitFor({ state: 'hidden' });
+  await page.getByRole('tab', { name: 'Work', exact: true }).click();
+  const overCap = page.locator('#team-work-panel');
+  const disclosure = overCap.locator('details.bot-work-disclosure').filter({ hasText: 'Team members' });
+  if (!(await disclosure.evaluate(element => element.open))) await disclosure.locator('summary').click();
+  await overCap.getByRole('button', { name: 'Remove Deleted bot', exact: true }).first().click();
+  await page.waitForFunction(() => document.querySelector('#team-work-panel summary')?.textContent?.includes('16'));
   await page.getByRole('button', { name: 'Team details', exact: true }).click();
   await page.getByRole('dialog', { name: 'Product studio', exact: true }).getByRole('button', { name: 'Team settings', exact: true }).click();
   const settings = page.getByRole('dialog', { name: 'Product studio settings', exact: true });
@@ -198,20 +200,22 @@ test('team member remove rolls back, and team delete hides when the route is mis
   await settings.getByRole('button', { name: 'Delete team', exact: true }).click();
   await page.getByRole('dialog', { name: 'Delete this team?', exact: true }).getByRole('textbox', { name: 'Type the team name to confirm', exact: true }).fill('Product studio');
   await page.getByRole('dialog', { name: 'Delete this team?', exact: true }).getByRole('button', { name: 'Delete team', exact: true }).click();
-  await settings.getByText('Deleting a team is not available on this host yet.', { exact: true }).waitFor();
-  assert.equal(await settings.getByRole('button', { name: 'Delete team', exact: true }).count(), 0);
+  await settings.getByText('Method not allowed', { exact: true }).waitFor();
+  assert.equal(await settings.getByRole('button', { name: 'Delete team', exact: true }).count(), 1);
   await settings.getByRole('button', { name: 'Cancel', exact: true }).click();
   await page.getByRole('button', { name: 'Team details', exact: true }).click();
   await page.getByRole('dialog', { name: 'Product studio', exact: true }).getByRole('button', { name: 'Team settings', exact: true }).click();
-  assert.equal(await page.getByRole('dialog', { name: 'Product studio settings', exact: true }).getByRole('button', { name: 'Delete team', exact: true }).count(), 0);
+  assert.equal(await page.getByRole('dialog', { name: 'Product studio settings', exact: true }).getByRole('button', { name: 'Delete team', exact: true }).count(), 1);
   const patches = calls.filter(call => call.method === 'PATCH');
   assert.equal(patches[0].path, '/api/bots/teams/crew');
   assert.deepEqual(patches[0].body, { expectedRevision: 4, memberIds: ['ava', 'bolt', 'iris'], coordinatorId: 'ava' });
-  assert.deepEqual(patches[1].body, patches[0].body);
-  assert.deepEqual(patches[2].body, { expectedRevision: 5, memberIds: ['ava', 'bolt'], coordinatorId: 'ava' });
-  assert.deepEqual(patches[3].body, { expectedRevision: 6, memberIds: ['ava'], coordinatorId: 'ava' });
-  assert.equal(patches[4].body.memberIds.length, 17);
-  assert.equal(patches[4].body.coordinatorId, 'm0');
+  assert.deepEqual(patches[1].body, { expectedRevision: 5, memberIds: ['ava', 'bolt'], coordinatorId: 'ava' });
+  assert.deepEqual(patches[2].body, { expectedRevision: 6, memberIds: ['ava'], coordinatorId: 'ava' });
+  const kept = patches.find(call => call.body.memberIds.length === 17);
+  assert.equal(kept.body.coordinatorId, 'm0');
+  const shrunk = patches.find(call => call.body.memberIds.length === 16);
+  assert.equal(shrunk.body.memberIds.includes('m0'), false);
+  assert.equal(shrunk.body.coordinatorId, 'm1');
   const deletes = calls.filter(call => call.method === 'DELETE');
   assert.equal(deletes.length, 2);
   assert.deepEqual(deletes.map(call => call.path), ['/api/bots/teams/crew', '/api/bots/teams/crew']);

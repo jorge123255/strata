@@ -51,12 +51,11 @@ test('a saved roster keeps its length, and the header and sidebar share one memb
   const editor = await readFile(new URL('../src/screens/BotTeamEditor.tsx', import.meta.url), 'utf8');
   const screen = await readFile(new URL('../src/screens/Bots.tsx', import.meta.url), 'utf8');
   assert.match(workspace, /teamRosterLabel\(/);
-  assert.match(workspace, /teamOverRosterCap\(/);
-  assert.match(workspace, /teamCapMessage\(teamRosterCount\(team\.memberIds\)\)/);
+  assert.doesNotMatch(workspace, /teamCapMessage/);
   assert.doesNotMatch(workspace, /Choose who stays/);
   assert.doesNotMatch(workspace, /from before the limit of/);
   assert.doesNotMatch(workspace, /teammates ·/);
-  assert.match(editor, /teamCapMessage\(memberIds\.length\)/);
+  assert.doesNotMatch(editor, /teamCapMessage/);
   assert.doesNotMatch(editor, /Uncheck members until/);
   assert.match(editor, /TEAM_MEMBER_CAP/);
   assert.doesNotMatch(editor, /memberIds\.slice\(0,\s*12\)/);

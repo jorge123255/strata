@@ -3047,7 +3047,6 @@ extension BotWorkspaceTests {
         XCTAssertTrue(BotWorkspaceStore.validTeamDraft(draft, retainedMemberIds: retained.union(["missing"]), availableMemberIds: Set(["bot_0", "bot_1"])))
         draft.memberIds = (0..<13).map { "bot_\($0)" } + ["new_bot"]
         XCTAssertFalse(BotWorkspaceStore.validTeamDraft(draft, unrestrictedTeams: true, retainedMemberIds: retained, availableMemberIds: Set(draft.memberIds)))
-        XCTAssertEqual(BotWorkspaceStore.teamCapMessage(count: 17), "This team has 17 of 12 members; remove some to save changes")
         XCTAssertEqual(BotWorkspaceStore.deletedBotName, "Deleted bot")
     }
     func testLargeTeamCreationRequiresCapabilityAndSendsEveryMemberWithCanonicalZero() async throws {

@@ -593,9 +593,6 @@ final class BotWorkspaceStore: ObservableObject {
         } == true
     }
     static let deletedBotName = "Deleted bot"
-    static func teamCapMessage(count: Int, cap: Int = 12) -> String {
-        "This team has \(count) of \(cap) members; remove some to save changes"
-    }
     static func validTeamDraft(_ draft: BotTeamDraft, unrestrictedTeams: Bool = false, continuousTeams: Bool = false, availableMemberIds: Set<String>? = nil, retainedMemberIds: Set<String>? = nil) -> Bool {
         let validLimits = continuousTeams ? draft.limits == .continuous :
             (unrestrictedTeams ? draft.limits.maxParallel >= 0 : (1...8).contains(draft.limits.maxParallel)) &&

@@ -1,12 +1,12 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { applyMessagePartial, clearStreams, createFollowScroller, hasLiveStream, prefersReducedMotion, shouldFollowOwnMessage, type RoomDraft } from '../lib/chat-motion';
+import { applyChannelReplyGroup, applyMessagePartial, clearStreams, createFollowScroller, hasLiveStream, prefersReducedMotion, shouldFollowOwnMessage, type RoomDraft } from '../lib/chat-motion';
 import { insertMention, mentionInsertion, mentionKeyAction, mentionKeyStops, mentionListVisible, mentionQuery, moveMentionIndex, roomMentionChoices, roomMessageAudience, type MentionChoice } from '../lib/mention-picker';
 import { ShimmerText, StreamedBody, TypingDots, useMessageEntrances } from '../components/ChatMotion';
 import { cx } from '../lib/format';
 import { ApiError, api } from '../lib/client';
 import { botActivityLabel, botTeamRunActive, mergeBotTeamChannelMessages, type Bot, type BotTeam, type BotTeamChannelMessage, type BotTeamChannelSnapshot, type BotTeamPresence, type BotTeamRun } from '../lib/bots';
 import { choicePayload, presentRecovery, recoveryFromEvent, type RecoveryPresentation, type TaskRecoveryEvent } from '../lib/room-choice';
-import { groupRoomReplies } from '../lib/reply-group';
+import { groupRoomReplies, withLiveReplyDrafts } from '../lib/reply-group';
 import { RoomChoiceCard } from '../components/RoomChoiceCard';
 import { ReplyGroupStack } from '../components/ReplyGroupStack';
 import { useStore } from '../lib/store';
@@ -117,8 +117,13 @@ function useRoomDrafts(teamId: string) {
       const detail = (event as CustomEvent<unknown>).detail;
       setDrafts(current => applyMessagePartial(current, detail, teamId));
     };
+    const onRoom = (event: Event) => {
+      const detail = (event as CustomEvent<unknown>).detail;
+      setDrafts(current => applyChannelReplyGroup(current, detail, teamId));
+    };
     window.addEventListener('strata:message-partial', onPartial);
-    return () => window.removeEventListener('strata:message-partial', onPartial);
+    window.addEventListener('strata:team-channel', onRoom);
+    return () => { window.removeEventListener('strata:message-partial', onPartial); window.removeEventListener('strata:team-channel', onRoom); };
   }, [teamId]);
   return drafts;
 }
@@ -132,6 +137,14 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
   const drafts = useRoomDrafts(team.id);
   const [quiet, setQuiet] = useState(false);
   const liveDrafts = drafts.filter(row => row.text && !channel.messages.some(message => message.id === row.messageId));
+  const draftRows: BotTeamChannelMessage[] = liveDrafts.map(draft => {
+    const bot = bots.find(item => item.id === draft.botId);
+    return { id: draft.messageId, sequence: Number.MAX_SAFE_INTEGER, teamId: team.id, kind: 'message', author: { type: 'bot', botId: draft.botId, name: bot?.name ?? 'A teammate', avatarConfig: bot?.avatarConfig }, content: draft.text, createdAt: '', ...(draft.replyGroupId ? { replyGroupId: draft.replyGroupId } : {}) };
+  });
+  const roomMessages = withLiveReplyDrafts(channel.messages, draftRows);
+  const roomFeed = groupRoomReplies(roomMessages, team.memberIds);
+  const stackedIds = new Set(roomFeed.flatMap(item => item.kind === 'replies' ? item.group.messages.map(row => row.id) : []));
+  const looseDrafts = liveDrafts.filter(draft => !stackedIds.has(draft.messageId));
   const entrances = useMessageEntrances(team.id, [...channel.messages.map(message => ({ id: message.id, own: message.author.type === 'user' })), ...liveDrafts.map(draft => ({ id: draft.messageId, own: false }))], !channel.loading);
   const follower = useRef(createFollowScroller(() => prefersReducedMotion()));
   useEffect(() => {
@@ -284,13 +297,14 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
       {channel.loading ? <p role="status" className="bot-room-loading">Opening the team channel…</p> : null}
       {channel.hasEarlier ? <div className="bot-room-earlier"><Btn size="sm" disabled={channel.loadingEarlier} onClick={() => { if (feed.current) olderAnchor.current = { height: feed.current.scrollHeight, top: feed.current.scrollTop }; void channel.loadEarlier().then(ok => { if (!ok) olderAnchor.current = null; }); }}>{channel.loadingEarlier ? 'Loading earlier…' : 'Load earlier messages'}</Btn></div> : null}
       {!channel.loading && !channel.messages.length && !channel.error ? <div className="bot-room-welcome"><div className="bot-room-welcome-faces">{members.slice(0, 4).map(bot => <CuaBotAvatar key={bot.id} name={bot.name} config={bot.avatarConfig} size={56}/>)}</div><h3>Your team, together</h3><p>Say hello, share an idea, or give the team something to work on. Everyone can join the conversation; {bots.find(bot => bot.id === team.coordinatorId)?.name ?? 'your coordinator'} organizes the work.</p><div><button type="button" disabled={!ready || !team.enabled} onClick={() => { setWorkMode('chat'); setPrompt('Hi everyone!'); changeRecipients([...team.memberIds]); composer.current?.focus(); }}>Say hi to everyone</button><button type="button" disabled={!ready || !team.enabled} onClick={() => { setPrompt('Who wants to help with '); changeRecipients([]); composer.current?.focus(); }}>Find the right teammate</button></div></div> : null}
-      {groupRoomReplies(channel.messages, team.memberIds).map(item => {
+      {roomFeed.map(item => {
         if (item.kind === 'replies') return <ReplyGroupStack key={item.group.id} messages={item.group.messages} triggerId={item.group.triggerId} bots={bots} entranceFor={id => entrances.get(id)} disabled={sending} onReply={reply}/>;
         const message = item.message;
+        if (looseDrafts.some(draft => draft.messageId === message.id)) return null;
         const recovery = recoveryFor(message);
         return <TeamChannelMessage key={message.id} message={message} team={team} bots={bots} messages={channel.messages} entrance={entrances.get(message.id)} disabled={sending} hideBody={!!recovery && message.content.trim() === recovery.text.trim()} choice={recovery ? recoveryCard(recovery) : null} onReply={() => reply(message)} onOpenConversation={chatId => void onOpenConversation(chatId).catch(cause => { if (mounted.current) setError(messageError(cause)); })}/>;
       })}
-      {liveDrafts.map(draft => {
+      {looseDrafts.map(draft => {
         const bot = bots.find(item => item.id === draft.botId), name = bot?.name ?? 'A teammate', entrance = entrances.get(draft.messageId);
         return <article key={draft.messageId} className={cx('bot-room-message bot-room-draft', entrance && 'msg-enter')} style={entrance ? { animationDuration: `${entrance.ms}ms`, animationDelay: `${entrance.delay}ms` } : undefined} data-author="bot" aria-live="polite" aria-busy="true" aria-label={`${name} is replying`}>
           <div className="bot-room-message-face">{bot ? <CuaBotAvatar name={name} config={bot.avatarConfig} size={38}/> : <span className="bot-room-person" aria-hidden="true"><Icon name="experts" size={17}/></span>}</div>

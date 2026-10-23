@@ -107,6 +107,25 @@ test('two bots answering one person stay separate, and a typed address that is n
   assert.deepEqual(shape(email), ['user', 'a', 'b']);
 });
 
+test('a live draft joins a replyGroupId stack and a lone draft stays out', () => {
+  const saved = [
+    message({ id: 'user', author: 'user', content: '@everyone look' }),
+    message({ id: 'a', replyGroupId: 'user', content: 'On it' }),
+  ];
+  const partner = message({ id: 'draft-b', replyGroupId: 'user', content: 'Me too' });
+  const alone = message({ id: 'draft-c', replyGroupId: 'other', content: 'Solo' });
+  const plain = message({ id: 'draft-d', content: 'No group' });
+  const joined = replies.withLiveReplyDrafts(saved, [partner, alone, plain]);
+  assert.deepEqual(joined.map(row => row.id), ['user', 'a', 'draft-b']);
+  const stacked = replies.groupRoomReplies(joined, members);
+  assert.deepEqual(shape(stacked), ['user', 'group:user:a+draft-b']);
+  const twoDrafts = replies.withLiveReplyDrafts([], [
+    message({ id: 'draft-a', replyGroupId: 'tm_user', content: 'First' }),
+    message({ id: 'draft-b', replyGroupId: 'tm_user', content: 'Second' }),
+  ]);
+  assert.deepEqual(shape(replies.groupRoomReplies(twoDrafts, members)), ['group:tm_user:draft-a+draft-b']);
+});
+
 test('the header counts replies, the preview stays on the first line, and the stagger is 60ms', () => {
   assert.equal(replies.replyGroupLabel(1), '1 bot replied');
   assert.equal(replies.replyGroupLabel(6), '6 bots replied');
@@ -130,7 +149,9 @@ test('the room renders the stack, collapses past five, and the phone uses the sa
     readFile(new URL('../../ios/StrataMobile/Views/BotWorkspaceViews.swift', import.meta.url), 'utf8'),
   ]);
   assert.match(bots, /replyGroupId\?: string/);
-  assert.match(channel, /groupRoomReplies\(channel\.messages, team\.memberIds\)/);
+  assert.match(channel, /withLiveReplyDrafts\(channel\.messages/);
+  assert.match(channel, /groupRoomReplies\(roomMessages, team\.memberIds\)/);
+  assert.match(channel, /applyChannelReplyGroup/);
   assert.match(channel, /ReplyGroupStack/);
   assert.match(stack, /replyGroupLabel/);
   assert.match(stack, /replyGroupPreview/);

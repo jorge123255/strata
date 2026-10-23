@@ -27,6 +27,21 @@ test('message.partial keeps the full text, starts at seq 1, and drops a cleared 
   assert.equal(first[0].text, 'Hi', 'A partial update copies the list instead of editing it.');
 });
 
+test('message.partial and the team-channel event keep replyGroupId on the live draft', () => {
+  const grouped = motion.applyMessagePartial([], frame(1, 'On it', { replyGroupId: 'tm_user' }), 'team_1');
+  assert.equal(grouped[0].replyGroupId, 'tm_user');
+  const kept = motion.applyMessagePartial(grouped, frame(2, 'On it.'), 'team_1');
+  assert.equal(kept[0].replyGroupId, 'tm_user');
+  const replaced = motion.applyMessagePartial(kept, frame(3, 'On it. Done', { replyGroupId: 'tm_other' }), 'team_1');
+  assert.equal(replaced[0].replyGroupId, 'tm_other');
+  const ignored = motion.applyMessagePartial([], frame(1, 'Hi', { replyGroupId: 'not a group' }), 'team_1');
+  assert.equal(ignored[0].replyGroupId, undefined);
+  const stamped = motion.applyChannelReplyGroup(ignored, { teamId: 'team_1', messageId: 'tm_job', replyGroupId: 'tm_user' }, 'team_1');
+  assert.equal(stamped[0].replyGroupId, 'tm_user');
+  assert.equal(motion.applyChannelReplyGroup(stamped, { teamId: 'team_2', messageId: 'tm_job', replyGroupId: 'tm_nope' }, 'team_1'), stamped);
+  assert.equal(motion.applyChannelReplyGroup(stamped, { teamId: 'team_1', replyGroupId: 'tm_user' }, 'team_1'), stamped);
+});
+
 test('streaming reveals whole words at a steady pace and snaps when motion is reduced', () => {
   const waiting = motion.advanceStream('', 'Hi there', 50, 0, false, false);
   assert.equal(waiting.shown, '');

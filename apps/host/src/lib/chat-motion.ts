@@ -3,7 +3,7 @@
  * without a browser. The screen only paints what these functions decide.
  */
 
-export type RoomDraft = { messageId: string; botId: string; seq: number; text: string; done: boolean };
+export type RoomDraft = { messageId: string; botId: string; seq: number; text: string; done: boolean; replyGroupId?: string };
 
 export type Entrance = { id: string; ms: number; delay: number };
 
@@ -130,18 +130,38 @@ export function shouldFollowOwnMessage(previousIds: readonly string[], next: rea
   return !previousIds.includes(last.id);
 }
 
+const replyGroupIdPattern = /^[A-Za-z0-9_.:-]{1,160}$/;
+
+export function readReplyGroupId(value: unknown): string | undefined {
+  return typeof value === 'string' && replyGroupIdPattern.test(value) ? value : undefined;
+}
+
 /** Keep the newest full text for a message. A stale or empty done frame drops the draft. */
 export function applyMessagePartial(drafts: readonly RoomDraft[], frame: unknown, teamId: string): RoomDraft[] {
   if (!frame || typeof frame !== 'object') return [...drafts];
   const detail = frame as Record<string, unknown>;
   if (detail.teamId !== teamId) return [...drafts];
-  const { messageId, botId, seq, text, done } = detail;
+  const { messageId, botId, seq, text, done, replyGroupId: rawGroup } = detail;
   if (typeof messageId !== 'string' || messageId.length === 0 || typeof botId !== 'string' || botId.length === 0) return [...drafts];
   if (typeof seq !== 'number' || !Number.isInteger(seq) || seq < 1 || typeof text !== 'string') return [...drafts];
   if (done === true && text === '') return drafts.filter(row => row.messageId !== messageId);
   const previous = drafts.find(row => row.messageId === messageId);
   if (previous && previous.seq >= seq) return [...drafts];
-  return [...drafts.filter(row => row.messageId !== messageId), { messageId, botId, seq, text, done: done === true }];
+  const replyGroupId = readReplyGroupId(rawGroup) ?? previous?.replyGroupId;
+  return [...drafts.filter(row => row.messageId !== messageId), { messageId, botId, seq, text, done: done === true, ...(replyGroupId ? { replyGroupId } : {}) }];
+}
+
+/** The team-channel event names the saved line and its reply group. Stamp that id onto the live draft. */
+export function applyChannelReplyGroup(drafts: readonly RoomDraft[], frame: unknown, teamId: string): RoomDraft[] {
+  const same = drafts as RoomDraft[];
+  if (!frame || typeof frame !== 'object') return same;
+  const detail = frame as Record<string, unknown>;
+  if (detail.teamId !== teamId || typeof detail.messageId !== 'string') return same;
+  const replyGroupId = readReplyGroupId(detail.replyGroupId);
+  if (!replyGroupId) return same;
+  const previous = drafts.find(row => row.messageId === detail.messageId);
+  if (!previous || previous.replyGroupId === replyGroupId) return same;
+  return drafts.map(row => row.messageId === detail.messageId ? { ...row, replyGroupId } : row);
 }
 
 export function easeOutCubic(t: number): number {

@@ -93,6 +93,24 @@ function fallbackRun<T extends ReplyGroupSource>(messages: readonly T[], start: 
   return run.length >= 2 ? run : [];
 }
 
+/**
+ * Live drafts join the saved feed only when their replyGroupId already has a partner.
+ * A lone draft stays a streaming line. A draft with no replyGroupId stays out of this list.
+ */
+export function withLiveReplyDrafts<T extends ReplyGroupSource>(messages: readonly T[], drafts: readonly T[]): T[] {
+  const savedIds = new Set(messages.map(row => row.id));
+  const live = drafts.filter(row => trimmed(row.replyGroupId) && !savedIds.has(row.id) && canGroup(row));
+  if (!live.length) return [...messages];
+  const counts = new Map<string, number>();
+  for (const row of [...messages, ...live]) {
+    const groupId = trimmed(row.replyGroupId);
+    if (!groupId || !canGroup(row)) continue;
+    counts.set(groupId, (counts.get(groupId) ?? 0) + 1);
+  }
+  const extra = live.filter(row => (counts.get(trimmed(row.replyGroupId)) ?? 0) >= 2);
+  return extra.length ? [...messages, ...extra] : [...messages];
+}
+
 /** Group bot replies that share `replyGroupId`, even when another message sits between them. */
 export function groupRoomReplies<T extends ReplyGroupSource>(messages: readonly T[], memberIds: readonly string[] = []): RoomFeedEntry<T>[] {
   const buckets = new Map<string, number[]>();

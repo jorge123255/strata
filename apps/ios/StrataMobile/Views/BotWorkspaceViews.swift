@@ -131,10 +131,6 @@ struct BotTeamEditor: View {
                     ForEach(selected.subtracting(Set(store.botCatalog?.bots.map(\.id) ?? [])).sorted(), id: \.self) { id in
                         memberToggle(id: id, name: BotWorkspaceStore.deletedBotName, face: .default(for: "Bot"))
                     }
-                    if selected.count > 12 {
-                        Text(BotWorkspaceStore.teamCapMessage(count: selected.count))
-                            .font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("teamMemberCapNote")
-                    }
                     Picker("Coordinator", selection: $coordinator) {
                         if coordinator.isEmpty { Text("Choose a coordinator").tag("") }
                         ForEach((store.botCatalog?.bots ?? []).filter { selected.contains($0.id) }) { bot in Text(bot.name).tag(bot.id) }
@@ -733,10 +729,6 @@ struct BotTeamDetailView: View {
             .accessibilityIdentifier("editBotTeamButton")
         if !activeRuns.isEmpty { Text("Team work is active. Finish or stop it before changing the team.").font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("teamSettingsActiveWorkMessage") }
         if workspace.teams?.teamSettingsSupported != true { Text("Update Strata on your Mac to edit this team and choose a shared computer.").font(.caption).foregroundStyle(.secondary) }
-        if team.memberIds.count > 12 {
-            Text(BotWorkspaceStore.teamCapMessage(count: team.memberIds.count))
-                .font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("teamMemberCapNote")
-        }
         ForEach(team.memberIds, id: \.self) { id in
             let bot = store.botCatalog?.bots.first { $0.id == id }
             let member = team.briefing?.members.first { $0.botId == id }
