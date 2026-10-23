@@ -12,9 +12,11 @@ export function continuationBudget(bot) {
 }
 
 export function toolSignature(name, args) {
-  const keys = args && typeof args === 'object' && !Array.isArray(args) ? Object.keys(args).sort() : undefined;
   let stable = '';
-  try { stable = JSON.stringify(args ?? {}, keys); } catch { stable = ''; }
+  try {
+    stable = JSON.stringify(args ?? {}, (_key, value) => value && typeof value === 'object' && !Array.isArray(value)
+      ? Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]])) : value);
+  } catch { stable = ''; }
   return `${name}\0${stable}`;
 }
 

@@ -12,6 +12,7 @@ import { jsonRpcProcess } from '../server/bots-runtime/process.mjs';
 import { createRemoteBotSSH } from '../server/bots-ssh.mjs';
 import { createBots } from '../server/bots.mjs';
 import { createConversations } from '../server/conversations.mjs';
+import { toolSignature } from '../server/bots-runtime/step-budget.mjs';
 
 const directory = await mkdtemp(join(tmpdir(), 'strata-continuous-runtime-'));
 test.after(() => rm(directory, { recursive: true, force: true }));
@@ -20,6 +21,33 @@ const tool = { name: 'inspect', description: 'Inert fixture', inputSchema: { typ
 const bot = (provider, continuousTeam) => ({ id: 'bot_fixture', name: 'Fixture', provider, model: 'fixture:cloud', workspace: directory, execution: { kind: 'local' }, continuousTeam });
 const answer = (round, terminal = 40) => round <= terminal ? { text: `Progress ${round}`, toolCalls: [{ id: `call_${round}`, name: 'inspect', args: { step: round } }] } : { text: 'Final report', toolCalls: [] };
 const sse = event => new Response(`data: ${JSON.stringify(event)}\n\ndata: [DONE]\n\n`);
+
+test('tool signatures preserve nested objects and arrays while ignoring object key order', () => {
+  const first = { toolId: 'QA-TEST-tool', arguments: { command: 'first', rows: [{ x: 1, y: 2 }] } };
+  const reordered = { arguments: { rows: [{ y: 2, x: 1 }], command: 'first' }, toolId: 'QA-TEST-tool' };
+  assert.equal(toolSignature('call_tool', first), toolSignature('call_tool', reordered));
+  assert.notEqual(toolSignature('call_tool', first), toolSignature('call_tool', { ...first, arguments: { ...first.arguments, command: 'second' } }));
+  assert.notEqual(toolSignature('call_tool', { rows: [{ x: 1 }] }), toolSignature('call_tool', { rows: [{ x: 2 }] }));
+  assert.notEqual(toolSignature('call_tool', { rows: [1, 2] }), toolSignature('call_tool', { rows: [2, 1] }));
+});
+
+for (const provider of ['configured', 'ollama']) test(`${provider} executes distinct consecutive nested MCP arguments`, async () => {
+  let requests = 0; const executed = [];
+  const next = () => ++requests <= 2
+    ? { text: '', toolCalls: [{ id: `QA-TEST-call-${requests}`, name: 'call_tool', args: { toolId: 'QA-TEST-tool', arguments: { command: requests === 1 ? 'first' : 'second' } } }] }
+    : { text: 'QA-TEST done', toolCalls: [] };
+  const runtime = createBotRuntime({ fetch: async () => {
+    const result = next(), call = result.toolCalls[0];
+    return sse({ choices: [{ delta: call ? { tool_calls: [{ index: 0, id: call.id, function: { name: call.name, arguments: JSON.stringify(call.args) } }] } : { content: result.text }, finish_reason: call ? 'tool_calls' : 'stop' }] });
+  } });
+  try {
+    const result = await runtime.run({ bot: bot(provider, false), message: 'QA-TEST distinct actions',
+      modelRequest: async () => next(), tools: [{ ...tool, name: 'call_tool' }],
+      executeTool: async (_name, args) => { executed.push(args.arguments.command); return 'QA-TEST result'; } });
+    assert.deepEqual(executed, ['first', 'second']);
+    assert.equal(result.publicReply, 'QA-TEST done'); assert.equal(result.pause, undefined);
+  } finally { await runtime.close(); }
+});
 
 for (const continuousTeam of [false, true]) test(`configured model continues past 32 steps while it is still making progress (${continuousTeam ? 'continuous team' : 'standalone'})`, async () => {
   let requests = 0, executions = 0, saved = 0;

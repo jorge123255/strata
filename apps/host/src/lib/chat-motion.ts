@@ -130,6 +130,16 @@ export function shouldFollowOwnMessage(previousIds: readonly string[], next: rea
   return !previousIds.includes(last.id);
 }
 
+/** Passes advance the room cursor, but only spoken peer updates count as unread. */
+export function roomMessageArrivals(messages: readonly { sequence: number; kind: string; author: { type: string } }[], after: number): { unread: number; sequence: number } {
+  let unread = 0, sequence = after;
+  for (const message of messages) {
+    sequence = Math.max(sequence, message.sequence);
+    if (message.sequence > after && message.kind !== 'pass' && message.author.type !== 'user') unread += 1;
+  }
+  return { unread, sequence };
+}
+
 const replyGroupIdPattern = /^[A-Za-z0-9_.:-]{1,160}$/;
 
 export function readReplyGroupId(value: unknown): string | undefined {

@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { applyChannelReplyGroup, applyMessagePartial, clearStreams, createFollowScroller, hasLiveStream, prefersReducedMotion, shouldFollowOwnMessage, type RoomDraft } from '../lib/chat-motion';
+import { applyChannelReplyGroup, applyMessagePartial, clearStreams, createFollowScroller, hasLiveStream, prefersReducedMotion, roomMessageArrivals, shouldFollowOwnMessage, type RoomDraft } from '../lib/chat-motion';
 import { insertMention, mentionInsertion, mentionKeyAction, mentionKeyStops, mentionListVisible, mentionQuery, moveMentionIndex, roomMentionChoices, roomMessageAudience, type MentionChoice } from '../lib/mention-picker';
 import { ShimmerText, StreamedBody, TypingDots, useMessageEntrances } from '../components/ChatMotion';
 import { cx } from '../lib/format';
@@ -217,15 +217,15 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
   useLayoutEffect(() => {
     const element = feed.current; if (!element || !visible) return;
     const rows = channel.messages.map(message => ({ id: message.id, own: message.author.type === 'user' }));
+    const arrived = roomMessageArrivals(channel.messages, previousLast.current);
     if (shouldFollowOwnMessage(seenMessageIds.current, rows)) { olderAnchor.current = null; follow.current = true; setAway(false); setUnread(0); }
     seenMessageIds.current = rows.map(row => row.id);
     if (olderAnchor.current) { const anchor = olderAnchor.current; element.scrollTop = anchor.top + element.scrollHeight - anchor.height; olderAnchor.current = null; }
     else if (follow.current) { follower.current.follow(element); setUnread(0); }
     else {
-      const arrived = channel.messages.filter(row => row.sequence > previousLast.current).length;
-      if (arrived && previousLast.current) setUnread(value => value + arrived);
+      if (arrived.unread && previousLast.current) setUnread(value => value + arrived.unread);
     }
-    previousLast.current = channel.messages.at(-1)?.sequence ?? previousLast.current;
+    previousLast.current = arrived.sequence;
   }, [channel.messages, channel.presence, liveDrafts.map(row => `${row.messageId}:${row.text.length}`).join('|'), visible]);
   function jumpToLatest() { follow.current = true; setAway(false); setUnread(0); if (feed.current) follower.current.follow(feed.current); }
   function rememberCaret(element: HTMLTextAreaElement) { setCaret(element.selectionStart ?? element.value.length); }

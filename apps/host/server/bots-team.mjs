@@ -980,7 +980,7 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
   function workSlots(run) { const cap = run.limits?.maxParallel ?? 0; return cap > 0 ? cap : Infinity; }
   function limitReason(run, job) {
     const limits = run.limits ?? {};
-    if (limits.maxTurns > 0 && run.consumedTurns >= limits.maxTurns) return 'This team reached its turn limit.';
+    if (job.resumeCheckpoint !== true && limits.maxTurns > 0 && run.consumedTurns >= limits.maxTurns) return 'This team reached its turn limit.';
     if (limits.maxDurationMs > 0) { const start = Date.parse(run.createdAt); if (Number.isFinite(start) && now() - start >= limits.maxDurationMs) return 'This team reached its time limit.'; }
     if (limits.maxHops > 0 && (job.hop ?? 0) > limits.maxHops) return 'This team reached its hop limit.';
     if (limits.maxDepth > 0 && (job.depth ?? 0) > limits.maxDepth) return 'This team reached its depth limit.';
@@ -1003,7 +1003,9 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
     });
   }
   const partials = new Map();
-  const partialMessageId = job => `tm_${job.id}`;
+  // A continuation keeps its logical job, but each attempt owns its draft,
+  // terminal report and recovery choice. Old choices remain idempotent.
+  const partialMessageId = job => `tm_${job.id}${job.continuationAttempt ? `_c${job.continuationAttempt}` : ''}`;
   function roomSpeakerJob(chatId) {
     return [...jobs.values()].find(job => job.chatId === chatId && job.state === 'running' && job.channelMode && !job.workflowId && !job.planId);
   }
@@ -1050,15 +1052,16 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
     emit('team-channel', { teamId: run.teamId, botId: job.botId, ...(replyGroupId ? { replyGroupId } : {}), passed: true, at: saved.createdAt });
   }
   function publishRoomLine(job, run, content, outcome) {
-    if (!outcome?.error && !outcome?.cancelled && !outcome?.pause) content = visibleReply(content, !!(job.completion || job.conversationSummary || job.resultBatch));
+    const paused = outcome?.pause?.kind === 'paused' || outcome?.ask?.field?.kind === 'paused';
+    if (!outcome?.error && !outcome?.cancelled && !paused) content = visibleReply(content, !!(job.completion || job.conversationSummary || job.resultBatch));
     if (!content?.trim()) {
       if (partials.has(job.id)) emitPartial(job, '', true);
       const replyGroupId = job.everyoneReply ? job.channelMessageId : undefined;
       if (job.passed || replyGroupId) recordPass(job, run);
       return;
     }
-    if (run.roomConversation && job.channelMode === 'conversation' && !outcome?.error && !outcome?.cancelled && nearDuplicate(run.teamId, content)) { job.suppressedDuplicate = true; if (partials.has(job.id)) emitPartial(job, '', true); return; }
-    const existing = channels.recent(run.teamId, 100).find(row => row.chatId === job.chatId && row.content === content && row.author?.botId === job.botId);
+    if (!paused && run.roomConversation && job.channelMode === 'conversation' && !outcome?.error && !outcome?.cancelled && nearDuplicate(run.teamId, content)) { job.suppressedDuplicate = true; if (partials.has(job.id)) emitPartial(job, '', true); return; }
+    const existing = !paused && channels.recent(run.teamId, 100).find(row => !row.recovery && row.chatId === job.chatId && row.content === content && row.author?.botId === job.botId);
     if (existing) { job.publicReportId = existing.id; if (partials.has(job.id)) emitPartial(job, '', true); return; }
     const bot = (() => { try { return requireBot(job.botId); } catch { return { id: job.botId, name: 'Unavailable teammate' }; } })();
     const cancelled = outcome?.cancelled === true, failed = !!outcome?.error;
@@ -1303,6 +1306,7 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
       if (!['queued', 'running'].includes(run.state)) throw fault(409, 'This team turn is no longer waiting.');
       job.continuationMessage = 'Continue from the checkpoint.';
       job.resumeCheckpoint = true;
+      job.continuationAttempt = (job.continuationAttempt ?? 0) + 1;
       job.state = 'queued';
       delete job.turnId;
       job.updatedAt = stamp();
