@@ -211,7 +211,9 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
   }
   function assertWorkflowReceipts(chatId) {
     const summary = actionJournal.summary(chatId);
-    if (!summary.available || ['pending', 'uncertain', 'interrupted'].some(state => summary.counts[state] > 0)) throw fault(409, 'Inspect unresolved action receipts and computer cleanup before continuing this workflow. No old action will be replayed.');
+    const message = 'Inspect unresolved action receipts and computer cleanup before continuing this workflow. No old action will be replayed.';
+    if (!summary.available) throw Object.assign(fault(409, message), { code: 'team_plan_receipts_unavailable' });
+    if (['pending', 'uncertain', 'interrupted'].some(state => summary.counts[state] > 0)) throw Object.assign(fault(409, message), { code: 'team_plan_receipts_unresolved' });
   }
   const team = createBotTeams({ directory, requireBot, conversations, createConversation: (id, teamContext) => createConversation(id, {}, teamContext), discardConversation: id => { conversations().remove(id); chatProfiles.delete(id); checkpoints.delete(id); save(); }, notify, workAuthority, assertRecoveryAvailable, workflowAuthority, planAuthority: (id, shared, context) => workflowAuthority(id, shared, context, true), assertWorkflowReceipts,
     usesComputer: (source, target) => { const bot = typeof source === 'string' ? chatProfiles.get(source) : source; return bot?.computerMode === 'cua' && cuaResource(bot) === cuaResource(target); }, teamComputers: teamComputerRows, resolveExecution: resolveTeamExecution, isChatBusy: chatBusy, isBotBusy: id => [...active.values()].some(run => run.botId === id), stopDirect: id => stop(id, { team: false }) });

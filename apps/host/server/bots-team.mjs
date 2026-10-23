@@ -709,8 +709,18 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
   }
   function roomTool(name, args, context) {
     const { run, job, team } = roomOrigin(context);
-    if (!args || typeof args !== 'object' || Array.isArray(args) || Object.keys(args).some(key => !(name === 'post_team_message' ? ['message', 'replyToId'] : ['botIds', 'message', 'purpose', 'replyToId']).includes(key))) throw fault(400, 'Choose supported public team message settings.');
-    const content = text(args.message, 8000, 'public team message'), replyToId = publicReply(team.id, args.replyToId) ?? job.channelMessageId;
+    let content, replyToId;
+    try {
+      if (!args || typeof args !== 'object' || Array.isArray(args) || Object.keys(args).some(key => !(name === 'post_team_message' ? ['message', 'replyToId'] : ['botIds', 'message', 'purpose', 'replyToId']).includes(key))) throw fault(400, 'Choose supported public team message settings.');
+      content = text(args.message, 8000, 'public team message');
+      replyToId = publicReply(team.id, args.replyToId) ?? job.channelMessageId;
+    } catch (error) {
+      // Only this pure argument parser proves that a public post had no effect.
+      // Identity conflicts, invitations and all append/persistence failures below
+      // keep their existing outcome: a status code alone never proves rollback.
+      if (name !== 'post_team_message' || error?.status !== 400) throw error;
+      return markNoEffect({ isError: true, content: [{ type: 'text', text: error.message }] });
+    }
     const requestId = `tool_${createHash('sha256').update(`${run.id}:${context.turnId}:${context.toolCallId}`).digest('hex')}`;
     const digest = createHash('sha256').update(JSON.stringify([name, args])).digest('hex'), old = channels.receipt(team.id, requestId);
     if (old) { if (old.digest !== digest) throw fault(409, 'This tool identity already belongs to another public team message.'); return { accepted: true, messageId: old.messageId, deliveryIds: old.deliveryIds ?? [] }; }
