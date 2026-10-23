@@ -2,9 +2,11 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { api } from '../lib/client';
 import { navigate } from '../lib/router';
 import { relTime } from '../lib/format';
-import { botActivityLabel, botTaskWorkLabel, botTeamRunActive, botTeamWorkLabel, botTeamWorkplace, TEAM_MEMBER_CAP, teamOverRosterCap, teamRosterCount, teamRosterLabel, type Bot, type BotTeam, type BotTeamActivity, type BotTeamActivitySnapshot, type BotTeamRun, type BotTeamsSnapshot } from '../lib/bots';
+import { botActivityLabel, botTaskWorkLabel, botTeamRunActive, botTeamWorkLabel, botTeamWorkplace, teamOverRosterCap, teamRosterCount, teamRosterLabel, type Bot, type BotTeam, type BotTeamActivity, type BotTeamActivitySnapshot, type BotTeamRun, type BotTeamsSnapshot } from '../lib/bots';
+import { DELETED_BOT_NAME, reportTeamMemberError, sameTeamMembers, teamCapMessage, teamMemberRemovalRequest } from '../lib/team-members';
 import type { Session } from '../lib/types';
 import { CuaBotAvatar } from '../components/CuaBotAvatar';
+import { TeamMemberRow } from '../components/TeamMemberRow';
 import { BotComputer } from '../components/BotComputer';
 import { BotTeamChannel } from './BotTeamChannel';
 import { Btn, Dialog, Empty, ErrorNotice, Icon, IconBtn } from '../components/ui';
@@ -45,11 +47,28 @@ export function TeamMark({ team, bots, size = 28 }: { team: Pick<BotTeam, 'membe
   return <span className="bot-team-mark" aria-hidden="true">{team.memberIds.slice(0, 3).map(id => { const bot = bots.find(item => item.id === id); return <CuaBotAvatar key={id} name={bot?.name ?? 'Bot'} config={bot?.avatarConfig} size={size}/>; })}</span>;
 }
 
+function TeamRoster({ team, bots, size, disabled, onRemove, notes = false }: { team: BotTeam; bots: Bot[]; size: number; disabled: boolean; onRemove: (id: string) => void; notes?: boolean }) {
+  return <>{team.memberIds.map(id => {
+    const bot = bots.find(item => item.id === id);
+    const briefing = team.briefing?.members.find(member => member.botId === id);
+    const role = briefing?.role ? `${briefing.role}${id === team.coordinatorId ? ' · Coordinator' : ''}` : id === team.coordinatorId ? 'Coordinator' : 'Teammate';
+    return <TeamMemberRow key={id} botId={id} name={bot?.name ?? DELETED_BOT_NAME} missing={!bot} detail={`${role}${bot?.paused ? ' · Paused' : ''}`} avatarConfig={bot?.avatarConfig} size={size} disabled={disabled} onRemove={() => onRemove(id)}>{notes && briefing?.instructions ? <p className="bot-team-member-note">{briefing.instructions}</p> : null}</TeamMemberRow>;
+  })}</>;
+}
+
 export function BotTeamPanel({ bots, resource, teamId, onSelect, onOpenConversation, onNewTeam, onNewBot }: { bots: Bot[]; resource: ReturnType<typeof useBotsResource<BotTeamsSnapshot>>; teamId?: string; onSelect: (id: string) => void; onOpenConversation: (chatId: string, conversation?: Session) => Promise<void>; onNewTeam: () => void; onNewBot: () => void }) {
-  const team = resource.data?.teams.find(item => item.id === teamId), runs = (resource.data?.runs ?? []).filter(run => run.teamId === teamId).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  const [editing, setEditing] = useState(false), [editorSection, setEditorSection] = useState<TeamEditorSection>('general'), [details, setDetails] = useState(false), [channelSupported, setChannelSupported] = useState(true), [tab, setTab] = useState<'channel'|'work'>('channel'), [prompt, setPrompt] = useState(''), [busy, setBusy] = useState(''), [error, setError] = useState('');
+  const savedTeam = resource.data?.teams.find(item => item.id === teamId);
+  const [rosterOverride, setRosterOverride] = useState<{ id: string; memberIds: string[]; coordinatorId: string } | null>(null);
+  const team = savedTeam && rosterOverride?.id === savedTeam.id ? { ...savedTeam, memberIds: rosterOverride.memberIds, coordinatorId: rosterOverride.coordinatorId } : savedTeam;
+  const runs = (resource.data?.runs ?? []).filter(run => run.teamId === teamId).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const [editing, setEditing] = useState(false), [editorSection, setEditorSection] = useState<TeamEditorSection>('general'), [details, setDetails] = useState(false), [channelSupported, setChannelSupported] = useState(true), [tab, setTab] = useState<'channel'|'work'>('channel'), [prompt, setPrompt] = useState(''), [busy, setBusy] = useState(''), [error, setError] = useState(''), [removing, setRemoving] = useState(false);
   const requestId = useRef<string | null>(null), revision = useRef(0), mounted = useRef(true);
-  useEffect(() => { revision.current++; setPrompt(''); requestId.current = null; setError(''); setEditing(false); setDetails(false); setChannelSupported(true); setTab('channel'); }, [teamId]);
+  useEffect(() => { revision.current++; setPrompt(''); requestId.current = null; setError(''); setEditing(false); setDetails(false); setChannelSupported(true); setTab('channel'); setRosterOverride(null); setRemoving(false); }, [teamId]);
+  useEffect(() => {
+    if (!rosterOverride) return;
+    const saved = resource.data?.teams.find(item => item.id === rosterOverride.id);
+    if (!saved || saved.coordinatorId === rosterOverride.coordinatorId && sameTeamMembers(saved.memberIds, rosterOverride.memberIds)) setRosterOverride(null);
+  }, [resource.data, rosterOverride]);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; revision.current++; }; }, []);
   const active = runs.find(run => botTeamRunActive(run.state)), current = !resource.error && !resource.loading;
   const tasks = useBotsResource<BotTeamActivitySnapshot>(team && resource.data?.teamWorkReviewSupported === true ? '/api/bots/activity' : null, 5000, team?.id);
@@ -90,6 +109,21 @@ export function BotTeamPanel({ bots, resource, teamId, onSelect, onOpenConversat
   const [computerOpen, setComputerOpen] = useState(false);
   useEffect(() => { setComputerOpen(false); }, [teamId, sharedComputer?.id]);
   function editSettings(section: TeamEditorSection) { setDetails(false); setEditorSection(section); setEditing(true); }
+  async function removeMember(botId: string) {
+    if (!team || removing || active || !current) return;
+    const request = teamMemberRemovalRequest(team, botId);
+    if (!request) return;
+    const previous = rosterOverride?.id === team.id ? rosterOverride : null;
+    const selected = revision.current;
+    setRosterOverride({ id: team.id, memberIds: request.body.memberIds, coordinatorId: request.body.coordinatorId });
+    setRemoving(true);
+    try {
+      await api.patch(request.path, request.body);
+      await resource.refresh();
+    } catch (cause) {
+      if (mounted.current && selected === revision.current) { setRosterOverride(previous); await reportTeamMemberError(errorMessage(cause)); }
+    } finally { if (mounted.current && selected === revision.current) setRemoving(false); }
+  }
   async function start() {
     if (!team || busy || !prompt.trim() || !team.enabled || active || !current) return;
     const selected = revision.current; requestId.current ??= crypto.randomUUID(); setBusy('start'); setError('');
@@ -107,7 +141,7 @@ export function BotTeamPanel({ bots, resource, teamId, onSelect, onOpenConversat
     <ResourceNotice {...resource} onRefresh={() => void resource.refresh()}>
       {!team ? <><div className="bots-page-heading"><div><h2>Your team</h2><p>Give each bot a role. Work together in shared conversations.</p></div><Btn icon="plus" disabled={bots.length<2} onClick={onNewTeam}>New team</Btn></div><div className="bots-team-grid">{(resource.data?.teams ?? []).map(item => <button className="bots-team-card" key={item.id} onClick={() => onSelect(item.id)}><TeamMark team={item} bots={bots} size={38}/><strong>{item.name}</strong><span>{teamRosterLabel(teamRosterCount(item.memberIds))} · {bots.find(bot => bot.id === item.coordinatorId)?.name ?? 'Unavailable coordinator'} coordinates</span><small>{item.enabled ? 'Collaboration enabled' : 'Collaboration off'}</small></button>)}</div>{!resource.data?.teams.length ? <Empty icon="experts" title="A place for your bots to work together" body={bots.length<2?'Add a second bot, then choose a coordinator and the work limits. Creating a team starts no task.':'Choose existing bots, pick a coordinator, and set the limits. Creating a team starts no task.'} action={<Btn icon="plus" onClick={bots.length<2?onNewBot:onNewTeam}>{bots.length<2?'Add a teammate':'Create your first team'}</Btn>}/> : null}</> : <>
         <div className="bots-page-heading bot-group-header"><div className="bot-group-identity"><TeamMark team={team} bots={bots} size={28}/><div><h2>{team.name}</h2><p>{teamRosterLabel(teamRosterCount(team.memberIds))} · {bots.find(bot => bot.id === team.coordinatorId)?.name ?? 'Unavailable coordinator'} coordinates</p></div></div><IconBtn name="ellipsis" title="Team details" onClick={() => setDetails(true)}/></div>
-        {teamOverRosterCap(teamRosterCount(team.memberIds)) ? <p className="bot-team-cap-note" role="note">This team has {teamRosterCount(team.memberIds)} members from before the limit of {TEAM_MEMBER_CAP}. Choose who stays, then save. <button type="button" onClick={() => editSettings('members')}>Choose who stays</button></p> : null}
+        {teamOverRosterCap(teamRosterCount(team.memberIds)) ? <p className="bot-team-cap-note" role="note"><span>{teamCapMessage(teamRosterCount(team.memberIds))}</span> <button type="button" onClick={() => editSettings('members')}>Remove members</button></p> : null}
         {channelSupported ? <div className="bot-room-tabs" role="tablist" aria-label="Team views"><button type="button" role="tab" id="team-channel-tab" aria-controls="team-channel-panel" aria-selected={tab === 'channel'} onClick={() => setTab('channel')} onKeyDown={event => { if (event.key === 'ArrowRight') { setTab('work'); document.getElementById('team-work-tab')?.focus(); } }}>Channel</button><button type="button" role="tab" id="team-work-tab" aria-controls="team-work-panel" aria-selected={tab === 'work'} onClick={() => setTab('work')} onKeyDown={event => { if (event.key === 'ArrowLeft') { setTab('channel'); document.getElementById('team-channel-tab')?.focus(); } }}>Work{tasks.data ? <TeamWorkCounts groups={taskGroups} stale={!!tasks.error || !!resource.error || workflowStale} workflows={workflowCounts}/> : tasks.error ? <span className="bot-work-counts">Unavailable</span> : active ? <span className="bot-room-tab-dot" aria-label="Active work"/> : null}</button></div> : <p className="small muted">This host supports coordinator work. Update it to use the shared team channel.</p>}
         <div className={`bot-team-view${tab === 'work' ? ' bot-team-view--work' : ''}`}>{workflowsSupported && team ? <BotTeamWorkflow key={team.id} team={team} bots={bots} visible={true} current={current} resource={workflows} view={tab} sessions={workflowSessions} activityStale={!!workflowActivity.error || workflowActivity.loading} onOpenConversation={onOpenConversation} onChanged={resource.refresh}/> : null}
         {channelSupported ? <div id="team-channel-panel" role="tabpanel" aria-labelledby="team-channel-tab" className="bot-room-panel" hidden={tab !== 'channel'}><BotTeamChannel key={team.id} team={team} bots={bots} visible={tab === 'channel'} current={current} continuousSupported={resource.data?.teamContinuousSupported} coordinatorWorkToolsSupported={resource.data?.teamCoordinatorWorkToolsSupported === true} workPlansSupported={plansSupported} onUnsupported={() => setChannelSupported(false)} onOpenConversation={onOpenConversation} onStateChange={resource.refresh} onWorkChanged={async () => { await tasks.refresh(); await resource.refresh(); }} onDetails={() => setDetails(true)} onShowWork={() => setTab('work')}/></div> : null}
@@ -122,7 +156,7 @@ export function BotTeamPanel({ bots, resource, teamId, onSelect, onOpenConversat
             onOpenConversation={id => void onOpenConversation(id).catch(cause => setError(errorMessage(cause)))} onDismiss={dismissStaleTeamWork}/> : null}
         </ResourceNotice> : null}
         <details className="bot-work-disclosure" key={`members-${team.id}`}><summary>Team members <span>{team.memberIds.length}</span></summary>
-        <div className="bots-team-members">{team.memberIds.map(id => { const bot = bots.find(item => item.id === id); return <div key={id}><CuaBotAvatar name={bot?.name ?? 'Unavailable bot'} config={bot?.avatarConfig} size={34}/><span><strong>{bot?.name ?? 'Unavailable bot'}</strong><small>{team.briefing?.members.find(member => member.botId === id)?.role ? `${team.briefing.members.find(member => member.botId === id)!.role}${id === team.coordinatorId ? ' · Coordinator' : ''}` : id === team.coordinatorId ? 'Coordinator' : 'Teammate'}{bot?.paused ? ' · Paused' : ''}</small></span></div>; })}</div>
+        <div className="bots-team-members"><TeamRoster team={team} bots={bots} size={34} disabled={!!active || removing || !current} onRemove={id => void removeMember(id)}/></div>
         </details>
         {runs.some(run => botTeamRunActive(run.state)) ? <section aria-label="Requests in progress"><div className="bots-section-heading"><h3>Requests in progress</h3></div><div className="bots-activity-list">{runs.filter(run => botTeamRunActive(run.state)).map(run => <article key={run.id} className="bots-activity-card"><div><Icon name="experts" size={20}/><div><strong>{botActivityLabel(run.state)}</strong><p>{run.consumedTurns} turns · {relTime(run.createdAt)}</p></div><span className="spacer"/><Btn size="sm" onClick={() => void onOpenConversation(run.rootChatId).catch(cause => setError(errorMessage(cause)))}>Open conversation</Btn><Btn size="sm" variant="danger" disabled={!current || !!busy || run.state === 'stopping'} onClick={() => void stop(run)}>{busy === run.id ? 'Stopping…' : run.state === 'cleanup_pending' ? 'Retry Stop' : 'Stop team'}</Btn></div>{run.detail ? <p>{run.detail}</p> : null}{run.state === 'cleanup_pending' ? <p>Some work has not confirmed it stopped. Check the conversation before starting another request.</p> : null}</article>)}</div></section> : null}
         <details className="bot-work-disclosure" key={`requests-${team.id}`}><summary><h3>Team requests</h3><span>{runs.filter(run => !botTeamRunActive(run.state)).length} earlier requests</span></summary>
@@ -133,13 +167,13 @@ export function BotTeamPanel({ bots, resource, teamId, onSelect, onOpenConversat
       </>}
     </ResourceNotice>
     {details && team && workplace ? <Dialog open title={team.name} compact className="bot-group-details" onClose={() => setDetails(false)} actions={<Btn onClick={() => setDetails(false)}>Done</Btn>}>
-      <section className="bot-team-details-section"><div className="bot-team-details-heading"><h3>Members · {team.memberIds.length}</h3><Btn size="sm" disabled={!!busy || !current} onClick={() => editSettings('members')}>Edit members</Btn></div><div className="bot-group-detail-members">{team.memberIds.map(id => { const bot = bots.find(row => row.id === id); return <div key={id}><CuaBotAvatar name={bot?.name ?? 'Unavailable bot'} config={bot?.avatarConfig} size={42}/><span><strong>{bot?.name ?? 'Unavailable bot'}</strong><small>{team.briefing?.members.find(member => member.botId === id)?.role ? `${team.briefing.members.find(member => member.botId === id)!.role}${id === team.coordinatorId ? ' · Coordinator' : ''}` : id === team.coordinatorId ? 'Coordinator' : 'Teammate'}{bot?.paused ? ' · Paused' : ''}</small>{team.briefing?.members.find(member => member.botId === id)?.instructions ? <p className="bot-team-member-note">{team.briefing.members.find(member => member.botId === id)!.instructions}</p> : null}</span></div>; })}</div></section>
+      <section className="bot-team-details-section"><div className="bot-team-details-heading"><h3>Members · {team.memberIds.length}</h3><Btn size="sm" disabled={!!busy || !current} onClick={() => editSettings('members')}>Edit members</Btn></div><div className="bot-group-detail-members"><TeamRoster team={team} bots={bots} size={42} notes disabled={!!active || removing || !current} onRemove={id => void removeMember(id)}/></div></section>
       {team.briefing?.instructions ? <section className="bot-team-details-section"><div className="bot-team-details-heading"><h3>Team instructions</h3><Btn size="sm" disabled={!!busy || !current} onClick={() => editSettings('general')}>Edit instructions</Btn></div><p className="bot-team-public-instructions">{team.briefing.instructions}</p></section> : null}
       <section className="bot-team-details-section" aria-label="Team computer and working folder"><div className="bot-team-details-heading"><h3>Computer & working folder</h3><Btn size="sm" disabled={!!busy || !current} onClick={() => editSettings('computer')}>Change</Btn></div><div className="bot-team-details-place"><Icon name="computer" size={19}/><div><strong>{workplace.name}</strong><span>{workplace.label}</span><code>{workplace.workspace}</code></div></div><p className="bot-group-detail-note">{workplace.shared ? 'Everyone shares this computer and folder. Each teammate keeps its own model and permissions.' : 'Each teammate uses its saved computer and working folder.'}</p>{computerOwner ? <Btn icon="computer" disabled={!!busy || !current} onClick={() => { setDetails(false); setComputerOpen(true); }}>Open team computer</Btn> : null}</section>
       {active ? <p className="bot-group-detail-note">The team is working. Settings can be reviewed now and changed after active work finishes or stops.</p> : null}
       <div className="bot-group-detail-actions"><Btn icon="link" onClick={()=>navigate('connectors',undefined,{team:team.id})}>Team connectors</Btn><Btn icon="activity" onClick={() => { setDetails(false); setTab('work'); }}>View team work</Btn><Btn icon="settings" disabled={!!busy || !current} onClick={() => editSettings('general')}>Team settings</Btn></div><p className="bot-group-detail-note">{botTeamWorkLabel(team.limits, resource.data?.teamContinuousSupported, resource.data?.teamUnrestrictedSupported)}{team.enabled ? '' : ' · Collaboration off'}. Earlier messages and completed work are retained.</p>
     </Dialog> : null}
-    {editing && team ? <BotTeamEditor key={team.id} bots={bots} team={team} computers={resource.data?.teamComputers} settingsSupported={resource.data?.teamSettingsSupported} instructionsSupported={resource.data?.teamInstructionsSupported} unrestrictedSupported={resource.data?.teamUnrestrictedSupported} continuousSupported={resource.data?.teamContinuousSupported} activeWork={!!active} initialSection={editorSection} onReload={resource.refresh} onClose={() => setEditing(false)} onSaved={async item => { const selected=revision.current;await resource.refresh();if(mounted.current&&selected===revision.current){setEditing(false);onSelect(item.id);} }}/>: null}
+    {editing && team ? <BotTeamEditor key={team.id} bots={bots} team={team} computers={resource.data?.teamComputers} settingsSupported={resource.data?.teamSettingsSupported} instructionsSupported={resource.data?.teamInstructionsSupported} unrestrictedSupported={resource.data?.teamUnrestrictedSupported} continuousSupported={resource.data?.teamContinuousSupported} activeWork={!!active} initialSection={editorSection} onReload={resource.refresh} onClose={() => setEditing(false)} onSaved={async item => { const selected=revision.current;await resource.refresh();if(mounted.current&&selected===revision.current){setEditing(false);onSelect(item.id);} }} onDeleted={async () => { const selected = revision.current; await resource.refresh(); if (mounted.current && selected === revision.current) { setEditing(false); navigate('bots', 'teams'); } }}/>: null}
     {computerOpen && computerOwner && team ? <BotComputer key={`${team.id}:${computerOwner.id}`} bot={computerOwner} teamName={team.name} onClose={() => setComputerOpen(false)}/> : null}
   </section>;
 }

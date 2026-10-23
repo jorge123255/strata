@@ -164,10 +164,13 @@ export function teamRosterCount(memberIds: readonly string[] | undefined) { retu
 export function teamRosterLabel(count: number) { return count === 1 ? '1 member' : `${count} members`; }
 export function teamOverRosterCap(count: number) { return count > TEAM_MEMBER_CAP; }
 export function botActivityLabel(state: string) { return ({ queued: 'Queued', running: 'Working', completed: 'Completed', error: 'Failed', cancelled: 'Stopped', interrupted: 'Interrupted', stopping: 'Stopping…', cleanup_pending: 'Checking cleanup', delivered: 'Delivered', pending: 'Waiting', accepted: 'Accepted', refused: 'Refused' } as Record<string, string>)[state] ?? state; }
-export function botTeamDraftError(draft: Pick<BotTeam, 'name'|'memberIds'|'coordinatorId'|'limits'> & { execution?: BotTeamExecution; briefing?: BotTeamBriefing; talkativeness?: Record<string, number>; bidding?: boolean; selectorBotId?: string | null }, bots: Pick<Bot,'id'>[], computers?: BotTeamComputer[], unrestricted = false, continuous = false): string | null {
+export function botTeamDraftError(draft: Pick<BotTeam, 'name'|'memberIds'|'coordinatorId'|'limits'> & { execution?: BotTeamExecution; briefing?: BotTeamBriefing; talkativeness?: Record<string, number>; bidding?: boolean; selectorBotId?: string | null }, bots: Pick<Bot,'id'>[], computers?: BotTeamComputer[], unrestricted = false, continuous = false, retainedMemberIds?: readonly string[]): string | null {
+  const retained = retainedMemberIds ? new Set(retainedMemberIds) : undefined;
+  const uniqueMembers = new Set(draft.memberIds);
+  const kept = !!retained && uniqueMembers.size === draft.memberIds.length && draft.memberIds.length <= retained.size && draft.memberIds.every(id => retained.has(id));
   if (!draft.name.trim() || draft.name.trim().length>80) return 'Give this team a name of up to 80 characters.';
-  if (draft.memberIds.length < 2 || draft.memberIds.length > TEAM_MEMBER_CAP) return 'Choose from 2 to 12 team members.';
-  if (new Set(draft.memberIds).size !== draft.memberIds.length || draft.memberIds.some(id => !bots.some(bot => bot.id === id))) return 'Choose available bots for this team.';
+  if (draft.memberIds.length < 2 || !kept && draft.memberIds.length > TEAM_MEMBER_CAP) return 'Choose from 2 to 12 team members.';
+  if (uniqueMembers.size !== draft.memberIds.length || draft.memberIds.some(id => !bots.some(bot => bot.id === id) && !(kept && retained?.has(id)))) return 'Choose available bots for this team.';
   if (!draft.memberIds.includes(draft.coordinatorId)) return 'Choose a coordinator from this team.';
   if (draft.bidding !== undefined && typeof draft.bidding !== 'boolean') return 'Choose whether teammates bid to speak.';
   if (draft.selectorBotId !== undefined && draft.selectorBotId !== null && draft.selectorBotId !== '' && !draft.memberIds.includes(draft.selectorBotId)) return 'Choose a teammate to pick the next speaker.';
@@ -177,7 +180,7 @@ export function botTeamDraftError(draft: Pick<BotTeam, 'name'|'memberIds'|'coord
   }
   if (draft.briefing) {
     const cleanText = (value: string, max: number) => typeof value === 'string' && value.length <= max && !value.includes('\0') && !Array.from(value).some(character => { const point = character.codePointAt(0)!; return point >= 0xD800 && point <= 0xDFFF; });
-    if (!cleanText(draft.briefing.instructions, 8000) || !Array.isArray(draft.briefing.members) || draft.briefing.members.length > (unrestricted ? draft.memberIds.length : TEAM_MEMBER_CAP)) return 'Use team instructions of up to 8,000 characters.';
+    if (!cleanText(draft.briefing.instructions, 8000) || !Array.isArray(draft.briefing.members) || draft.briefing.members.length > (unrestricted || kept ? draft.memberIds.length : TEAM_MEMBER_CAP)) return 'Use team instructions of up to 8,000 characters.';
     const seen = new Set<string>();
     let total = draft.briefing.instructions.length;
     for (const member of draft.briefing.members) {

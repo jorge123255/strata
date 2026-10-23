@@ -68,6 +68,7 @@ struct BotTeamEditor: View {
     @State private var talkativeness: [String: Int]
     @State private var bidding: Bool
     @State private var confirmingReload = false
+    @State private var memberPendingRemoval: String?
     @FocusState private var focused: Field?
     private enum Field: Hashable { case name, folder, instructions, memberRole(String), memberInstructions(String) }
 
@@ -105,7 +106,7 @@ struct BotTeamEditor: View {
                      bidding: bidding ? true : nil)
     }
     private var canSave: Bool {
-        BotWorkspaceStore.validTeamDraft(draft, unrestrictedTeams: unrestrictedTeams, continuousTeams: limits == .continuous, availableMemberIds: Set(store.botCatalog?.bots.map(\.id) ?? [])) && workspace.mutation == nil && !hasActiveWork && !changed &&
+        BotWorkspaceStore.validTeamDraft(draft, unrestrictedTeams: unrestrictedTeams, continuousTeams: limits == .continuous, availableMemberIds: Set(store.botCatalog?.bots.map(\.id) ?? []), retainedMemberIds: baseline.map { Set($0.memberIds) }) && workspace.mutation == nil && !hasActiveWork && !changed &&
         (baseline == nil || (supportsSettings && baseline?.revision != nil)) &&
         (executionMode != "shared" || (chosenComputer?.available == true && chosenComputer?.allowsFolder(folder.trimmingCharacters(in: .whitespacesAndNewlines)) == true))
     }
@@ -128,7 +129,11 @@ struct BotTeamEditor: View {
                         memberToggle(id: bot.id, name: bot.name, face: bot.face)
                     }
                     ForEach(selected.subtracting(Set(store.botCatalog?.bots.map(\.id) ?? [])).sorted(), id: \.self) { id in
-                        memberToggle(id: id, name: "Unavailable bot", face: .default(for: "Bot"))
+                        memberToggle(id: id, name: BotWorkspaceStore.deletedBotName, face: .default(for: "Bot"))
+                    }
+                    if selected.count > 12 {
+                        Text(BotWorkspaceStore.teamCapMessage(count: selected.count))
+                            .font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("teamMemberCapNote")
                     }
                     Picker("Coordinator", selection: $coordinator) {
                         if coordinator.isEmpty { Text("Choose a coordinator").tag("") }
@@ -159,7 +164,7 @@ struct BotTeamEditor: View {
                                 HStack(spacing: 10) {
                                     AvatarBadge(bot?.face ?? .default(for: "Bot"), size: 30)
                                     VStack(alignment: .leading, spacing: 3) {
-                                        Text(bot?.name ?? "Unavailable bot")
+                                        Text(bot?.name ?? BotWorkspaceStore.deletedBotName)
                                         Text(role.isEmpty ? (id == coordinator ? "Coordinator" : "Add a role & instructions") : role).font(.caption).foregroundStyle(.secondary)
                                     }
                                 }.accessibilityIdentifier("teamMemberBriefing-\(id)")
@@ -256,6 +261,13 @@ struct BotTeamEditor: View {
                 .confirmationDialog("Discard your changes and reload this team?", isPresented: $confirmingReload) {
                     Button("Reload latest team", role: .destructive) { if let current { reload(current) } }
                 }
+                .confirmationDialog("Remove this teammate?", isPresented: Binding(get: { memberPendingRemoval != nil }, set: { if !$0 { memberPendingRemoval = nil } }), titleVisibility: .visible) {
+                    Button("Remove", role: .destructive) {
+                        if let id = memberPendingRemoval { confirmRemoveMember(id) }
+                        memberPendingRemoval = nil
+                    }
+                    Button("Cancel", role: .cancel) { memberPendingRemoval = nil }
+                } message: { Text("Remove this bot from the team.") }
                 .task { await store.refreshBots(); await workspace.refreshTeams() }
         }
     }
@@ -273,6 +285,28 @@ struct BotTeamEditor: View {
                 }
             }
         }.disabled(anchor || selected.count >= 12 && !selected.contains(id)).accessibilityIdentifier("teamMember-\(id)")
+            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                if !anchor && !hasActiveWork && workspace.mutation == nil && (baseline == nil || supportsSettings && baseline?.revision != nil) {
+                    Button("Remove", role: .destructive) { memberPendingRemoval = id }
+                        .accessibilityIdentifier("removeTeamMember-\(id)")
+                }
+            }
+    }
+    private func confirmRemoveMember(_ id: String) {
+        let snapshot = selected
+        let snapshotCoordinator = coordinator
+        selected.remove(id)
+        if coordinator == id { coordinator = selected.sorted().first ?? "" }
+        guard let saved = baseline, saved.memberIds.contains(id) else { return }
+        Task {
+            let savedOk = await workspace.removeTeamMember(saved, botId: id)
+            if savedOk, let updated = workspace.teams?.teams.first(where: { $0.id == saved.id }) {
+                baseline = updated
+            } else if !savedOk {
+                selected = snapshot
+                coordinator = snapshotCoordinator
+            }
+        }
     }
     private func reload(_ team: BotTeam) {
         baseline = team; name = team.name; selected = Set(team.memberIds); coordinator = team.coordinatorId; limits = team.limits == .continuous ? .continuous : team.limits.forHost(unrestrictedTeams: unrestrictedTeams, continuousTeams: false)
@@ -378,6 +412,7 @@ struct BotTeamDetailView: View {
     @State private var choiceBusy = ""
     @State private var choiceErrors: [String: String] = [:]
     @State private var choiceRetries: [String: String] = [:]
+    @State private var memberPendingRemoval: String?
     private var team: BotTeam? { workspace.teams?.teams.first { $0.id == teamId } }
     private var channel: BotTeamChannel? { workspace.channels[teamId] }
     private var channelKey: String { BotWorkspaceStore.channelKey(teamId) }
@@ -698,19 +733,37 @@ struct BotTeamDetailView: View {
             .accessibilityIdentifier("editBotTeamButton")
         if !activeRuns.isEmpty { Text("Team work is active. Finish or stop it before changing the team.").font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("teamSettingsActiveWorkMessage") }
         if workspace.teams?.teamSettingsSupported != true { Text("Update Strata on your Mac to edit this team and choose a shared computer.").font(.caption).foregroundStyle(.secondary) }
+        if team.memberIds.count > 12 {
+            Text(BotWorkspaceStore.teamCapMessage(count: team.memberIds.count))
+                .font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("teamMemberCapNote")
+        }
         ForEach(team.memberIds, id: \.self) { id in
             let bot = store.botCatalog?.bots.first { $0.id == id }
             let member = team.briefing?.members.first { $0.botId == id }
+            let name = bot?.name ?? BotWorkspaceStore.deletedBotName
             HStack(alignment: .top, spacing: 10) {
                 AvatarBadge(bot?.face ?? .default(for: "Bot"), size: 30)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(bot?.name ?? "Unavailable bot")
+                    Text(name)
                     if let role = member?.role, !role.isEmpty { Text(role).font(.caption).foregroundStyle(.secondary) }
                     if let instructions = member?.instructions, !instructions.isEmpty { Text(instructions).font(.caption).foregroundStyle(.secondary).lineLimit(4) }
                 }
                 Spacer()
                 if id == team.coordinatorId { Text("Coordinator").font(.caption).foregroundStyle(.secondary) }
             }
+            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                if activeRuns.isEmpty && workspace.mutation == nil && workspace.teams?.teamSettingsSupported == true && team.revision != nil {
+                    Button("Remove", role: .destructive) { memberPendingRemoval = id }
+                        .accessibilityIdentifier("removeTeamMember-\(id)")
+                }
+            }
+            .confirmationDialog("Remove \(name) from this team?", isPresented: Binding(get: { memberPendingRemoval == id }, set: { if !$0 && memberPendingRemoval == id { memberPendingRemoval = nil } }), titleVisibility: .visible) {
+                Button("Remove", role: .destructive) {
+                    memberPendingRemoval = nil
+                    Task { await workspace.removeTeamMember(team, botId: id) }
+                }
+                Button("Cancel", role: .cancel) { memberPendingRemoval = nil }
+            } message: { Text("Remove this bot from the team.") }
         }
         if let instructions = team.briefing?.instructions, !instructions.isEmpty {
             VStack(alignment: .leading, spacing: 6) { Text("Team instructions").font(.subheadline.weight(.semibold)); Text(instructions).font(.subheadline).textSelection(.enabled) }

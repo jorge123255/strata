@@ -531,14 +531,14 @@ final class BotWorkspaceStore: ObservableObject {
         if value != nil { await refreshTeams() }
         return value != nil && isCurrent()
     }
-    func updateTeam(_ team: BotTeam, draft: BotTeamDraft) async -> Bool {
+    func updateTeam(_ team: BotTeam, draft: BotTeamDraft, retainedMemberIds: Set<String>? = nil) async -> Bool {
         var draft = draft
         let chosenContinuous = draft.limits == .continuous
         guard teams?.teamSettingsSupported == true, CompanionClient.isSafeIdentifier(team.id),
               let revision = team.revision, revision > 0,
               teams?.teams.first(where: { $0.id == team.id })?.revision == revision,
               teams?.runs.contains(where: { $0.teamId == team.id && $0.isActive }) != true,
-              Self.validTeamDraft(draft, unrestrictedTeams: unrestrictedTeams, continuousTeams: chosenContinuous, availableMemberIds: currentBotIds()), validTeamExecution(draft), draft.briefing == nil || teams?.teamInstructionsSupported == true else { return false }
+              Self.validTeamDraft(draft, unrestrictedTeams: unrestrictedTeams, continuousTeams: chosenContinuous, availableMemberIds: currentBotIds(), retainedMemberIds: retainedMemberIds ?? Set(team.memberIds)), validTeamExecution(draft), draft.briefing == nil || teams?.teamInstructionsSupported == true else { return false }
         struct Result: Decodable { var team: BotTeam }
         let body = BotTeamUpdate(expectedRevision: revision, name: draft.name, memberIds: draft.memberIds,
                                  coordinatorId: draft.coordinatorId, limits: draft.limits.forHost(unrestrictedTeams: unrestrictedTeams, continuousTeams: chosenContinuous), execution: draft.execution ?? .individual, briefing: draft.briefing, talkativeness: draft.talkativeness, bidding: draft.bidding)
@@ -546,22 +546,69 @@ final class BotWorkspaceStore: ObservableObject {
         if value != nil { await refreshTeams() }
         return value != nil && isCurrent()
     }
+    /// Drops one saved teammate and patches the roster. A failed save puts the previous team back.
+    func removeTeamMember(_ team: BotTeam, botId: String) async -> Bool {
+        guard var snapshot = teams, let index = snapshot.teams.firstIndex(where: { $0.id == team.id }) else { return false }
+        let original = snapshot.teams[index]
+        guard original.memberIds.contains(botId) else { return false }
+        guard teams?.teamSettingsSupported == true else {
+            if isCurrent() { messages["teams"] = "Update Strata on your Mac to edit this team." }
+            return false
+        }
+        if teams?.runs.contains(where: { $0.teamId == original.id && $0.isActive }) == true {
+            if isCurrent() { messages["teams"] = "Finish or stop team work before removing a teammate." }
+            return false
+        }
+        if let computerId = original.execution?.computerId, teams?.teamComputers?.first(where: { $0.id == computerId })?.memberId == botId {
+            if isCurrent() { messages["teams"] = "Choose another computer before removing the teammate who hosts it." }
+            return false
+        }
+        var memberIds = original.memberIds
+        memberIds.removeAll { $0 == botId }
+        var coordinatorId = original.coordinatorId
+        if coordinatorId == botId { coordinatorId = memberIds.first ?? "" }
+        guard memberIds.count >= 2, memberIds.contains(coordinatorId) else {
+            if isCurrent() { messages["teams"] = "Choose from 2 to 12 team members." }
+            return false
+        }
+        var next = original
+        next.memberIds = memberIds
+        next.coordinatorId = coordinatorId
+        if let briefing = next.briefing {
+            next.briefing = BotTeamBriefing(instructions: briefing.instructions, members: briefing.members.filter { memberIds.contains($0.botId) })
+        }
+        if let voice = next.talkativeness { next.talkativeness = voice.filter { memberIds.contains($0.key) } }
+        let previous = teams
+        snapshot.teams[index] = next
+        teams = snapshot
+        let draft = BotTeamDraft(name: next.name, memberIds: next.memberIds, coordinatorId: next.coordinatorId, enabled: next.enabled, limits: next.limits, execution: next.execution, briefing: next.briefing, talkativeness: next.talkativeness, bidding: next.bidding)
+        let saved = await updateTeam(original, draft: draft, retainedMemberIds: Set(original.memberIds))
+        if !saved, isCurrent(), teams?.teams.first(where: { $0.id == original.id })?.memberIds == memberIds { teams = previous }
+        return saved && isCurrent()
+    }
     private func validTeamExecution(_ draft: BotTeamDraft) -> Bool {
         guard let execution = draft.execution, execution.isShared else { return true }
         return teams?.teamSettingsSupported == true && teams?.teamComputers?.contains {
             $0.id == execution.computerId && $0.available && ($0.memberId == nil || draft.memberIds.contains($0.memberId!)) && $0.allowsFolder(execution.workspace ?? "")
         } == true
     }
-    static func validTeamDraft(_ draft: BotTeamDraft, unrestrictedTeams: Bool = false, continuousTeams: Bool = false, availableMemberIds: Set<String>? = nil) -> Bool {
+    static let deletedBotName = "Deleted bot"
+    static func teamCapMessage(count: Int, cap: Int = 12) -> String {
+        "This team has \(count) of \(cap) members; remove some to save changes"
+    }
+    static func validTeamDraft(_ draft: BotTeamDraft, unrestrictedTeams: Bool = false, continuousTeams: Bool = false, availableMemberIds: Set<String>? = nil, retainedMemberIds: Set<String>? = nil) -> Bool {
         let validLimits = continuousTeams ? draft.limits == .continuous :
             (unrestrictedTeams ? draft.limits.maxParallel >= 0 : (1...8).contains(draft.limits.maxParallel)) &&
             (1...4).contains(draft.limits.maxDepth) && (1...32).contains(draft.limits.maxHops) &&
             (1...100).contains(draft.limits.maxTurns) && (60_000...3_600_000).contains(draft.limits.maxDurationMs)
+        let unique = Set(draft.memberIds)
+        let shrinking = retainedMemberIds.map { unique.isSubset(of: $0) && draft.memberIds.count <= $0.count && unique.count == draft.memberIds.count } ?? false
+        let known = availableMemberIds.map { available in draft.memberIds.allSatisfy { available.contains($0) || (shrinking && retainedMemberIds?.contains($0) == true) } } ?? true
         guard !draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, draft.name.count <= 80,
-              draft.memberIds.count >= 2, draft.memberIds.count <= 12,
-              Set(draft.memberIds).count == draft.memberIds.count,
+              draft.memberIds.count >= 2, shrinking || draft.memberIds.count <= 12,
+              unique.count == draft.memberIds.count,
               draft.memberIds.allSatisfy(CompanionClient.isSafeIdentifier), draft.memberIds.contains(draft.coordinatorId),
-              availableMemberIds.map({ Set(draft.memberIds).isSubset(of: $0) }) != false, validLimits else { return false }
+              known, validLimits else { return false }
         if let voice = draft.talkativeness, voice.contains(where: { !draft.memberIds.contains($0.key) || !(0...100).contains($0.value) }) { return false }
         if let briefing = draft.briefing {
             func validText(_ value: String, max: Int) -> Bool { value.utf16.count <= max && !value.contains("\0") }

@@ -3036,6 +3036,20 @@ extension BotWorkspaceTests {
         XCTAssertFalse(BotWorkspaceStore.validTeamDraft(draft))
         draft.memberIds.removeLast(); XCTAssertTrue(BotWorkspaceStore.validTeamDraft(draft))
     }
+    func testRetainedRosterAllowsShrinkingPastTheCapAndKeepsNewMembersBounded() {
+        let retained = Set((0..<17).map { "bot_\($0)" })
+        var draft = BotTeamDraft(name: "Large team", memberIds: Array(retained).sorted(), coordinatorId: "bot_0")
+        XCTAssertFalse(BotWorkspaceStore.validTeamDraft(draft, availableMemberIds: Set(draft.memberIds)))
+        XCTAssertTrue(BotWorkspaceStore.validTeamDraft(draft, retainedMemberIds: retained, availableMemberIds: Set<String>()))
+        draft.memberIds = ["bot_0", "bot_1", "missing"]
+        draft.coordinatorId = "bot_0"
+        XCTAssertFalse(BotWorkspaceStore.validTeamDraft(draft, retainedMemberIds: retained, availableMemberIds: Set(["bot_0", "bot_1"])))
+        XCTAssertTrue(BotWorkspaceStore.validTeamDraft(draft, retainedMemberIds: retained.union(["missing"]), availableMemberIds: Set(["bot_0", "bot_1"])))
+        draft.memberIds = (0..<13).map { "bot_\($0)" } + ["new_bot"]
+        XCTAssertFalse(BotWorkspaceStore.validTeamDraft(draft, unrestrictedTeams: true, retainedMemberIds: retained, availableMemberIds: Set(draft.memberIds)))
+        XCTAssertEqual(BotWorkspaceStore.teamCapMessage(count: 17), "This team has 17 of 12 members; remove some to save changes")
+        XCTAssertEqual(BotWorkspaceStore.deletedBotName, "Deleted bot")
+    }
     func testLargeTeamCreationRequiresCapabilityAndSendsEveryMemberWithCanonicalZero() async throws {
         let fixture = StoreTransport(); defer { fixture.close() }; var supported = false
         let ids = (0..<12).map { "bot_\($0)" }
