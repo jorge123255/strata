@@ -197,7 +197,7 @@ export function createConversations({ directory, enabled = () => true, notify = 
     if (!session.messages.some(m => m.id === assistantMessageId)) session.messages.push({ id: assistantMessageId, role: 'assistant', content: '', streaming: true, at });
     if (session.defaultTitle || session.title === 'New conversation') { session.title = message.length > 48 ? message.slice(0, 47).trimEnd() + '…' : message; session.defaultTitle = false; }
     session.updatedAt = at;
-    turns.set(id, { assistantMessageId, executing: true, started: clock(), controller, steps: 0 }); record.status = 'Starting…'; touch(id, true);
+    turns.set(id, { assistantMessageId, executing: true, started: clock(), controller, steps: 0, counted: new Set() }); record.status = 'Starting…'; touch(id, true);
     return detail(id);
   }
   function record(id, frame) {
@@ -219,7 +219,15 @@ export function createConversations({ directory, enabled = () => true, notify = 
       reply.tools = old ? reply.tools.map(t => t.id === tool.id ? next : t) : [...(reply.tools ?? []), next];
     };
     // Live progress is metadata only: the conversation id, a per-turn tool count and the tool name.
-    const progress = name => { turn.steps += 1; notify('task.progress', { conversationId: id, step: turn.steps, toolName: String(name ?? '').slice(0, 120) }); };
+    // Approval and execution both announce 'running' for one call; count each call id once.
+    const progress = (name, callId) => {
+      if (typeof callId === 'string' && callId) {
+        if (turn.counted.has(callId)) return;
+        turn.counted.add(callId);
+      }
+      turn.steps += 1;
+      notify('task.progress', { conversationId: id, step: turn.steps, toolName: String(name ?? '').slice(0, 120) });
+    };
     switch (frame.type) {
       case 'start': for (const key of ['requestId', 'model', 'contextMax', 'demo', 'remoteModel']) if (frame[key] !== undefined) reply[key] = frame[key]; break;
       case 'queued': if (frame.requestId) reply.requestId = frame.requestId; break;
@@ -237,10 +245,10 @@ export function createConversations({ directory, enabled = () => true, notify = 
         reply.reasoning = (reply.reasoning ?? '') + text;
         break;
       }
-      case 'agent-tool': if (frame.tool?.state === 'running') progress(frame.tool.name); mergeTool(frame.tool); break;
+      case 'agent-tool': if (frame.tool?.state === 'running') progress(frame.tool.name, frame.tool.id); mergeTool(frame.tool); break;
       case 'native-tool': {
         const event = frame.event;
-        if (event?.id && event.event !== 'result') progress(event.name);
+        if (event?.id && event.event !== 'result') progress(event.name, event.id);
         if (event?.id) mergeTool({ id: event.id, name: event.name ?? reply.tools?.find(t => t.id === event.id)?.name ?? 'Connected tool', args: event.arguments ?? {}, preview: 'Connected tool', effect: '', scope: 'connected', state: event.event === 'result' ? event.ok ? 'done' : 'error' : 'running', ...(event.text !== undefined ? { result: event.text } : {}), durationMs: event.ms });
         break;
       }

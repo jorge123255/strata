@@ -889,12 +889,18 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
     finishJob(job, run, outcome);
   }
   // Live progress is metadata only: ids, a per-turn tool count and the tool name.
-  function progress(context, toolName) {
+  // Approval and execution both announce 'running' for one call; count each call id once.
+  function progress(context, toolName, callId) {
     const job = turnJobs.get(context.turnId), run = runs.get(job?.runId);
     if (!job || !run || job.generation !== run.generation || job.state !== 'running') return;
-    const step = (turnSteps.get(context.turnId) ?? 0) + 1;
-    turnSteps.set(context.turnId, step);
-    emit('task.progress', { teamId: run.teamId, runId: run.id, jobId: job.id, botId: job.botId, conversationId: job.chatId, step, toolName: String(toolName ?? '').slice(0, 120) });
+    const state = turnSteps.get(context.turnId) ?? { step: 0, counted: new Set() };
+    if (typeof callId === 'string' && callId) {
+      if (state.counted.has(callId)) return;
+      state.counted.add(callId);
+    }
+    state.step += 1;
+    turnSteps.set(context.turnId, state);
+    emit('task.progress', { teamId: run.teamId, runId: run.id, jobId: job.id, botId: job.botId, conversationId: job.chatId, step: state.step, toolName: String(toolName ?? '').slice(0, 120) });
   }
   function holdForTransientRetry(job, run, outcome) {
     if (!outcome?.error || outcome.cancelled || !['queued', 'running'].includes(run.state)) return false;

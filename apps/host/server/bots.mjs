@@ -621,7 +621,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
       if (frame.type === 'done' || frame.type === 'error') { terminal = frame; return; }
       if (bot.computerMode === 'cua' && frame.type === 'agent-tool' && frame.tool?.state === 'running') markOwned(bot);
       work.record(bot.id, frame);
-      if (frame.type === 'agent-tool' && frame.tool?.state === 'running') team.progress(context, frame.tool.name);
+      if (frame.type === 'agent-tool' && frame.tool?.state === 'running') team.progress(context, frame.tool.name, frame.tool.id);
       // Record the new piece before the transcript grows, so a snapshot of the
       // same reply does not publish that piece a second time.
       if (frame.type === 'delta' && typeof frame.text === 'string' && frame.text) { try { team.noteRoomDelta(session.id, frame.text); } catch { /* A live caption cannot stop the reply. */ } }

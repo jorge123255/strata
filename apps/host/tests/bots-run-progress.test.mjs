@@ -26,7 +26,7 @@ function fixture(t, run) {
     runtime: { providers: async () => [], run, close() {} }, remoteSSH: { run: () => assert.fail('No SSH'), cua: () => assert.fail('No CUA') } });
   chats = createConversations({ directory, enabled: () => true, notify, pending: id => bots.pending(id), stop: id => bots.stop(id), approve: input => bots.approve(input), validateSelection: input => bots.validateSelection(input), execute: input => bots.run(input) });
   t.after(async () => { await bots.close(); chats.close(); rmSync(directory, { recursive: true, force: true }); });
-  const make = name => bots.create({ name: `QA-TEST-${name}`, provider: 'codex', workspace: directory, computerMode: 'host', capabilities: 'both', policy: 'bypass' }).bot;
+  const make = (name, patch = {}) => bots.create({ name: `QA-TEST-${name}`, provider: 'codex', workspace: directory, computerMode: 'host', capabilities: 'both', policy: 'bypass', ...patch }).bot;
   const makeTeam = (coordinator, worker) => bots.team.create({ name: 'QA-TEST-Team', memberIds: [coordinator.id, worker.id], coordinatorId: coordinator.id, enabled: true }).team;
   return { directory, bots, chats, events, make, makeTeam };
 }
@@ -78,15 +78,20 @@ test('a one-to-one bot conversation emits task.progress with the conversation id
   for (const data of steps) assert.deepEqual(Object.keys(data).sort(), ['conversationId', 'step', 'toolName']);
 });
 
-test('a conversation turn reports each agent and connected tool start once, in order', async t => {
+test('each tool call counts once per turn; repeated and late frames do not advance the step', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'strata-run-progress-'));
   const events = [];
+  let late;
   const chats = createConversations({ directory, enabled: () => true, notify: (event, data) => events.push([event, data]),
     execute: ({ onFrame }) => {
+      late = onFrame;
+      onFrame({ type: 'agent-tool', tool: { id: 't1', name: 'qa_test_agent_tool', state: 'running' } });
       onFrame({ type: 'agent-tool', tool: { id: 't1', name: 'qa_test_agent_tool', state: 'running' } });
       onFrame({ type: 'agent-tool', tool: { id: 't1', name: 'qa_test_agent_tool', state: 'done' } });
       onFrame({ type: 'native-tool', event: { id: 'n1', name: 'qa_test_connected_tool', event: 'call' } });
+      onFrame({ type: 'native-tool', event: { id: 'n1', name: 'qa_test_connected_tool', event: 'call' } });
       onFrame({ type: 'native-tool', event: { id: 'n1', name: 'qa_test_connected_tool', event: 'result', ok: true } });
+      onFrame({ type: 'agent-tool', tool: { id: 't2', name: 'qa_test_second_tool', state: 'running' } });
       return { text: 'done' };
     } });
   t.after(() => { chats.close(); rmSync(directory, { recursive: true, force: true }); });
@@ -97,7 +102,46 @@ test('a conversation turn reports each agent and connected tool start once, in o
   assert.deepEqual(steps, [
     { conversationId: conversation.id, step: 1, toolName: 'qa_test_agent_tool' },
     { conversationId: conversation.id, step: 2, toolName: 'qa_test_connected_tool' },
+    { conversationId: conversation.id, step: 3, toolName: 'qa_test_second_tool' },
   ]);
+  late({ type: 'agent-tool', tool: { id: 't9', name: 'qa_test_late_tool', state: 'running' } });
+  assert.equal(events.filter(([event]) => event === 'task.progress').length, 3);
+});
+
+test('an approved manual team write counts one step in each scope', async t => {
+  const heldInputs = new Map();
+  const f = fixture(t, async input => {
+    if (input.bot.teamConversationOnly) return;
+    await input.executeTool('write_file', { path: 'qa-test-approved.txt', content: 'QA-TEST one write' }, 'qa_test_one_call');
+    heldInputs.set(input.sessionId, input); await held(input.signal);
+  });
+  const coordinator = f.make('Manual Coordinator'), worker = f.make('Manual Worker', { policy: 'manual' }), team = f.makeTeam(coordinator, worker);
+  const room = [];
+  const unsubscribe = f.bots.team.subscribe((event, data) => { if (event === 'task.progress') room.push(data); });
+  t.after(unsubscribe);
+  const run = f.bots.team.message(team.id, { message: 'QA-TEST-approved', requestId: 'manual-progress', workMode: 'work', recipientIds: [worker.id] }).run;
+  const chat = () => f.chats.list().conversations.find(row => row.preferences?.botId === worker.id);
+  await until(() => chat() && f.bots.pending(chat().id).length === 1);
+  assert.equal(room.length, 0);
+  await f.chats.approval(chat().id, f.bots.pending(chat().id)[0].callId, 'approve');
+  await until(() => heldInputs.size === 1);
+  const steps = room.filter(row => row.runId === run.id);
+  assert.deepEqual(steps.map(row => [row.step, row.toolName]), [[1, 'write_file']]);
+  const personal = f.events.filter(([event, data]) => event === 'task.progress' && !data.teamId && data.conversationId === chat().id).map(([, data]) => data);
+  assert.deepEqual(personal.map(row => [row.step, row.toolName]), [[1, 'write_file']]);
+  await f.bots.team.stop(team.id, run.id);
+});
+
+test('a denied manual write reports no progress steps', async t => {
+  const f = fixture(t, async input => {
+    await input.executeTool('write_file', { path: 'qa-test-denied.txt', content: 'QA-TEST denied' }, 'qa_test_denied_call');
+  });
+  const conversation = f.bots.createConversation(f.make('Deny', { policy: 'manual' }).id).conversation;
+  f.chats.send(conversation.id, 'QA-TEST-deny');
+  await until(() => f.bots.pending(conversation.id).length === 1);
+  await f.chats.approval(conversation.id, f.bots.pending(conversation.id)[0].callId, 'deny');
+  await until(() => !f.chats.detail(conversation.id).conversation.active);
+  assert.equal(f.events.filter(([event]) => event === 'task.progress').length, 0);
 });
 
 test('POST /api/bots/teams/:teamId/runs/:runId/stop stops a held run; bodies and unknown runs are rejected', async t => {
