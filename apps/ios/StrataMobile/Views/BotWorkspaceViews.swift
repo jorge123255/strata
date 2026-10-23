@@ -1634,7 +1634,7 @@ private struct BotSkillDetailView: View {
                     if !skill.description.isEmpty { Text(skill.description).font(.subheadline) }
                     Text(skill.body).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                     if !skill.triggers.isEmpty { LabeledContent("Triggers", value: skill.triggers.joined(separator: ", ")) }
-                    Text("Revision \(skill.revision)").font(.caption).foregroundStyle(.secondary)
+                    Text("Revision \(skill.revision.description)").font(.caption).foregroundStyle(.secondary)
                 }
                 if !skill.isLibrary {
                     Section {

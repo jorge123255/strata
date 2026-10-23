@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { existsSync, readFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, mkdirSync, writeFileSync, mkdtempSync, accessSync, constants } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { build, transform } from 'esbuild';
 import { chromium } from 'playwright-core';
@@ -85,6 +86,27 @@ test('desktop and iPhone member editing keep the remove, cap, and delete afforda
   assert.match(iosStore, /func removeTeamMember/);
 });
 
+/** Pictures go to STRATA_TEST_SCREENSHOTS, or a temp test-output folder. A path that cannot be created is skipped. */
+export function screenshotDirectory(envValue = process.env.STRATA_TEST_SCREENSHOTS) {
+  const requested = envValue || join(tmpdir(), 'test-output');
+  try {
+    mkdirSync(requested, { recursive: true });
+    accessSync(requested, constants.W_OK);
+    return requested;
+  } catch {
+    return null;
+  }
+}
+
+test('screenshots follow STRATA_TEST_SCREENSHOTS and skip a path that cannot be written', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'strata-shots-'));
+  assert.equal(screenshotDirectory(dir), dir);
+  const blocked = join(dir, 'not-a-directory');
+  writeFileSync(blocked, 'x');
+  assert.equal(screenshotDirectory(join(blocked, 'shots')), null);
+  assert.equal(screenshotDirectory(''), join(tmpdir(), 'test-output'));
+});
+
 const executablePath = [process.env.STRATA_UI_BROWSER, '/usr/bin/google-chrome', '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(path => path && existsSync(path));
 test('team member remove saves an over-cap roster, and team delete stays available', { skip: executablePath ? false : 'Installed Chromium required.', timeout: 90000 }, async t => {
   const at = '2026-10-23T12:00:00Z';
@@ -136,9 +158,12 @@ test('team member remove saves an over-cap roster, and team delete stays availab
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   page.setDefaultTimeout(12000);
   page.on('pageerror', error => errors.push(error.message));
-  const shots = '/opt/cursor/artifacts';
-  mkdirSync(shots, { recursive: true });
-  async function shot(name) { await page.screenshot({ path: join(shots, `${name}.png`) }); }
+  const shots = screenshotDirectory();
+  async function shot(name) {
+    if (!shots) return;
+    try { await page.screenshot({ path: join(shots, `${name}.png`) }); }
+    catch { /* A missing picture does not change the remove or delete result. */ }
+  }
   await page.goto(origin);
   await page.getByRole('heading', { name: 'Product studio' }).waitFor();
   await page.getByRole('tab', { name: 'Work', exact: true }).click();
