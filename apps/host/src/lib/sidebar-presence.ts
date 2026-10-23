@@ -15,7 +15,7 @@
  * Placeholder fields on a bot: `status`, `statusLine`, `workingOn`, `unread`.
  * Placeholder fields on a team: `memberCount`, `unread`, `typing`, `typingNames`, `lastMessage`.
  */
-import { botAvatarActivity, botPersonalConversations, botTeamRosterPreview } from './bots';
+import { botAvatarActivity, botPersonalConversations, botTeamRosterPreview, teamRosterCount } from './bots';
 import type { Bot, BotRoomSummary, BotSidebarSummary, BotSummaryRow, BotTeam } from './bots';
 
 export type SidebarBotStatus = 'working' | 'idle' | 'paused' | 'error';
@@ -274,7 +274,9 @@ function facesFor(memberIds: string[], memberCount: number, bots: SidebarRosterB
 }
 
 /**
- * Host summary wins for status, unread, member count, last message and who is replying.
+ * Host summary wins for status, unread, last message and who is replying.
+ * When the team is in the catalog, the member count is that saved roster.
+ * A room that exists only in the summary keeps the summary count.
  * A paused bot stays Paused while the summary still says idle: the summary has no paused state.
  * Someone queued in a room is not typing.
  */
@@ -335,7 +337,8 @@ export function clearSummaryUnread(summary: BotSidebarSummary, kind: 'bot' | 'ro
 
 function overlayRoom(row: SidebarRoomRow | undefined, live: BotRoomSummary, catalog: { bots: SidebarRosterBot[]; teams: SidebarRosterRoom[] }): SidebarRoomRow {
   const team = catalog.teams.find(item => item.id === live.id);
-  const faces = facesFor(team?.memberIds ?? [], live.memberCount, catalog.bots);
+  const memberCount = team ? teamRosterCount(team.memberIds) : live.memberCount;
+  const faces = facesFor(team?.memberIds ?? [], memberCount, catalog.bots);
   const names = live.working.filter(member => member.state === 'working').map(member => member.name).filter((name, index, all) => all.indexOf(name) === index).slice(0, 8);
   const typing = names.length > 0;
   const author = live.lastMessage?.authorName ?? '';
@@ -345,8 +348,8 @@ function overlayRoom(row: SidebarRoomRow | undefined, live: BotRoomSummary, cata
     id: live.id,
     name: live.name || row?.name || 'Room',
     faces,
-    extra: Math.max(0, live.memberCount - faces.length),
-    memberCount: live.memberCount,
+    extra: Math.max(0, memberCount - faces.length),
+    memberCount,
     unread: live.unreadCount,
     typing,
     typingLabel: typingLabel(names, typing),

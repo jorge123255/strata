@@ -7,7 +7,7 @@ import { adoptSharedConversation, adoptSharedConversations, selectSession, useSt
 import { markSidebarRead, sidebarReadTarget } from '../lib/sidebar-reads';
 import { sessionTitle } from '../lib/session-title';
 import { relTime } from '../lib/format';
-import { blankBot, botComputerSelection, botConversationContext, botConversations, botPersonalConversations, botDraftError, botPolicyLabel, botAvatarActivity, botReplySignal, botConversationRoster, botProviderName, botSetupStepError, type BotPolicy, type Bot, type BotDraft, type BotExecution, type BotsSnapshot, type BotTeamsSnapshot } from '../lib/bots';
+import { blankBot, botComputerSelection, botConversationContext, botConversations, botPersonalConversations, botDraftError, botPolicyLabel, botAvatarActivity, botReplySignal, botConversationRoster, botProviderName, botSetupStepError, teamRosterLabel, type BotPolicy, type Bot, type BotDraft, type BotExecution, type BotsSnapshot, type BotTeamsSnapshot } from '../lib/bots';
 import { botReadiness, type BotComputerReadiness } from '../lib/bot-readiness';
 import type { Session } from '../lib/types';
 import { ShimmerText, StatusDot } from '../components/ChatMotion';
@@ -250,7 +250,7 @@ export function BotsScreen() {
           if (row.kind === 'team') {
             const team = teams.data?.teams.find(item => item.id === row.id); if (!team) return null;
             return <button className="cua-sidebar-item cua-roster-bot cua-roster-team" key={`team:${team.id}`} aria-label={`Open team ${team.name}`} title={team.name} data-selected={route === 'teams' && location.query.get('team') === team.id || undefined} data-state={row.state} onClick={() => navigate('bots','teams',{team:team.id})}>
-              <TeamMark team={team} bots={bots} size={26}/><span className="cua-roster-copy"><span className="cua-roster-title"><strong>{team.name}</strong>{Number.isFinite(Date.parse(row.updatedAt)) ? <time dateTime={row.updatedAt}>{relTime(row.updatedAt)}</time> : null}</span><small>{row.state === 'working' ? <ShimmerText text={row.preview ?? (team.enabled ? `${team.memberIds.length} teammates` : 'Collaboration off')}/> : (row.preview ?? (team.enabled ? `${team.memberIds.length} teammates` : 'Collaboration off'))}</small></span>{row.state === 'working' || row.state === 'attention' ? <StatusDot status={row.state === 'working' ? 'working' : 'attention'}/> : null}
+              <TeamMark team={team} bots={bots} size={26}/><span className="cua-roster-copy"><span className="cua-roster-title"><strong>{team.name}</strong>{Number.isFinite(Date.parse(row.updatedAt)) ? <time dateTime={row.updatedAt}>{relTime(row.updatedAt)}</time> : null}</span><small>{row.state === 'working' ? <ShimmerText text={row.preview ?? (team.enabled ? teamRosterLabel(team.memberIds.length) : 'Collaboration off')}/> : (row.preview ?? (team.enabled ? teamRosterLabel(team.memberIds.length) : 'Collaboration off'))}</small></span>{row.state === 'working' || row.state === 'attention' ? <StatusDot status={row.state === 'working' ? 'working' : 'attention'}/> : null}
             </button>;
           }
           const bot = bots.find(item => item.id === row.id); if (!bot) return null;

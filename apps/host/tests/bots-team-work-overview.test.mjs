@@ -11,7 +11,7 @@ import { chromium } from 'playwright-core';
 const root = fileURLToPath(new URL('..', import.meta.url)), src = join(root, 'src');
 const { outputFiles: selectorFiles } = await build({ entryPoints: [join(src, 'screens/botTeamWorkSelectors.ts')], bundle: true, write: false, format: 'esm', platform: 'node' });
 const selectors = await import(`data:text/javascript;base64,${Buffer.from(selectorFiles[0].text).toString('base64')}`);
-const at = '2026-10-22T01:00:00Z';
+const at = new Date(Date.now() - 60 * 60 * 1000).toISOString();
 const evidence = [{ kind: 'file', label: 'Deliverable', detail: '/fixture/private/work/output.txt' }, { kind: 'test', label: 'Focused checks', detail: 'Reported check result. Full evidence end marker.' }];
 function task(id, status, state = 'completed', extra = {}) {
   return { id, teamId: 'team_first', runId: 'tr_fixture', botId: 'bot_builder', chatId: `s_${id}`, type: 'delivery', title: id, state, createdAt: at, updatedAt: at,
@@ -55,6 +55,45 @@ test('evidence counts describe reported items without interpreting success claim
   const row = task('Evidence', 'ready_for_review', 'completed', { evidence: [...evidence, ...evidence, { kind: 'note', label: 'Claim', detail: 'All checks passed and independently verified' }] });
   assert.equal(selectors.teamTaskEvidence(row), '2 files · 2 test reports · 1 note');
   assert.equal(selectors.teamTaskEvidence(task('No result', 'working')), '');
+});
+
+test('an errored run older than a day leaves the need-you count, and dismiss or a resolved review clears it', () => {
+  const day = 24 * 60 * 60 * 1000;
+  const now = Date.parse('2026-10-23T12:00:00Z');
+  const oldAt = new Date(now - day).toISOString();
+  const freshAt = new Date(now - day + 1000).toISOString();
+  const stale = { ...task('Oct 22 error', 'blocked', 'error'), createdAt: oldAt, updatedAt: oldAt };
+  const fresh = { ...task('Fresh error', 'blocked', 'error'), createdAt: freshAt, updatedAt: freshAt };
+  const ready = task('Ready result', 'ready_for_review');
+  const verified = { ...task('Verified result', 'verified'), updatedAt: oldAt };
+  const interrupted = { ...task('Interrupted modern work', 'interrupted', 'interrupted'), updatedAt: oldAt };
+  const continued = { ...task('Continued original result', 'blocked', 'error', { recoveryJobId: 'tj_kept' }), updatedAt: oldAt };
+  const groups = selectors.teamWorkGroups([stale, fresh, ready, verified, interrupted, continued], 'team_first', { now });
+  assert.deepEqual(groups.stale.map(row => row.id), ['Oct 22 error']);
+  assert.deepEqual(groups.needsYou.map(row => row.id).sort(), ['Fresh error', 'Interrupted modern work', 'Ready result']);
+  assert.deepEqual(groups.continuing.map(row => row.id), ['Continued original result']);
+  assert.deepEqual(groups.history.map(row => row.id), ['Verified result']);
+  assert.equal(groups.needsYou.length + groups.stale.length + groups.continuing.length + groups.history.length, 6);
+  const dismissed = selectors.teamWorkGroups([stale, fresh, ready], 'team_first', { now, dismissed: new Set(['Oct 22 error', 'Ready result']) });
+  assert.deepEqual(dismissed.stale.map(row => row.id), []);
+  assert.deepEqual(dismissed.history.map(row => row.id), ['Oct 22 error']);
+  assert.deepEqual(dismissed.needsYou.map(row => row.id).sort(), ['Fresh error', 'Ready result']);
+  const resolved = { ...stale, state: 'completed', work: { ...stale.work, status: 'verified' } };
+  const afterReview = selectors.teamWorkGroups([resolved], 'team_first', { now, dismissed: new Set(['Oct 22 error']) });
+  assert.equal(afterReview.needsYou.length, 0);
+  assert.equal(afterReview.stale.length, 0);
+  assert.deepEqual(afterReview.history.map(row => row.id), ['Oct 22 error']);
+  assert.deepEqual(selectors.retainedStaleDismissals([stale, fresh, resolved], new Set(['Oct 22 error', 'Fresh error', 'gone']), now), ['Oct 22 error']);
+  assert.equal(selectors.STALE_TEAM_ERROR_MS, day);
+});
+
+test('the work screen offers dismiss for an older error and keeps that choice on this computer', () => {
+  const overview = readFileSync(join(src, 'screens/BotTeamWorkOverview.tsx'), 'utf8');
+  const workspace = readFileSync(join(src, 'screens/BotsWorkspace.tsx'), 'utf8');
+  assert.match(overview, /Older errors/);
+  assert.match(overview, />Dismiss</);
+  assert.match(workspace, /retainedStaleDismissals/);
+  assert.match(workspace, /strata\.dismissed-team-work/);
 });
 
 test('earlier unverified records are counted without promoting history into current work', () => {

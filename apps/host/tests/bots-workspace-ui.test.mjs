@@ -38,6 +38,28 @@ test('continuous hosts require the exact zero shape and retain older protocol la
   assert.equal(bots.botTeamWorkLabel(bots.DEFAULT_BOT_TEAM_LIMITS,false,true),'All available teammates · 24 work turns · 10 minute limit');
   assert.equal(bots.botTeamWorkLabel(bots.DEFAULT_BOT_TEAM_LIMITS,false,false),'2 parallel tasks · 24 turns · 10 minute limit');
 });
+test('a saved roster keeps its length, and the header and sidebar share one member label', async () => {
+  const ids = Array.from({ length: 17 }, (_, index) => `member_${index}`);
+  assert.equal(bots.TEAM_MEMBER_CAP, 12);
+  assert.equal(bots.teamRosterCount(ids), 17);
+  assert.equal(bots.teamRosterCount(undefined), 0);
+  assert.equal(bots.teamRosterLabel(1), '1 member');
+  assert.equal(bots.teamRosterLabel(17), '17 members');
+  assert.equal(bots.teamOverRosterCap(12), false);
+  assert.equal(bots.teamOverRosterCap(17), true);
+  const workspace = await readFile(new URL('../src/screens/BotsWorkspace.tsx', import.meta.url), 'utf8');
+  const editor = await readFile(new URL('../src/screens/BotTeamEditor.tsx', import.meta.url), 'utf8');
+  const screen = await readFile(new URL('../src/screens/Bots.tsx', import.meta.url), 'utf8');
+  assert.match(workspace, /teamRosterLabel\(/);
+  assert.match(workspace, /teamOverRosterCap\(/);
+  assert.match(workspace, /Choose who stays/);
+  assert.match(workspace, /from before the limit of/);
+  assert.doesNotMatch(workspace, /teammates ·/);
+  assert.match(editor, /Uncheck members until/);
+  assert.match(editor, /TEAM_MEMBER_CAP/);
+  assert.doesNotMatch(editor, /memberIds\.slice\(0,\s*12\)/);
+  assert.match(screen, /teamRosterLabel\(team\.memberIds\.length\)/);
+});
 test('MCP imports retain separate arguments and environment but never import bot or tool authority',()=>{
   const input={mcpServers:{local:{command:'/path with spaces/program',args:['--file','a b'],env:{TOKEN:'synthetic'},botIds:['foreign'],enabledToolIds:['everything']},remote:{url:'https://example.invalid/mcp',headers:{Authorization:'Bearer synthetic-key'}}}};
   const parsed=connections.parseBotConnectionImport(JSON.stringify(input));

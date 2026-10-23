@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { applyMessagePartial, clearStreams, createFollowScroller, hasLiveStream, prefersReducedMotion, type RoomDraft } from '../lib/chat-motion';
+import { applyMessagePartial, clearStreams, createFollowScroller, hasLiveStream, prefersReducedMotion, shouldFollowOwnMessage, type RoomDraft } from '../lib/chat-motion';
 import { ShimmerText, StreamedBody, TypingDots, useMessageEntrances } from '../components/ChatMotion';
 import { cx } from '../lib/format';
 import { ApiError, api } from '../lib/client';
@@ -139,7 +139,7 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
   const [workMode, setWorkMode] = useState<'chat' | 'work'>('chat');
   const [prompt, setPrompt] = useState(''), [recipients, setRecipients] = useState<string[]>([]), [picker, setPicker] = useState(false), [replyTo, setReplyTo] = useState<BotTeamChannelMessage | null>(null);
   const [actions, setActions] = useState(false), [sending, setSending] = useState(false), [stopping, setStopping] = useState(''), [error, setError] = useState(''), [unread, setUnread] = useState(0), [away, setAway] = useState(false);
-  const requestId = useRef<string | null>(null), mounted = useRef(true), sendingRef = useRef(false), feed = useRef<HTMLDivElement>(null), composer = useRef<HTMLTextAreaElement>(null), follow = useRef(true), previousLast = useRef(0), olderAnchor = useRef<{ height: number; top: number } | null>(null);
+  const requestId = useRef<string | null>(null), mounted = useRef(true), sendingRef = useRef(false), feed = useRef<HTMLDivElement>(null), composer = useRef<HTMLTextAreaElement>(null), follow = useRef(true), previousLast = useRef(0), olderAnchor = useRef<{ height: number; top: number } | null>(null), seenMessageIds = useRef<string[]>([]);
   const members = team.memberIds.map(id => bots.find(bot => bot.id === id)).filter((bot): bot is Bot => !!bot);
   const active = channel.activeRuns.filter(run => botTeamRunActive(run.state));
   const ready = current && !channel.error && !channel.loading;
@@ -163,6 +163,9 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
   }, [visible]);
   useLayoutEffect(() => {
     const element = feed.current; if (!element || !visible) return;
+    const rows = channel.messages.map(message => ({ id: message.id, own: message.author.type === 'user' }));
+    if (shouldFollowOwnMessage(seenMessageIds.current, rows)) { olderAnchor.current = null; follow.current = true; setAway(false); setUnread(0); }
+    seenMessageIds.current = rows.map(row => row.id);
     if (olderAnchor.current) { const anchor = olderAnchor.current; element.scrollTop = anchor.top + element.scrollHeight - anchor.height; olderAnchor.current = null; }
     else if (follow.current) { follower.current.follow(element); setUnread(0); }
     else {
