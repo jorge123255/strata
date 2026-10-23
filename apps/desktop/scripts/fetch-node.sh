@@ -20,7 +20,7 @@ set -euo pipefail
 
 NODE_VERSION="${STRATA_NODE_VERSION:-24.12.0}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEST="$HERE/../src-tauri/resources/node"
+DEST="${STRATA_NODE_DEST:-$HERE/../src-tauri/resources/node}"
 
 # Published SHA-256 of each official nodejs.org archive, recorded so a tampered or truncated
 # download is refused rather than shipped. Add a row when bumping the version.
@@ -100,4 +100,8 @@ case "$ARCHIVE" in
 esac
 chmod +x "$DEST/$EXE"
 
-echo "fetch-node: installed $("$DEST/$EXE" --version) at $DEST/$EXE"
+if "$DEST/$EXE" --version >/dev/null 2>&1; then
+  echo "fetch-node: installed $("$DEST/$EXE" --version) at $DEST/$EXE"
+else
+  echo "fetch-node: installed $DEST/$EXE (this machine cannot run $TARGET binaries; the archive SHA-256 was checked)"
+fi

@@ -19,9 +19,10 @@ VERSION="$(grep -m1 '^version = ' "$DESKTOP/src-tauri/Cargo.toml" | cut -d'"' -f
 OUT="${1:-$BUNDLE/dmg/Strata_${VERSION}_aarch64.dmg}"
 
 if [ ! -d "$APP" ]; then
-  echo "error: $APP does not exist; run 'cargo tauri build --bundles app' first" >&2
+  echo "error: $APP does not exist; run 'npm run build:app' first" >&2
   exit 1
 fi
+node "$DESKTOP/scripts/check-app-bundle.mjs" "$APP"
 
 WORK="$(mktemp -d -t strata-dmg)"
 trap 'rm -rf "$WORK"' EXIT
