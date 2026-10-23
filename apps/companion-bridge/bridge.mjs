@@ -221,6 +221,7 @@ export class HostClient {
   async request(path, { method = 'GET', body, signal, deviceId } = {}) {
     const notification = notificationRequest(path, method, body, deviceId);
     const summaryConversations = path === '/api/companion/conversations?summary=1';
+    const conversationChoice = /^\/api\/companion\/conversations\/([a-zA-Z0-9_-]{1,120})\/messages\/([a-zA-Z0-9_-]{1,120})\/choice$/.exec(summaryConversations ? '' : path);
     const conversation = /^\/api\/companion\/conversations(?:\/[a-zA-Z0-9_-]{1,120}(?:\/(messages|stop|approval))?)?$/.exec(summaryConversations ? '/api/companion/conversations' : path);
     const bots = path === '/api/bots' || /^\/api\/bots\/[a-zA-Z0-9_-]{1,120}\/conversations$/.test(path);
     const avatar = /^\/api\/bots\/[a-zA-Z0-9_-]{1,120}$/.test(path) && method === 'PATCH';
@@ -236,7 +237,7 @@ export class HostClient {
       && path !== '/api/native/operations'
       && !/^\/api\/native\/instances\/[a-zA-Z0-9_-]+\/unload$/.test(path)
       && !/^\/api\/serving\/requests\/[a-zA-Z0-9_-]+\/cancel$/.test(path)
-      && !conversation && !management && !bots && !computer && !avatar && !workspace && !profile && !folder && !notification) throw fail(403, 'Unsupported host control.');
+      && !conversation && !conversationChoice && !management && !bots && !computer && !avatar && !workspace && !profile && !folder && !notification) throw fail(403, 'Unsupported host control.');
     const mutation = path.endsWith('/load') || path.endsWith('/unload') || path.endsWith('/cancel') || path === '/api/native/operations' || path === '/api/chat/stream';
     if (workspace || profile || folder || notification) {
       // Fully validated narrow collaboration route; no arbitrary tool execution.
@@ -248,6 +249,8 @@ export class HostClient {
     } else if (bots) {
       if (method !== (path === '/api/bots' ? 'GET' : 'POST') || (path === '/api/bots' && body !== undefined)) throw fail(403, 'Unsupported bot control.');
       if (body !== undefined) botSelection(body, 403);
+    } else if (conversationChoice) {
+      if (method !== 'POST' || !body || Object.keys(body).length !== 1 || body.choice !== 'continue') throw fail(403, 'Unsupported host control.');
     } else if (conversation) {
       if (summaryConversations && (method !== 'GET' || body !== undefined)) throw fail(403, 'Unsupported host control.');
       const create = path === '/api/companion/conversations' && method === 'POST';
@@ -480,6 +483,8 @@ export function publicConversation(conversation, { summary = false } = {}) {
       if (typeof message.streaming === 'boolean') clean.streaming = message.streaming;
       if (Array.isArray(message.tools)) clean.tools = message.tools.map(publicTool).filter(Boolean);
       if (message.role === 'assistant') {
+        const recovery = publicPauseRecovery(message.recovery);
+        if (recovery) clean.recovery = recovery;
         // This is the same model-supplied Thinking text already visible on the Mac.
         if (typeof message.reasoning === 'string' && message.reasoning.trim()) clean.reasoning = message.reasoning;
         if (Number.isFinite(message.reasoningMs) && message.reasoningMs >= 0) clean.reasoningMs = message.reasoningMs;
@@ -490,6 +495,26 @@ export function publicConversation(conversation, { summary = false } = {}) {
     });
   }
   return result;
+}
+
+function publicPauseRecovery(value) {
+  // A one-to-one pause has no team job. Keep the sentence and the continue button; drop everything else.
+  if (!value || typeof value !== 'object' || Array.isArray(value) || value.kind !== 'paused') return undefined;
+  const text = typeof value.text === 'string' ? value.text.trim() : '';
+  const question = typeof value.question === 'string' ? value.question.trim() : '';
+  if (!text || text.length > 2_000 || text.includes('\0') || !question || question.length > 240 || question.includes('\0')) return undefined;
+  if (!Array.isArray(value.options) || value.options.length < 1 || value.options.length > 4) return undefined;
+  const allowed = new Set(['retry', 'skip', 'different', 'continue']);
+  const options = [];
+  for (const option of value.options) {
+    if (!option || typeof option !== 'object' || !allowed.has(option.id) || typeof option.label !== 'string' || !option.label.trim() || option.label.length > 80 || option.label.includes('\0')) return undefined;
+    const row = { id: option.id, label: option.label.trim() };
+    if (option.id === 'continue') row.style = 'primary';
+    options.push(row);
+  }
+  if (new Set(options.map(option => option.id)).size !== options.length || !options.some(option => option.id === 'continue')) return undefined;
+  if (value.choice !== undefined && value.choice !== 'continue') return undefined;
+  return { kind: 'paused', text, question, options, ...(value.choice === 'continue' ? { choice: 'continue' } : {}) };
 }
 
 function publicConversationDetail(body) {
@@ -989,6 +1014,16 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
         const created = await host.json('/api/companion/conversations', { method: 'POST', body: options });
         requireCurrentSession();
         return sendJSON(res, 201, publicConversationDetail(created));
+      }
+      const conversationChoice = /^\/v1\/conversations\/([a-zA-Z0-9_-]{1,120})\/messages\/([a-zA-Z0-9_-]{1,120})\/choice$/.exec(path);
+      if (conversationChoice) {
+        if (method !== 'POST') throw fail(405, 'This conversation action is unavailable.');
+        const choiceBody = await readBody(req);
+        if (Object.keys(choiceBody).length !== 1 || choiceBody.choice !== 'continue') throw fail(400, 'Choose one of the shown options.');
+        requireCurrentSession();
+        const chosen = await host.json(`/api/companion/conversations/${encode(conversationChoice[1])}/messages/${encode(conversationChoice[2])}/choice`, { method: 'POST', body: { choice: 'continue' } });
+        requireCurrentSession();
+        return sendJSON(res, 200, publicConversationDetail(chosen));
       }
       const conversationMatch = /^\/v1\/conversations\/([a-zA-Z0-9_-]{1,120})(?:\/(messages|stop|approval))?$/.exec(path);
       if (conversationMatch) {

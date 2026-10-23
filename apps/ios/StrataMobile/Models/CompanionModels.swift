@@ -393,6 +393,19 @@ struct MacConversation: Decodable, Identifiable, Equatable {
     }
 }
 
+struct MacPauseOption: Decodable, Equatable {
+    var id: String
+    var label: String
+}
+
+struct MacPauseRecovery: Decodable, Equatable {
+    var kind: String
+    var text: String
+    var question: String
+    var options: [MacPauseOption]
+    var choice: String?
+}
+
 struct MacChatMessage: Decodable, Identifiable, Equatable {
     var id: String
     var role: String
@@ -404,6 +417,7 @@ struct MacChatMessage: Decodable, Identifiable, Equatable {
     var reasoning: String?
     var reasoningMs: Double?
     var blocks: [MacMessageBlock]?
+    var recovery: MacPauseRecovery? = nil
 
     var thinkingText: String? {
         guard let value = reasoning?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
@@ -420,23 +434,18 @@ struct MacChatMessage: Decodable, Identifiable, Equatable {
         return "Thought for " + String(format: "%.0f", (duration / 1000).rounded()) + "s"
     }
 
-    /// The host may raise or drop the step budget. Any "N-step limit" sentence is this pause.
+    /// The host may raise or drop the step budget. This only hides that leftover sentence.
     var isStepPause: Bool {
         guard let error, !error.isEmpty else { return false }
-        let limit = error.range(of: #"reached its (?:\d+-)?step limit"#, options: [.regularExpression, .caseInsensitive]) != nil
-        let spent = error.range(of: "ran out of steps", options: .caseInsensitive) != nil
-        return limit || spent
+        return isStepPauseText(error)
     }
 
-    var stepPauseSummary: String {
-        let done = (tools ?? []).filter { $0.state != "proposed" && $0.state != "running" }.count
-        let text = content.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
-        let notice = text.count <= 280 && (isStepPauseText(text) || text.range(of: "try sending the message again", options: .caseInsensitive) != nil)
-        let spoken = notice ? "" : text
-        let body = spoken.count > 140 ? String(spoken.prefix(139)).trimmingCharacters(in: .whitespaces) + "…" : spoken
-        let steps = done > 0 ? "Worked on \(done) \(done == 1 ? "step" : "steps")." : ""
-        let line = [steps, body].filter { !$0.isEmpty }.joined(separator: " ")
-        return line.isEmpty ? "The run paused before it finished." : line
+    /// A paused run from the host: `recovery.text` is the summary and `continue` is Keep going.
+    var pauseChoice: MacPauseRecovery? {
+        guard let recovery, recovery.kind == "paused" else { return nil }
+        let summary = recovery.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !summary.isEmpty, recovery.options.contains(where: { $0.id == "continue" && !$0.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else { return nil }
+        return recovery
     }
 
     func isPauseNotice(_ value: String) -> Bool {

@@ -645,7 +645,7 @@ final class BotWorkspaceStore: ObservableObject {
 
     /// Posts the host's recovery choice. The saved message comes back with `recovery.choice` set.
     func chooseMessageRecovery(teamId: String, messageId: String, choice: String) async -> String? {
-        guard CompanionClient.isSafeIdentifier(teamId), CompanionClient.isSafeIdentifier(messageId), ["retry", "skip", "different"].contains(choice) else {
+        guard CompanionClient.isSafeIdentifier(teamId), CompanionClient.isSafeIdentifier(messageId), ["retry", "skip", "different", "continue"].contains(choice) else {
             return "That choice is not available yet."
         }
         struct Body: Encodable { var choice: String }

@@ -10,48 +10,58 @@ import { chromium } from 'playwright-core';
 const root = fileURLToPath(new URL('..', import.meta.url));
 function fileURLToPath(url) { return decodeURIComponent(url.pathname); }
 
-test('a step-limit pause is a card, for any step count', async () => {
+test('a paused run uses the shared recovery card and posts continue', async () => {
   const code = await transform(await readFile(new URL('../src/lib/step-pause.ts', import.meta.url), 'utf8'), { loader: 'ts', format: 'esm' });
   const pause = await import(`data:text/javascript;base64,${Buffer.from(code.code).toString('base64')}`);
   assert.equal(pause.isStepPause('The bot reached its 32-step limit. Continue in this chat to proceed.'), true);
   assert.equal(pause.isStepPause('The bot reached its 64-step limit. Continue in this chat to proceed.'), true);
   assert.equal(pause.isStepPause('This bot reached its step limit before finishing.'), true);
-  assert.equal(pause.isStepPause('This stopped because it ran out of steps before it finished.'), true);
   assert.equal(pause.isStepPause('The model could not be reached.'), false);
-  assert.equal(pause.stepPauseSummary({ content: 'Tightened the notes.', tools: [{ state: 'done' }, { state: 'done' }, { state: 'running' }] }), 'Worked on 2 steps. Tightened the notes.');
-  assert.equal(pause.stepPauseSummary({ content: 'The bot reached its 32-step limit. Continue in this chat to proceed. Try sending the message again.', tools: [{ state: 'done' }] }), 'Worked on 1 step.');
-  assert.equal(pause.stepPauseSummary({ content: '', tools: [] }), 'The run paused before it finished.');
   assert.equal(pause.isPauseNotice('Try sending the message again.'), true);
-  const card = await readFile(new URL('../src/components/StepPauseCard.tsx', import.meta.url), 'utf8');
-  const chat = await readFile(new URL('../src/screens/Chat.tsx', import.meta.url), 'utf8');
-  const phone = await readFile(new URL('../../ios/StrataMobile/Views/ChatView.swift', import.meta.url), 'utf8');
-  const model = await readFile(new URL('../../ios/StrataMobile/Models/CompanionModels.swift', import.meta.url), 'utf8');
-  for (const source of [card, phone]) {
-    assert.match(source, /Paused after a long run/);
-    assert.match(source, /Keep going/);
-    assert.match(source, /Stop here/);
-    assert.doesNotMatch(source, /try sending again/i);
-    assert.doesNotMatch(source, /Try again/);
-  }
-  assert.match(chat, /StepPauseCard/);
-  assert.match(chat, /continueConversation\(\)/);
-  assert.match(chat, /m\.error && !stepPause/);
-  assert.doesNotMatch(chat, /try sending again/i);
-  assert.match(phone, /Continue from where you left off/);
+  const [chat, store, card, design, phone, model, workspace, choices] = await Promise.all([
+    readFile(new URL('../src/screens/Chat.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/lib/store.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../src/components/RoomChoiceCard.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/styles/bots-design.css', import.meta.url), 'utf8'),
+    readFile(new URL('../../ios/StrataMobile/Views/ChatView.swift', import.meta.url), 'utf8'),
+    readFile(new URL('../../ios/StrataMobile/Models/CompanionModels.swift', import.meta.url), 'utf8'),
+    readFile(new URL('../../ios/StrataMobile/Services/BotWorkspaceStore.swift', import.meta.url), 'utf8'),
+    readFile(new URL('../../ios/StrataMobile/Views/Components.swift', import.meta.url), 'utf8'),
+  ]);
+  assert.match(chat, /ChatPauseChoice/);
+  assert.match(chat, /continuePausedChat/);
+  assert.match(chat, /text=\{recovery\.text\}/);
+  assert.match(chat, /<ErrorNotice message=\{m\.error\} detail=\{m\.errorDetail\} \{\.\.\.contextRecovery\(m\.errorCode\)\}\/>/);
+  assert.match(chat, /m\.error && !legacyLimit && !paused/);
+  assert.doesNotMatch(chat, /StepPauseCard|continueConversation\(\)|Paused after a long run|Stop here|try sending again/i);
+  assert.match(store, /type === 'pause'/);
+  assert.match(store, /\/api\/companion\/conversations\/\$\{encodeURIComponent\(sessionId\)\}\/messages\/\$\{encodeURIComponent\(messageId\)\}\/choice/);
+  assert.match(store, /choice: 'continue'/);
+  assert.doesNotMatch(card, /Keep going|Paused after a long run|try sending again/i);
+  assert.match(design, /button\[data-style='primary'\]/);
+  assert.match(phone, /RoomChoiceCard/);
+  assert.match(phone, /continuePausedMessage/);
+  assert.doesNotMatch(phone, /Paused after a long run|Stop here|Continue from where you left off|try sending again/i);
+  assert.match(model, /pauseChoice/);
   assert.match(model, /isStepPause/);
-  assert.match(model, /stepPauseSummary/);
+  assert.doesNotMatch(model, /stepPauseSummary|Paused after a long run/);
+  assert.match(workspace, /\["retry", "skip", "different", "continue"\]/);
+  assert.match(choices, /"retry", "skip", "different", "continue"/);
+  assert.match(choices, /id == "continue" \? "primary"/);
 });
 
 const executablePath = [process.env.STRATA_UI_BROWSER, '/usr/bin/google-chrome', '/usr/bin/chromium'].find(path => path && existsSync(path));
 
-test('the pause card is a quiet inline choice', { skip: executablePath ? false : 'Installed Chromium required.', timeout: 60000 }, async t => {
+test('the pause card shows the host summary and a primary Keep going button', { skip: executablePath ? false : 'Installed Chromium required.', timeout: 60000 }, async t => {
   const src = join(root, 'src');
+  const summary = 'I finished inspect. The rest of this request is still left.';
   const entry = `
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import { StepPauseCard } from ${JSON.stringify(join(src, 'components/StepPauseCard.tsx'))};
+import { RoomChoiceCard } from ${JSON.stringify(join(src, 'components/RoomChoiceCard.tsx'))};
+import ${JSON.stringify(join(src, 'screens/BotTeamChannel.css'))};
 import ${JSON.stringify(join(src, 'styles/bots-design.css'))};
-function App(){return <div className="bots-workspace" style={{height:'100vh',padding:'48px 56px'}}><div className="st-msg st-msg--assistant"><div className="st-bubble"><p>I tightened the notes and left the checklist in the thread.</p></div><StepPauseCard summary="Worked on 3 steps. I tightened the notes and left the checklist in the thread." onContinue={()=>{}} onStop={()=>{}}/></div></div>}
+function App(){return <div className="bots-workspace" style={{height:'100vh',padding:'48px 56px'}}><div className="st-msg st-msg--assistant"><RoomChoiceCard text=${JSON.stringify(summary)} options={[{id:'continue', label:'Keep going', style:'primary'}]} onChoose={()=>{}}/></div></div>}
 createRoot(document.getElementById('root')).render(<App/>);`;
   const { outputFiles } = await build({ stdin: { contents: entry, resolveDir: src, loader: 'tsx' }, bundle: true, write: false, outfile: 'harness.js', format: 'iife', platform: 'browser', jsx: 'automatic', define: { 'process.env.NODE_ENV': '"production"' }, loader: { '.woff2': 'empty', '.woff': 'empty', '.ttf': 'empty' } });
   const js = outputFiles.find(file => file.path.endsWith('.js')).text;
@@ -69,9 +79,14 @@ createRoot(document.getElementById('root')).render(<App/>);`;
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 900, height: 420 } });
   await page.goto(`http://127.0.0.1:${server.address().port}`);
-  await page.getByRole('button', { name: 'Keep going' }).waitFor();
-  await page.getByRole('button', { name: 'Stop here' }).waitFor();
+  await page.getByText(summary).waitFor();
+  const button = page.getByRole('button', { name: 'Keep going' });
+  await button.waitFor();
+  assert.equal(await page.getByRole('button', { name: 'Stop here' }).count(), 0);
   assert.equal(await page.getByText(/try sending again/i).count(), 0);
+  assert.equal(await page.getByText(/Paused after a long run/).count(), 0);
+  const style = await button.evaluate(node => getComputedStyle(node).backgroundColor);
+  assert.notEqual(style, 'rgba(0, 0, 0, 0)');
   const shot = '/opt/cursor/artifacts/screenshots/bots-step-pause.png';
   mkdirSync('/opt/cursor/artifacts/screenshots', { recursive: true });
   await page.screenshot({ path: shot });

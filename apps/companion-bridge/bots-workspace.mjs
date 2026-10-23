@@ -147,6 +147,7 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
   else if (p === '/api/bots/connectors/catalog') route = { kind: 'connectorCatalog' };
   else {
     const harnessReview = /^\/api\/bots\/harness\/actions\/(ba_[a-f0-9]{64})\/review$/.exec(p);
+    const channelChoice = /^\/api\/bots\/teams\/([A-Za-z0-9_-]{1,120})\/messages\/([A-Za-z0-9_-]{1,120})\/choice$/.exec(p);
     const channel = /^\/api\/bots\/teams\/([A-Za-z0-9_-]{1,120})\/(channel|messages)$/.exec(p);
     const team = /^\/api\/bots\/teams\/([A-Za-z0-9_-]{1,120})(?:\/runs(?:\/([A-Za-z0-9_-]{1,120})(?:\/(stop))?)?)?$/.exec(p);
     const task = /^\/api\/bots\/teams\/(team_[a-f0-9-]+)\/jobs\/(tj_[a-f0-9-]+)\/(review|recovery|resume)$/.exec(p);
@@ -155,6 +156,7 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
     const connection = /^\/api\/bots\/connections\/([A-Za-z0-9_-]{1,120})(?:\/(check|auth|auth\/complete|auth\/cancel))?$/.exec(p);
     if (harnessReview) route = { kind: 'harnessReview', actionId: harnessReview[1] };
     else if (task) route = { kind: 'task', teamId: task[1], jobId: task[2], action: task[3] };
+    else if (channelChoice) route = { kind: 'channelChoice', teamId: channelChoice[1], messageId: channelChoice[2] };
     else if (channel) route = { kind: channel[2] === 'channel' ? 'channel' : 'channelMessage', teamId: channel[1] };
     else if (team) route = { kind: p.includes('/runs') ? 'run' : 'team', teamId: team[1], runId: team[2], action: team[3] };
     else if (skill) route = { kind: 'skill', skillId: skill[1] };
@@ -170,7 +172,7 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
     else if (route.kind === 'channel' && ['after', 'before'].includes(key) && /^(0|[1-9][0-9]{0,15})$/.test(value) && Number.isSafeInteger(Number(value))) route[key] = Number(value);
     else throw error(status, 'Choose a saved bot or provider.');
   } else if (route.kind === 'providerModels') throw error(status, 'Choose a provider.');
-  const allowed = { teams: ['GET', 'POST'], team: ['PATCH'], channel: ['GET'], channelMessage: ['POST'], run: route.action === 'stop' ? ['POST'] : route.runId ? ['GET'] : ['POST'], activity: ['GET'], supervision: ['GET'], skills: ['GET', 'POST'], skill: ['PATCH', 'DELETE'], assignment: ['POST'], connections: ['GET', 'POST'], connection: route.action ? ['POST'] : ['PATCH', 'DELETE'], connectionAuth: ['auth/complete', 'auth/cancel'].includes(route.action) ? ['POST'] : ['GET', 'POST', 'DELETE'], connectorCatalog: ['GET'], providerModels: ['GET'] };
+  const allowed = { teams: ['GET', 'POST'], team: ['PATCH'], channel: ['GET'], channelMessage: ['POST'], channelChoice: ['POST'], run: route.action === 'stop' ? ['POST'] : route.runId ? ['GET'] : ['POST'], activity: ['GET'], supervision: ['GET'], skills: ['GET', 'POST'], skill: ['PATCH', 'DELETE'], assignment: ['POST'], connections: ['GET', 'POST'], connection: route.action ? ['POST'] : ['PATCH', 'DELETE'], connectionAuth: ['auth/complete', 'auth/cancel'].includes(route.action) ? ['POST'] : ['GET', 'POST', 'DELETE'], connectorCatalog: ['GET'], providerModels: ['GET'] };
   allowed.createdTools = ['GET', 'POST']; allowed.createdTool = ['PATCH', 'DELETE'];
   allowed.harnessActions = ['GET']; allowed.harnessReview = ['POST'];
   if (!(route.kind === 'task' ? route.action === 'recovery' ? ['GET'] : ['POST'] : allowed[route.kind]).includes(method)) throw error(status, 'This workspace action is unavailable from iPhone.');
@@ -210,6 +212,9 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
       object(body.limits, Object.keys(limits), status);
       if (!continuousLimits(body.limits)) for (const [key, value] of Object.entries(body.limits)) if (!Number.isSafeInteger(value) || value < limits[key][0] || value > limits[key][1]) throw error(status, 'Choose supported team limits.');
     }
+  } else if (route.kind === 'channelChoice') {
+    object(body, ['choice'], status);
+    if (!['retry', 'skip', 'different', 'continue'].includes(body.choice)) throw error(status, 'Choose one of the shown options.');
   } else if (route.kind === 'channelMessage') {
     object(body, ['message', 'requestId', 'recipientIds', 'replyToId', 'workMode', 'durablePlan', 'everyone'], status);
     string(body.message, 16_000, status);
@@ -322,6 +327,32 @@ function taskRecovery(value,route) {
   if (!isObject(value) || !id(value.id) || value.jobId!==route.jobId || !id(value.sourceRunId) || !id(value.botId) || !Number.isSafeInteger(value.expectedRevision) || value.expectedRevision<1 || typeof value.canResume!=='boolean' || !date(value.expiresAt) || !Array.isArray(value.completedReports) || value.completedReports.length>1000 || !Array.isArray(value.steps) || value.steps.length>32) throw error(502, 'Strata returned unreadable recovery information.');
   return {id:value.id,jobId:value.jobId,sourceRunId:value.sourceRunId,botId:value.botId,expectedRevision:value.expectedRevision,canResume:value.canResume,expiresAt:value.expiresAt,...Object.fromEntries(['botName','provider','model','computerLabel','workspace','summary'].map(key=>[key,taskText(value[key],key==='summary'?8000:key==='workspace'?4000:500,true)])),...(value.blockedReason!==undefined?{blockedReason:taskText(value.blockedReason,2500)}:{}),steps:value.steps.map(v=>taskText(v,2000)),completedReports:value.completedReports.map(v=>{if(!isObject(v)||!id(v.jobId)||!id(v.chatId))throw error(502,'Strata returned unreadable earlier results.');return{jobId:v.jobId,chatId:v.chatId,summary:taskText(v.summary,8000),...(id(v.reportId)?{reportId:v.reportId}:{})};})};
 }
+const recoveryChoiceIds = ['retry', 'skip', 'different', 'continue'];
+function messageRecovery(value) {
+  // Older rooms send retry, skip, and different. A paused run sends continue.
+  // A field this phone does not understand is left off the message; it does not hide the room.
+  if (value === undefined) return undefined;
+  if (!isObject(value) || !/^tj_[a-f0-9-]{1,80}$/.test(value.jobId ?? '') || !/^tr_[a-f0-9-]{1,80}$/.test(value.runId ?? '')) return undefined;
+  if (typeof value.question !== 'string' || !value.question.trim() || value.question.length > 240 || value.question.includes('\0') || !value.question.isWellFormed()) return undefined;
+  if (!Array.isArray(value.options) || value.options.length < 1 || value.options.length > 4) return undefined;
+  const options = [];
+  for (const option of value.options) {
+    if (!isObject(option) || !recoveryChoiceIds.includes(option.id) || typeof option.label !== 'string' || !option.label.trim() || option.label.length > 80 || option.label.includes('\0') || !option.label.isWellFormed()) return undefined;
+    const row = { id: option.id, label: option.label.trim() };
+    if (option.style === 'primary' || option.style === 'neutral' || option.style === 'danger') row.style = option.style;
+    else if (option.id === 'continue') row.style = 'primary';
+    options.push(row);
+  }
+  if (new Set(options.map(option => option.id)).size !== options.length) return undefined;
+  let text;
+  if (value.text !== undefined) {
+    if (typeof value.text !== 'string' || !value.text.trim() || value.text.length > 2_000 || value.text.includes('\0') || !value.text.isWellFormed()) return undefined;
+    text = value.text.trim();
+  }
+  if (value.kind !== undefined && value.kind !== 'paused') return undefined;
+  if (value.choice !== undefined && !options.some(option => option.id === value.choice)) return undefined;
+  return { jobId: value.jobId, runId: value.runId, question: value.question.trim(), options, ...(text ? { text } : {}), ...(value.kind === 'paused' ? { kind: 'paused' } : {}), ...(value.choice ? { choice: value.choice } : {}) };
+}
 function channelSnapshot(value, route) {
   const invalid = () => { throw error(502, 'Strata returned unreadable team channel information.'); };
   if (!isObject(value) || value.teamId !== route.teamId || value.supported !== true || !Array.isArray(value.messages) || value.messages.length > 100 || !Array.isArray(value.activeRuns) || !Number.isSafeInteger(value.nextSequence) || value.nextSequence < 0 || typeof value.hasMore !== 'boolean' || typeof value.hasMoreBefore !== 'boolean') invalid();
@@ -335,7 +366,8 @@ function channelSnapshot(value, route) {
     if (v.workMode !== undefined && (v.author.type !== 'user' || !['chat', 'work'].includes(v.workMode))) invalid();
     let avatarConfig;
     if (v.author.avatarConfig !== undefined) { try { avatarConfig = botAvatarConfig(v.author.avatarConfig, 502); if (avatarConfig.shape === 'classic') delete avatarConfig.shape; } catch { /* Omit unavailable future artwork; never forward arbitrary assets or fields. */ } }
-    return { id: v.id, sequence: v.sequence, teamId: v.teamId, kind: v.kind, author: { type: v.author.type, name: v.author.name, ...(v.author.type === 'bot' ? { botId: v.author.botId } : {}), ...(avatarConfig ? { avatarConfig } : {}) }, content: v.content, createdAt: date(v.createdAt), ...(v.workMode !== undefined ? { workMode: v.workMode } : {}), ...(v.planId !== undefined ? { planId: v.planId } : {}), ...Object.fromEntries(['replyToId', 'runId', 'chatId'].filter(key => v[key] !== undefined).map(key => [key, v[key]])), ...(v.recipientIds ? { recipientIds: v.recipientIds } : {}), ...(['queued', 'working', 'done', 'error', 'interrupted', 'cancelled'].includes(v.state) ? { state: v.state } : {}) };
+    const recovery = messageRecovery(v.recovery);
+    return { id: v.id, sequence: v.sequence, teamId: v.teamId, kind: v.kind, author: { type: v.author.type, name: v.author.name, ...(v.author.type === 'bot' ? { botId: v.author.botId } : {}), ...(avatarConfig ? { avatarConfig } : {}) }, content: v.content, createdAt: date(v.createdAt), ...(v.workMode !== undefined ? { workMode: v.workMode } : {}), ...(v.planId !== undefined ? { planId: v.planId } : {}), ...Object.fromEntries(['replyToId', 'runId', 'chatId'].filter(key => v[key] !== undefined).map(key => [key, v[key]])), ...(v.recipientIds ? { recipientIds: v.recipientIds } : {}), ...(recovery ? { recovery } : {}), ...(['queued', 'working', 'done', 'error', 'interrupted', 'cancelled'].includes(v.state) ? { state: v.state } : {}) };
   });
   if (messages.length && value.nextSequence !== messages.at(-1).sequence || value.activeRuns.some(v => !isObject(v) || !id(v.id) || v.teamId !== route.teamId)) invalid();
   const presence = Array.isArray(value.presence) ? value.presence.flatMap(row => isObject(row) && id(row.botId) && id(row.runId) && id(row.jobId) && ['working', 'queued'].includes(row.state) ? [{ botId: row.botId, state: row.state, runId: row.runId, jobId: row.jobId }] : []) : undefined;
@@ -409,6 +441,12 @@ export function publicBotWorkspace(body, route) {
     return body[key].filter(v => v && valid(v.id)).slice(0, max).map(project);
   };
   if (route.kind === 'channel') return channelSnapshot(body, route);
+  if (route.kind === 'channelChoice') {
+    if (!isObject(body) || body.accepted !== true || !recoveryChoiceIds.includes(body.choice) || !isObject(body.message)) throw error(502, 'Strata did not save this choice.');
+    const message = channelSnapshot({ teamId: route.teamId, supported: true, messages: [body.message], activeRuns: [], nextSequence: body.message.sequence, hasMore: false, hasMoreBefore: false }, route).messages[0];
+    if (message.id !== route.messageId || message.teamId !== route.teamId || message.recovery?.choice !== body.choice) throw error(502, 'Strata did not save this choice.');
+    return { accepted: true, choice: body.choice, message };
+  }
   if (route.kind === 'task') {
     if (route.action==='recovery') return {plan:taskRecovery(body.plan,route)};
     if (!isObject(body.activity) || !id(body.activity.id) || body.activity.teamId!==route.teamId || !body.activity.work) throw error(502, 'Strata returned an unrelated task.');

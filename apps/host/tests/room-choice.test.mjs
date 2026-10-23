@@ -49,13 +49,33 @@ test('the live event and the web event use the same shape, and text is the body'
   assert.equal(choice.recoveryFromEvent(null), null);
 });
 
-test('a button posts only retry, skip, or different', () => {
+test('a button posts retry, skip, different, or continue', () => {
   assert.deepEqual(choice.choicePayload('retry'), { choice: 'retry' });
   assert.deepEqual(choice.choicePayload('skip'), { choice: 'skip' });
   assert.deepEqual(choice.choicePayload('different'), { choice: 'different' });
+  assert.deepEqual(choice.choicePayload('continue'), { choice: 'continue' });
   assert.equal(choice.choicePayload('other'), null);
   assert.equal(choice.choicePayload('different-approach'), null);
+  assert.equal(choice.choicePayload('resume'), null);
   assert.equal(choice.choicePayload('Try again'), null);
+});
+
+test('a paused recovery shows the host text and a primary continue button', () => {
+  const summary = 'I finished inspect. The rest of this request is still left.';
+  const paused = choice.recoveryFromMessage(message({
+    kind: 'paused', jobId: 'tj_1', runId: 'tr_1', text: summary, question: 'Keep going?',
+    options: [{ id: 'continue', label: 'Keep going' }],
+  }, 'older line'));
+  assert.equal(paused.text, summary);
+  assert.equal(paused.question, 'Keep going?');
+  assert.deepEqual(paused.options, [{ id: 'continue', label: 'Keep going', style: 'primary' }]);
+  const live = choice.recoveryFromEvent({
+    teamId: 'team_1', messageId: 'tm_1', jobId: 'tj_1', runId: 'tr_1',
+    text: summary, question: 'Keep going?', options: [{ id: 'continue', label: 'Keep going' }],
+  });
+  assert.equal(live.text, summary);
+  assert.equal(live.options[0].style, 'primary');
+  assert.equal(live.options[0].label, 'Keep going');
 });
 
 test('the room card renders host labels, marks a saved choice, and retries a failed post', async () => {

@@ -12,9 +12,9 @@ struct ChatView: View {
     @State private var setupBot: CompanionBot?
     @FocusState private var composerFocused: Bool
     @State private var arrivals = CoucouArrivals()
-    @State private var stoppedPauses = Set<String>()
-    @State private var continuedPauses = Set<String>()
-    @State private var continuingPause: String?
+    @State private var pauseBusy = ""
+    @State private var pauseError = ""
+    @State private var pauseErrorId = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -270,7 +270,7 @@ struct ChatView: View {
                 ForEach(message.timelineItems) { item in
                     switch item {
                     case .text(_, let text):
-                        if !(message.isStepPause && message.isPauseNotice(text)) {
+                        if !(message.isStepPause && message.isPauseNotice(text)), message.pauseChoice?.text.trimmingCharacters(in: .whitespacesAndNewlines) != text.trimmingCharacters(in: .whitespacesAndNewlines) {
                             messageText(text, isUser: isUser)
                         }
                     case .group(let group, let tools):
@@ -282,11 +282,9 @@ struct ChatView: View {
                         activity(tool)
                     }
                 }
-                if message.isStepPause {
-                    if message.id == store.currentConversation?.messages.last?.id, !continuedPauses.contains(message.id) {
-                        stepPauseCard(message)
-                    }
-                } else if let error = message.error, !error.isEmpty {
+                if let paused = message.pauseChoice, message.streaming != true {
+                    pauseCard(message, paused)
+                } else if let error = message.error, !error.isEmpty, !message.isStepPause {
                     Label(error, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(StrataTheme.warning)
                 }
             }
@@ -294,48 +292,33 @@ struct ChatView: View {
         }
     }
 
-    private func stepPauseCard(_ message: MacChatMessage) -> some View {
-        let stopped = stoppedPauses.contains(message.id)
-        let busy = continuingPause == message.id
-        return VStack(alignment: .leading, spacing: 8) {
-            Text("Paused after a long run").font(.subheadline.weight(.semibold)).foregroundStyle(StrataTheme.ink)
-            Text(message.stepPauseSummary).font(.subheadline).foregroundStyle(StrataTheme.secondaryInk).fixedSize(horizontal: false, vertical: true)
-            if stopped {
-                Text("Stopped here.").font(.subheadline).foregroundStyle(StrataTheme.secondaryInk)
-            } else {
-                HStack(spacing: 8) {
-                    Button {
-                        Task { await keepGoing(message.id) }
-                    } label: {
-                        Text(busy ? "Continuing…" : "Keep going").font(.subheadline.weight(.semibold))
-                            .padding(.horizontal, 14).padding(.vertical, 8)
-                            .foregroundStyle(StrataTheme.primaryInk)
-                            .background(StrataTheme.primaryFill, in: Capsule())
-                    }
-                    .disabled(busy)
-                    .accessibilityIdentifier("stepPauseContinue")
-                    Button("Stop here") { stoppedPauses.insert(message.id) }
-                        .font(.subheadline)
-                        .disabled(busy)
-                        .accessibilityIdentifier("stepPauseStop")
-                }
-            }
+    private func pauseCard(_ message: MacChatMessage, _ recovery: MacPauseRecovery) -> some View {
+        let options = recovery.options.compactMap { option -> RoomChoiceOption? in
+            let label = option.label.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !option.id.isEmpty, !label.isEmpty else { return nil }
+            return RoomChoiceOption(id: option.id, label: label, style: option.id == "continue" ? "primary" : nil)
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(StrataTheme.grouped, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(StrataTheme.line, lineWidth: 1))
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("stepPauseCard")
+        return RoomChoiceCard(
+            text: recovery.text.trimmingCharacters(in: .whitespacesAndNewlines),
+            options: options,
+            chosen: recovery.choice == "continue" ? "continue" : nil,
+            busy: pauseBusy == message.id ? "continue" : "",
+            error: pauseErrorId == message.id ? pauseError : "",
+            onChoose: { optionId in Task { await keepGoing(message.id, optionId) } },
+            onRetry: { Task { await keepGoing(message.id, "continue") } }
+        )
     }
 
-    private func keepGoing(_ id: String) async {
-        continuingPause = id
-        let before = store.currentConversation?.messages.count ?? store.messages.count
-        await store.sendMessage("Continue from where you left off. Do not repeat what you have already written.")
-        continuingPause = nil
-        let after = store.currentConversation?.messages.count ?? store.messages.count
-        if store.error == nil, after > before { continuedPauses.insert(id) }
+    private func keepGoing(_ id: String, _ optionId: String) async {
+        guard optionId == "continue", pauseBusy.isEmpty else { return }
+        pauseBusy = id
+        pauseError = ""
+        pauseErrorId = ""
+        if let error = await store.continuePausedMessage(messageId: id) {
+            pauseError = error
+            pauseErrorId = id
+        }
+        pauseBusy = ""
     }
 
     private func isLiveMessage(_ message: MacChatMessage) -> Bool {

@@ -908,7 +908,7 @@ struct RoomRecoveryPresentation: Equatable {
 
 /// The room card reads the host's recovery field and the same live event shape. Labels are never invented here.
 enum RoomChoice {
-    static let choiceIds: Set<String> = ["retry", "skip", "different"]
+    static let choiceIds: Set<String> = ["retry", "skip", "different", "continue"]
 
     static func fromMessage(id: String, teamId: String, content: String, recovery: BotTeamMessageRecovery?) -> RoomRecoveryPresentation? {
         guard let recovery else { return nil }
@@ -928,7 +928,8 @@ enum RoomChoice {
             let id = option.id.trimmingCharacters(in: .whitespacesAndNewlines)
             let label = option.label.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !id.isEmpty, !label.isEmpty else { return nil }
-            return RoomChoiceOption(id: id, label: label, style: option.style)
+            let style = option.style ?? (id == "continue" ? "primary" : nil)
+            return RoomChoiceOption(id: id, label: label, style: style)
         }
         let asked = question.trimmingCharacters(in: .whitespacesAndNewlines)
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? (fallback.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? asked : fallback.trimmingCharacters(in: .whitespacesAndNewlines)) : text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -959,12 +960,7 @@ struct RoomChoiceCard: View {
             Text(text).font(.body).foregroundStyle(StrataTheme.ink).fixedSize(horizontal: false, vertical: true)
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(options) { option in
-                    Button(busy == option.id ? "Sending…" : option.label) { onChoose(option.id) }
-                        .buttonStyle(.bordered)
-                        .tint(chosen == option.id ? Color.accentColor : (option.style == "danger" ? Color.red : Color.primary))
-                        .disabled(locked)
-                        .accessibilityIdentifier("teamRoomChoice-\(option.id)")
-                        .accessibilityAddTraits(chosen == option.id ? .isSelected : [])
+                    choiceButton(option, locked: locked)
                 }
             }
             if chosen == nil, !error.isEmpty {
@@ -983,6 +979,24 @@ struct RoomChoiceCard: View {
         .onAppear {
             guard !reduceMotion else { shown = true; return }
             withAnimation(.spring(response: CoucouMotion.springResponse, dampingFraction: CoucouMotion.springDamping)) { shown = true }
+        }
+    }
+
+    @ViewBuilder
+    private func choiceButton(_ option: RoomChoiceOption, locked: Bool) -> some View {
+        if option.style == "primary" {
+            Button(busy == option.id ? "Sending…" : option.label) { onChoose(option.id) }
+                .buttonStyle(.borderedProminent)
+                .disabled(locked)
+                .accessibilityIdentifier("teamRoomChoice-\(option.id)")
+                .accessibilityAddTraits(chosen == option.id ? .isSelected : [])
+        } else {
+            Button(busy == option.id ? "Sending…" : option.label) { onChoose(option.id) }
+                .buttonStyle(.bordered)
+                .tint(chosen == option.id ? Color.accentColor : (option.style == "danger" ? Color.red : Color.primary))
+                .disabled(locked)
+                .accessibilityIdentifier("teamRoomChoice-\(option.id)")
+                .accessibilityAddTraits(chosen == option.id ? .isSelected : [])
         }
     }
 }
