@@ -4,6 +4,7 @@ import { api } from '../lib/client';
 import { navigate, useLocation } from '../lib/router';
 import { useMedia } from '../lib/responsive';
 import { adoptSharedConversation, adoptSharedConversations, selectSession, useStore } from '../lib/store';
+import { markSidebarRead, sidebarReadTarget } from '../lib/sidebar-reads';
 import { sessionTitle } from '../lib/session-title';
 import { relTime } from '../lib/format';
 import { blankBot, botComputerSelection, botConversationContext, botConversations, botPersonalConversations, botDraftError, botPolicyLabel, botAvatarActivity, botReplySignal, botConversationRoster, botProviderName, botSetupStepError, type BotPolicy, type Bot, type BotDraft, type BotExecution, type BotsSnapshot, type BotTeamsSnapshot } from '../lib/bots';
@@ -56,7 +57,7 @@ export function BotsScreen() {
   const [showRosterFilters, setShowRosterFilters] = useState(false), [showChatHistory, setShowChatHistory] = useState(false);
   const teams = useBotsResource<BotTeamsSnapshot>('/api/bots/teams');
   const [computerReadiness, setComputerReadiness] = useState<{ key: string; computer?: BotComputerReadiness; error?: string; checking?: boolean } | null>(null);
-  const generation = useRef(0), navigationRevision = useRef(0), alive = useRef(true), personalChatRequest = useRef<symbol | null>(null), snapshotSignature = useRef(''), reading = useRef(false);
+  const generation = useRef(0), navigationRevision = useRef(0), alive = useRef(true), personalChatRequest = useRef<symbol | null>(null), snapshotSignature = useRef(''), reading = useRef(false), readPost = useRef('');
   const bots = snapshot?.bots ?? [];
   const selected = bots.find(bot => bot.id === location.param) ?? (!location.param ? bots[0] : undefined);
   const workTab = WORK_TABS.find(tab => tab.id === location.param)?.id;
@@ -96,7 +97,15 @@ export function BotsScreen() {
     const timer = setInterval(() => { if (!document.hidden) void refresh(false, false); }, 3000);
     return () => { alive.current = false; generation.current++; navigationRevision.current++; clearInterval(timer); window.removeEventListener('hashchange', navigated); };
   }, []);
-  useEffect(() => { setEditing(null); setOpening(null); setEditorError(''); setNewTeam(false); setShowChatHistory(false); }, [location.route, location.param, location.query.toString()]);
+  useEffect(() => { setEditing(null); setOpening(null); setEditorError(''); setNewTeam(location.route === 'bots' && location.param === 'teams' && location.query.get('new') === 'room'); setShowChatHistory(false); }, [location.route, location.param, location.query.toString()]);
+  useEffect(() => {
+    const target = sidebarReadTarget(location.route, location.param, location.query);
+    if (!target) return;
+    const key = `${target.kind}:${target.id}`;
+    const post = readPost.current !== key;
+    if (post) readPost.current = key;
+    void markSidebarRead(target.kind, target.id, { post });
+  }, [location.route, location.param, location.query, sessions]);
   useEffect(() => {
     if (route === 'bot' && selected && chat) {
       setSelectedChats(previous => previous[selected.id] ? previous : { ...previous, [selected.id]: chat.id });
@@ -288,7 +297,7 @@ export function BotsScreen() {
       <div className="cua-chat-history">{selected && chats.length ? chats.map(conversation => <button key={conversation.id} aria-label={`Open conversation ${sessionTitle(conversation)}`} onClick={() => { setShowChatHistory(false); openChat(selected, conversation); }}><Icon name="chat" size={19}/><span><strong>{sessionTitle(conversation)}</strong><small>{conversation.active ? 'Working' : Number.isFinite(Date.parse(conversation.updatedAt)) ? relTime(conversation.updatedAt) : 'Shared conversation'}</small></span><Icon name="chevron" size={13}/></button>) : <p className="small muted">New conversations with this bot will appear here.</p>}</div>
     </Dialog>
     <Dialog open={showRosterFilters} title="Find a conversation" compact onClose={() => setShowRosterFilters(false)} actions={<><Btn disabled={!rosterQuery && rosterFilter === 'all'} onClick={() => { setRosterQuery(''); setRosterFilter('all'); }}>Clear filters</Btn><Btn variant="primary" onClick={() => setShowRosterFilters(false)}>Done</Btn></>}><div className="form-stack"><label className="input-field"><span>Search bots</span><input className="st-input" type="search" aria-label="Search bots" placeholder="Search bots…" value={rosterQuery} onChange={event => setRosterQuery(event.target.value)}/></label><div className="input-field"><span>Activity</span><Select ariaLabel="Filter bots" value={rosterFilter} options={[{value:'all',label:'All conversations'},{value:'attention',label:'Needs attention'},{value:'working',label:'Working'}]} onChange={setRosterFilter}/></div><p className="small muted" role="status">{listedRoster.length} of {roster.length} conversations</p></div></Dialog>
-    {newTeam?<BotTeamEditor bots={bots} computers={teams.data?.teamComputers} settingsSupported={teams.data?.teamSettingsSupported} instructionsSupported={teams.data?.teamInstructionsSupported} unrestrictedSupported={teams.data?.teamUnrestrictedSupported} continuousSupported={teams.data?.teamContinuousSupported} onClose={()=>setNewTeam(false)} onSaved={async team=>{const revision=navigationRevision.current,hash=window.location.hash;await teams.refresh();if(alive.current&&revision===navigationRevision.current&&hash===window.location.hash){setNewTeam(false);navigate('bots','teams',{team:team.id});}}}/>:null}
+    {newTeam?<BotTeamEditor bots={bots} computers={teams.data?.teamComputers} settingsSupported={teams.data?.teamSettingsSupported} instructionsSupported={teams.data?.teamInstructionsSupported} unrestrictedSupported={teams.data?.teamUnrestrictedSupported} continuousSupported={teams.data?.teamContinuousSupported} onClose={()=>{setNewTeam(false); if(location.query.get('new')==='room') navigate('bots','teams');}} onSaved={async team=>{const revision=navigationRevision.current,hash=window.location.hash;await teams.refresh();if(alive.current&&revision===navigationRevision.current&&hash===window.location.hash){setNewTeam(false);navigate('bots','teams',{team:team.id});}}}/>:null}
     <Dialog open={!!editing} title={editing ? `${editing.bot.name}’s settings` : 'Bot settings'} className="cua-settings-dialog" onClose={() => { if (!pending && !configBusy) setEditing(null); }} actions={<><Btn disabled={!!pending || configBusy} onClick={() => setEditing(null)}>Cancel</Btn><Btn variant="primary" disabled={!!pending || configBusy} onClick={() => { if (editing) void save(editing.draft, editing.bot); }}>{pending === 'save' ? 'Saving…' : 'Save settings'}</Btn></>}>
       {editing && snapshot ? <div className="form-stack"><label className="input-field"><span>Name</span><input className="st-input" maxLength={120} value={editing.draft.name} onChange={event => setEditing({ ...editing, draft: { ...editing.draft, name: event.target.value } })}/></label><details className="cua-edit-look"><summary><CuaBotAvatar config={editing.draft.avatarConfig} name={editing.draft.name} size={40}/>Edit look</summary><CuaBotAvatarPicker value={editing.draft.avatarConfig ?? defaultCuaBotAvatar(editing.draft.name)} name={editing.draft.name} shapes={snapshot?.avatarShapes} onChange={avatarConfig => setEditing({ ...editing, draft: { ...editing.draft, avatarConfig } })}/></details><CuaBotsConfig draft={editing.draft} snapshot={snapshot} apiKeySet={editing.bot.providerSettings?.apiKeySet} busy={!!pending} onBusyChange={setConfigBusy} onChange={patch => setEditing(current => current ? { ...current, draft: { ...current.draft, ...patch } } : null)}/><p className="xs muted">Profile changes apply to new conversations. Existing conversations keep their original settings.</p>{editorError ? <ErrorNotice message={editorError} action="Dismiss" onRetry={() => setEditorError('')}/> : null}</div> : null}
     </Dialog>

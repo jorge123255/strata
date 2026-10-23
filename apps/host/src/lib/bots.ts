@@ -112,6 +112,7 @@ export interface BotTeamChannelMessage {
 export interface BotTeamChannelPreview { id: string; sequence: number; kind: BotTeamChannelMessage['kind']; author: Pick<BotTeamChannelAuthor, 'type'|'name'|'botId'>; content: string; createdAt: string }
 export interface BotTeamPresence { botId: string; state: 'working' | 'queued'; runId: string; jobId: string }
 export interface BotTeamChannelSnapshot { teamId: string; supported: boolean; messages: BotTeamChannelMessage[]; activeRuns: BotTeamRun[]; nextSequence: number; hasMore?: boolean; hasMoreBefore?: boolean; firstSequence?: number; presence?: BotTeamPresence[] }
+/** Sidebar summary from GET /api/bots/summary and the bot-summary stream. */
 export interface BotRoomLastMessage { at: string; preview: string; authorName: string }
 export interface BotRoomWorking { botId: string; name: string; state: 'working' | 'queued' }
 export interface BotRoomSummary { id: string; name: string; memberCount: number; unreadCount: number; lastMessage: BotRoomLastMessage | null; working: BotRoomWorking[] }
