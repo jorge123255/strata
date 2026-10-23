@@ -24,6 +24,8 @@ html:has(.connector-workspace),
   --st-focus: #1e4e78;
   --st-user-bg: #2c2d31;
   --st-user-ink: #f7f8fa;
+  /* Muted ink that stays AA on the dark user bubble. The page muted token is too dark there. */
+  --st-user-muted: #aeb4be;
   --st-action: #1c1c1e;
   --st-action-hover: #3a3d44;
   --st-action-ink: #f7f8fa;
@@ -52,6 +54,7 @@ html[data-theme="dark"]:has(.connector-workspace),
   --st-focus: #d5e4f2;
   --st-user-bg: #2a2c31;
   --st-user-ink: #f5f6f8;
+  --st-user-muted: #aeb4be;
   --st-action: #f5f6f8;
   --st-action-hover: #e4e6ea;
   --st-action-ink: #121316;
@@ -184,6 +187,48 @@ html[data-theme="dark"]:has(.connector-workspace),
 .cua-bots-sidebar .cua-roster-bot[data-selected] small {
   color: var(--st-ink-soft);
   opacity: 1;
+}
+/* Compact 52px rail: hide the name and preview again. The expanded copy
+   rule is more specific than Bots.css, so without this a long preview
+   stays in the layout and stretches the row. */
+@container bots (max-width: 920px) {
+  .cua-bots-shell[data-list] > .cua-bots-sidebar {
+    padding: 12px 6px;
+  }
+  .cua-bots-shell[data-list] .cua-bots-sidebar .cua-sidebar-item.cua-roster-bot {
+    justify-content: center;
+    min-height: 72px;
+    padding: 8px 4px;
+    gap: 0;
+  }
+  .cua-bots-shell[data-list] .cua-sidebar-item > span.cua-roster-copy {
+    display: none;
+  }
+}
+@media (max-width: 760px) {
+  .cua-bots-shell[data-list] > .cua-bots-sidebar {
+    padding: 12px 6px;
+  }
+  .cua-bots-shell[data-list] .cua-bots-sidebar .cua-sidebar-item.cua-roster-bot {
+    justify-content: center;
+    min-height: 72px;
+    padding: 8px 4px;
+    gap: 0;
+  }
+  .cua-bots-shell[data-list] .cua-sidebar-item > span.cua-roster-copy {
+    display: none;
+  }
+}
+@media (max-width: 500px) {
+  .cua-bots-sidebar .cua-sidebar-item.cua-roster-bot {
+    justify-content: center;
+    min-height: 72px;
+    padding: 8px 4px;
+    gap: 0;
+  }
+  .cua-bots-sidebar .cua-sidebar-item > span.cua-roster-copy {
+    display: none;
+  }
 }
 
 /* Workspace chrome and cards. Soft edge, no shadow. */
@@ -452,12 +497,39 @@ html[data-theme="dark"]:has(.connector-workspace),
   border-radius: 18px 18px 6px 18px;
   padding: 10px 14px;
 }
-.bot-room-message[data-author="user"] .bot-room-message-body,
+/* The header and its time sit on the page, next to the bubble. */
 .bot-room-message[data-author="user"] header,
-.bot-room-message[data-author="user"] time,
-.bot-room-message[data-author="user"] footer > span,
-.bot-room-message[data-author="user"] footer > button {
+.bot-room-message[data-author="user"] header time {
+  color: var(--st-ink-muted);
+}
+.bot-room-message[data-author="user"] .bot-room-message-body,
+.bot-room-message[data-author="user"] .bot-room-message-bubble footer > span,
+.bot-room-message[data-author="user"] .bot-room-message-bubble footer > button {
   color: var(--st-user-ink);
+}
+.bot-room-message[data-author="user"] .bot-room-message-bubble .bot-room-addressed,
+.bot-room-message[data-author="user"] .bot-room-message-bubble .bot-room-reply-context,
+.bot-room-message[data-author="user"] .bot-room-message-bubble .md-dot {
+  color: var(--st-user-muted);
+}
+.bot-room-message[data-author="user"] .bot-room-message-bubble .bot-room-reply-context {
+  border-left-color: color-mix(in srgb, var(--st-user-ink) 45%, transparent);
+}
+.bot-room-message[data-author="user"] .bot-room-message-bubble .bot-room-reply-context strong {
+  color: var(--st-user-ink);
+}
+.bot-room-message[data-author="user"] .bot-room-message-bubble a {
+  color: var(--st-user-ink);
+  text-decoration-line: underline;
+  text-underline-offset: 3px;
+}
+.bot-room-message[data-author="user"] .bot-room-message-bubble a:focus-visible {
+  outline-color: var(--st-user-ink);
+}
+.bot-room-message[data-author="user"] .bot-room-message-bubble .md-code {
+  color: var(--st-user-ink);
+  background: color-mix(in srgb, var(--st-user-ink) 12%, var(--st-user-bg));
+  border-color: color-mix(in srgb, var(--st-user-ink) 28%, transparent);
 }
 .bot-room-message-body {
   font-size: 15px;
