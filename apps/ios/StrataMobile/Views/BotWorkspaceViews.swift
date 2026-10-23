@@ -321,6 +321,7 @@ struct BotTeamDetailView: View {
     @State private var tasksExpanded = false
     @State private var workHistoryExpanded = false
     @State private var follow = BotTeamMessageFollowState()
+    @State private var arrivals = CoucouArrivals()
     @State private var sentScrollRequest: String?
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -375,7 +376,7 @@ struct BotTeamDetailView: View {
                                     .accessibilityIdentifier("loadEarlierTeamMessagesButton")
                             }
                             if entries.isEmpty { emptyChannel(team) }
-                            ForEach(entries) { entry in channelRow(entry, team: team).id(entry.id) }
+                            channelMessages(team)
                         } else if let channel {
                             Text(channel.reason ?? "Shared team channels require a newer Strata on your Mac.")
                                 .font(.callout).foregroundStyle(.secondary).padding(.vertical, 24)
@@ -686,6 +687,17 @@ struct BotTeamDetailView: View {
             .accessibilityIdentifier("toggleBotTeamEnabledButton")
     }
 
+    private func channelMessages(_ team: BotTeam) -> some View {
+        let rows = entries.map { CoucouRow(id: $0.id, own: $0.author.type == "user") }
+        let ready = channel != nil && !workspace.loading.contains(channelKey)
+        arrivals.begin(key: teamId, rows: rows, ready: ready)
+        return ForEach(entries) { entry in
+            CoucouMessageEnter(entrance: arrivals.entrance(id: entry.id), onDone: { arrivals.finish(id: entry.id) }) {
+                channelRow(entry, team: team)
+            }.id(entry.id)
+        }
+    }
+
     private func channelRow(_ entry: BotTeamChannelMessage, team: BotTeam) -> some View {
         let human = entry.author.type == "user"
         return HStack(alignment: .bottom, spacing: 8) {
@@ -795,7 +807,11 @@ struct BotTeamDetailView: View {
                     if !recipient.isEmpty { Text("To " + (recipient == "everyone" ? "Everyone" : store.botCatalog?.bots.first { $0.id == recipient }?.name ?? "Teammate")).lineLimit(2) }
                     Spacer(minLength: 0)
                     if let names = channel?.presence?.filter({ $0.state == "working" }).map({ row in store.botCatalog?.bots.first { $0.id == row.botId }?.name ?? "A teammate" }), !names.isEmpty {
-                        Text(names.joined(separator: ", ") + (names.count == 1 ? " is working…" : " are working…")).lineLimit(2)
+                        let label = names.joined(separator: ", ") + (names.count == 1 ? " is working…" : " are working…")
+                        HStack(spacing: 6) {
+                            TypingDots(label: label, hiddenLabel: true)
+                            ShimmerText(text: label).lineLimit(2)
+                        }
                     } else if !activeRuns.isEmpty { Label("Team working", systemImage: "circle.fill").labelStyle(.titleOnly).foregroundStyle(StrataTheme.accentText) }
                 }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 8)
             }

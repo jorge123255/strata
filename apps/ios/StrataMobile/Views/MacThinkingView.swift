@@ -10,8 +10,10 @@ struct MacThinkingView: View {
             Button { expanded.toggle() } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "sparkle").font(.caption.weight(.semibold)).foregroundStyle(StrataTheme.ink).frame(width: 28, height: 28).background(StrataTheme.grouped, in: Circle())
-                    Text(message.thinkingTitle(isLive: isLive)).font(.subheadline.weight(.medium))
-                    if isLive { Circle().fill(StrataTheme.success).frame(width: 6, height: 6).accessibilityLabel("Live thinking") }
+                        .symbolEffect(.variableColor.iterative, isActive: isLive)
+                    if isLive { ShimmerText(text: message.thinkingTitle(isLive: isLive)).font(.subheadline.weight(.medium)) }
+                    else { Text(message.thinkingTitle(isLive: isLive)).font(.subheadline.weight(.medium)) }
+                    if isLive { BreathingStatusDot(kind: .working).accessibilityLabel("Live thinking") }
                     Spacer(minLength: 4)
                     Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.caption2)
                 }

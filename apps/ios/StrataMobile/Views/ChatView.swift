@@ -11,6 +11,7 @@ struct ChatView: View {
     @State private var userScrolling = false
     @State private var setupBot: CompanionBot?
     @FocusState private var composerFocused: Bool
+    @State private var arrivals = CoucouArrivals()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -140,14 +141,22 @@ struct ChatView: View {
     }
 
     private var conversationScroll: some View {
-        ScrollView {
+        let ready = !store.isSelectingConversation
+        let key = store.currentConversation?.id ?? store.currentChatId ?? "none"
+        let rows = visibleMessages.map { CoucouRow(id: $0.id, own: $0.role == "user") }
+        arrivals.begin(key: key, rows: rows, ready: ready)
+        return ScrollView {
             if store.isSelectingConversation {
                 ProgressView("Opening Mac conversation…").padding(.top, 40)
             } else if visibleMessages.isEmpty {
                 chatWelcome
             } else {
                 VStack(alignment: .leading, spacing: 23) {
-                    ForEach(visibleMessages) { message in messageView(message).id(message.id) }
+                    ForEach(visibleMessages) { message in
+                        CoucouMessageEnter(entrance: arrivals.entrance(id: message.id), onDone: { arrivals.finish(id: message.id) }) {
+                            messageView(message)
+                        }.id(message.id)
+                    }
                     ForEach(additionalPendingApprovals) { tool in activity(tool) }
                     if store.isWorking { workingIndicator }
                     Color.clear.frame(height: 1).id("conversationBottom")
@@ -197,9 +206,11 @@ struct ChatView: View {
 
     private var workingIndicator: some View {
         HStack(spacing: 9) {
-            ProgressView().controlSize(.small).tint(StrataTheme.accentText)
-            Text(liveStatus).font(.caption).foregroundStyle(StrataTheme.secondaryInk)
+            TypingDots(label: liveStatus, hiddenLabel: true)
+            ShimmerText(text: liveStatus).font(.caption)
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(liveStatus)
         .accessibilityIdentifier("chatThinkingIndicator")
     }
 
