@@ -1116,8 +1116,6 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined' && window.a
   document.addEventListener?.('visibilitychange', () => { if (document.visibilityState === 'hidden') flushSessions(); });
 }
 
-}
-
 export function newSession(): Session {
   const session: Session = {
     id: uid('s'),
