@@ -147,27 +147,11 @@ test('a paused chat recovery is the public summary and a primary continue option
   assert.ok(!JSON.stringify(publicConversation(value).messages[1]).includes('PRIVATE_PAUSE'));
 });
 
-test('a paused chat continue posts only {choice:"continue"}', async t => {
+test('a one-to-one pause continue route is not open yet', async () => {
   const calls = [];
   const host = new HostClient({ upstream: 'http://127.0.0.1:47831', fetcher: async (url, options) => { calls.push({ url, options }); return new Response('{}'); } });
-  await host.request('/api/companion/conversations/s_desktop-1/messages/m_pause/choice', { method: 'POST', body: { choice: 'continue' } });
-  assert.equal(calls.length, 1);
-  assert.equal(JSON.parse(calls[0].options.body).choice, 'continue');
-  for (const body of [{ choice: 'resume' }, { choice: 'continue', message: 'Continue' }, {}]) await assert.rejects(host.request('/api/companion/conversations/s_desktop-1/messages/m_pause/choice', { method: 'POST', body }), { status: 403 });
-  await assert.rejects(host.request('/api/companion/conversations/s_desktop-1/messages/m_pause/choice', { method: 'GET' }), { status: 403 });
-  assert.equal(calls.length, 1);
-  const paused = structuredClone(conversation);
-  paused.messages[1].recovery = { kind: 'paused', text: 'I finished inspect. The rest of this request is still left.', question: 'Keep going?', options: [{ id: 'continue', label: 'Keep going' }], jobId: 'PRIVATE_JOB' };
-  const paired = await fixture(t, () => ({ conversation: paused, pending: [] }));
-  const result = await request(paired.bridge, `/v1/conversations/${conversation.id}/messages/m_assistant/choice`, { token: paired.token, method: 'POST', body: { choice: 'continue' } });
-  assert.equal(result.status, 200);
-  assert.deepEqual(paired.calls.at(-1).body, { choice: 'continue' });
-  assert.equal(paired.calls.at(-1).path, `/api/companion/conversations/${conversation.id}/messages/m_assistant/choice`);
-  assert.equal(result.json.conversation.messages[1].recovery.text, 'I finished inspect. The rest of this request is still left.');
-  assert.equal(result.json.conversation.messages[1].recovery.options[0].style, 'primary');
-  assert.ok(!result.text.includes('PRIVATE_JOB'));
-  assert.equal((await request(paired.bridge, `/v1/conversations/${conversation.id}/messages/m_assistant/choice`, { token: paired.token, method: 'POST', body: { choice: 'resume' } })).status, 400);
-  assert.equal(paired.calls.filter(call => String(call.path).endsWith('/choice')).length, 1);
+  await assert.rejects(host.request('/api/companion/conversations/s_desktop-1/messages/m_pause/choice', { method: 'POST', body: { choice: 'continue' } }), { status: 403 });
+  assert.equal(calls.length, 0);
 });
 
 test('HostClient only admits exact shared-conversation methods and prevents desktop sync or URL forwarding', async () => {

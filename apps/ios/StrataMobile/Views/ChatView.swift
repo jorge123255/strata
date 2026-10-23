@@ -304,6 +304,7 @@ struct ChatView: View {
             chosen: recovery.choice == "continue" ? "continue" : nil,
             busy: pauseBusy == message.id ? "continue" : "",
             error: pauseErrorId == message.id ? pauseError : "",
+            paused: true,
             onChoose: { optionId in Task { await keepGoing(message.id, optionId) } },
             onRetry: { Task { await keepGoing(message.id, "continue") } }
         )

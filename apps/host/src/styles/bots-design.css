@@ -208,6 +208,23 @@
 }
 .st-msg .bot-room-choice { margin: 12px 0 4px; max-width: 440px; }
 
+/* A paused run uses the same card. It stays quiet: no failure border, no alarm color. */
+.bot-room-choice[data-kind='paused'] {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+.bot-room-choice[data-kind='paused'] p,
+.bots-workspace .bot-room-choice[data-kind='paused'] p {
+  color: var(--st-ink-soft);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.bot-room-message[data-pause='true'] .bot-room-message-bubble {
+  border-color: transparent;
+  background: transparent;
+}
+
 .bot-worked { margin: 2px 0 12px; }
 .bot-worked > button {
   border: 0;

@@ -1583,19 +1583,22 @@ export function branchFrom(messageId: string): string | null {
 }
 
 /**
+ * One-to-one pause continue. The route is not on the host yet.
+ * TODO: POST { choice: 'continue' } for this chat when that route exists.
+ * Rooms already post that body to /api/bots/teams/:teamId/messages/:messageId/choice.
+ */
+export function continuePausedChat(sessionId: string, messageId: string) {
+  void sessionId;
+  void messageId;
+}
+
+/**
  * Asks the model to keep going from where it stopped.
  *
  * Sent as an ordinary user turn rather than a special mode, because that is
  * what it is: a continuation is a request, and the transcript should show it.
+ * Returns false when a reply is already running.
  */
-/** Posts Continue for a paused one-to-one bot reply. The host resumes that chat from its checkpoint. */
-export async function continuePausedChat(sessionId: string, messageId: string) {
-  const result = await api.post<{ conversation?: Session }>(`/api/companion/conversations/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/choice`, { choice: 'continue' });
-  if (result.conversation) applySharedConversation(result);
-  return result;
-}
-
-/** Sends a continuation into the open conversation. Returns false when a reply is already running. */
 export async function continueConversation() {
   if (!state.activeSession || state.streaming) return false;
   await sendMessage('Continue from where you left off. Do not repeat what you have already written.');
@@ -1968,7 +1971,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
               const row = option as { id?: unknown; label?: unknown };
               return row?.id === 'continue' && typeof row.label === 'string' && row.label.trim() ? [{ id: 'continue' as const, label: row.label.trim(), style: 'primary' as const }] : [];
             }).slice(0, 1) : [];
-            if (options.length) patchAssistant(m => ({ ...m, streaming: false, recovery: { kind: 'paused', text, question: typeof recovery.question === 'string' && recovery.question.trim() ? recovery.question.trim() : 'Keep going?', options } }));
+            if (options.length) patchAssistant(m => ({ ...m, streaming: false, recovery: { kind: 'paused', text, question: typeof recovery.question === 'string' ? recovery.question.trim() : '', options } }));
           }
         } else if (type === 'error') {
           clearStatus(sessionId);

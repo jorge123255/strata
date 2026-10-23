@@ -635,6 +635,7 @@ struct BotTeamMessageRecovery: Decodable, Equatable {
     var options: [BotTeamMessageRecoveryOption]
     var choice: String?
     var text: String?
+    var kind: String? = nil
 }
 
 struct TeamChannelPass: Decodable, Equatable {

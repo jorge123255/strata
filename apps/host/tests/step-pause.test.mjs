@@ -18,36 +18,50 @@ test('a paused run uses the shared recovery card and posts continue', async () =
   assert.equal(pause.isStepPause('This bot reached its step limit before finishing.'), true);
   assert.equal(pause.isStepPause('The model could not be reached.'), false);
   assert.equal(pause.isPauseNotice('Try sending the message again.'), true);
-  const [chat, store, card, design, phone, model, workspace, choices] = await Promise.all([
+  const [chat, store, card, design, channel, phone, model, workspace, choices, companion] = await Promise.all([
     readFile(new URL('../src/screens/Chat.tsx', import.meta.url), 'utf8'),
     readFile(new URL('../src/lib/store.ts', import.meta.url), 'utf8'),
     readFile(new URL('../src/components/RoomChoiceCard.tsx', import.meta.url), 'utf8'),
     readFile(new URL('../src/styles/bots-design.css', import.meta.url), 'utf8'),
+    readFile(new URL('../src/screens/BotTeamChannel.tsx', import.meta.url), 'utf8'),
     readFile(new URL('../../ios/StrataMobile/Views/ChatView.swift', import.meta.url), 'utf8'),
     readFile(new URL('../../ios/StrataMobile/Models/CompanionModels.swift', import.meta.url), 'utf8'),
     readFile(new URL('../../ios/StrataMobile/Services/BotWorkspaceStore.swift', import.meta.url), 'utf8'),
     readFile(new URL('../../ios/StrataMobile/Views/Components.swift', import.meta.url), 'utf8'),
+    readFile(new URL('../../ios/StrataMobile/Services/CompanionStore.swift', import.meta.url), 'utf8'),
   ]);
   assert.match(chat, /ChatPauseChoice/);
   assert.match(chat, /continuePausedChat/);
+  assert.match(chat, /kind="paused"/);
   assert.match(chat, /text=\{recovery\.text\}/);
+  assert.match(chat, /data-error=\{m\.error && !paused/);
   assert.match(chat, /<ErrorNotice message=\{m\.error\} detail=\{m\.errorDetail\} \{\.\.\.contextRecovery\(m\.errorCode\)\}\/>/);
   assert.match(chat, /m\.error && !legacyLimit && !paused/);
-  assert.doesNotMatch(chat, /StepPauseCard|continueConversation\(\)|Paused after a long run|Stop here|try sending again/i);
+  assert.doesNotMatch(chat, /StepPauseCard|continueConversation\(\)|Paused after a long run|Stop here|try sending again|\/api\/companion\/conversations/i);
   assert.match(store, /type === 'pause'/);
-  assert.match(store, /\/api\/companion\/conversations\/\$\{encodeURIComponent\(sessionId\)\}\/messages\/\$\{encodeURIComponent\(messageId\)\}\/choice/);
-  assert.match(store, /choice: 'continue'/);
-  assert.doesNotMatch(card, /Keep going|Paused after a long run|try sending again/i);
+  assert.match(store, /TODO: POST \{ choice: 'continue' \}/);
+  assert.doesNotMatch(store, /\/api\/companion\/conversations\/\$\{encodeURIComponent\(sessionId\)\}\/messages/);
+  assert.match(channel, /\/messages\/\$\{encodeURIComponent\(card\.messageId\)\}\/choice/);
+  assert.match(channel, /kind=\{card\.kind\}/);
+  assert.match(channel, /!paused && message\.state/);
+  assert.doesNotMatch(card, /Keep going|try sending again/i);
+  assert.match(card, /aria-label=\{paused \? 'Paused'/);
   assert.match(design, /button\[data-style='primary'\]/);
+  assert.match(design, /\[data-kind='paused'\]/);
   assert.match(phone, /RoomChoiceCard/);
+  assert.match(phone, /paused: true/);
   assert.match(phone, /continuePausedMessage/);
   assert.doesNotMatch(phone, /Paused after a long run|Stop here|Continue from where you left off|try sending again/i);
   assert.match(model, /pauseChoice/);
   assert.match(model, /isStepPause/);
-  assert.doesNotMatch(model, /stepPauseSummary|Paused after a long run/);
+  assert.doesNotMatch(model, /stepPauseSummary/);
   assert.match(workspace, /\["retry", "skip", "different", "continue"\]/);
+  assert.match(workspace, /messages\/\\\(messageId\)\/choice/);
   assert.match(choices, /"retry", "skip", "different", "continue"/);
   assert.match(choices, /id == "continue" \? "primary"/);
+  assert.match(choices, /paused \? StrataTheme.secondaryInk/);
+  assert.match(companion, /TODO: POST \{"choice":"continue"\}/);
+  assert.doesNotMatch(companion, /\/messages\/" \+ messageId \+ "\/choice/);
 });
 
 const executablePath = [process.env.STRATA_UI_BROWSER, '/usr/bin/google-chrome', '/usr/bin/chromium'].find(path => path && existsSync(path));
@@ -61,7 +75,7 @@ import { createRoot } from 'react-dom/client';
 import { RoomChoiceCard } from ${JSON.stringify(join(src, 'components/RoomChoiceCard.tsx'))};
 import ${JSON.stringify(join(src, 'screens/BotTeamChannel.css'))};
 import ${JSON.stringify(join(src, 'styles/bots-design.css'))};
-function App(){return <div className="bots-workspace" style={{height:'100vh',padding:'48px 56px'}}><div className="st-msg st-msg--assistant"><RoomChoiceCard text=${JSON.stringify(summary)} options={[{id:'continue', label:'Keep going', style:'primary'}]} onChoose={()=>{}}/></div></div>}
+function App(){return <div className="bots-workspace" style={{height:'100vh',padding:'48px 56px'}}><div className="st-msg st-msg--assistant" data-pause="true"><RoomChoiceCard kind="paused" text=${JSON.stringify(summary)} options={[{id:'continue', label:'Keep going', style:'primary'}]} onChoose={()=>{}}/></div></div>}
 createRoot(document.getElementById('root')).render(<App/>);`;
   const { outputFiles } = await build({ stdin: { contents: entry, resolveDir: src, loader: 'tsx' }, bundle: true, write: false, outfile: 'harness.js', format: 'iife', platform: 'browser', jsx: 'automatic', define: { 'process.env.NODE_ENV': '"production"' }, loader: { '.woff2': 'empty', '.woff': 'empty', '.ttf': 'empty' } });
   const js = outputFiles.find(file => file.path.endsWith('.js')).text;
@@ -79,6 +93,7 @@ createRoot(document.getElementById('root')).render(<App/>);`;
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 900, height: 420 } });
   await page.goto(`http://127.0.0.1:${server.address().port}`);
+  await page.getByRole('group', { name: 'Paused' }).waitFor();
   await page.getByText(summary).waitFor();
   const button = page.getByRole('button', { name: 'Keep going' });
   await button.waitFor();

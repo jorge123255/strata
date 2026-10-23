@@ -904,6 +904,7 @@ struct RoomRecoveryPresentation: Equatable {
     var question: String
     var options: [RoomChoiceOption]
     var choice: String?
+    var paused: Bool = false
 }
 
 /// The room card reads the host's recovery field and the same live event shape. Labels are never invented here.
@@ -912,18 +913,18 @@ enum RoomChoice {
 
     static func fromMessage(id: String, teamId: String, content: String, recovery: BotTeamMessageRecovery?) -> RoomRecoveryPresentation? {
         guard let recovery else { return nil }
-        return present(messageId: id, teamId: teamId, jobId: recovery.jobId, runId: recovery.runId, text: recovery.text ?? "", question: recovery.question, options: recovery.options.map { RoomChoiceOption(id: $0.id, label: $0.label, style: nil) }, choice: recovery.choice, fallback: content)
+        return present(messageId: id, teamId: teamId, jobId: recovery.jobId, runId: recovery.runId, text: recovery.text ?? "", question: recovery.question, options: recovery.options.map { RoomChoiceOption(id: $0.id, label: $0.label, style: nil) }, choice: recovery.choice, kind: recovery.kind, fallback: content)
     }
 
-    static func fromEvent(teamId: String, messageId: String, jobId: String, runId: String, text: String, question: String, options: [RoomChoiceOption]) -> RoomRecoveryPresentation? {
-        present(messageId: messageId, teamId: teamId, jobId: jobId, runId: runId, text: text, question: question, options: options, choice: nil, fallback: "")
+    static func fromEvent(teamId: String, messageId: String, jobId: String, runId: String, text: String, question: String, options: [RoomChoiceOption], kind: String? = nil) -> RoomRecoveryPresentation? {
+        present(messageId: messageId, teamId: teamId, jobId: jobId, runId: runId, text: text, question: question, options: options, choice: nil, kind: kind, fallback: "")
     }
 
     static func choiceId(_ optionId: String) -> String? {
         choiceIds.contains(optionId) ? optionId : nil
     }
 
-    private static func present(messageId: String, teamId: String, jobId: String, runId: String, text: String, question: String, options: [RoomChoiceOption], choice: String?, fallback: String) -> RoomRecoveryPresentation? {
+    private static func present(messageId: String, teamId: String, jobId: String, runId: String, text: String, question: String, options: [RoomChoiceOption], choice: String?, kind: String? = nil, fallback: String) -> RoomRecoveryPresentation? {
         let rows = options.compactMap { option -> RoomChoiceOption? in
             let id = option.id.trimmingCharacters(in: .whitespacesAndNewlines)
             let label = option.label.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -939,7 +940,7 @@ enum RoomChoice {
               !runId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               !asked.isEmpty, !body.isEmpty, !rows.isEmpty else { return nil }
         let selected = choiceIds.contains(choice ?? "") && rows.contains { $0.id == choice } ? choice : nil
-        return RoomRecoveryPresentation(messageId: messageId, teamId: teamId, text: body, question: asked, options: rows, choice: selected)
+        return RoomRecoveryPresentation(messageId: messageId, teamId: teamId, text: body, question: asked, options: rows, choice: selected, paused: kind == "paused")
     }
 }
 
@@ -949,6 +950,7 @@ struct RoomChoiceCard: View {
     var chosen: String?
     var busy: String
     var error: String = ""
+    var paused: Bool = false
     var onChoose: (String) -> Void
     var onRetry: () -> Void = {}
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -957,7 +959,7 @@ struct RoomChoiceCard: View {
     var body: some View {
         let locked = chosen != nil || !busy.isEmpty
         VStack(alignment: .leading, spacing: 12) {
-            Text(text).font(.body).foregroundStyle(StrataTheme.ink).fixedSize(horizontal: false, vertical: true)
+            Text(text).font(.body).foregroundStyle(paused ? StrataTheme.secondaryInk : StrataTheme.ink).fixedSize(horizontal: false, vertical: true)
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(options) { option in
                     choiceButton(option, locked: locked)
@@ -970,10 +972,11 @@ struct RoomChoiceCard: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(StrataTheme.surface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(chosen == nil ? StrataTheme.line.opacity(0.7) : Color.accentColor.opacity(0.7), lineWidth: 1))
+        .background(paused ? StrataTheme.grouped : StrataTheme.surface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(paused ? StrataTheme.line.opacity(0.45) : (chosen == nil ? StrataTheme.line.opacity(0.7) : Color.accentColor.opacity(0.7)), lineWidth: 1))
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("teamRoomChoice")
+        .accessibilityIdentifier(paused ? "teamRoomPause" : "teamRoomChoice")
+        .accessibilityLabel(paused ? "Paused" : "A choice for this room")
         .offset(y: reduceMotion || shown ? 0 : CoucouMotion.messageRise)
         .opacity(reduceMotion || shown ? 1 : 0)
         .onAppear {

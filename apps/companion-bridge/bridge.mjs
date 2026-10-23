@@ -221,7 +221,6 @@ export class HostClient {
   async request(path, { method = 'GET', body, signal, deviceId } = {}) {
     const notification = notificationRequest(path, method, body, deviceId);
     const summaryConversations = path === '/api/companion/conversations?summary=1';
-    const conversationChoice = /^\/api\/companion\/conversations\/([a-zA-Z0-9_-]{1,120})\/messages\/([a-zA-Z0-9_-]{1,120})\/choice$/.exec(summaryConversations ? '' : path);
     const conversation = /^\/api\/companion\/conversations(?:\/[a-zA-Z0-9_-]{1,120}(?:\/(messages|stop|approval))?)?$/.exec(summaryConversations ? '/api/companion/conversations' : path);
     const bots = path === '/api/bots' || /^\/api\/bots\/[a-zA-Z0-9_-]{1,120}\/conversations$/.test(path);
     const avatar = /^\/api\/bots\/[a-zA-Z0-9_-]{1,120}$/.test(path) && method === 'PATCH';
@@ -237,7 +236,7 @@ export class HostClient {
       && path !== '/api/native/operations'
       && !/^\/api\/native\/instances\/[a-zA-Z0-9_-]+\/unload$/.test(path)
       && !/^\/api\/serving\/requests\/[a-zA-Z0-9_-]+\/cancel$/.test(path)
-      && !conversation && !conversationChoice && !management && !bots && !computer && !avatar && !workspace && !profile && !folder && !notification) throw fail(403, 'Unsupported host control.');
+      && !conversation && !management && !bots && !computer && !avatar && !workspace && !profile && !folder && !notification) throw fail(403, 'Unsupported host control.');
     const mutation = path.endsWith('/load') || path.endsWith('/unload') || path.endsWith('/cancel') || path === '/api/native/operations' || path === '/api/chat/stream';
     if (workspace || profile || folder || notification) {
       // Fully validated narrow collaboration route; no arbitrary tool execution.
@@ -249,8 +248,6 @@ export class HostClient {
     } else if (bots) {
       if (method !== (path === '/api/bots' ? 'GET' : 'POST') || (path === '/api/bots' && body !== undefined)) throw fail(403, 'Unsupported bot control.');
       if (body !== undefined) botSelection(body, 403);
-    } else if (conversationChoice) {
-      if (method !== 'POST' || !body || Object.keys(body).length !== 1 || body.choice !== 'continue') throw fail(403, 'Unsupported host control.');
     } else if (conversation) {
       if (summaryConversations && (method !== 'GET' || body !== undefined)) throw fail(403, 'Unsupported host control.');
       const create = path === '/api/companion/conversations' && method === 'POST';
@@ -1014,16 +1011,6 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
         const created = await host.json('/api/companion/conversations', { method: 'POST', body: options });
         requireCurrentSession();
         return sendJSON(res, 201, publicConversationDetail(created));
-      }
-      const conversationChoice = /^\/v1\/conversations\/([a-zA-Z0-9_-]{1,120})\/messages\/([a-zA-Z0-9_-]{1,120})\/choice$/.exec(path);
-      if (conversationChoice) {
-        if (method !== 'POST') throw fail(405, 'This conversation action is unavailable.');
-        const choiceBody = await readBody(req);
-        if (Object.keys(choiceBody).length !== 1 || choiceBody.choice !== 'continue') throw fail(400, 'Choose one of the shown options.');
-        requireCurrentSession();
-        const chosen = await host.json(`/api/companion/conversations/${encode(conversationChoice[1])}/messages/${encode(conversationChoice[2])}/choice`, { method: 'POST', body: { choice: 'continue' } });
-        requireCurrentSession();
-        return sendJSON(res, 200, publicConversationDetail(chosen));
       }
       const conversationMatch = /^\/v1\/conversations\/([a-zA-Z0-9_-]{1,120})(?:\/(messages|stop|approval))?$/.exec(path);
       if (conversationMatch) {

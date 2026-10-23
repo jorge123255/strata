@@ -894,26 +894,12 @@ final class CompanionStore: ObservableObject {
         catch { if connectionGeneration == generation, conversationGeneration == selection { self.error = friendly(error) } }
     }
 
-    /// Posts Continue for a paused one-to-one reply. The Mac resumes that chat from its checkpoint.
+    /// One-to-one pause continue. The route is not on the Mac yet.
+    /// TODO: POST {"choice":"continue"} when that route exists.
+    /// Team rooms already post that body to /v1/bots/teams/:teamId/messages/:messageId/choice.
     func continuePausedMessage(messageId: String) async -> String? {
-        guard let client, let selected = currentConversation,
-              CompanionClient.isSafeIdentifier(selected.id), CompanionClient.isSafeIdentifier(messageId) else {
-            return "That choice is not available yet."
-        }
-        let generation = connectionGeneration
-        let selection = UUID()
-        conversationGeneration = selection
-        do {
-            let detail: MacConversationDetail = try await client.perform(conversationPath(selected.id) + "/messages/" + messageId + "/choice", method: "POST", body: ["choice": "continue"])
-            guard connectionGeneration == generation, conversationGeneration == selection else { return nil }
-            apply(detail)
-            error = nil
-            return nil
-        } catch is CancellationError { return nil }
-        catch {
-            guard connectionGeneration == generation, conversationGeneration == selection else { return nil }
-            return friendly(error)
-        }
+        _ = messageId
+        return nil
     }
 
     private func apply(_ detail: MacConversationDetail) {

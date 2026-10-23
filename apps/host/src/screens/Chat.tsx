@@ -634,23 +634,18 @@ function ChatPauseChoice({ sessionId, messageId, recovery, disabled }: {
     disabled: boolean;
 }) {
     const [busy, setBusy] = useState('');
-    const [error, setError] = useState('');
-    const [chosen, setChosen] = useState(recovery.choice ?? '');
     async function choose(optionId: string) {
-        if (!choicePayload(optionId) || optionId !== 'continue') return;
+        if (!choicePayload(optionId) || optionId !== 'continue' || busy) return;
         setBusy(optionId);
-        setError('');
         try {
+            // The one-to-one route is not available yet. Rooms post this choice themselves.
             await continuePausedChat(sessionId, messageId);
-            setChosen(optionId);
-        } catch (cause) {
-            setError(cause instanceof Error ? cause.message : 'The choice was not saved.');
         } finally {
             setBusy('');
         }
     }
     const options = recovery.options.map(option => option.id === 'continue' && !option.style ? { ...option, style: 'primary' as const } : option);
-    return <RoomChoiceCard text={recovery.text} options={options} chosen={chosen} busy={busy} disabled={disabled} error={error} onChoose={id => void choose(id)} onRetry={() => { if (!busy) void choose('continue'); }}/>;
+    return <RoomChoiceCard text={recovery.text} options={options} chosen={recovery.choice ?? ''} busy={busy} disabled={disabled} kind="paused" onChoose={id => void choose(id)} onRetry={() => { if (!busy) void choose('continue'); }}/>;
 }
 function Message({ message: m, isLast, entrance, onEditPrompt, onPreview, onOpenLink, onOpenTimeSkip, timeSkipDone, timeSkipReal, timeSkipRun, }: {
     message: ChatMessage;
@@ -701,7 +696,7 @@ function Message({ message: m, isLast, entrance, onEditPrompt, onPreview, onOpen
         </div>
       </div>);
     }
-    return (<div className={cx('st-msg st-msg--assistant', motion)} style={motionStyle} data-error={m.error ? 'true' : undefined}>
+    return (<div className={cx('st-msg st-msg--assistant', motion)} style={motionStyle} data-error={m.error && !paused ? 'true' : undefined} data-pause={paused ? 'true' : undefined}>
       {tr(m.reasoning ? <ReasoningBlock message={m}/> : null)}
 
 

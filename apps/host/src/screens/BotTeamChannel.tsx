@@ -311,7 +311,7 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
   function recoveryCard(card: RecoveryPresentation) {
     const busy = choiceBusy.startsWith(`${card.messageId}:`) ? choiceBusy.slice(card.messageId.length + 1) : '';
     const failed = choiceError?.messageId === card.messageId ? choiceError : null;
-    return <RoomChoiceCard key={card.messageId} text={card.text} options={card.options} chosen={card.choice ?? ''} busy={busy} disabled={!ready} error={failed?.text ?? ''} onChoose={id => void chooseRecovery(card, id)} onRetry={() => { if (failed) void chooseRecovery(card, failed.optionId); }}/>;
+    return <RoomChoiceCard key={card.messageId} text={card.text} options={card.options} chosen={card.choice ?? ''} busy={busy} disabled={!ready} error={failed?.text ?? ''} kind={card.kind} onChoose={id => void chooseRecovery(card, id)} onRetry={() => { if (failed) void chooseRecovery(card, failed.optionId); }}/>;
   }
   const recipientLabel = recipients.length === team.memberIds.length ? 'Everyone' : recipients.length ? recipients.map(id => bots.find(bot => bot.id === id)?.name ?? 'Unavailable teammate').join(', ') : 'Team';
   return <div className="bot-room" hidden={!visible} aria-label={`${team.name} channel`}>
@@ -325,7 +325,7 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
         const message = item.message;
         if (looseDrafts.some(draft => draft.messageId === message.id)) return null;
         const recovery = recoveryFor(message);
-        return <TeamChannelMessage key={message.id} message={message} team={team} bots={bots} messages={channel.messages} entrance={entrances.get(message.id)} disabled={sending} hideBody={!!recovery && message.content.trim() === recovery.text.trim()} choice={recovery ? recoveryCard(recovery) : null} onReply={() => reply(message)} onOpenConversation={chatId => void onOpenConversation(chatId).catch(cause => { if (mounted.current) setError(messageError(cause)); })}/>;
+        return <TeamChannelMessage key={message.id} message={message} team={team} bots={bots} messages={channel.messages} entrance={entrances.get(message.id)} disabled={sending} hideBody={!!recovery && message.content.trim() === recovery.text.trim()} paused={recovery?.kind === 'paused'} choice={recovery ? recoveryCard(recovery) : null} onReply={() => reply(message)} onOpenConversation={chatId => void onOpenConversation(chatId).catch(cause => { if (mounted.current) setError(messageError(cause)); })}/>;
       })}
       {looseDrafts.map(draft => {
         const bot = bots.find(item => item.id === draft.botId), name = bot?.name ?? 'A teammate', entrance = entrances.get(draft.messageId);
@@ -357,7 +357,7 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
   </div>;
 }
 
-function TeamChannelMessage({ message, team, bots, messages, entrance, disabled, hideBody = false, choice = null, onReply, onOpenConversation }: { message: BotTeamChannelMessage; team: BotTeam; bots: Bot[]; messages: BotTeamChannelMessage[]; entrance?: { ms: number; delay: number }; disabled: boolean; hideBody?: boolean; choice?: ReactNode; onReply: () => void; onOpenConversation: (id: string) => void }) {
+function TeamChannelMessage({ message, team, bots, messages, entrance, disabled, hideBody = false, paused = false, choice = null, onReply, onOpenConversation }: { message: BotTeamChannelMessage; team: BotTeam; bots: Bot[]; messages: BotTeamChannelMessage[]; entrance?: { ms: number; delay: number }; disabled: boolean; hideBody?: boolean; paused?: boolean; choice?: ReactNode; onReply: () => void; onOpenConversation: (id: string) => void }) {
   const author = message.author, bot = bots.find(item => item.id === author.botId), replying = messages.find(item => item.id === message.replyToId);
   const implicitRootReply = !!message.runId && replying?.author.type === 'user' && replying.runId === message.runId;
   const addressedEveryone = !!team.memberIds.length && message.recipientIds?.length === team.memberIds.length && team.memberIds.every(id => message.recipientIds?.includes(id));
@@ -365,14 +365,14 @@ function TeamChannelMessage({ message, team, bots, messages, entrance, disabled,
   const folded = message.kind === 'assignment' || message.kind === 'report' && message.content.length > 1800;
   const preview = message.content.split('\n').find(line => line.trim())?.slice(0, 140) ?? '';
   const date = new Date(message.createdAt), validDate = Number.isFinite(date.getTime());
-  return <article className={cx('bot-room-message', entrance && 'msg-enter')} style={entrance ? { animationDuration: `${entrance.ms}ms`, animationDelay: `${entrance.delay}ms` } : undefined} data-kind={message.kind} data-author={author.type} data-message-id={message.id} aria-label={`${author.name}${kind ? ` · ${kind}` : ''}`}>
+  return <article className={cx('bot-room-message', entrance && 'msg-enter')} style={entrance ? { animationDuration: `${entrance.ms}ms`, animationDelay: `${entrance.delay}ms` } : undefined} data-kind={message.kind} data-author={author.type} data-message-id={message.id} data-pause={paused || undefined} aria-label={`${author.name}${paused ? ' · Paused' : kind ? ` · ${kind}` : ''}`}>
     <div className="bot-room-message-face">{author.type === 'bot' ? <CuaBotAvatar name={author.name} config={author.avatarConfig ?? bot?.avatarConfig} size={38}/> : <span className="bot-room-person" aria-hidden="true">{author.type === 'user' ? <Icon name="chat" size={17}/> : <Icon name="experts" size={17}/>}</span>}</div>
     <div className="bot-room-message-main"><header><strong>{author.name}</strong>{author.botId === team.coordinatorId ? <span className="bot-room-role">Coordinator</span> : null}{kind ? <span className="bot-room-kind">{kind}</span> : null}{validDate ? <time dateTime={message.createdAt} title={date.toLocaleString()}>{date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time> : null}</header>
       <div className="bot-room-message-bubble">{message.recipientIds?.length && !addressedEveryone ? <p className="bot-room-addressed">To {message.recipientIds.map(id => bots.find(item => item.id === id)?.name ?? 'Former teammate').join(', ')}</p> : null}
       {message.replyToId && !implicitRootReply ? <blockquote className="bot-room-reply-context"><strong>{replying?.author.name ?? 'Earlier message'}</strong><span>Related message</span></blockquote> : null}
       {hideBody ? null : <div className="bot-room-message-body">{hasLiveStream(message.id) ? <StreamedBody id={message.id} text={message.content} done render={text => <ChannelMarkdown text={text}/>}/> : folded ? <details className="bot-room-message-disclosure"><summary><strong>{message.kind === 'assignment' ? 'Task assignment' : 'Read full report'}</strong><span>{preview}</span></summary><ChannelMarkdown key={currentLanguage()} text={message.content}/></details> : <ChannelMarkdown key={currentLanguage()} text={message.content}/>}</div>}
       {choice}
-      <footer><button type="button" disabled={disabled} onClick={onReply}>Reply<span className="sr-only"> to {author.name}</span></button>{message.chatId ? <button type="button" onClick={() => onOpenConversation(message.chatId!)}><Icon name="activity" size={12}/>Thinking & tools</button> : null}{message.state && ['error', 'interrupted', 'cancelled'].includes(message.state) ? <span>{botActivityLabel(message.state)}</span> : null}</footer></div>
+      <footer><button type="button" disabled={disabled} onClick={onReply}>Reply<span className="sr-only"> to {author.name}</span></button>{message.chatId ? <button type="button" onClick={() => onOpenConversation(message.chatId!)}><Icon name="activity" size={12}/>Thinking & tools</button> : null}{!paused && message.state && ['error', 'interrupted', 'cancelled'].includes(message.state) ? <span>{botActivityLabel(message.state)}</span> : null}</footer></div>
     </div>
   </article>;
 }
