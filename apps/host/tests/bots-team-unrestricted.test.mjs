@@ -53,14 +53,17 @@ test('saved parallel settings persist on the team and historical run limits stay
   assert.equal(JSON.parse(readFileSync(file)).teams[0].limits.maxParallel,2);assert.equal(restored.list().teams[0].limits.maxParallel,2);assert.equal(restored.detail(team.id,run.id).run.limits.maxParallel,1);
 });
 
-test('twelve members do not all greet when everyone is set',async t=>{
+test('an everyone flag greets all twelve members once, in order, without task tools',async t=>{
   const f=fixture(t,12,async input=>{
     assert.equal(input.bot.teamConversationOnly,true);assert.equal(input.tools.some(t=>t.name==='shell'),false);
+    assert.match(input.bot.instructions,/one or two sentences/);
     input.onFrame({type:'delta',text:`Hello from ${input.bot.id}`});
   });const team=f.team(),run=f.bots.team.message(team.id,{message:'Hi everyone',requestId:'twelve',everyone:true}).run;
   await until(()=>f.bots.team.detail(team.id,run.id).run.state==='completed');const finished=f.bots.team.detail(team.id,run.id).run;
   const replies=f.bots.team.channel(team.id).messages.filter(m=>m.content.startsWith('Hello from'));
-  assert.equal(replies.length,1);assert.equal(f.seen.length,1);assert.equal(finished.consumedTurns,1);assert.equal(finished.limits.maxTurns,24);
+  assert.deepEqual(replies.map(m=>m.content),f.members.map(bot=>`Hello from ${bot.id}`));
+  assert.deepEqual(f.seen.map(input=>input.bot.id),f.members.map(bot=>bot.id));
+  assert.equal(finished.consumedTurns,12);assert.equal(finished.limits.maxTurns,24);
   assert.equal(f.bots.team.channel(team.id).messages.some(m=>m.content.includes('public conversation invitations')),false);
 });
 

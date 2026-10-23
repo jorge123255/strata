@@ -80,7 +80,7 @@ test('a picked teammate is addressed directly, even when the coordinator is paus
   assert.deepEqual(f.jobs(work.id).map(job => ({ botId: job.botId, channelMode: job.channelMode })), [{ botId: 'bot_1', channelMode: 'task' }]);
 });
 
-test('everyone asks the selector once and does not wake the whole room', async t => {
+test('a plain greeting asks the selector once, and an everyone flag does not', async t => {
   const calls = [];
   const f = journal(t, 4, { selectSpeakers(input) { calls.push(input.history.at(-1)?.content); return { speakers: ['bot_1'] }; } });
   const team = f.make();
@@ -93,13 +93,14 @@ test('everyone asks the selector once and does not wake the whole room', async t
   const flagged = f.service.message(team.id, { message: 'Hi everyone', requestId: 'flagged', everyone: true }).run;
   assert.equal(flagged.directDelivery, true);
   assert.deepEqual(flagged.requestedRecipientIds, ['bot_0', 'bot_1', 'bot_2', 'bot_3']);
-  assert.equal(f.jobs(flagged.id).length, 0);
+  assert.deepEqual(f.jobs(flagged.id).map(job => job.botId), ['bot_0']);
   f.service.tick();
-  assert.equal(calls.length, 2);
-  assert.deepEqual(f.jobs(flagged.id).map(job => job.botId), ['bot_1']);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(f.jobs(flagged.id).map(job => job.botId), ['bot_0']);
   const legacy = f.service.message(team.id, { message: '@all hello', requestId: 'legacy-at' }).run;
   f.service.tick();
   assert.equal(f.jobs(legacy.id).length, 1);
+  assert.equal(f.jobs(legacy.id)[0].botId, 'bot_0');
   const suppressed = f.service.message(team.id, { message: '@everyone hello', requestId: 'suppressed', everyone: false }).run;
   f.service.tick();
   assert.equal(f.jobs(suppressed.id).length, 1);
@@ -108,6 +109,70 @@ test('everyone asks the selector once and does not wake the whole room', async t
   const retry = f.service.message(team.id, { message: 'Hi everyone', requestId: 'flagged', everyone: true });
   assert.equal(retry.run.id, flagged.id);
   assert.equal(f.jobs(flagged.id).length, 1);
+});
+
+test('@everyone and @all get one short reply from every available member, in order, without the selector', async t => {
+  const calls = [];
+  const f = journal(t, 4, { selectSpeakers(input) { calls.push(input.history.at(-1)?.content ?? ''); return { speakers: ['bot_1'] }; } });
+  const team = f.make(4, { talkativeness: { bot_2: 0 }, limits: { maxHops: 1, maxParallel: 2, maxDepth: 2, maxTurns: 24, maxDurationMs: 600000 } });
+  f.bots.get('bot_3').paused = true;
+  const said = ['One sentence from the first.', 'A different second sentence.', 'Third member, briefly.'];
+  const run = f.service.message(team.id, { message: '@everyone hi', requestId: 'all-hi' }).run;
+  assert.equal(calls.length, 0);
+  assert.deepEqual(f.jobs(run.id).map(job => job.botId), ['bot_0']);
+  for (let index = 0; index < said.length; index++) {
+    f.service.tick();
+    const job = f.jobs(run.id).find(row => row.state === 'running');
+    assert.equal(job.botId, `bot_${index}`);
+    assert.equal(job.hop, 0);
+    const ctx = f.context(job);
+    f.service.begin(ctx);
+    const instructions = f.service.instructions(ctx);
+    assert.match(instructions, /one or two sentences/);
+    assert.match(instructions, /@everyone hi/);
+    for (const earlier of said.slice(0, index)) assert.match(instructions, new RegExp(earlier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    f.service.end(ctx, { publicReply: said[index] });
+  }
+  f.service.tick();
+  assert.equal(calls.length, 0);
+  assert.deepEqual(replies(f.service.channel(team.id)), said);
+  assert.equal(f.jobs(run.id).some(job => job.botId === 'bot_3'), false);
+  assert.equal(f.service.detail(team.id, run.id).run.state, 'completed');
+
+  const flagged = f.service.message(team.id, { message: 'Hello room', requestId: 'flagged-all', everyone: true }).run;
+  f.service.tick();
+  assert.equal(calls.length, 0);
+  assert.equal(f.jobs(flagged.id).find(row => row.state === 'running').botId, 'bot_0');
+  for (const text of ['Flagged first line.', 'Flagged second line.', 'Flagged third line.']) {
+    const job = f.jobs(flagged.id).find(row => row.state === 'running');
+    const ctx = f.context(job);
+    f.service.begin(ctx);
+    f.service.end(ctx, { publicReply: text });
+    f.service.tick();
+  }
+  assert.deepEqual(f.jobs(flagged.id).map(job => job.botId), ['bot_0', 'bot_1', 'bot_2']);
+  assert.equal(f.service.detail(team.id, flagged.id).run.state, 'completed');
+
+  const duplicate = f.service.message(team.id, { message: '@all hello', requestId: 'all-duplicate' }).run;
+  f.service.tick();
+  const first = f.context(f.jobs(duplicate.id).find(row => row.state === 'running'));
+  f.service.begin(first);
+  f.service.end(first, { publicReply: 'Ship the small fix today and tell the user.' });
+  f.service.tick();
+  const second = f.context(f.jobs(duplicate.id).find(row => row.state === 'running'));
+  assert.equal(second.bot.id, 'bot_1');
+  f.service.begin(second);
+  f.service.end(second, { publicReply: 'Ship the small fix today and tell the user now.' });
+  f.service.tick();
+  assert.equal(f.jobs(duplicate.id).some(job => job.botId === 'bot_2'), false);
+  assert.deepEqual(replies(f.service.channel(team.id)).filter(line => line.startsWith('Ship ')), ['Ship the small fix today and tell the user.']);
+  assert.equal(f.service.detail(team.id, duplicate.id).run.state, 'completed');
+  assert.equal(calls.length, 0);
+
+  const greeting = f.service.message(team.id, { message: 'Hi everyone', requestId: 'plain-greeting' }).run;
+  f.service.tick();
+  assert.deepEqual(calls, ['Hi everyone']);
+  assert.deepEqual(f.jobs(greeting.id).map(job => job.botId), ['bot_1']);
 });
 
 test('a room speaker can pass without publishing, and a later speaker still answers', async t => {
@@ -225,7 +290,9 @@ test('the channel stream pushes presence for the open room', async t => {
   assert.deepEqual(JSON.parse(first.slice(first.indexOf('data: ') + 6)).presence, []);
   f.service.message(team.id, { message: 'Hello', requestId: 'streamed', everyone: true });
   const second = await readEvent();
-  assert.equal(JSON.parse(second.slice(second.indexOf('data: ') + 6)).presence.length, 0);
+  const queued = JSON.parse(second.slice(second.indexOf('data: ') + 6));
+  assert.equal(queued.presence.length, 1);
+  assert.equal(queued.presence[0].state, 'queued');
   f.service.tick();
   const third = await readEvent();
   const payload = JSON.parse(third.slice(third.indexOf('data: ') + 6));
@@ -235,24 +302,30 @@ test('the channel stream pushes presence for the open room', async t => {
   await reader.cancel();
 });
 
-test('a 12-member @everyone room selects once, keeps one speaker, and stops', async t => {
+test('a 12-member @everyone room asks every member once, in order, and does not call the selector', async t => {
   const calls = [];
-  let replied = false;
-  const f = journal(t, 12, { selectSpeakers(input) { calls.push(input); return { speakers: replied ? [] : ['bot_3', 'bot_4'] }; } });
+  const f = journal(t, 12, { selectSpeakers(input) { calls.push(input); return { speakers: ['bot_3', 'bot_4'] }; } });
   const team = f.make(12);
   const run = f.service.message(team.id, { message: '@everyone hi', requestId: 'twelve-hi' }).run;
   assert.equal(calls.length, 0);
-  assert.equal(f.jobs(run.id).length, 0);
+  assert.deepEqual(f.jobs(run.id).map(job => job.botId), ['bot_0']);
+  const said = [];
+  for (let index = 0; index < 12; index++) {
+    f.service.tick();
+    const job = f.jobs(run.id).find(row => row.state === 'running');
+    assert.equal(job.botId, `bot_${index}`);
+    assert.equal(job.hop, 0);
+    const ctx = f.context(job);
+    f.service.begin(ctx);
+    if (index > 0) assert.match(f.service.instructions(ctx), new RegExp(`Hello from bot_${index - 1}`));
+    const text = `Hello from bot_${index}.`;
+    said.push(text);
+    f.service.end(ctx, { publicReply: text });
+  }
   f.service.tick();
-  assert.equal(calls.length, 1);
-  assert.equal(f.jobs(run.id).filter(job => job.state === 'running').length, 1);
-  assert.equal(f.jobs(run.id).length, 1);
-  assert.ok(f.jobs(run.id).every(job => job.state !== 'queued' || job.botId === 'bot_3'));
-  const speaker = f.context(f.jobs(run.id)[0]);
-  f.service.begin(speaker); replied = true; f.service.end(speaker, { publicReply: 'Hello from one teammate' });
-  f.service.tick();
-  assert.equal(calls.length, 2);
-  assert.equal(f.jobs(run.id).length, 1);
+  assert.equal(calls.length, 0);
+  assert.equal(f.jobs(run.id).length, 12);
+  assert.deepEqual(replies(f.service.channel(team.id)), said);
   assert.equal(f.service.detail(team.id, run.id).run.state, 'completed');
   assert.equal(f.service.channel(team.id).presence.length, 0);
 });
@@ -519,11 +592,11 @@ test('a passed turn clears a live draft and does not publish it', async t => {
   await stream.cancel();
 });
 
-test('an empty selector for @everyone hi still answers once, and a later empty selection settles', async t => {
+test('an empty selector for a plain greeting still answers once, and a later empty selection settles', async t => {
   const events = [];
   const f = journal(t, 3, { notify: (event, data) => events.push(event), selectSpeakers() { return { speakers: [] }; } });
   const team = f.make(3, { talkativeness: { bot_2: 100 } });
-  const run = f.service.message(team.id, { message: '@everyone hi', requestId: 'everyone-hi' }).run;
+  const run = f.service.message(team.id, { message: 'Hi', requestId: 'plain-hi' }).run;
   f.service.tick();
   assert.equal(f.jobs(run.id).length, 0);
   f.service.tick();
@@ -543,7 +616,7 @@ test('a room that cannot answer a human greeting emits room.quiet and does not s
   const events = [];
   const f = journal(t, 3, { notify: (event, data) => events.push({ event, data }), selectSpeakers() { return { speakers: [] }; } });
   const team = f.make(3, { talkativeness: { bot_0: 0, bot_1: 0, bot_2: 0 } });
-  const run = f.service.message(team.id, { message: '@everyone hi', requestId: 'silent-hi' }).run;
+  const run = f.service.message(team.id, { message: 'Hi', requestId: 'silent-hi' }).run;
   const stream = await openRoomStream(t, f.service, team.id);
   assert.match(await stream.readEvent(), /^event: team-channel/);
   f.service.tick();
@@ -579,7 +652,7 @@ test('selectorBotId is stored on the team and passed to the selector', async t =
   assert.deepEqual(seen, ['bot_2']);
 });
 
-test('the model picker answers @everyone hi when it returns nobody, maps a name to an id, and prefers the coordinator', async t => {
+test('the model picker answers a plain greeting when it returns nobody, maps a name to an id, and prefers the coordinator', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'strata-room-picker-'));
   const lines = [];
   const original = console.log;
@@ -615,9 +688,9 @@ test('the model picker answers @everyone hi when it returns nobody, maps a name 
     }
     throw new Error('The room did not settle');
   };
-  const first = bots.team.message(team.id, { message: '@everyone hi', requestId: 'model-empty' }).run;
+  const first = bots.team.message(team.id, { message: 'Hi', requestId: 'model-empty' }).run;
   await untilSettled(first.id);
-  assert.deepEqual(replies(bots.team.channel(team.id)), ['Hello from Pal @everyone hi']);
+  assert.deepEqual(replies(bots.team.channel(team.id)), ['Hello from Pal Hi']);
   assert.match(prompts[0], /The latest message is from the human/);
   assert.match(prompts[0], /greeting, @everyone, or @all needs 1 or 2 speakers/);
   const firstLog = lines.find(line => line.startsWith('room selection'));
@@ -628,9 +701,9 @@ test('the model picker answers @everyone hi when it returns nobody, maps a name 
   assert.equal(prompts.some(content => content.startsWith('The latest message is from a bot')), true);
   bots.team.update(team.id, { selectorBotId: coder.id });
   useNames = true;
-  const second = bots.team.message(team.id, { message: '@all hello', requestId: 'model-name' }).run;
+  const second = bots.team.message(team.id, { message: 'Hello room', requestId: 'model-name' }).run;
   await untilSettled(second.id);
-  assert.deepEqual(replies(bots.team.channel(team.id)), ['Hello from Pal @everyone hi', 'Hello from Pal @all hello']);
+  assert.deepEqual(replies(bots.team.channel(team.id)), ['Hello from Pal Hi', 'Hello from Pal Hello room']);
   assert.ok(lines.some(line => line.startsWith('room selection') && line.includes(`picker ${coder.id} qwen`) && line.includes('Pal') && line.includes(`accepted ${pal.id}`)));
   assert.equal(bots.team.detail(team.id, second.id).run.state, 'completed');
   assert.equal(prompts.filter(content => content.startsWith('The latest message is from a bot')).length, 2);
