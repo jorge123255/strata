@@ -27,8 +27,74 @@ export type RoomFeedEntry<T> =
   | { kind: 'message'; message: T }
   | { kind: 'replies'; group: ReplyGroup<T> };
 
-export function replyGroupLabel(count: number): string {
+export function replyGroupLabel(replied: number, expected = 0): string {
+  const count = Number.isFinite(replied) ? Math.max(0, Math.trunc(replied)) : 0;
+  const total = Number.isFinite(expected) ? Math.max(0, Math.trunc(expected)) : 0;
+  if (total > 0) return `${count} of ${total} bots replied`;
   return `${count} ${count === 1 ? 'bot' : 'bots'} replied`;
+}
+
+function uniqueIds(ids: readonly string[] | undefined): string[] {
+  if (!ids) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const id of ids) {
+    if (typeof id !== 'string') continue;
+    const trimmed = id.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+  return out;
+}
+
+/** Members named on the triggering message. Current members stand in when that list was not saved. */
+export function replyGroupRoster(trigger: { recipientIds?: readonly string[] } | null | undefined, memberIds: readonly string[] = []): string[] {
+  const saved = uniqueIds(trigger?.recipientIds);
+  return saved.length ? saved : uniqueIds(memberIds);
+}
+
+/** How many roster members have a reply in this stack. */
+export function replyGroupRepliedCount(messages: readonly { author?: { botId?: string } }[], roster: readonly string[]): number {
+  const wanted = new Set(uniqueIds(roster));
+  if (!wanted.size) return messages.length;
+  const replied = new Set<string>();
+  for (const message of messages) {
+    const id = message.author?.botId?.trim();
+    if (id && wanted.has(id)) replied.add(id);
+  }
+  return replied.size;
+}
+
+/** Roster members with no reply yet, in send-time order. */
+export function replyGroupGaps(messages: readonly { author?: { botId?: string } }[], roster: readonly string[]): string[] {
+  const replied = new Set<string>();
+  for (const message of messages) {
+    const id = message.author?.botId?.trim();
+    if (id) replied.add(id);
+  }
+  return uniqueIds(roster).filter(id => !replied.has(id));
+}
+
+/** A round is live while its run is active, a reply is still streaming, or a missing teammate is queued or working. */
+export function replyRoundIsLive(input: {
+  triggerRunId?: string;
+  activeRunIds: readonly string[];
+  missingBotIds: readonly string[];
+  presence?: readonly { botId?: string; state?: string; runId?: string }[];
+  drafting?: boolean;
+}): boolean {
+  if (input.drafting) return true;
+  const runId = input.triggerRunId?.trim() ?? '';
+  if (runId && input.activeRunIds.some(id => id === runId)) return true;
+  if (!input.missingBotIds.length || !input.presence?.length) return false;
+  const missing = new Set(input.missingBotIds);
+  return input.presence.some(row => {
+    const botId = row.botId?.trim() ?? '';
+    if (!botId || !missing.has(botId) || (row.state !== 'working' && row.state !== 'queued')) return false;
+    const presenceRun = row.runId?.trim() ?? '';
+    return !runId || !presenceRun || presenceRun === runId;
+  });
 }
 
 export function replyGroupStaggerMs(index: number): number {

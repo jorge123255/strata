@@ -6,7 +6,7 @@ import { cx } from '../lib/format';
 import { ApiError, api } from '../lib/client';
 import { botActivityLabel, botTeamRunActive, mergeBotTeamChannelMessages, type Bot, type BotTeam, type BotTeamChannelMessage, type BotTeamChannelSnapshot, type BotTeamPresence, type BotTeamRun } from '../lib/bots';
 import { choicePayload, presentRecovery, recoveryFromEvent, type RecoveryPresentation, type TaskRecoveryEvent } from '../lib/room-choice';
-import { groupRoomReplies, withLiveReplyDrafts } from '../lib/reply-group';
+import { groupRoomReplies, replyGroupGaps, replyGroupRoster, replyRoundIsLive, withLiveReplyDrafts } from '../lib/reply-group';
 import { RoomChoiceCard } from '../components/RoomChoiceCard';
 import { ReplyGroupStack } from '../components/ReplyGroupStack';
 import { useStore } from '../lib/store';
@@ -174,6 +174,21 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
   const mentionCursor = mentionChoices.length ? Math.min(mentionIndex, mentionChoices.length - 1) : 0;
   const activeMentionDomId = showMentions ? `team-mention-${team.id}-${mentionChoices[mentionCursor]!.kind}-${mentionChoices[mentionCursor]!.id}` : undefined;
   const active = channel.activeRuns.filter(run => botTeamRunActive(run.state));
+  const replyStack = (group: { triggerId: string; messages: BotTeamChannelMessage[] }) => {
+    const trigger = channel.messages.find(row => row.id === group.triggerId);
+    const roster = replyGroupRoster(trigger, team.memberIds);
+    const missing = replyGroupGaps(group.messages, roster);
+    return {
+      roster,
+      live: replyRoundIsLive({
+        triggerRunId: trigger?.runId || group.messages.find(row => row.runId)?.runId,
+        activeRunIds: active.map(run => run.id),
+        missingBotIds: missing,
+        presence: channel.presence,
+        drafting: group.messages.some(row => liveDrafts.some(draft => draft.messageId === row.id)),
+      }),
+    };
+  };
   const ready = current && !channel.error && !channel.loading;
   const recoveryFor = (message: BotTeamChannelMessage) => presentRecovery(message, liveRecovery.find(event => event.messageId === message.id && event.teamId === team.id) ?? null);
   const pendingRecovery = liveRecovery.filter(event => event.teamId === team.id && !channel.messages.some(message => message.id === event.messageId));
@@ -298,7 +313,7 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
       {channel.hasEarlier ? <div className="bot-room-earlier"><Btn size="sm" disabled={channel.loadingEarlier} onClick={() => { if (feed.current) olderAnchor.current = { height: feed.current.scrollHeight, top: feed.current.scrollTop }; void channel.loadEarlier().then(ok => { if (!ok) olderAnchor.current = null; }); }}>{channel.loadingEarlier ? 'Loading earlier…' : 'Load earlier messages'}</Btn></div> : null}
       {!channel.loading && !channel.messages.length && !channel.error ? <div className="bot-room-welcome"><div className="bot-room-welcome-faces">{members.slice(0, 4).map(bot => <CuaBotAvatar key={bot.id} name={bot.name} config={bot.avatarConfig} size={56}/>)}</div><h3>Your team, together</h3><p>Say hello, share an idea, or give the team something to work on. Everyone can join the conversation; {bots.find(bot => bot.id === team.coordinatorId)?.name ?? 'your coordinator'} organizes the work.</p><div><button type="button" disabled={!ready || !team.enabled} onClick={() => { setWorkMode('chat'); setPrompt('Hi everyone!'); changeRecipients([...team.memberIds]); composer.current?.focus(); }}>Say hi to everyone</button><button type="button" disabled={!ready || !team.enabled} onClick={() => { setPrompt('Who wants to help with '); changeRecipients([]); composer.current?.focus(); }}>Find the right teammate</button></div></div> : null}
       {roomFeed.map(item => {
-        if (item.kind === 'replies') return <ReplyGroupStack key={item.group.id} messages={item.group.messages} triggerId={item.group.triggerId} bots={bots} entranceFor={id => entrances.get(id)} disabled={sending} onReply={reply}/>;
+        if (item.kind === 'replies') { const stack = replyStack(item.group); return <ReplyGroupStack key={item.group.id} messages={item.group.messages} triggerId={item.group.triggerId} roster={stack.roster} live={stack.live} bots={bots} entranceFor={id => entrances.get(id)} disabled={sending} onReply={reply}/>; }
         const message = item.message;
         if (looseDrafts.some(draft => draft.messageId === message.id)) return null;
         const recovery = recoveryFor(message);

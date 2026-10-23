@@ -337,6 +337,7 @@ private struct TeamReplyGroupRow: View {
     var index: Int
     var animate: Bool
     var messageId: String
+    var missing = false
     var onReply: () -> Void
     var onDone: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -346,22 +347,25 @@ private struct TeamReplyGroupRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             AvatarBadge(face, size: 26)
+                .opacity(missing ? 0.72 : 1)
             VStack(alignment: .leading, spacing: 1) {
-                Text(name).font(.caption.weight(.semibold)).foregroundStyle(StrataTheme.ink).lineLimit(1)
+                Text(name).font(.caption.weight(.semibold)).foregroundStyle(missing ? StrataTheme.secondaryInk : StrataTheme.ink).lineLimit(1)
                 Text(preview).font(.subheadline).foregroundStyle(StrataTheme.secondaryInk).lineLimit(2)
             }
             Spacer(minLength: 8)
-            Button(action: onReply) { Text("Reply") }
-                .font(.caption2)
-                .buttonStyle(.plain)
-                .foregroundStyle(StrataTheme.secondaryInk)
-                .accessibilityLabel("Reply to \(name)")
+            if !missing {
+                Button(action: onReply) { Text("Reply") }
+                    .font(.caption2)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(StrataTheme.secondaryInk)
+                    .accessibilityLabel("Reply to \(name)")
+            }
         }
         .padding(.vertical, 2)
         .opacity(reduceMotion || !animate || shown ? 1 : 0)
         .offset(y: reduceMotion || !animate || shown ? 0 : CoucouMotion.messageRise)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("teamReply-\(messageId)")
+        .accessibilityElement(children: missing ? .combine : .contain)
+        .accessibilityIdentifier(missing ? "teamReplyMissing-\(messageId)" : "teamReply-\(messageId)")
         .onAppear {
             guard !started else { return }
             started = true
@@ -829,7 +833,7 @@ struct BotTeamDetailView: View {
         arrivals.begin(key: teamId, rows: rows, ready: ready)
         return ForEach(feedItems(team)) { item in
             if item.grouped {
-                replyGroup(item)
+                replyGroup(item, team: team)
             } else if let entry = item.messages.first {
                 CoucouMessageEnter(entrance: arrivals.entrance(id: entry.id), onDone: { arrivals.finish(id: entry.id) }) {
                     channelRow(entry, team: team)
@@ -837,10 +841,21 @@ struct BotTeamDetailView: View {
             }
         }
     }
-    @ViewBuilder private func replyGroup(_ item: RoomFeedItem) -> some View {
+    @ViewBuilder private func replyGroup(_ item: RoomFeedItem, team: BotTeam) -> some View {
         let expanded = expandedReplyGroups.contains(item.id)
         let visible = RoomReplyGroup.visibleCount(item.messages.count, expanded: expanded)
-        let label = RoomReplyGroup.label(item.messages.count)
+        let trigger = entries.first { $0.id == item.triggerId }
+        let roster = RoomReplyGroup.roster(recipientIds: trigger?.recipientIds, memberIds: team.memberIds)
+        let repliedIds = item.messages.compactMap(\.author.botId)
+        let missing = RoomReplyGroup.gaps(repliedBotIds: repliedIds, roster: roster)
+        let replied = roster.isEmpty ? item.messages.count : RoomReplyGroup.repliedCount(repliedBotIds: repliedIds, roster: roster)
+        let live = RoomReplyGroup.roundIsLive(
+            triggerRunId: trigger?.runId ?? item.messages.compactMap(\.runId).first,
+            activeRunIds: activeRuns.filter(\.isActive).map(\.id),
+            missingBotIds: missing,
+            presence: (channel?.presence ?? []).map { ReplyRoundPresence(botId: $0.botId, state: $0.state, runId: $0.runId) }
+        )
+        let label = RoomReplyGroup.label(replied: replied, expected: roster.count)
         VStack(alignment: .leading, spacing: 2) {
             if item.messages.count > RoomReplyGroup.previewLimit {
                 Button {
@@ -866,6 +881,21 @@ struct BotTeamDetailView: View {
                     messageId: entry.id,
                     onReply: { reply = entry; requestId = UUID().uuidString; taskFocused = true },
                     onDone: { arrivals.finish(id: entry.id) }
+                )
+            }
+            ForEach(missing, id: \.self) { botId in
+                let known = store.botCatalog?.bots.first { $0.id == botId }
+                let name = known?.name ?? "Teammate"
+                TeamReplyGroupRow(
+                    name: name,
+                    preview: live ? "Still working" : "didn't reply",
+                    face: known?.face ?? .default(for: name),
+                    index: 0,
+                    animate: false,
+                    messageId: botId,
+                    missing: true,
+                    onReply: {},
+                    onDone: {}
                 )
             }
         }
