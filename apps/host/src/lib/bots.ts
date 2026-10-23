@@ -58,7 +58,7 @@ export interface BotTeamComputer { id: string; name: string; label: string; comp
 export interface BotTeamMemberBriefing { botId: string; role: string; instructions: string }
 /** Public instructions for this team. Private bot profiles are separate. */
 export interface BotTeamBriefing { instructions: string; members: BotTeamMemberBriefing[] }
-export interface BotTeam { id: string; name: string; memberIds: string[]; coordinatorId: string; enabled: boolean; limits: BotTeamLimits; createdAt: string; updatedAt: string; revision?: number; execution?: BotTeamExecution; briefing?: BotTeamBriefing; channelPreview?: BotTeamChannelPreview; talkativeness?: Record<string, number>; bidding?: boolean }
+export interface BotTeam { id: string; name: string; memberIds: string[]; coordinatorId: string; enabled: boolean; limits: BotTeamLimits; createdAt: string; updatedAt: string; revision?: number; execution?: BotTeamExecution; briefing?: BotTeamBriefing; channelPreview?: BotTeamChannelPreview; talkativeness?: Record<string, number>; bidding?: boolean; selectorBotId?: string }
 export type BotTeamRunState = 'queued'|'running'|'completed'|'error'|'cancelled'|'interrupted'|'stopping'|'cleanup_pending';
 export interface BotTeamRun { id: string; teamId: string; rootChatId: string; rootBotId: string; state: BotTeamRunState; limits: BotTeamLimits; consumedTurns: number; createdAt: string; updatedAt: string; detail?: string; planId?: string }
 export interface BotTaskEvidence { kind: 'file'|'test'|'link'|'note'; label: string; detail: string }
@@ -157,12 +157,13 @@ export function botTeamWorkLabel(limits: BotTeamLimits, continuous = false, unre
 export function botTeamParallelLabel(limits: BotTeamLimits, unrestricted = false) { return unrestricted || limits.maxParallel === 0 ? 'All available teammates' : `${limits.maxParallel} parallel tasks`; }
 export function botTeamRunActive(state: string) { return ['queued', 'running', 'stopping', 'cleanup_pending'].includes(state); }
 export function botActivityLabel(state: string) { return ({ queued: 'Queued', running: 'Working', completed: 'Completed', error: 'Failed', cancelled: 'Stopped', interrupted: 'Interrupted', stopping: 'Stopping…', cleanup_pending: 'Checking cleanup', delivered: 'Delivered', pending: 'Waiting', accepted: 'Accepted', refused: 'Refused' } as Record<string, string>)[state] ?? state; }
-export function botTeamDraftError(draft: Pick<BotTeam, 'name'|'memberIds'|'coordinatorId'|'limits'> & { execution?: BotTeamExecution; briefing?: BotTeamBriefing; talkativeness?: Record<string, number>; bidding?: boolean }, bots: Pick<Bot,'id'>[], computers?: BotTeamComputer[], unrestricted = false, continuous = false): string | null {
+export function botTeamDraftError(draft: Pick<BotTeam, 'name'|'memberIds'|'coordinatorId'|'limits'> & { execution?: BotTeamExecution; briefing?: BotTeamBriefing; talkativeness?: Record<string, number>; bidding?: boolean; selectorBotId?: string | null }, bots: Pick<Bot,'id'>[], computers?: BotTeamComputer[], unrestricted = false, continuous = false): string | null {
   if (!draft.name.trim() || draft.name.trim().length>80) return 'Give this team a name of up to 80 characters.';
   if (draft.memberIds.length < 2 || draft.memberIds.length > 12) return 'Choose from 2 to 12 team members.';
   if (new Set(draft.memberIds).size !== draft.memberIds.length || draft.memberIds.some(id => !bots.some(bot => bot.id === id))) return 'Choose available bots for this team.';
   if (!draft.memberIds.includes(draft.coordinatorId)) return 'Choose a coordinator from this team.';
   if (draft.bidding !== undefined && typeof draft.bidding !== 'boolean') return 'Choose whether teammates bid to speak.';
+  if (draft.selectorBotId !== undefined && draft.selectorBotId !== null && draft.selectorBotId !== '' && !draft.memberIds.includes(draft.selectorBotId)) return 'Choose a teammate to pick the next speaker.';
   if (draft.talkativeness) {
     if (typeof draft.talkativeness !== 'object' || Array.isArray(draft.talkativeness)) return 'Choose a talkativeness from 0 to 100 for each teammate.';
     for (const [id, value] of Object.entries(draft.talkativeness)) if (!draft.memberIds.includes(id) || !Number.isInteger(value) || value < 0 || value > 100) return 'Choose a talkativeness from 0 to 100 for each teammate.';

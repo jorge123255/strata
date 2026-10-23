@@ -249,17 +249,59 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     if (!summary.available) throw Object.assign(fault(409, message), { code: 'team_plan_receipts_unavailable' });
     if (['pending', 'uncertain', 'interrupted'].some(state => summary.counts[state] > 0)) throw Object.assign(fault(409, message), { code: 'team_plan_receipts_unresolved' });
   }
+  function mapSpeakerNames(raw, members) {
+    if (!Array.isArray(raw)) return [];
+    const ids = [];
+    for (const token of raw) {
+      if (typeof token !== 'string') continue;
+      const cleaned = token.trim().replace(/^@/, '');
+      if (!cleaned) continue;
+      const byId = members.find(member => member.id === cleaned);
+      const named = members.filter(member => typeof member.name === 'string' && member.name.trim().toLowerCase() === cleaned.toLowerCase());
+      const id = byId?.id ?? (named.length === 1 ? named[0].id : undefined);
+      if (id && !ids.includes(id)) ids.push(id);
+      if (ids.length === 2) break;
+    }
+    return ids;
+  }
   function roomSpeakers(input) {
-    const speaker = input?.members?.find(member => member.provider === 'configured' && member.modelSource);
-    if (!speaker || typeof modelRequest !== 'function') return chooseRoomSpeakers(input);
+    const members = Array.isArray(input?.members) ? input.members : [];
+    const usable = member => member?.provider === 'configured' && member.modelSource;
+    // The coordinator's model picks, unless this team chose a selector. Do not use
+    // whichever configured model happens to be first in the roster.
+    const picker = [input?.selectorBotId, input?.coordinatorId].map(id => members.find(member => member.id === id)).find(usable) ?? null;
+    const human = input?.humanTurn === true || input?.history?.at(-1)?.authorType !== 'bot';
+    const logSelection = (raw, accepted) => {
+      const model = picker?.modelSource?.model || 'none';
+      console.log(`room selection · run ${input?.runId || 'unknown'} · picker ${picker ? `${picker.id} ${model}` : 'none'} · raw ${JSON.stringify(raw ?? '').slice(0, 500)} · accepted ${accepted.length ? accepted.join(',') : 'none'}`);
+    };
+    const offline = () => {
+      const speakers = chooseRoomSpeakers(input).speakers ?? [];
+      logSelection(null, speakers);
+      return { speakers };
+    };
+    if (!picker || typeof modelRequest !== 'function') return offline();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 18000);
-    const prompt = `Recent room:\n${(input.history ?? []).map(row => `${row.authorName}: ${row.content}`).join('\n')}\nMembers:\n${input.members.map(member => `${member.id} ${member.name} role=${member.role || '-'} talkativeness=${member.talkativeness} available=${member.available}`).join('\n')}\nLast speaker: ${input.lastSpeakerId || 'none'}\nAddressed by a teammate: ${input.addressedBotId || 'none'}\nReply with JSON only: {"speakers":["bot_id"]}. Use 0 to 2 ids, ordered. Prefer the addressed teammate. Skip talkativeness 0 unless addressed. Do not pick the last speaker. Use [] when nobody has something new to add.`;
-    return modelRequest({ messages: [{ role: 'user', content: prompt.slice(0, 4000) }], tools: [], system: 'You pick who speaks next in a group chat. JSON only.' }, { id: speaker.id, name: speaker.name, provider: 'configured', modelSource: speaker.modelSource, continuousTeam: false }, controller.signal).then(result => {
-      const match = String(result?.text ?? '').match(/\{[\s\S]*\}/);
-      const parsed = match ? JSON.parse(match[0]) : {};
-      return { speakers: Array.isArray(parsed.speakers) ? parsed.speakers.filter(id => typeof id === 'string').slice(0, 2) : [] };
-    }).catch(() => chooseRoomSpeakers(input)).finally(() => clearTimeout(timer));
+    const roomRule = human
+      ? 'The latest message is from the human. A greeting, @everyone, or @all needs 1 or 2 speakers. Do not answer with an empty list.'
+      : 'The latest message is from a bot. Use an empty list when nobody has something new to add.';
+    const prompt = `${roomRule}\nRecent room:\n${(input.history ?? []).map(row => `${row.authorName}: ${row.content}`).join('\n')}\nMembers:\n${members.map(member => `${member.id} ${member.name} role=${member.role || '-'} talkativeness=${member.talkativeness} available=${member.available}`).join('\n')}\nLast speaker: ${input.lastSpeakerId || 'none'}\nAddressed by a teammate: ${input.addressedBotId || 'none'}\nReply with JSON only: {"speakers":["bot_id"]}. Use 1 or 2 ids for a human greeting or a message to the whole room, otherwise 0 to 2, ordered. A speaker may be a member id or that member's exact name. Prefer the addressed teammate. Skip talkativeness 0 unless addressed. Do not pick the last speaker.`;
+    return modelRequest({ messages: [{ role: 'user', content: prompt.slice(0, 4000) }], tools: [], system: 'You pick who speaks next in a group chat. JSON only.' }, { id: picker.id, name: picker.name, provider: 'configured', modelSource: picker.modelSource, continuousTeam: false }, controller.signal).then(result => {
+      let speakers = [];
+      try {
+        const match = String(result?.text ?? '').match(/\{[\s\S]*\}/);
+        const parsed = match ? JSON.parse(match[0]) : {};
+        speakers = mapSpeakerNames(parsed.speakers, members);
+      } catch { speakers = []; }
+      if (!speakers.length && human) speakers = chooseRoomSpeakers(input).speakers ?? [];
+      logSelection(result?.text ?? '', speakers);
+      return { speakers: speakers.slice(0, 2) };
+    }).catch(error => {
+      const speakers = chooseRoomSpeakers(input).speakers ?? [];
+      logSelection(String(error?.message ?? error), speakers);
+      return { speakers };
+    }).finally(() => clearTimeout(timer));
   }
   const team = createBotTeams({ directory, requireBot, conversations, createConversation: (id, teamContext) => createConversation(id, {}, teamContext), discardConversation: id => { conversations().remove(id); chatProfiles.delete(id); checkpoints.delete(id); save(); }, notify, workAuthority, assertRecoveryAvailable, workflowAuthority, planAuthority: (id, shared, context) => workflowAuthority(id, shared, context, true), assertWorkflowReceipts, selectSpeakers: roomSpeakers,
     usesComputer: (source, target) => { const bot = typeof source === 'string' ? chatProfiles.get(source) : source; return bot?.computerMode === 'cua' && cuaResource(bot) === cuaResource(target); }, teamComputers: teamComputerRows, resolveExecution: resolveTeamExecution, isChatBusy: chatBusy, isBotBusy: id => [...active.values()].some(run => run.botId === id), stopDirect: id => stop(id, { team: false }), roomReadSequence: teamId => { const value = reads.value.teams?.[teamId]; return Number.isSafeInteger(value) && value >= 0 ? value : 0; } });
@@ -880,6 +922,7 @@ export function createBotRoutes({ bots, port }) {
             const { messageId, botId, seq, text, delta, done } = data;
             res.write(`event: message.partial\ndata: ${JSON.stringify({ messageId, botId, seq, text, delta, done })}\n\n`);
           }
+          if (event === 'room.quiet') res.write(`event: room.quiet\ndata: ${JSON.stringify({ teamId: data.teamId, runId: data.runId, ...(data.messageId ? { messageId: data.messageId } : {}) })}\n\n`);
         });
         const ping = setInterval(() => { if (!res.writableEnded) res.write(': ping\n\n'); }, 15000);
         req.on('close', () => { clearInterval(ping); stop(); });

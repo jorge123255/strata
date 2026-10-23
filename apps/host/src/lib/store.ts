@@ -646,6 +646,9 @@ function applyEvent(e: StreamEvent) {
     case 'message.partial':
       if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('strata:message-partial', { detail: data }));
       break;
+    case 'room.quiet':
+      if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('strata:room-quiet', { detail: data }));
+      break;
     case 'bot-summary':
       if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('strata:bot-summary', { detail: data }));
       break;

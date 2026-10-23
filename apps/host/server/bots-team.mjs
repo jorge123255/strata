@@ -60,6 +60,15 @@ function isDirectQuestion(content) {
   const line = String(content ?? '').trim();
   return /\?\s*$/.test(line) || /^(?:who|what|why|how|should|can|could|would|do|does|did|is|are)\b/i.test(line);
 }
+// A greeting or a message to the whole room is an opener, same as a direct question.
+// "@everyone hi" has no question mark, but the room was still addressed.
+function addressesRoom(content, considerEveryone) {
+  if (considerEveryone) return true;
+  const line = String(content ?? '').trim();
+  if (/^@(?:everyone|all)\b/i.test(line)) return true;
+  const body = line.replace(/^@(?:everyone|all)\b[:,\s]*/i, '').trim();
+  return /^(?:hi|hey|hello|howdy|hiya|yo|sup|good\s+(?:morning|afternoon|evening)|what'?s up)\b/i.test(body);
+}
 // Offline fallback: one willing teammate answers a person, then the room rests
 // unless a bot just named exactly one teammate. A model selector can replace this.
 export function chooseRoomSpeakers(input) {
@@ -88,6 +97,10 @@ function savedVoice(row) {
   if (row.bidding !== undefined) {
     if (typeof row.bidding !== 'boolean') throw fault(503, 'A saved team is invalid.');
     extra.bidding = row.bidding;
+  }
+  if (row.selectorBotId !== undefined) {
+    if (typeof row.selectorBotId !== 'string' || !row.memberIds.includes(row.selectorBotId)) throw fault(503, 'A saved team is invalid.');
+    extra.selectorBotId = row.selectorBotId;
   }
   return extra;
 }
@@ -194,7 +207,7 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
   function requireTeam(id) { const team = teams.get(id); if (!team) throw fault(404, 'This team is unavailable.'); return team; }
   function requireRun(teamId, id) { const run = runs.get(id); if (!run || run.teamId !== teamId) throw fault(404, 'This team run is unavailable.'); return run; }
   function normalize(input, old = {}) {
-    if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !['name', 'memberIds', 'coordinatorId', 'enabled', 'limits', 'execution', 'briefing', 'expectedRevision', 'talkativeness', 'bidding'].includes(key))) throw fault(400, 'Choose supported team settings.');
+    if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !['name', 'memberIds', 'coordinatorId', 'enabled', 'limits', 'execution', 'briefing', 'expectedRevision', 'talkativeness', 'bidding', 'selectorBotId'].includes(key))) throw fault(400, 'Choose supported team settings.');
     const memberIds = input.memberIds ?? old.memberIds;
     if (!Array.isArray(memberIds) || new Set(memberIds).size !== memberIds.length || memberIds.length < 2) throw fault(400, 'Choose at least two different bots from the current roster.');
     if (memberIds.length > MAX_TEAM_MEMBERS) throw fault(400, 'Choose from 2 to 12 team members.');
@@ -225,11 +238,18 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
     }
     const bidding = input.bidding === undefined ? old.bidding === true : input.bidding;
     if (typeof bidding !== 'boolean') throw fault(400, 'Choose whether teammates bid to speak.');
-    return { execution: copy(execution), briefing, name: text(input.name ?? old.name, 80, 'team name'), memberIds: copy(memberIds), coordinatorId, enabled: input.enabled ?? old.enabled ?? false, limits, talkativeness, bidding };
+    let selectorBotId = input.selectorBotId === undefined ? old.selectorBotId : input.selectorBotId;
+    if (selectorBotId === null || selectorBotId === '') selectorBotId = undefined;
+    if (selectorBotId !== undefined && (typeof selectorBotId !== 'string' || !memberIds.includes(selectorBotId))) {
+      if (input.selectorBotId !== undefined) throw fault(400, 'Choose a teammate to pick the next speaker.');
+      selectorBotId = undefined;
+    }
+    return { execution: copy(execution), briefing, name: text(input.name ?? old.name, 80, 'team name'), memberIds: copy(memberIds), coordinatorId, enabled: input.enabled ?? old.enabled ?? false, limits, talkativeness, bidding, selectorBotId };
   }
   function storeTeam(id, team) {
     if (!team.talkativeness || !Object.keys(team.talkativeness).length) delete team.talkativeness;
     if (!team.bidding) delete team.bidding;
+    if (!team.selectorBotId) delete team.selectorBotId;
     teams.set(id, team);
   }
   const publicRun = run => { const { generation, requestHash, executionSnapshot, needsSelection, selecting, mentionQueue, mentionedIds, chainPaused, emptyStreak, bidUsed, lastSpeakerId, recentSpeakers, considerEveryone, openingQuestion, roomConversation, ...safe } = copy(run); return safe; };
@@ -371,7 +391,7 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
       let bot; try { bot = requireBot(id); } catch { bot = { id, name: 'Unavailable teammate', paused: true }; }
       return { id, name: bot.name, role: team.briefing?.members?.find(member => member.botId === id)?.role ?? '', talkativeness: talkativenessOf(team, id), paused: bot.paused === true, available: availableMembers(team).includes(id), provider: bot.provider, ...(bot.modelSource ? { modelSource: copy(bot.modelSource) } : {}) };
     });
-    return { teamId: team.id, history, members, lastSpeakerId: run.lastSpeakerId, addressedBotId: latestBot ? addressedBot(team, latestBot.content, latestBot.botId) : undefined, openingQuestion: run.openingQuestion === true };
+    return { teamId: team.id, runId: run.id, coordinatorId: team.coordinatorId, ...(team.selectorBotId ? { selectorBotId: team.selectorBotId } : {}), history, members, lastSpeakerId: run.lastSpeakerId, addressedBotId: latestBot ? addressedBot(team, latestBot.content, latestBot.botId) : undefined, openingQuestion: run.openingQuestion === true, humanTurn: history.at(-1)?.authorType !== 'bot' };
   }
   function acceptSpeakers(team, run, raw, addressedBotId) {
     const list = Array.isArray(raw?.speakers) ? raw.speakers : [];
@@ -429,8 +449,25 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
     const bids = Array.isArray(value?.bids) ? value.bids : [];
     const choice = bids.filter(row => row && row.pass !== true && Number.isInteger(row.urgency) && row.urgency >= 0 && row.urgency <= 9 && row.botId !== run.lastSpeakerId).sort((a, b) => b.urgency - a.urgency)[0];
     const hop = runJobs(run.id).reduce((max, row) => Math.max(max, row.hop ?? 0), 0) + (runJobs(run.id).length ? 1 : 0);
-    if (!choice || !queueRoomSpeaker(run, choice.botId, hop)) { settle(run); return; }
+    if (!choice || !queueRoomSpeaker(run, choice.botId, hop)) { if (!startHumanFallback(run, input)) quietSettle(run); return; }
     queueTick();
+  }
+  function speakerHop(run) {
+    return runJobs(run.id).reduce((max, row) => Math.max(max, row.hop ?? 0), 0) + (runJobs(run.id).length ? 1 : 0);
+  }
+  // A person who just spoke must get one answer. A bot-to-bot silence still ends the chain.
+  function startHumanFallback(run, input) {
+    if (run.lastSpeakerId || input?.history?.at(-1)?.authorType === 'bot') return false;
+    const team = requireTeam(run.teamId);
+    const picked = acceptSpeakers(team, run, chooseRoomSpeakers(input), input?.addressedBotId);
+    if (!picked.length || !queueRoomSpeaker(run, picked[0], speakerHop(run))) return false;
+    queueTick();
+    return true;
+  }
+  function quietSettle(run) {
+    const spoke = runJobs(run.id).some(job => ['conversation', 'bid'].includes(job.channelMode) && !['cancelled', 'error'].includes(job.state));
+    if (!spoke) emit('room.quiet', { teamId: run.teamId, runId: run.id, ...(run.channelMessageId ? { messageId: run.channelMessageId } : {}) });
+    settle(run);
   }
   function applySelection(runId, value, input) {
     const run = runs.get(runId);
@@ -452,11 +489,12 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
           applyBids(run.id, bids, input); return;
         }
       }
-      settle(run); return;
+      if (!startHumanFallback(run, input)) quietSettle(run);
+      return;
     }
     run.emptyStreak = 0;
     const hop = runJobs(run.id).reduce((max, row) => Math.max(max, row.hop ?? 0), 0) + (runJobs(run.id).length ? 1 : 0);
-    if (!queueRoomSpeaker(run, speakers[0], hop)) { settle(run); return; }
+    if (!queueRoomSpeaker(run, speakers[0], hop)) { quietSettle(run); return; }
     queueTick();
   }
   function beginSelection(run) {
@@ -563,7 +601,7 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
     run.channelMessageId = messageId;
     if (recipients) run.requestedRecipientIds = recipients;
     if (workDirect || roomChat) run.directDelivery = true;
-    if (roomChat) { run.roomConversation = true; run.considerEveryone = considerEveryone; run.openingQuestion = isDirectQuestion(content); run.mentionedIds = [...liveMentions]; run.mentionQueue = liveMentions.slice(1); }
+    if (roomChat) { run.roomConversation = true; run.considerEveryone = considerEveryone; run.openingQuestion = isDirectQuestion(content) || addressesRoom(content, considerEveryone); run.mentionedIds = [...liveMentions]; run.mentionQueue = liveMentions.slice(1); }
     else if (recipients && purpose === 'bid') { const ready = new Set(available); run.expectedParticipation = { purpose: 'bid', memberIds: recipients.filter(id => id !== team.coordinatorId && ready.has(id)) }; }
     let result;
     try {

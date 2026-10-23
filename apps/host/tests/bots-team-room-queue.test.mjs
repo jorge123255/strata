@@ -6,7 +6,8 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createBotTeams, DEFAULT_TEAM_LIMITS, MAX_TEAM_MEMBERS } from '../server/bots-team.mjs';
-import { createBotRoutes } from '../server/bots.mjs';
+import { createBotRoutes, createBots } from '../server/bots.mjs';
+import { createConversations } from '../server/conversations.mjs';
 
 function journal(t, count = 4, hooks = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'strata-team-room-'));
@@ -516,4 +517,121 @@ test('a passed turn clears a live draft and does not publish it', async t => {
   assert.equal(cleared.json, JSON.stringify({ messageId, botId: 'bot_1', seq: 2, text: '', delta: '', done: true }));
   assert.equal(f.service.channel(team.id).messages.some(row => row.id === messageId), false);
   await stream.cancel();
+});
+
+test('an empty selector for @everyone hi still answers once, and a later empty selection settles', async t => {
+  const events = [];
+  const f = journal(t, 3, { notify: (event, data) => events.push(event), selectSpeakers() { return { speakers: [] }; } });
+  const team = f.make(3, { talkativeness: { bot_2: 100 } });
+  const run = f.service.message(team.id, { message: '@everyone hi', requestId: 'everyone-hi' }).run;
+  f.service.tick();
+  assert.equal(f.jobs(run.id).length, 0);
+  f.service.tick();
+  const job = f.jobs(run.id).find(row => row.state === 'running');
+  assert.equal(job.botId, 'bot_2');
+  const ctx = f.context(job);
+  f.service.begin(ctx);
+  f.service.end(ctx, { publicReply: 'Hi.' });
+  f.service.tick();
+  assert.equal(f.jobs(run.id).length, 1);
+  assert.deepEqual(replies(f.service.channel(team.id)), ['Hi.']);
+  assert.equal(f.service.detail(team.id, run.id).run.state, 'completed');
+  assert.equal(events.includes('room.quiet'), false);
+});
+
+test('a room that cannot answer a human greeting emits room.quiet and does not start a turn', async t => {
+  const events = [];
+  const f = journal(t, 3, { notify: (event, data) => events.push({ event, data }), selectSpeakers() { return { speakers: [] }; } });
+  const team = f.make(3, { talkativeness: { bot_0: 0, bot_1: 0, bot_2: 0 } });
+  const run = f.service.message(team.id, { message: '@everyone hi', requestId: 'silent-hi' }).run;
+  const stream = await openRoomStream(t, f.service, team.id);
+  assert.match(await stream.readEvent(), /^event: team-channel/);
+  f.service.tick();
+  f.service.tick();
+  assert.equal(f.jobs(run.id).length, 0);
+  assert.equal(f.service.detail(team.id, run.id).run.state, 'completed');
+  const quiet = events.find(row => row.event === 'room.quiet');
+  const opening = f.service.channel(team.id).messages.find(row => row.author.type === 'user');
+  assert.equal(quiet.data.teamId, team.id);
+  assert.equal(quiet.data.runId, run.id);
+  assert.equal(quiet.data.messageId, opening.id);
+  let streamed = null;
+  for (let i = 0; i < 8 && !streamed; i++) {
+    const parsed = stream.parse(await stream.readEvent());
+    if (parsed.name === 'room.quiet') streamed = parsed;
+  }
+  assert.equal(streamed.name, 'room.quiet');
+  assert.equal(streamed.json, JSON.stringify({ teamId: team.id, runId: run.id, messageId: opening.id }));
+  await stream.cancel();
+});
+
+test('selectorBotId is stored on the team and passed to the selector', async t => {
+  const seen = [];
+  const f = journal(t, 3, { selectSpeakers(input) { seen.push(input.selectorBotId ?? null); return { speakers: ['bot_1'] }; } });
+  const team = f.make(3, { selectorBotId: 'bot_2' });
+  assert.equal(team.selectorBotId, 'bot_2');
+  assert.throws(() => f.service.update(team.id, { selectorBotId: 'bot_9' }), { status: 400 });
+  const cleared = f.service.update(team.id, { selectorBotId: null }).team;
+  assert.equal(Object.hasOwn(cleared, 'selectorBotId'), false);
+  const chosen = f.service.update(cleared.id, { selectorBotId: 'bot_2' }).team;
+  f.service.message(chosen.id, { message: 'Hello', requestId: 'picker-setting' });
+  f.service.tick();
+  assert.deepEqual(seen, ['bot_2']);
+});
+
+test('the model picker answers @everyone hi when it returns nobody, maps a name to an id, and prefers the coordinator', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'strata-room-picker-'));
+  const lines = [];
+  const original = console.log;
+  console.log = (...args) => { lines.push(args.map(item => String(item)).join(' ')); };
+  t.after(() => { console.log = original; });
+  let chats;
+  const connection = { id: 'inert', name: 'Inert', baseUrl: 'https://fixture.invalid/v1', protocol: 'openai-chat', models: [{ id: 'qwen' }, { id: 'lead-model' }] };
+  const prompts = [];
+  let useNames = false;
+  const bots = createBots({
+    directory, defaultWorkspace: () => directory, conversations: () => chats, tools: { definitions: () => [], finish() {} },
+    modelProviders: { resolve: ({ modelId }) => ({ connection, model: connection.models.find(model => model.id === modelId) ?? connection.models[0] }), list: () => ({ connections: [connection] }) },
+    modelRequest: async payload => {
+      const content = payload.messages[0].content;
+      prompts.push(content);
+      const human = content.startsWith('The latest message is from the human');
+      if (!human) return { text: '{"speakers":[]}' };
+      return { text: useNames ? '{"speakers":["Pal"]}' : '{"speakers":[]}' };
+    },
+    runtime: { providers: async () => [], async run(input) { const text = `Hello from ${input.bot.name} ${input.message}`; input.onFrame({ type: 'delta', text }); input.onFrame({ type: 'done', publicReply: text }); }, async close() {} },
+  });
+  chats = createConversations({ directory, enabled: () => true, pending: id => bots.pending(id), stop: id => bots.stop(id), execute: input => bots.run(input), validateSelection: input => bots.validateSelection(input) });
+  t.after(async () => { await bots.close(); chats.close(); rmSync(directory, { recursive: true, force: true }); });
+  const profile = { provider: 'configured', workspace: directory, policy: 'bypass', capabilities: 'both', computerMode: 'host' };
+  const coder = bots.create({ ...profile, name: 'Coder', modelSource: { connectionId: 'inert', model: 'qwen' } }).bot;
+  const lead = bots.create({ ...profile, name: 'Lead', modelSource: { connectionId: 'inert', model: 'lead-model' } }).bot;
+  const pal = bots.create({ name: 'Pal', provider: 'codex', workspace: directory, policy: 'bypass', capabilities: 'both', computerMode: 'host' }).bot;
+  const team = bots.team.create({ name: 'Room', memberIds: [coder.id, lead.id, pal.id], coordinatorId: lead.id, enabled: true, talkativeness: { [pal.id]: 100 } }).team;
+  const untilSettled = async runId => {
+    for (let i = 0; i < 40; i++) {
+      if (!['queued', 'running'].includes(bots.team.detail(team.id, runId).run.state)) return;
+      await new Promise(resolve => setTimeout(resolve, 15));
+    }
+    throw new Error('The room did not settle');
+  };
+  const first = bots.team.message(team.id, { message: '@everyone hi', requestId: 'model-empty' }).run;
+  await untilSettled(first.id);
+  assert.deepEqual(replies(bots.team.channel(team.id)), ['Hello from Pal @everyone hi']);
+  assert.match(prompts[0], /The latest message is from the human/);
+  assert.match(prompts[0], /greeting, @everyone, or @all needs 1 or 2 speakers/);
+  const firstLog = lines.find(line => line.startsWith('room selection'));
+  assert.match(firstLog, new RegExp(`run ${first.id}`));
+  assert.match(firstLog, new RegExp(`picker ${lead.id} lead-model`));
+  assert.match(firstLog, /\[\]/);
+  assert.match(firstLog, new RegExp(`accepted ${pal.id}`));
+  assert.equal(prompts.some(content => content.startsWith('The latest message is from a bot')), true);
+  bots.team.update(team.id, { selectorBotId: coder.id });
+  useNames = true;
+  const second = bots.team.message(team.id, { message: '@all hello', requestId: 'model-name' }).run;
+  await untilSettled(second.id);
+  assert.deepEqual(replies(bots.team.channel(team.id)), ['Hello from Pal @everyone hi', 'Hello from Pal @all hello']);
+  assert.ok(lines.some(line => line.startsWith('room selection') && line.includes(`picker ${coder.id} qwen`) && line.includes('Pal') && line.includes(`accepted ${pal.id}`)));
+  assert.equal(bots.team.detail(team.id, second.id).run.state, 'completed');
+  assert.equal(prompts.filter(content => content.startsWith('The latest message is from a bot')).length, 2);
 });

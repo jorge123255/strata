@@ -120,14 +120,20 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
   const connection = useStore(state => state.connection);
   const channel = useTeamChannel(team.id, visible, onUnsupported, connection === 'live');
   const drafts = useRoomDrafts(team.id);
+  const [quiet, setQuiet] = useState(false);
   const liveDrafts = drafts.filter(row => row.text && !channel.messages.some(message => message.id === row.messageId));
   useEffect(() => {
     const onRoom = (event: Event) => {
-      const detail = (event as CustomEvent<{ teamId?: string }>).detail;
-      if (detail?.teamId === team.id) void channel.refresh();
+      const detail = (event as CustomEvent<{ teamId?: string; presence?: unknown[] }>).detail;
+      if (detail?.teamId === team.id) { if (detail.presence?.length) setQuiet(false); void channel.refresh(); }
+    };
+    const onQuiet = (event: Event) => {
+      const quietDetail = (event as CustomEvent<{ teamId?: string }>).detail;
+      if (quietDetail?.teamId === team.id) setQuiet(true);
     };
     window.addEventListener('strata:team-channel', onRoom);
-    return () => window.removeEventListener('strata:team-channel', onRoom);
+    window.addEventListener('strata:room-quiet', onQuiet);
+    return () => { window.removeEventListener('strata:team-channel', onRoom); window.removeEventListener('strata:room-quiet', onQuiet); };
   }, [team.id, channel.refresh]);
   useNotificationDestination({ type: 'team', id: team.id }, visible);
   const [workMode, setWorkMode] = useState<'chat' | 'work'>('chat');
@@ -208,6 +214,7 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
           <div className="bot-room-message-main"><header><strong>{name}</strong></header><div className="bot-room-message-bubble"><div className="bot-room-message-body">{draft.text}</div></div></div>
         </article>;
       })}
+      {quiet && !channel.presence.length ? <p className="bot-room-quiet" role="status">The room stayed quiet.</p> : null}
       {channel.presence.filter(row => row.state === 'working' && !liveDrafts.some(draft => draft.botId === row.botId)).map(row => <div className="bot-room-working" key={row.jobId}><span className="bot-room-working-dot" aria-hidden="true"/><span>{bots.find(bot => bot.id === row.botId)?.name ?? 'A teammate'} is working…</span></div>)}
       {active.map(run => { const limited = !Object.values(run.limits).every(value => value === 0); return <div className="bot-room-working" key={run.id}><span className="bot-room-working-dot" aria-hidden="true"/><span><strong>{botActivityLabel(run.state)}</strong><small>{limited ? 'Working with the team' : 'Until finished or stopped'}</small></span><Btn size="sm" variant="danger" disabled={!!stopping || run.state === 'stopping'} onClick={() => void stop(run)}>{stopping === run.id ? 'Stopping…' : run.state === 'cleanup_pending' ? 'Retry Stop' : 'Stop team'}</Btn></div>; })}
     </div>
