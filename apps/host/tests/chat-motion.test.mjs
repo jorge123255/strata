@@ -25,6 +25,11 @@ test('message.partial keeps the full text, starts at seq 1, and drops a cleared 
   assert.equal(done[0].done, true);
   assert.deepEqual(motion.applyMessagePartial(done, frame(4, '', { done: true }), 'team_1'), []);
   assert.equal(first[0].text, 'Hi', 'A partial update copies the list instead of editing it.');
+  const grouped = motion.applyMessagePartial([], frame(1, 'Hi', { replyGroupId: 'tm_human' }), 'team_1');
+  assert.equal(grouped[0].replyGroupId, 'tm_human');
+  assert.equal(motion.applyMessagePartial(grouped, frame(2, 'Hi there', { delta: ' there' }), 'team_1')[0].replyGroupId, 'tm_human');
+  assert.equal(motion.applyMessagePartial(grouped, frame(2, 'Hi there', { replyGroupId: 'tm_other' }), 'team_1')[0].replyGroupId, 'tm_other');
+  assert.equal(Object.hasOwn(motion.applyMessagePartial([], frame(1, 'Hi', { replyGroupId: 'bad group' }), 'team_1')[0], 'replyGroupId'), false);
 });
 
 test('streaming reveals whole words at a steady pace and snaps when motion is reduced', () => {

@@ -257,7 +257,7 @@ export function parseSidebarSummary(value: unknown): BotSidebarSummary | null {
 
 /**
  * One SSE frame from /api/bots/summary/stream.
- * `message.partial` is a draft reply `{messageId, botId, seq, text, delta, done}`.
+ * `message.partial` is a draft reply `{messageId, botId, seq, text, delta, done, replyGroupId?}`.
  * It is not a saved team-channel line, so the summary (and its unread count) stays put.
  * Only a parsed `bot-summary` replaces the document. A bad frame keeps the last good one.
  */
