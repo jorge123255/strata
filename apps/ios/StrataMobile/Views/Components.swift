@@ -380,6 +380,30 @@ enum RoomMention {
     }
 }
 
+enum MemberReplyState: String, Equatable {
+    case replied, passed, working, absent
+
+    var line: String {
+        switch self {
+        case .passed: return "passed"
+        case .working: return "Still working"
+        case .replied, .absent: return "didn't reply"
+        }
+    }
+
+    func spoken(name: String) -> String {
+        switch self {
+        case .passed: return "\(name) passed"
+        case .working: return "\(name). Still working"
+        case .replied, .absent: return "\(name) didn't reply"
+        }
+    }
+}
+
+struct MemberPassRecord: Equatable {
+    var botId: String
+}
+
 struct ReplyRoundPresence: Equatable {
     var botId: String
     var state: String
@@ -433,6 +457,22 @@ enum RoomReplyGroup {
     static func gaps(repliedBotIds: [String], roster: [String]) -> [String] {
         let replied = Set(repliedBotIds.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
         return uniqueIds(roster).filter { !replied.contains($0) }
+    }
+
+    /// Replied, passed, still working, or didn't reply. A pass wins over a live round.
+    static func memberReplyState(hasReply: Bool, roundLive: Bool, passed: Bool) -> MemberReplyState {
+        if hasReply { return .replied }
+        if passed { return .passed }
+        if roundLive { return .working }
+        return .absent
+    }
+
+    /// The host has not named the pass field. Until it does, a member with no message has not passed.
+    static func memberChoseToPass(botId: String, records: [MemberPassRecord]) -> Bool {
+        let id = botId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty, records.contains(where: { $0.botId == id }) else { return false }
+        // Read the named pass field on `records` here. Until then, a saved row is not a pass.
+        return false
     }
 
     /// A round is live while its run is active, a reply is still streaming, or a missing teammate is queued or working.

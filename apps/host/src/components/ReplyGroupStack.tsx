@@ -1,16 +1,17 @@
 import { useState } from 'react';
 import type { Entrance } from '../lib/chat-motion';
 import type { Bot, BotTeamChannelMessage } from '../lib/bots';
-import { REPLY_GROUP_PREVIEW, replyGroupGaps, replyGroupLabel, replyGroupPreview, replyGroupRepliedCount, replyGroupStaggerMs } from '../lib/reply-group';
+import { REPLY_GROUP_PREVIEW, memberChoseToPass, memberReplyLabel, memberReplyLine, memberReplyState, replyGroupGaps, replyGroupLabel, replyGroupPreview, replyGroupRepliedCount, replyGroupStaggerMs, type MemberPassRecord } from '../lib/reply-group';
 import { cx } from '../lib/format';
 import { CuaBotAvatar } from './CuaBotAvatar';
 
 /** Compact stack for one @everyone burst. Past five replies, the header opens the rest. */
-export function ReplyGroupStack({ messages, triggerId, roster, live, bots, entranceFor, disabled, onReply }: {
+export function ReplyGroupStack({ messages, triggerId, roster, live, records = [], bots, entranceFor, disabled, onReply }: {
   messages: BotTeamChannelMessage[];
   triggerId: string;
   roster: readonly string[];
   live: boolean;
+  records?: readonly MemberPassRecord[];
   bots: Bot[];
   entranceFor: (id: string) => Entrance | undefined;
   disabled: boolean;
@@ -39,10 +40,10 @@ export function ReplyGroupStack({ messages, triggerId, roster, live, bots, entra
     {gaps.map(botId => {
       const bot = bots.find(item => item.id === botId);
       const name = bot?.name || 'Teammate';
-      const detail = live ? 'Still working' : "didn't reply";
-      return <article key={`missing-${botId}`} className="bot-room-reply-row is-missing" data-missing={botId} data-reply-state={live ? 'working' : 'absent'} aria-label={live ? `${name}. Still working` : `${name} didn't reply`}>
+      const state = memberReplyState({ hasReply: false, roundLive: live, passed: memberChoseToPass(botId, records) });
+      return <article key={`missing-${botId}`} className="bot-room-reply-row is-missing" data-missing={botId} data-reply-state={state} aria-label={memberReplyLabel(name, state)}>
         <div className="bot-room-message-face"><CuaBotAvatar name={name} config={bot?.avatarConfig} size={28}/></div>
-        <div className="bot-room-reply-row-copy"><strong>{name}</strong><p>{detail}</p></div>
+        <div className="bot-room-reply-row-copy"><strong>{name}</strong><p>{memberReplyLine(state)}</p></div>
       </article>;
     })}
   </section>;

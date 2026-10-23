@@ -76,6 +76,50 @@ export function replyGroupGaps(messages: readonly { author?: { botId?: string } 
   return uniqueIds(roster).filter(id => !replied.has(id));
 }
 
+export type MemberReplyState = 'replied' | 'passed' | 'working' | 'absent';
+
+/** A room row the pass check can read. The pass field itself is not named yet. */
+export interface MemberPassRecord {
+  author?: { botId?: string };
+  kind?: string;
+  state?: string;
+  content?: string;
+}
+
+/**
+ * Whether this member chose not to answer.
+ * The host has not named that field. Until it does, a member with no message has not passed.
+ */
+export function memberChoseToPass(botId: string, records: readonly MemberPassRecord[] = []): boolean {
+  const id = botId.trim();
+  const saved = records.some(row => row.author?.botId?.trim() === id);
+  if (!id || !saved) return false;
+  // Read the named pass field on `records` here. Until then, a saved row is not a pass.
+  return false;
+}
+
+/** Replied, passed, still working, or didn't reply. A pass wins over a live round. */
+export function memberReplyState(input: { hasReply: boolean; roundLive: boolean; passed: boolean }): MemberReplyState {
+  if (input.hasReply) return 'replied';
+  if (input.passed) return 'passed';
+  if (input.roundLive) return 'working';
+  return 'absent';
+}
+
+/** Muted line under the member's name. */
+export function memberReplyLine(state: MemberReplyState): string {
+  if (state === 'passed') return 'passed';
+  if (state === 'working') return 'Still working';
+  return "didn't reply";
+}
+
+/** Spoken name for the muted row. */
+export function memberReplyLabel(name: string, state: MemberReplyState): string {
+  if (state === 'passed') return `${name} passed`;
+  if (state === 'working') return `${name}. Still working`;
+  return `${name} didn't reply`;
+}
+
 /** A round is live while its run is active, a reply is still streaming, or a missing teammate is queued or working. */
 export function replyRoundIsLive(input: {
   triggerRunId?: string;

@@ -145,6 +145,18 @@ test('the header counts the send-time roster and names who has not replied', () 
   assert.equal(replies.replyRoundIsLive({ triggerRunId: 'run_1', activeRunIds: [], missingBotIds: ['bot_b'], presence: [{ botId: 'bot_b', state: 'queued', runId: 'run_1' }] }), true);
   assert.equal(replies.replyRoundIsLive({ triggerRunId: 'run_1', activeRunIds: [], missingBotIds: ['bot_b'], presence: [{ botId: 'bot_a', state: 'working', runId: 'run_1' }] }), false);
   assert.equal(replies.replyRoundIsLive({ triggerRunId: 'run_1', activeRunIds: ['run_9'], missingBotIds: ['bot_b'] }), false);
+  assert.equal(replies.memberReplyState({ hasReply: true, roundLive: true, passed: true }), 'replied');
+  assert.equal(replies.memberReplyState({ hasReply: false, roundLive: true, passed: true }), 'passed');
+  assert.equal(replies.memberReplyState({ hasReply: false, roundLive: true, passed: false }), 'working');
+  assert.equal(replies.memberReplyState({ hasReply: false, roundLive: false, passed: false }), 'absent');
+  assert.equal(replies.memberChoseToPass('bot_b', [{ author: { botId: 'bot_b' }, kind: 'message', content: '' }]), false);
+  assert.equal(replies.memberChoseToPass('bot_b', []), false);
+  assert.equal(replies.memberReplyLine('passed'), 'passed');
+  assert.equal(replies.memberReplyLine('working'), 'Still working');
+  assert.equal(replies.memberReplyLine('absent'), "didn't reply");
+  assert.equal(replies.memberReplyLabel('Cleo', 'passed'), 'Cleo passed');
+  assert.equal(replies.memberReplyLabel('Cleo', 'working'), 'Cleo. Still working');
+  assert.equal(replies.memberReplyLabel('Dot', 'absent'), "Dot didn't reply");
 });
 
 test('the header counts replies, the preview stays on the first line, and the stagger is 60ms', () => {
@@ -177,8 +189,9 @@ test('the room renders the stack, collapses past five, and the phone uses the sa
   assert.match(channel, /replyGroupRoster/);
   assert.match(channel, /replyRoundIsLive/);
   assert.match(stack, /replyGroupLabel/);
-  assert.match(stack, /didn't reply/);
-  assert.match(stack, /Still working/);
+  assert.match(stack, /memberReplyState/);
+  assert.match(stack, /memberChoseToPass/);
+  assert.match(stack, /memberReplyLine/);
   assert.match(stack, /is-missing/);
   assert.match(stack, /replyGroupPreview/);
   assert.match(stack, /replyGroupStaggerMs\(index\)/);
@@ -192,8 +205,14 @@ test('the room renders the stack, collapses past five, and the phone uses the sa
   assert.match(logic, /static let previewLimit = 5/);
   assert.match(logic, /static let staggerSeconds = 0\.06/);
   assert.match(logic, /of \\\(expected\) bots replied/);
-  assert.match(phone, /didn't reply/);
-  assert.match(phone, /Still working/);
+  assert.match(logic, /func memberReplyState/);
+  assert.match(logic, /func memberChoseToPass/);
+  assert.match(logic, /case \.passed: return "passed"/);
+  assert.match(logic, /Still working/);
+  assert.match(logic, /didn't reply/);
+  assert.match(phone, /memberReplyState/);
+  assert.match(phone, /memberChoseToPass/);
+  assert.match(phone, /state\.line/);
   assert.match(phone, /RoomReplyGroup\.label\(replied:/);
   assert.match(phone, /RoomReplyGroup\.group/);
   assert.match(phone, /RoomReplyGroup\.stagger/);
@@ -257,6 +276,8 @@ createRoot(document.getElementById('root')).render(<App/>);`;
   assert.equal(await finished.getByRole('button', { name: 'Reply to Ada' }).count(), 1);
   assert.equal(await running.getByRole('article', { name: 'Cleo. Still working' }).count(), 1);
   assert.equal(await running.locator('[data-reply-state="working"]').count(), 1);
+  assert.equal(await finished.locator('[data-reply-state="absent"]').count(), 2);
+  assert.equal(await page.locator('[data-reply-state="passed"]').count(), 0);
   assert.deepEqual(errors, []);
   const shots = '/opt/cursor/artifacts/screenshots';
   mkdirSync(shots, { recursive: true });
