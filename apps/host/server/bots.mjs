@@ -431,7 +431,23 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     if ([...active.values()].some(run => run.botId === id)) throw fault(409, 'Stop this bot’s active conversations before removing its profile.');
     computer.checkRemove(bot);
     if (hasOwnedComputer(id)) throw fault(409, 'Stop this bot’s isolated computer from its Computer view before removing the profile. Its files and history will be retained.');
-    work.removed?.(id); profiles.delete(id); save(); notify('bots', { deleted: id }); return { deleted: id };
+    const forgotten = team.forgetBot(id);
+    work.removed?.(id); profiles.delete(id);
+    try { save(); } catch (error) { profiles.set(id, bot); throw error; }
+    for (const teamId of forgotten.deletedTeams) clearTeamRead(teamId);
+    notify('bots', { deleted: id }); return { deleted: id };
+  }
+  function clearTeamRead(teamId) {
+    if (!Object.hasOwn(reads.value.teams, teamId)) return;
+    const previous = reads.value.teams[teamId];
+    delete reads.value.teams[teamId];
+    try { reads.save(reads.value); }
+    catch (error) { reads.value.teams[teamId] = previous; throw error; }
+  }
+  function removeTeam(id) {
+    const result = team.remove(id);
+    clearTeamRead(id);
+    return result;
   }
   async function pause(id, input) {
     const old = requireBot(id);
@@ -794,7 +810,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     return { bot: emitSummaryNow().bots.find(row => row.id === botId) };
   }
   queueMicrotask(bindInbox);
-  return { list, create, update, saveProfile, setHostFolder, remove, pause, createConversation, computer, work, team, summary, markTeamRead, markBotRead, subscribeSummary: listener => { summaryListeners.add(listener); return () => summaryListeners.delete(listener); }, hasBot: id => profiles.has(id), hasTeam: id => team.hasTeam(id), teamConnectorAccess: (teamId, botId, teamRunId) => team.connectorAccess(teamId, botId, teamRunId), providerModels: id => runtime.models?.(id) ?? Promise.resolve({ provider: id, models: [], detail: 'This provider has no verified effort catalog. Use Provider default.' }), prepareCUA, checkComputer: (input, options) => computerAction(input, false, options), prepareComputer: (input, options) => computerAction(input, true, options), validateSelection, run, pending, approve, stop,
+  return { list, create, update, saveProfile, setHostFolder, remove, removeTeam, pause, createConversation, computer, work, team, summary, markTeamRead, markBotRead, subscribeSummary: listener => { summaryListeners.add(listener); return () => summaryListeners.delete(listener); }, hasBot: id => profiles.has(id), hasTeam: id => team.hasTeam(id), teamConnectorAccess: (teamId, botId, teamRunId) => team.connectorAccess(teamId, botId, teamRunId), providerModels: id => runtime.models?.(id) ?? Promise.resolve({ provider: id, models: [], detail: 'This provider has no verified effort catalog. Use Provider default.' }), prepareCUA, checkComputer: (input, options) => computerAction(input, false, options), prepareComputer: (input, options) => computerAction(input, true, options), validateSelection, run, pending, approve, stop,
     harnessActions: chatId => ({ ...actionJournal.summary(chatId), coverage: { local: 'durable', sshHostTools: 'durable', sshComputerTools: 'worker-durable-read-only', identity: 'Exact conversation, authority, turn and provider call identity; anonymous calls and older settled receipts outside retention are not deduplicated.', recovery: 'No automatic retries or resumes. SSH receipt acknowledgement and computer cleanup remain separate.' } }),
     reviewHarnessAction: (id, input) => actionJournal.review(id, input),
     supervision: () => { const snapshot = botSupervisionSnapshot({ bots: [...profiles.values()], conversations: conversations()?.supervisionSources?.() ?? [], pendingCount: id => active.get(id)?.pending.size ?? 0, now: Date.parse(now()) }); snapshot.sessions = snapshot.sessions.map(row => { const harness = harnessObserver.snapshot(row.id); return harness ? {...row,harness} : row; }); return snapshot; },
@@ -964,6 +980,10 @@ export function createBotRoutes({ bots, port }) {
         if (runId && req.method === 'GET') return json(res, 200, bots.team.detail(teamId, runId));
         if (!runId && url.pathname.endsWith('/runs') && req.method === 'POST') return json(res, 201, bots.team.start(teamId, await readBody(req)));
         if (!runId && !url.pathname.endsWith('/runs') && req.method === 'PATCH') return json(res, 200, bots.team.update(teamId, await readBody(req)));
+        if (!runId && !url.pathname.endsWith('/runs') && req.method === 'DELETE') {
+          if ([...url.searchParams].length || req.headers['transfer-encoding'] || Number(req.headers['content-length'] ?? 0) > 0) throw fault(400, 'Delete takes no additional settings.');
+          return json(res, 200, bots.removeTeam(teamId));
+        }
         return error(res, 405, 'This team action is unavailable.');
       }
       if (/^\/api\/bots\/computers\/(check|prepare|prepare-cua)$/.test(url.pathname) && req.method === 'POST') {

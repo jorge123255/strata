@@ -206,14 +206,30 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
   }
   function requireTeam(id) { const team = teams.get(id); if (!team) throw fault(404, 'This team is unavailable.'); return team; }
   function requireRun(teamId, id) { const run = runs.get(id); if (!run || run.teamId !== teamId) throw fault(404, 'This team run is unavailable.'); return run; }
+  function memberExists(id) { try { requireBot(id); return true; } catch (error) { if (error?.status === 404) return false; throw error; } }
   function normalize(input, old = {}) {
     if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !['name', 'memberIds', 'coordinatorId', 'enabled', 'limits', 'execution', 'briefing', 'expectedRevision', 'talkativeness', 'bidding', 'selectorBotId'].includes(key))) throw fault(400, 'Choose supported team settings.');
-    const memberIds = input.memberIds ?? old.memberIds;
-    if (!Array.isArray(memberIds) || new Set(memberIds).size !== memberIds.length || memberIds.length < 2) throw fault(400, 'Choose at least two different bots from the current roster.');
-    if (memberIds.length > MAX_TEAM_MEMBERS) throw fault(400, 'Choose from 2 to 12 team members.');
-    for (const id of memberIds) requireBot(id);
-    const coordinatorId = input.coordinatorId ?? old.coordinatorId;
-    if (!memberIds.includes(coordinatorId)) throw fault(400, 'Choose a coordinator from this team.');
+    const requested = input.memberIds ?? old.memberIds;
+    const prior = Array.isArray(old.memberIds) ? old.memberIds : [];
+    if (!Array.isArray(requested) || new Set(requested).size !== requested.length) throw fault(400, 'Choose at least two different bots from the current roster.');
+    // A profile removed since the last save is left out. A bot added in this edit must still exist.
+    // Check the cap before that lookup so a new list of unknown ids still reports the size, as before.
+    const priorLive = new Set(prior.filter(id => memberExists(id)));
+    const memberIds = [];
+    const fresh = [];
+    for (const id of requested) {
+      if (prior.includes(id)) { if (priorLive.has(id)) memberIds.push(id); }
+      else fresh.push(id);
+    }
+    if (memberIds.length + fresh.length > MAX_TEAM_MEMBERS && priorLive.size <= MAX_TEAM_MEMBERS) throw fault(400, 'Choose from 2 to 12 team members.');
+    for (const id of fresh) { requireBot(id); memberIds.push(id); }
+    if (memberIds.length < 2) throw fault(400, 'Choose at least two different bots from the current roster.');
+    if (memberIds.length > MAX_TEAM_MEMBERS && fresh.length) throw fault(400, 'Remove members until this team has 12 or fewer before adding anyone.');
+    let coordinatorId = input.coordinatorId ?? old.coordinatorId;
+    if (!memberIds.includes(coordinatorId)) {
+      if (typeof coordinatorId === 'string' && prior.includes(coordinatorId) && !memberExists(coordinatorId)) coordinatorId = memberIds[0];
+      else throw fault(400, 'Choose a coordinator from this team.');
+    }
     if (input.enabled !== undefined && typeof input.enabled !== 'boolean') throw fault(400, 'Choose whether this team may collaborate.');
     const limits = { ...DEFAULT_TEAM_LIMITS, ...(old.limits ?? {}) };
     if (input.limits !== undefined) {
@@ -241,7 +257,8 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
     let selectorBotId = input.selectorBotId === undefined ? old.selectorBotId : input.selectorBotId;
     if (selectorBotId === null || selectorBotId === '') selectorBotId = undefined;
     if (selectorBotId !== undefined && (typeof selectorBotId !== 'string' || !memberIds.includes(selectorBotId))) {
-      if (input.selectorBotId !== undefined) throw fault(400, 'Choose a teammate to pick the next speaker.');
+      const removedProfile = typeof selectorBotId === 'string' && prior.includes(selectorBotId) && !memberExists(selectorBotId);
+      if (input.selectorBotId !== undefined && !removedProfile) throw fault(400, 'Choose a teammate to pick the next speaker.');
       selectorBotId = undefined;
     }
     return { execution: copy(execution), briefing, name: text(input.name ?? old.name, 80, 'team name'), memberIds: copy(memberIds), coordinatorId, enabled: input.enabled ?? old.enabled ?? false, limits, talkativeness, bidding, selectorBotId };
@@ -1532,9 +1549,74 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
     },
     stopRun: async row => { const result = await stop(row.teamId, row.parentRunId, 'Stopped by you.', true); if (result.run.state === 'cleanup_pending') throw fault(503, result.run.detail); },
   });
+  function referencesBot(team, botId) {
+    return team.memberIds.includes(botId) || team.coordinatorId === botId || team.selectorBotId === botId || Object.hasOwn(team.talkativeness ?? {}, botId) || !!team.briefing?.members?.some(row => row.botId === botId);
+  }
+  function excise(id) {
+    const team = teams.get(id);
+    const removedRuns = [...runs.values()].filter(run => run.teamId === id);
+    const runIds = new Set(removedRuns.map(run => run.id));
+    const removedJobs = [...jobs.values()].filter(job => runIds.has(job.runId));
+    const jobIds = new Set(removedJobs.map(job => job.id));
+    const removedStarts = [...startKeys].filter(([key]) => key.startsWith(`${id}:`));
+    const removedDeliveries = [...deliveryKeys].filter(([, jobId]) => jobIds.has(jobId));
+    const typing = typingTeams.has(id);
+    teams.delete(id); typingTeams.delete(id);
+    for (const run of removedRuns) runs.delete(run.id);
+    for (const job of removedJobs) jobs.delete(job.id);
+    for (const [key] of removedStarts) startKeys.delete(key);
+    for (const [key] of removedDeliveries) deliveryKeys.delete(key);
+    return () => {
+      if (team) teams.set(id, team);
+      if (typing) typingTeams.add(id);
+      for (const run of removedRuns) runs.set(run.id, run);
+      for (const job of removedJobs) jobs.set(job.id, job);
+      for (const [key, value] of removedStarts) startKeys.set(key, value);
+      for (const [key, value] of removedDeliveries) deliveryKeys.set(key, value);
+    };
+  }
+  function remove(id) {
+    requireTeam(id);
+    if ([...runs.values()].some(run => run.teamId === id && liveStates.has(run.state))) throw Object.assign(fault(409, 'Stop this team’s current work before deleting it.'), { code: 'team_busy' });
+    const restoreChannel = channels.discard(id);
+    const restoreTeam = excise(id);
+    try { save(); }
+    catch (error) { restoreTeam(); try { restoreChannel(); } catch { /* The team file was not replaced. */ } throw error; }
+    publish();
+    return { deleted: id };
+  }
+  function forgetBot(botId) {
+    const affected = [...teams.values()].filter(team => referencesBot(team, botId));
+    if (!affected.length) return { deletedTeams: [] };
+    for (const team of affected) {
+      if (team.memberIds.filter(id => id !== botId).length < 2 && [...runs.values()].some(run => run.teamId === team.id && liveStates.has(run.state))) throw fault(409, 'Stop this team’s current work before removing a teammate who would leave it with fewer than two members.');
+    }
+    const deletedTeams = [];
+    const restores = [];
+    try {
+      for (const team of affected) {
+        const memberIds = team.memberIds.filter(id => id !== botId);
+        if (memberIds.length < 2) { restores.push(channels.discard(team.id)); restores.push(excise(team.id)); deletedTeams.push(team.id); continue; }
+        const previous = team;
+        const coordinatorId = memberIds.includes(team.coordinatorId) ? team.coordinatorId : (memberIds.find(id => memberExists(id)) ?? memberIds[0]);
+        const talkativeness = { ...(team.talkativeness ?? {}) };
+        delete talkativeness[botId];
+        const selectorBotId = team.selectorBotId && team.selectorBotId !== botId && memberIds.includes(team.selectorBotId) ? team.selectorBotId : undefined;
+        const briefing = normalizeTeamBriefing({ instructions: team.briefing?.instructions ?? '', members: (team.briefing?.members ?? []).filter(row => memberIds.includes(row.botId)) }, memberIds);
+        storeTeam(team.id, { ...team, memberIds, coordinatorId, briefing, talkativeness, selectorBotId, revision: (team.revision ?? 1) + 1, updatedAt: stamp() });
+        restores.push(() => { teams.set(previous.id, previous); });
+      }
+      save();
+    } catch (error) {
+      for (const restore of restores.reverse()) { try { restore(); } catch { /* Report the original save failure. */ } }
+      throw error;
+    }
+    publish();
+    return { deletedTeams };
+  }
   const timer = setInterval(tick, 1000); timer.unref();
   const partialTimer = setInterval(() => { try { snapshotRoomPartials(); } catch { /* A live caption cannot stop the room. */ } }, 400); partialTimer.unref();
-  return { list, create, update, executionForRun: id => copy(runs.get(id)?.executionSnapshot), sharedAnchor: id => [...teams.values()].some(team => team.execution?.mode === 'shared' && team.execution.computerId === `cua:${id}`),
+  return { list, create, update, remove, forgetBot, executionForRun: id => copy(runs.get(id)?.executionSnapshot), sharedAnchor: id => [...teams.values()].some(team => team.execution?.mode === 'shared' && team.execution.computerId === `cua:${id}`),
     hasTeam: id => teams.has(id),
     connectorAccess(teamId, botId, teamRunId) {
       const current = teams.get(teamId), run = runs.get(teamRunId);

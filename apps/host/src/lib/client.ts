@@ -38,6 +38,11 @@ export const api = {
   del: <T>(path: string, body?: unknown) => request<T>('DELETE', path, body),
 };
 
+/** Delete one team. The host removes its channel and room read, and refuses while the team is working. */
+export function deleteBotTeam(id: string) {
+  return api.del<{ deleted: string }>(`/api/bots/teams/${encodeURIComponent(id)}`);
+}
+
 export interface StreamEvent {
   event: string;
   data: Record<string, unknown>;

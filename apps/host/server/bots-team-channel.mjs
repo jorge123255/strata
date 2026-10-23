@@ -93,8 +93,22 @@ export function createTeamChannels({ directory, now = Date.now, notify = () => {
     const selected = after === undefined ? all.slice(-100) : all.filter(message => message.sequence > after).slice(0, 100);
     return { id: teamId, latestSequence: row ? row.nextSequence - 1 : 0, messages: selected.map(message => ({ id: message.id, sequence: message.sequence, kind: message.kind, author: { type: message.author.type, ...(message.author.botId ? { botId: message.author.botId } : {}) }, state: message.state, createdAt: message.createdAt, ...(message.planEvent !== undefined ? { planId: message.planId, planEvent: message.planEvent } : {}) })) };
   }
+  function discard(teamId) {
+    const had = channels.has(teamId), old = channels.get(teamId);
+    const removed = [...receipts].filter(([, receipt]) => receipt.teamId === teamId);
+    if (had) channels.delete(teamId);
+    for (const [key] of removed) receipts.delete(key);
+    const restore = () => {
+      if (had) channels.set(teamId, old); else channels.delete(teamId);
+      for (const [key, receipt] of removed) receipts.set(key, receipt);
+      if (had || removed.length) save();
+    };
+    try { if (had || removed.length) save(); }
+    catch (error) { if (had) channels.set(teamId, old); for (const [key, receipt] of removed) receipts.set(key, receipt); throw error; }
+    return had || removed.length ? restore : () => {};
+  }
   return {
-    append, appendAndRemember: append, snapshot, preview, notificationSources, latestSequence, unreadCount, summaryLine,
+    append, appendAndRemember: append, discard, snapshot, preview, notificationSources, latestSequence, unreadCount, summaryLine,
     find: (teamId, messageId) => copy(channels.get(teamId)?.messages.find(row => row.id === messageId)),
     recent: (teamId, limit = 30) => copy((channels.get(teamId)?.messages ?? []).slice(-limit)),
     receipt: (teamId, requestId) => copy(receipts.get(`${teamId}:${requestId}`)),
