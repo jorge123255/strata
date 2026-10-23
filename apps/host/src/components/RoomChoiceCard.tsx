@@ -1,13 +1,15 @@
 import type { RoomChoiceOption } from '../lib/room-choice';
 
 /** The sentence and the button labels come from the host. A saved choice stays selected. */
-export function RoomChoiceCard({ text, options, chosen = '', busy = '', disabled = false, error = '', onChoose, onRetry }: {
+export function RoomChoiceCard({ text, options, chosen = '', busy = '', disabled = false, error = '', kind, onChoose, onRetry }: {
   text: string;
   options: RoomChoiceOption[];
   chosen?: string;
   busy?: string;
   disabled?: boolean;
   error?: string;
+  /** A paused run uses the same card, without the failure treatment. */
+  kind?: 'paused';
   onChoose: (id: string) => void;
   onRetry?: () => void;
 }) {
@@ -15,7 +17,8 @@ export function RoomChoiceCard({ text, options, chosen = '', busy = '', disabled
   const rows = options.filter(option => option.id.trim() && option.label.trim());
   if (!body || !rows.length) return null;
   const locked = disabled || !!busy || !!chosen;
-  return <section className="bot-room-choice" role="group" aria-label="A choice for this room">
+  const paused = kind === 'paused';
+  return <section className="bot-room-choice" data-kind={paused ? 'paused' : undefined} role="group" aria-label={paused ? 'Paused' : 'A choice for this room'}>
     <p>{body}</p>
     <div className="bot-room-choice-actions">{rows.map(option => {
       const selected = chosen === option.id;

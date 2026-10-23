@@ -931,7 +931,7 @@ struct BotTeamDetailView: View {
                     let recovery = RoomChoice.fromMessage(id: entry.id, teamId: entry.teamId, content: entry.content, recovery: entry.recovery)
                     if recovery?.text != entry.content.trimmingCharacters(in: .whitespacesAndNewlines) { messageContent(entry) }
                     if let recovery {
-                        RoomChoiceCard(text: recovery.text, options: recovery.options, chosen: recovery.choice, busy: choiceBusy.hasPrefix(entry.id + ":") ? String(choiceBusy.dropFirst(entry.id.count + 1)) : "", error: choiceErrors[entry.id] ?? "") { optionId in
+                        RoomChoiceCard(text: recovery.text, options: recovery.options, chosen: recovery.choice, busy: choiceBusy.hasPrefix(entry.id + ":") ? String(choiceBusy.dropFirst(entry.id.count + 1)) : "", error: choiceErrors[entry.id] ?? "", paused: recovery.paused) { optionId in
                             Task { await chooseRoomRecovery(recovery, optionId: optionId) }
                         } onRetry: {
                             if let optionId = choiceRetries[entry.id] { Task { await chooseRoomRecovery(recovery, optionId: optionId) } }

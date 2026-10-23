@@ -97,6 +97,49 @@ test('only unsupported old hosts get a read-only upgrade fallback; transient and
   }
 });
 
+test('a paused recovery keeps the host text and continue, and the choice posts only that id', async t => {
+  const jobId = 'tj_0123456789abcdef', runId = 'tr_0123456789abcdef';
+  const summary = 'I finished inspect. The rest of this request is still left.';
+  const recovery = { kind: 'paused', jobId, runId, text: summary, question: 'Keep going?', options: [{ id: 'continue', label: 'Keep going' }] };
+  const raw = snapshot();
+  raw.messages[0].recovery = { ...recovery, note: 'PRIVATE_RECOVERY' };
+  raw.messages[0].recovery.options[0] = { ...recovery.options[0], secret: 'PRIVATE_OPTION' };
+  const clean = publicBotWorkspace(raw, route);
+  assert.deepEqual(clean.messages[0].recovery, { ...recovery, options: [{ id: 'continue', label: 'Keep going', style: 'primary' }] });
+  assert.ok(!JSON.stringify(clean).includes('PRIVATE_'));
+  const classic = snapshot();
+  classic.messages[0].recovery = { jobId, runId, question: 'What should I do next?', options: [{ id: 'retry', label: 'Try again' }, { id: 'skip', label: 'Skip this' }, { id: 'different', label: 'Try a different way' }] };
+  assert.deepEqual(publicBotWorkspace(classic, route).messages[0].recovery, classic.messages[0].recovery);
+  const broken = snapshot();
+  broken.messages[0].recovery = { jobId: 'job_secret', text: 'PRIVATE_PAUSE' };
+  const hidden = publicBotWorkspace(broken, route);
+  assert.equal(hidden.messages[0].recovery, undefined);
+  assert.equal(hidden.messages[0].content, 'Hello team');
+  assert.ok(!JSON.stringify(hidden).includes('PRIVATE_PAUSE'));
+  const saved = { ...message, recovery: { ...recovery, options: [{ id: 'continue', label: 'Keep going', style: 'primary' }], choice: 'continue' } };
+  const posted = publicBotWorkspace({ accepted: true, choice: 'continue', message: saved, secret: 'PRIVATE_CHOICE' }, { kind: 'channelChoice', teamId, messageId: message.id });
+  assert.equal(posted.accepted, true);
+  assert.equal(posted.choice, 'continue');
+  assert.equal(posted.message.recovery.text, summary);
+  assert.equal(posted.message.recovery.choice, 'continue');
+  assert.ok(!JSON.stringify(posted).includes('PRIVATE_CHOICE'));
+  assert.equal(botWorkspaceRequest(`/api/bots/teams/${teamId}/messages/${message.id}/choice`, 'POST', { choice: 'continue' }).kind, 'channelChoice');
+  assert.throws(() => botWorkspaceRequest(`/api/bots/teams/${teamId}/messages/${message.id}/choice`, 'POST', { choice: 'resume' }), { status: 403 });
+  assert.throws(() => botWorkspaceRequest(`/api/bots/teams/${teamId}/messages/${message.id}/choice`, 'POST', { choice: 'continue', note: 'x' }), { status: 403 });
+  const f = await fixture(t, (path, options) => {
+    if (path === `/api/bots/teams/${teamId}/messages/${message.id}/choice` && options?.body?.choice === 'continue') return { accepted: true, choice: 'continue', message: saved };
+  });
+  const result = await request(f.bridge, `/v1/bots/teams/${teamId}/messages/${message.id}/choice`, { token: f.token, method: 'POST', body: { choice: 'continue' } });
+  assert.equal(result.status, 200);
+  assert.equal(result.json.choice, 'continue');
+  assert.equal(result.json.message.recovery.text, summary);
+  assert.deepEqual(f.calls.at(-1).body, { choice: 'continue' });
+  assert.equal(f.calls.at(-1).path, `/api/bots/teams/${teamId}/messages/${message.id}/choice`);
+  const rejected = await request(f.bridge, `/v1/bots/teams/${teamId}/messages/${message.id}/choice`, { token: f.token, method: 'POST', body: { choice: 'resume' } });
+  assert.equal(rejected.status, 400);
+  assert.equal(f.calls.filter(call => call.path.endsWith('/choice')).length, 1);
+});
+
 test('wrong methods and GET bodies never reach the channel host', async t => {
   const f = await fixture(t);
   for (const [method, suffix, body] of [['POST', 'channel', {}], ['GET', 'messages', undefined], ['DELETE', 'messages', undefined], ['GET', 'channel', { unknown: true }]]) {

@@ -253,8 +253,19 @@ final class ThinkingTimelineTests: XCTestCase {
         XCTAssertEqual(event?.options.map(\.id), ["retry", "skip", "different"])
         XCTAssertEqual(RoomChoice.choiceId("retry"), "retry")
         XCTAssertEqual(RoomChoice.choiceId("different"), "different")
+        XCTAssertEqual(RoomChoice.choiceId("continue"), "continue")
         XCTAssertNil(RoomChoice.choiceId("different-approach"))
         XCTAssertNil(RoomChoice.choiceId("invent"))
+        XCTAssertNil(RoomChoice.choiceId("resume"))
+        let paused = RoomChoice.fromMessage(id: "tm_1", teamId: "team_1", content: "older line", recovery: BotTeamMessageRecovery(jobId: "tj_1", runId: "tr_1", question: "Keep going?", options: [BotTeamMessageRecoveryOption(id: "continue", label: "Keep going")], choice: nil, text: "I finished inspect. The rest of this request is still left."))
+        XCTAssertEqual(paused?.text, "I finished inspect. The rest of this request is still left.")
+        XCTAssertEqual(paused?.options.map(\.label), ["Keep going"])
+        XCTAssertEqual(paused?.options.first?.style, "primary")
+        XCTAssertEqual(paused?.paused, true)
+        XCTAssertEqual(saved?.paused, false)
+        let pausedEvent = RoomChoice.fromEvent(teamId: "team_1", messageId: "tm_1", jobId: "tj_1", runId: "tr_1", text: "I finished inspect. The rest of this request is still left.", question: "Keep going?", options: [RoomChoiceOption(id: "continue", label: "Keep going", style: nil)], kind: "paused")
+        XCTAssertEqual(pausedEvent?.paused, true)
+        XCTAssertEqual(pausedEvent?.text, "I finished inspect. The rest of this request is still left.")
     }
 
     func testRoomReplyGroupsUseReplyGroupIdThenConsecutiveEveryoneReplies() {

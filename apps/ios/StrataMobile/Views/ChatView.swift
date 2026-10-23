@@ -12,6 +12,9 @@ struct ChatView: View {
     @State private var setupBot: CompanionBot?
     @FocusState private var composerFocused: Bool
     @State private var arrivals = CoucouArrivals()
+    @State private var pauseBusy = ""
+    @State private var pauseError = ""
+    @State private var pauseErrorId = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -267,7 +270,9 @@ struct ChatView: View {
                 ForEach(message.timelineItems) { item in
                     switch item {
                     case .text(_, let text):
-                        messageText(text, isUser: isUser)
+                        if !(message.isStepPause && message.isPauseNotice(text)), message.pauseChoice?.text.trimmingCharacters(in: .whitespacesAndNewlines) != text.trimmingCharacters(in: .whitespacesAndNewlines) {
+                            messageText(text, isUser: isUser)
+                        }
                     case .group(let group, let tools):
                         MacActivityGroupView(group: group, tools: tools,
                             isLive: isLiveMessage(message),
@@ -277,12 +282,44 @@ struct ChatView: View {
                         activity(tool)
                     }
                 }
-                if let error = message.error, !error.isEmpty {
+                if let paused = message.pauseChoice, message.streaming != true {
+                    pauseCard(message, paused)
+                } else if let error = message.error, !error.isEmpty, !message.isStepPause {
                     Label(error, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(StrataTheme.warning)
                 }
             }
             if !isUser { Spacer(minLength: 0) }
         }
+    }
+
+    private func pauseCard(_ message: MacChatMessage, _ recovery: MacPauseRecovery) -> some View {
+        let options = recovery.options.compactMap { option -> RoomChoiceOption? in
+            let label = option.label.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !option.id.isEmpty, !label.isEmpty else { return nil }
+            return RoomChoiceOption(id: option.id, label: label, style: option.id == "continue" ? "primary" : nil)
+        }
+        return RoomChoiceCard(
+            text: recovery.text.trimmingCharacters(in: .whitespacesAndNewlines),
+            options: options,
+            chosen: recovery.choice == "continue" ? "continue" : nil,
+            busy: pauseBusy == message.id ? "continue" : "",
+            error: pauseErrorId == message.id ? pauseError : "",
+            paused: true,
+            onChoose: { optionId in Task { await keepGoing(message.id, optionId) } },
+            onRetry: { Task { await keepGoing(message.id, "continue") } }
+        )
+    }
+
+    private func keepGoing(_ id: String, _ optionId: String) async {
+        guard optionId == "continue", pauseBusy.isEmpty else { return }
+        pauseBusy = id
+        pauseError = ""
+        pauseErrorId = ""
+        if let error = await store.continuePausedMessage(messageId: id) {
+            pauseError = error
+            pauseErrorId = id
+        }
+        pauseBusy = ""
     }
 
     private func isLiveMessage(_ message: MacChatMessage) -> Bool {

@@ -1,6 +1,6 @@
 /** Buttons for a failed team task. Labels and the sentence come from the host. */
 export type RoomChoiceStyle = 'primary' | 'neutral' | 'danger';
-export type RecoveryChoiceId = 'retry' | 'skip' | 'different';
+export type RecoveryChoiceId = 'retry' | 'skip' | 'different' | 'continue';
 
 export interface RoomChoiceOption {
   id: string;
@@ -16,6 +16,8 @@ export interface MessageRecovery {
   options: RoomChoiceOption[];
   choice?: RecoveryChoiceId;
   text?: string;
+  /** A long run that paused. `continue` posts `{ choice: 'continue' }`. */
+  kind?: 'paused';
 }
 
 /** Live `task.recovery` and the web event `strata:task-recovery`. */
@@ -27,6 +29,8 @@ export interface TaskRecoveryEvent {
   text: string;
   question: string;
   options: RoomChoiceOption[];
+  /** A long run that paused. The card is a calm pause, not a failure. */
+  kind?: 'paused';
 }
 
 export interface RecoveryPresentation {
@@ -38,9 +42,10 @@ export interface RecoveryPresentation {
   question: string;
   options: RoomChoiceOption[];
   choice?: RecoveryChoiceId;
+  kind?: 'paused';
 }
 
-const CHOICE_IDS: readonly RecoveryChoiceId[] = ['retry', 'skip', 'different'];
+const CHOICE_IDS: readonly RecoveryChoiceId[] = ['retry', 'skip', 'different', 'continue'];
 
 function textOf(value: unknown) {
   return typeof value === 'string' ? value.trim() : '';
@@ -48,6 +53,10 @@ function textOf(value: unknown) {
 
 function choiceId(value: unknown): RecoveryChoiceId | undefined {
   return CHOICE_IDS.find(id => id === value);
+}
+
+function pausedKind(value: unknown): 'paused' | undefined {
+  return value === 'paused' ? 'paused' : undefined;
 }
 
 function cleanOptions(value: unknown): RoomChoiceOption[] {
@@ -61,6 +70,7 @@ function cleanOptions(value: unknown): RoomChoiceOption[] {
     if (!id || !label) continue;
     const option: RoomChoiceOption = { id, label };
     if (item.style === 'primary' || item.style === 'neutral' || item.style === 'danger') option.style = item.style;
+    else if (id === 'continue') option.style = 'primary';
     options.push(option);
   }
   return options;
@@ -69,15 +79,17 @@ function cleanOptions(value: unknown): RoomChoiceOption[] {
 export function recoveryFromEvent(detail: unknown): TaskRecoveryEvent | null {
   if (!detail || typeof detail !== 'object') return null;
   const row = detail as Record<string, unknown>;
+  const nested = row.recovery && typeof row.recovery === 'object' && !Array.isArray(row.recovery) ? row.recovery as Record<string, unknown> : undefined;
   const teamId = textOf(row.teamId);
   const messageId = textOf(row.messageId);
-  const jobId = textOf(row.jobId);
-  const runId = textOf(row.runId);
-  const question = textOf(row.question);
-  const text = textOf(row.text) || question;
-  const options = cleanOptions(row.options);
+  const jobId = textOf(row.jobId) || textOf(nested?.jobId);
+  const runId = textOf(row.runId) || textOf(nested?.runId);
+  const question = textOf(row.question) || textOf(nested?.question);
+  const text = textOf(row.text) || textOf(nested?.text) || question;
+  const options = cleanOptions(row.options ?? nested?.options);
+  const kind = pausedKind(row.kind) ?? pausedKind(nested?.kind);
   if (!teamId || !messageId || !jobId || !runId || !text || !options.length) return null;
-  return { teamId, messageId, jobId, runId, text, question: question || text, options };
+  return { teamId, messageId, jobId, runId, text, question: question || text, options, ...(kind ? { kind } : {}) };
 }
 
 export function recoveryFromMessage(message: { id?: string; teamId?: string; content?: string; recovery?: unknown } | null | undefined): RecoveryPresentation | null {
@@ -92,9 +104,11 @@ export function recoveryFromMessage(message: { id?: string; teamId?: string; con
   if (!messageId || !teamId || !jobId || !runId || !question || !options.length) return null;
   const text = textOf(recovery.text) || textOf(message.content) || question;
   const choice = choiceId(recovery.choice);
+  const kind = pausedKind(recovery.kind);
   return {
     messageId, teamId, jobId, runId, text, question, options,
     ...(choice && options.some(option => option.id === choice) ? { choice } : {}),
+    ...(kind ? { kind } : {}),
   };
 }
 
@@ -102,7 +116,8 @@ export function recoveryFromMessage(message: { id?: string; teamId?: string; con
 export function presentRecovery(message: { id?: string; teamId?: string; content?: string; recovery?: unknown }, live?: TaskRecoveryEvent | null): RecoveryPresentation | null {
   const saved = recoveryFromMessage(message);
   if (live && live.messageId === textOf(message.id) && live.teamId === textOf(message.teamId)) {
-    return { ...live, ...(saved?.choice ? { choice: saved.choice } : {}) };
+    const kind = live.kind ?? saved?.kind;
+    return { ...live, ...(saved?.choice ? { choice: saved.choice } : {}), ...(kind ? { kind } : {}) };
   }
   return saved;
 }

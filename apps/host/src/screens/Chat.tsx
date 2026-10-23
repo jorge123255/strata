@@ -25,6 +25,7 @@ import { useNative } from '../lib/native';
 import { mainResult, previewOf } from '../lib/deliverables';
 import { noModelNotice } from '../lib/no-model';
 import { ReasoningBlock } from '../components/ReasoningBlock';
+import { WorkedSteps } from '../components/WorkedSteps';
 import { StatusLine } from '../components/StatusLine';
 import { TypingDots, useMessageEntrances } from '../components/ChatMotion';
 import { GoalBar } from '../components/GoalBar';
@@ -35,6 +36,9 @@ import { ActivityLine, EditedFiles, FileCard, SkillsUsed } from '../components/D
 import { queueMessage, usePlan, usePlanQuiet } from '../lib/plan';
 import { plainFailureText } from '../lib/plain-errors';
 import { contextRecovery } from '../lib/context-recovery';
+import { isPauseNotice, isStepPause } from '../lib/step-pause';
+import { RoomChoiceCard } from '../components/RoomChoiceCard';
+import { choicePayload } from '../lib/room-choice';
 import { useLiveStatus } from '../lib/live-status';
 import { askQuestion, askSub, askIcon } from '../lib/ask';
 import { artifactFromUrl, type PreviewArtifact } from '../lib/artifacts';
@@ -44,7 +48,7 @@ import { Markdown } from '../components/Markdown';
 import { Btn, Icon, IconBtn, ErrorNotice, type IconName } from '../components/ui';
 import { composerCap, scrollBehavior } from '../lib/responsive';
 import { relTime, cx, duration, tokens, tps } from '../lib/format';
-import { createSubagentExample, pushToast, setPreviewTabClosed, branchFrom, continueLast, markRead, resolveTool, retryLast, selectSession, rewindTo, sendMessage, stopStreaming, useStore, } from '../lib/store';
+import { createSubagentExample, pushToast, setPreviewTabClosed, branchFrom, continueLast, continuePausedChat, markRead, resolveTool, retryLast, selectSession, rewindTo, sendMessage, stopStreaming, useStore, } from '../lib/store';
 import { getSlashCommands } from '../lib/commands';
 import { useLocation } from '../lib/router';
 import { composerSends } from '../lib/shortcut-bindings';
@@ -623,6 +627,26 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
         </div>) : null)}
     </div>);
 }
+function ChatPauseChoice({ sessionId, messageId, recovery, disabled }: {
+    sessionId: string;
+    messageId: string;
+    recovery: NonNullable<ChatMessage['recovery']>;
+    disabled: boolean;
+}) {
+    const [busy, setBusy] = useState('');
+    async function choose(optionId: string) {
+        if (!choicePayload(optionId) || optionId !== 'continue' || busy) return;
+        setBusy(optionId);
+        try {
+            // The one-to-one route is not available yet. Rooms post this choice themselves.
+            await continuePausedChat(sessionId, messageId);
+        } finally {
+            setBusy('');
+        }
+    }
+    const options = recovery.options.map(option => option.id === 'continue' && !option.style ? { ...option, style: 'primary' as const } : option);
+    return <RoomChoiceCard text={recovery.text} options={options} chosen={recovery.choice ?? ''} busy={busy} disabled={disabled} kind="paused" onChoose={id => void choose(id)} onRetry={() => { if (!busy) void choose('continue'); }}/>;
+}
 function Message({ message: m, isLast, entrance, onEditPrompt, onPreview, onOpenLink, onOpenTimeSkip, timeSkipDone, timeSkipReal, timeSkipRun, }: {
     message: ChatMessage;
     isLast: boolean;
@@ -645,7 +669,14 @@ function Message({ message: m, isLast, entrance, onEditPrompt, onPreview, onOpen
     const planCard = !!m.planId && storedPlan?.id === m.planId;
     // A reply with activity lines is drawn piece by piece in the order it came; one without is the plain text it always was.
     const grouped = !!m.blocks?.some(b => b.kind === 'group');
+    const stepTools = bot && !grouped ? (m.tools ?? []).filter(tool => tool.state !== 'proposed' && tool.state !== 'running') : [];
+    const stepIds = new Set(stepTools.map(tool => tool.id));
     const [sentTime, setSentTime] = useState(() => relTime(m.at));
+    const paused = m.recovery?.kind === 'paused' && m.recovery.options.some(option => option.id === 'continue') ? m.recovery : null;
+    const legacyLimit = isStepPause(m.error);
+    const pauseNotice = isPauseNotice(m.content);
+    const hidePausedBody = !!paused && (!m.content.trim() || m.content.trim() === paused.text.trim());
+    const skipBubble = !planCard && !grouped && (hidePausedBody || (legacyLimit && (!m.content.trim() || pauseNotice)));
     const motion = entrance ? 'msg-enter' : undefined;
     const motionStyle = entrance ? { animationDuration: `${entrance.ms}ms`, animationDelay: `${entrance.delay}ms` } : undefined;
     if (m.role === 'user') {
@@ -665,19 +696,21 @@ function Message({ message: m, isLast, entrance, onEditPrompt, onPreview, onOpen
         </div>
       </div>);
     }
-    return (<div className={cx('st-msg st-msg--assistant', motion)} style={motionStyle} data-error={m.error ? 'true' : undefined}>
+    return (<div className={cx('st-msg st-msg--assistant', motion)} style={motionStyle} data-error={m.error && !paused ? 'true' : undefined} data-pause={paused ? 'true' : undefined}>
       {tr(m.reasoning ? <ReasoningBlock message={m}/> : null)}
 
 
-      {tr((m.tools ?? []).filter(t => !grouped || t.state !== 'done').map((t) => (<ToolCard key={t.id} messageId={m.id} tool={t}/>)))}
+      {tr((m.tools ?? []).filter(t => (!grouped || t.state !== 'done') && !stepIds.has(t.id)).map((t) => (<ToolCard key={t.id} messageId={m.id} tool={t}/>)))}
+      {tr(stepTools.length ? <WorkedSteps tools={stepTools}/> : null)}
 
-      {tr(!(m.timeSkipId && timeSkipReal && !timeSkipDone) && (m.content || m.error || !m.streaming || !liveStatus) ? <div className="st-bubble">
+      {tr(!(m.timeSkipId && timeSkipReal && !timeSkipDone) && !skipBubble && (m.content || m.error || !m.streaming || !liveStatus) ? <div className="st-bubble">
         {tr(planCard ? <PlanCard chatId={activeSession} planId={m.planId!}/> : null)}
-        {tr(m.error ? (<ErrorNotice message={m.error} detail={m.errorDetail} {...contextRecovery(m.errorCode)}/>) : null)}
+        {tr(m.error && !legacyLimit && !paused ? (<ErrorNotice message={m.error} detail={m.errorDetail} {...contextRecovery(m.errorCode)}/>) : null)}
         {tr(grouped && !planCard && !m.timeSkipId ? m.blocks!.map((b, i) => b.kind === 'group' ? <ActivityLine key={b.id} group={b} sessionId={activeSession ?? ''} onPreview={onPreview}/> : <Markdown key={i} text={b.text} onOpenLink={onOpenLink} imageSession={activeSession} onPreviewHtml={content => onPreview({ id: m.id + '-html-' + i, kind: 'website', title: 'HTML preview', content })}/>) : null)}
-        {tr(m.content && !planCard && !grouped ? (<Markdown text={m.timeSkipId && !timeSkipReal ? hostLive ? tr('This was a sample run made while the app could not reach its host.') : timeSkipDone ? tr('The result is ready. Switch between Original and Updated, or compare them side by side. This example uses sample outputs and simulated checks.') : tr('Revising the saved draft. Follow the result in the sidebar. This example uses sample outputs and simulated checks.') : m.content} onOpenLink={onOpenLink} imageSession={activeSession} onPreviewHtml={content => onPreview({ id: m.id + '-html', kind: 'website', title: 'HTML preview', content })}/>) : !m.error && m.streaming && !liveStatus ? <TypingDots label={tr("Generating")}/> : null)}
+        {tr(m.content && !pauseNotice && !hidePausedBody && !planCard && !grouped ? (<Markdown text={m.timeSkipId && !timeSkipReal ? hostLive ? tr('This was a sample run made while the app could not reach its host.') : timeSkipDone ? tr('The result is ready. Switch between Original and Updated, or compare them side by side. This example uses sample outputs and simulated checks.') : tr('Revising the saved draft. Follow the result in the sidebar. This example uses sample outputs and simulated checks.') : m.content} onOpenLink={onOpenLink} imageSession={activeSession} onPreviewHtml={content => onPreview({ id: m.id + '-html', kind: 'website', title: 'HTML preview', content })}/>) : !m.error && m.streaming && !liveStatus ? <TypingDots label={tr("Generating")}/> : null)}
         {tr(m.streaming && m.content ? <span className="caret" aria-hidden="true"/> : null)}
       </div> : null)}
+      {tr(paused && !m.streaming && activeSession ? <ChatPauseChoice sessionId={activeSession} messageId={m.id} recovery={paused} disabled={streaming}/> : null)}
       {tr(m.skills?.length && !m.streaming ? <SkillsUsed skills={m.skills}/> : null)}
       {tr(m.deliverables?.length && !m.streaming ? <div className="deliverables">{m.deliverables.map(f => <FileCard key={f.path} file={f} sessionId={activeSession ?? ''} onPreview={onPreview}/>)}<EditedFiles files={m.deliverables} sessionId={activeSession ?? ''} onPreview={onPreview}/></div> : null)}
       {tr(m.streaming && isLast && !m.timeSkipId ? <StatusLine sessionId={activeSession} startedAt={Date.parse(m.at) || Date.now()} tokens={m.tokens}/> : null)}

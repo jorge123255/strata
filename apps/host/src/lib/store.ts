@@ -1583,18 +1583,35 @@ export function branchFrom(messageId: string): string | null {
 }
 
 /**
+ * One-to-one pause continue. The route is not on the host yet.
+ * TODO: POST { choice: 'continue' } for this chat when that route exists.
+ * Rooms already post that body to /api/bots/teams/:teamId/messages/:messageId/choice.
+ */
+export function continuePausedChat(sessionId: string, messageId: string) {
+  void sessionId;
+  void messageId;
+}
+
+/**
  * Asks the model to keep going from where it stopped.
  *
  * Sent as an ordinary user turn rather than a special mode, because that is
  * what it is: a continuation is a request, and the transcript should show it.
+ * Returns false when a reply is already running.
  */
+export async function continueConversation() {
+  if (!state.activeSession || state.streaming) return false;
+  await sendMessage('Continue from where you left off. Do not repeat what you have already written.');
+  return true;
+}
+
 export async function continueLast() {
   const sessionId = state.activeSession;
   if (!sessionId || state.streaming) return;
   const session = state.sessions.find((s) => s.id === sessionId);
   const last = session?.messages[session.messages.length - 1];
   if (!last || last.role !== 'assistant' || !last.content.trim()) return;
-  await sendMessage('Continue from where you left off. Do not repeat what you have already written.');
+  await continueConversation();
 }
 
 /**
@@ -1946,6 +1963,16 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
           // What the context holds after each model request of an agent turn: the meter follows the turn instead of waiting for its end.
           const used = Number(frame.contextTokens), max = Number(frame.contextMax);
           if (Number.isFinite(used) && used > 0) patchAssistant((m) => ({ ...m, contextUsed: used, ...(Number.isFinite(max) && max > 0 ? { contextMax: max } : {}) }));
+        } else if (type === 'pause') {
+          const recovery = frame.recovery as { kind?: unknown; text?: unknown; question?: unknown; options?: unknown } | undefined;
+          if (recovery?.kind === 'paused' && typeof recovery.text === 'string' && recovery.text.trim()) {
+            const text = recovery.text.trim();
+            const options = Array.isArray(recovery.options) ? recovery.options.flatMap(option => {
+              const row = option as { id?: unknown; label?: unknown };
+              return row?.id === 'continue' && typeof row.label === 'string' && row.label.trim() ? [{ id: 'continue' as const, label: row.label.trim(), style: 'primary' as const }] : [];
+            }).slice(0, 1) : [];
+            if (options.length) patchAssistant(m => ({ ...m, streaming: false, recovery: { kind: 'paused', text, question: typeof recovery.question === 'string' ? recovery.question.trim() : '', options } }));
+          }
         } else if (type === 'error') {
           clearStatus(sessionId);
           // A sentence the host wrote for the person (it carries its catalog key) is shown in their language as it is; anything else is made plain here.

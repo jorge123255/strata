@@ -131,6 +131,29 @@ test('thinking duration accepts only nonnegative finite numbers and is shared on
   assert.equal(clean.messages[1].reasoning, undefined); assert.equal(clean.messages[1].reasoningMs, 0);
 });
 
+test('a paused chat recovery is the public summary and a primary continue option', () => {
+  const value = structuredClone(conversation);
+  value.messages[1].recovery = { kind: 'paused', text: 'I finished inspect. The rest of this request is still left.', question: 'Keep going?', options: [{ id: 'continue', label: 'Keep going', secret: 'PRIVATE_OPTION' }], jobId: 'PRIVATE_JOB', note: 'PRIVATE_RECOVERY' };
+  const clean = publicConversation(value).messages[1];
+  assert.deepEqual(clean.recovery, { kind: 'paused', text: 'I finished inspect. The rest of this request is still left.', question: 'Keep going?', options: [{ id: 'continue', label: 'Keep going', style: 'primary' }] });
+  assert.ok(!JSON.stringify(clean).includes('PRIVATE_'));
+  value.messages[1].recovery.choice = 'continue';
+  delete value.messages[1].recovery.jobId;
+  delete value.messages[1].recovery.note;
+  delete value.messages[1].recovery.options[0].secret;
+  assert.equal(publicConversation(value).messages[1].recovery.choice, 'continue');
+  value.messages[1].recovery = { kind: 'other', text: 'PRIVATE_PAUSE' };
+  assert.equal(publicConversation(value).messages[1].recovery, undefined);
+  assert.ok(!JSON.stringify(publicConversation(value).messages[1]).includes('PRIVATE_PAUSE'));
+});
+
+test('a one-to-one pause continue route is not open yet', async () => {
+  const calls = [];
+  const host = new HostClient({ upstream: 'http://127.0.0.1:47831', fetcher: async (url, options) => { calls.push({ url, options }); return new Response('{}'); } });
+  await assert.rejects(host.request('/api/companion/conversations/s_desktop-1/messages/m_pause/choice', { method: 'POST', body: { choice: 'continue' } }), { status: 403 });
+  assert.equal(calls.length, 0);
+});
+
 test('HostClient only admits exact shared-conversation methods and prevents desktop sync or URL forwarding', async () => {
   const calls = [];
   const host = new HostClient({ upstream: 'http://127.0.0.1:47831', fetcher: async (url, options) => { calls.push({ url, options }); return new Response('{}'); } });

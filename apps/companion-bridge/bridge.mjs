@@ -480,6 +480,8 @@ export function publicConversation(conversation, { summary = false } = {}) {
       if (typeof message.streaming === 'boolean') clean.streaming = message.streaming;
       if (Array.isArray(message.tools)) clean.tools = message.tools.map(publicTool).filter(Boolean);
       if (message.role === 'assistant') {
+        const recovery = publicPauseRecovery(message.recovery);
+        if (recovery) clean.recovery = recovery;
         // This is the same model-supplied Thinking text already visible on the Mac.
         if (typeof message.reasoning === 'string' && message.reasoning.trim()) clean.reasoning = message.reasoning;
         if (Number.isFinite(message.reasoningMs) && message.reasoningMs >= 0) clean.reasoningMs = message.reasoningMs;
@@ -490,6 +492,26 @@ export function publicConversation(conversation, { summary = false } = {}) {
     });
   }
   return result;
+}
+
+function publicPauseRecovery(value) {
+  // A one-to-one pause has no team job. Keep the sentence and the continue button; drop everything else.
+  if (!value || typeof value !== 'object' || Array.isArray(value) || value.kind !== 'paused') return undefined;
+  const text = typeof value.text === 'string' ? value.text.trim() : '';
+  const question = typeof value.question === 'string' ? value.question.trim() : '';
+  if (!text || text.length > 2_000 || text.includes('\0') || !question || question.length > 240 || question.includes('\0')) return undefined;
+  if (!Array.isArray(value.options) || value.options.length < 1 || value.options.length > 4) return undefined;
+  const allowed = new Set(['retry', 'skip', 'different', 'continue']);
+  const options = [];
+  for (const option of value.options) {
+    if (!option || typeof option !== 'object' || !allowed.has(option.id) || typeof option.label !== 'string' || !option.label.trim() || option.label.length > 80 || option.label.includes('\0')) return undefined;
+    const row = { id: option.id, label: option.label.trim() };
+    if (option.id === 'continue') row.style = 'primary';
+    options.push(row);
+  }
+  if (new Set(options.map(option => option.id)).size !== options.length || !options.some(option => option.id === 'continue')) return undefined;
+  if (value.choice !== undefined && value.choice !== 'continue') return undefined;
+  return { kind: 'paused', text, question, options, ...(value.choice === 'continue' ? { choice: 'continue' } : {}) };
 }
 
 function publicConversationDetail(body) {

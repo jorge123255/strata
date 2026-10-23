@@ -894,6 +894,14 @@ final class CompanionStore: ObservableObject {
         catch { if connectionGeneration == generation, conversationGeneration == selection { self.error = friendly(error) } }
     }
 
+    /// One-to-one pause continue. The route is not on the Mac yet.
+    /// TODO: POST {"choice":"continue"} when that route exists.
+    /// Team rooms already post that body to /v1/bots/teams/:teamId/messages/:messageId/choice.
+    func continuePausedMessage(messageId: String) async -> String? {
+        _ = messageId
+        return nil
+    }
+
     private func apply(_ detail: MacConversationDetail) {
         // A live poll often returns the same snapshot. Publishing it repeatedly
         // needlessly rebuilds the scroll view and its selectable text controls.

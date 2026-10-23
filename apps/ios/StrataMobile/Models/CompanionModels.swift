@@ -393,6 +393,19 @@ struct MacConversation: Decodable, Identifiable, Equatable {
     }
 }
 
+struct MacPauseOption: Decodable, Equatable {
+    var id: String
+    var label: String
+}
+
+struct MacPauseRecovery: Decodable, Equatable {
+    var kind: String
+    var text: String
+    var question: String
+    var options: [MacPauseOption]
+    var choice: String?
+}
+
 struct MacChatMessage: Decodable, Identifiable, Equatable {
     var id: String
     var role: String
@@ -404,6 +417,7 @@ struct MacChatMessage: Decodable, Identifiable, Equatable {
     var reasoning: String?
     var reasoningMs: Double?
     var blocks: [MacMessageBlock]?
+    var recovery: MacPauseRecovery? = nil
 
     var thinkingText: String? {
         guard let value = reasoning?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
@@ -418,6 +432,30 @@ struct MacChatMessage: Decodable, Identifiable, Equatable {
     func thinkingTitle(isLive: Bool) -> String {
         guard !isLive, let duration = reasoningMs, duration.isFinite, duration >= 0 else { return "Thinking" }
         return "Thought for " + String(format: "%.0f", (duration / 1000).rounded()) + "s"
+    }
+
+    /// The host may raise or drop the step budget. This only hides that leftover sentence.
+    var isStepPause: Bool {
+        guard let error, !error.isEmpty else { return false }
+        return isStepPauseText(error)
+    }
+
+    /// A paused run from the host: `recovery.text` is the summary and `continue` is Keep going.
+    var pauseChoice: MacPauseRecovery? {
+        guard let recovery, recovery.kind == "paused" else { return nil }
+        let summary = recovery.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !summary.isEmpty, recovery.options.contains(where: { $0.id == "continue" && !$0.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else { return nil }
+        return recovery
+    }
+
+    func isPauseNotice(_ value: String) -> Bool {
+        let text = value.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.count <= 280 && (isStepPauseText(text) || text.range(of: "try sending the message again", options: .caseInsensitive) != nil)
+    }
+
+    private func isStepPauseText(_ value: String) -> Bool {
+        value.range(of: #"reached its (?:\d+-)?step limit"#, options: [.regularExpression, .caseInsensitive]) != nil
+            || value.range(of: "ran out of steps", options: .caseInsensitive) != nil
     }
 
     /// Ordered Mac text/activity blocks are authoritative. Tool membership is
