@@ -104,10 +104,16 @@ export interface BotTeamPlansSnapshot { teamWorkPlansSupported: boolean; availab
 export function botTaskWorkLabel(status: string) { return ({working:'Working',ready_for_review:'Ready for review',verified:'Verified',blocked:'Blocked',interrupted:'Interrupted'} as Record<string,string>)[status] ?? 'Needs review'; }
 /** Public, durable room messages are separate from each bot's private work chat. */
 export interface BotTeamChannelAuthor { type: 'user'|'bot'|'system'; botId?: string; name: string; avatarConfig?: Bot['avatarConfig'] }
+/** Button choices for a failed team task. The visible `content` stays plain; Helper renders `options`. */
+export interface BotTeamRecoveryOption { id: 'retry'|'skip'|'different'; label: string }
+export interface BotTeamRecovery {
+  jobId: string; runId: string; question: string; options: BotTeamRecoveryOption[]; choice?: 'retry'|'skip'|'different';
+}
 export interface BotTeamChannelMessage {
   id: string; sequence: number; teamId: string; kind: 'message'|'assignment'|'report'|'status';
   author: BotTeamChannelAuthor; content: string; createdAt: string; replyToId?: string; replyGroupId?: string;
   recipientIds?: string[]; runId?: string; chatId?: string; state?: string; workMode?: 'chat'|'work'; planId?: string;
+  recovery?: BotTeamRecovery;
 }
 export interface BotTeamChannelPreview { id: string; sequence: number; kind: BotTeamChannelMessage['kind']; author: Pick<BotTeamChannelAuthor, 'type'|'name'|'botId'>; content: string; createdAt: string }
 export interface BotTeamPresence { botId: string; state: 'working' | 'queued'; runId: string; jobId: string }
