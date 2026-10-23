@@ -25,6 +25,7 @@ export function createTeamChannels({ directory, now = Date.now, notify = () => {
     for (const message of row.messages) {
       if (message.planId !== undefined && !planId(message.planId)) throw fault(503, 'A saved work-plan reference is invalid.');
       if (!validPlanEvent(message)) throw fault(503, 'A saved work-plan status event is invalid.');
+      if (message.replyGroupId !== undefined && !id(message.replyGroupId)) throw fault(503, 'A saved team message is invalid.');
       if (!id(message?.id) || seen.has(message.id) || message.teamId !== row.teamId || !cursor(message.sequence) || message.sequence <= previous || message.sequence >= row.nextSequence || !kinds.has(message.kind) || typeof message.content !== 'string' || message.content.length > 16000 || !['user', 'bot', 'system'].includes(message.author?.type) || typeof message.author.name !== 'string' || typeof message.createdAt !== 'string' || message.state && !states.has(message.state) || message.workMode !== undefined && !['chat', 'work'].includes(message.workMode)) throw fault(503, 'A saved team message is invalid.');
       previous = message.sequence; seen.add(message.id);
     }
@@ -41,10 +42,11 @@ export function createTeamChannels({ directory, now = Date.now, notify = () => {
   }
   function append(teamId, input, receipt) {
     if (input.planId !== undefined && !planId(input.planId)) throw fault(400, 'Choose a valid work-plan reference.');
+    if (input.replyGroupId !== undefined && !id(input.replyGroupId)) throw fault(400, 'Choose a valid reply group.');
     if (!validPlanEvent(input)) throw fault(400, 'Choose a valid host work-plan status event.');
     const old = channels.get(teamId), row = old ?? { teamId, nextSequence: 1, messages: [] };
     if (row.messages.length >= 50000) throw fault(503, 'This team channel reached its history limit. Existing history was retained.');
-    const message = { id: input.id ?? `tm_${randomUUID()}`, sequence: row.nextSequence, teamId, kind: input.kind ?? 'message', author: copy(input.author), content: String(input.content).slice(0, 16000), createdAt: new Date(now()).toISOString(), ...Object.fromEntries(['replyToId', 'recipientIds', 'runId', 'chatId', 'state', 'workMode', 'planId', 'planEvent'].filter(key => input[key] !== undefined).map(key => [key, copy(input[key])])) };
+    const message = { id: input.id ?? `tm_${randomUUID()}`, sequence: row.nextSequence, teamId, kind: input.kind ?? 'message', author: copy(input.author), content: String(input.content).slice(0, 16000), createdAt: new Date(now()).toISOString(), ...Object.fromEntries(['replyToId', 'recipientIds', 'runId', 'chatId', 'state', 'workMode', 'planId', 'planEvent', 'replyGroupId'].filter(key => input[key] !== undefined).map(key => [key, copy(input[key])])) };
     if (row.messages.some(item => item.id === message.id)) return copy(row.messages.find(item => item.id === message.id));
     const receiptKey = receipt ? `${teamId}:${receipt.requestId}` : undefined;
     if (receipt && (receipts.has(receiptKey) || receipts.size >= 20000)) throw fault(503, 'The team channel receipt is unavailable. Existing history was retained.');
@@ -93,8 +95,22 @@ export function createTeamChannels({ directory, now = Date.now, notify = () => {
     const selected = after === undefined ? all.slice(-100) : all.filter(message => message.sequence > after).slice(0, 100);
     return { id: teamId, latestSequence: row ? row.nextSequence - 1 : 0, messages: selected.map(message => ({ id: message.id, sequence: message.sequence, kind: message.kind, author: { type: message.author.type, ...(message.author.botId ? { botId: message.author.botId } : {}) }, state: message.state, createdAt: message.createdAt, ...(message.planEvent !== undefined ? { planId: message.planId, planEvent: message.planEvent } : {}) })) };
   }
+  function discard(teamId) {
+    const had = channels.has(teamId), old = channels.get(teamId);
+    const removed = [...receipts].filter(([, receipt]) => receipt.teamId === teamId);
+    if (had) channels.delete(teamId);
+    for (const [key] of removed) receipts.delete(key);
+    const restore = () => {
+      if (had) channels.set(teamId, old); else channels.delete(teamId);
+      for (const [key, receipt] of removed) receipts.set(key, receipt);
+      if (had || removed.length) save();
+    };
+    try { if (had || removed.length) save(); }
+    catch (error) { if (had) channels.set(teamId, old); for (const [key, receipt] of removed) receipts.set(key, receipt); throw error; }
+    return had || removed.length ? restore : () => {};
+  }
   return {
-    append, appendAndRemember: append, snapshot, preview, notificationSources, latestSequence, unreadCount, summaryLine,
+    append, appendAndRemember: append, discard, snapshot, preview, notificationSources, latestSequence, unreadCount, summaryLine,
     find: (teamId, messageId) => copy(channels.get(teamId)?.messages.find(row => row.id === messageId)),
     recent: (teamId, limit = 30) => copy((channels.get(teamId)?.messages ?? []).slice(-limit)),
     receipt: (teamId, requestId) => copy(receipts.get(`${teamId}:${requestId}`)),

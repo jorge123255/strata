@@ -95,11 +95,18 @@ test('continuous authority is turn-bound and Stop invalidates it before cleanup,
   assert.equal(f.service.channel(team.id).messages.some(row => row.content.includes('Late reply')), false);
 });
 
-for (const message of ['@everyone please answer', '@all hello']) test('a leading @everyone lets one teammate answer and does not wake the whole room: ' + message, async t => {
-  const f = fixture(t, async input => { assert.equal(input.bot.teamConversationOnly, true); assert.equal(input.tools.some(tool => tool.name === 'write_file'), false); say(input, `Answer ${input.bot.id}`); });
+for (const message of ['@everyone please answer', '@all hello']) test('a leading @everyone or @all gets one short reply from every member: ' + message, async t => {
+  const f = fixture(t, async input => {
+    assert.equal(input.bot.teamConversationOnly, true); assert.equal(input.tools.some(tool => tool.name === 'write_file'), false);
+    assert.match(input.bot.instructions, /one or two sentences/);
+    for (const earlier of f.seen) if (earlier !== input) assert.match(input.bot.instructions, new RegExp(`Answer ${earlier.bot.id}`));
+    say(input, `Answer ${input.bot.id}`);
+  });
   const run = f.send(message).run; await f.done(run);
   const replies = f.bots.team.channel(f.team.id).messages.filter(row => row.content.startsWith('Answer '));
-  assert.equal(replies.length, 1); assert.equal(f.seen.length, 1); assert.equal(f.effects.length, 0);
+  assert.deepEqual(replies.map(row => row.content), f.members.map(bot => `Answer ${bot.id}`));
+  assert.deepEqual(f.seen.map(input => input.bot.id), f.members.map(bot => bot.id));
+  assert.equal(f.effects.length, 0);
   assert.equal(f.bots.team.channel(f.team.id).messages.some(row => row.content.includes('public conversation invitations')), false);
 });
 

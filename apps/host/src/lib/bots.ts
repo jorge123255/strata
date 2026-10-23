@@ -106,7 +106,7 @@ export function botTaskWorkLabel(status: string) { return ({working:'Working',re
 export interface BotTeamChannelAuthor { type: 'user'|'bot'|'system'; botId?: string; name: string; avatarConfig?: Bot['avatarConfig'] }
 export interface BotTeamChannelMessage {
   id: string; sequence: number; teamId: string; kind: 'message'|'assignment'|'report'|'status';
-  author: BotTeamChannelAuthor; content: string; createdAt: string; replyToId?: string;
+  author: BotTeamChannelAuthor; content: string; createdAt: string; replyToId?: string; replyGroupId?: string;
   recipientIds?: string[]; runId?: string; chatId?: string; state?: string; workMode?: 'chat'|'work'; planId?: string;
 }
 export interface BotTeamChannelPreview { id: string; sequence: number; kind: BotTeamChannelMessage['kind']; author: Pick<BotTeamChannelAuthor, 'type'|'name'|'botId'>; content: string; createdAt: string }
@@ -162,10 +162,18 @@ export function teamRosterCount(memberIds: readonly string[] | undefined) { retu
 export function teamRosterLabel(count: number) { return count === 1 ? '1 member' : `${count} members`; }
 export function teamOverRosterCap(count: number) { return count > TEAM_MEMBER_CAP; }
 export function botActivityLabel(state: string) { return ({ queued: 'Queued', running: 'Working', completed: 'Completed', error: 'Failed', cancelled: 'Stopped', interrupted: 'Interrupted', stopping: 'Stopping…', cleanup_pending: 'Checking cleanup', delivered: 'Delivered', pending: 'Waiting', accepted: 'Accepted', refused: 'Refused' } as Record<string, string>)[state] ?? state; }
-export function botTeamDraftError(draft: Pick<BotTeam, 'name'|'memberIds'|'coordinatorId'|'limits'> & { execution?: BotTeamExecution; briefing?: BotTeamBriefing; talkativeness?: Record<string, number>; bidding?: boolean; selectorBotId?: string | null }, bots: Pick<Bot,'id'>[], computers?: BotTeamComputer[], unrestricted = false, continuous = false): string | null {
+export function botTeamDraftError(draft: Pick<BotTeam, 'name'|'memberIds'|'coordinatorId'|'limits'> & { execution?: BotTeamExecution; briefing?: BotTeamBriefing; talkativeness?: Record<string, number>; bidding?: boolean; selectorBotId?: string | null }, bots: Pick<Bot,'id'>[], computers?: BotTeamComputer[], unrestricted = false, continuous = false, previousMemberIds?: readonly string[]): string | null {
   if (!draft.name.trim() || draft.name.trim().length>80) return 'Give this team a name of up to 80 characters.';
-  if (draft.memberIds.length < 2 || draft.memberIds.length > TEAM_MEMBER_CAP) return 'Choose from 2 to 12 team members.';
-  if (new Set(draft.memberIds).size !== draft.memberIds.length || draft.memberIds.some(id => !bots.some(bot => bot.id === id))) return 'Choose available bots for this team.';
+  const prior = Array.isArray(previousMemberIds) ? previousMemberIds : undefined;
+  const known = (id: string) => bots.some(bot => bot.id === id);
+  if (!Array.isArray(draft.memberIds) || new Set(draft.memberIds).size !== draft.memberIds.length) return 'Choose available bots for this team.';
+  const added = prior ? draft.memberIds.filter(id => !prior.includes(id)) : [...draft.memberIds];
+  if (added.some(id => !known(id))) return 'Choose available bots for this team.';
+  const resolved = draft.memberIds.filter(id => known(id));
+  if (resolved.length < 2) return 'Choose from 2 to 12 team members.';
+  const priorOver = !!prior && prior.filter(id => known(id)).length > TEAM_MEMBER_CAP;
+  if (resolved.length > TEAM_MEMBER_CAP && !priorOver) return 'Choose from 2 to 12 team members.';
+  if (resolved.length > TEAM_MEMBER_CAP && added.length > 0) return 'Remove members until this team has 12 or fewer before adding anyone.';
   if (!draft.memberIds.includes(draft.coordinatorId)) return 'Choose a coordinator from this team.';
   if (draft.bidding !== undefined && typeof draft.bidding !== 'boolean') return 'Choose whether teammates bid to speak.';
   if (draft.selectorBotId !== undefined && draft.selectorBotId !== null && draft.selectorBotId !== '' && !draft.memberIds.includes(draft.selectorBotId)) return 'Choose a teammate to pick the next speaker.';
