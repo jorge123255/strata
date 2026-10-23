@@ -129,20 +129,89 @@ test('HostClient.stream allows only the hub events path with a caller signal', a
   await assert.rejects(host.request('/api/bots/teams/team_ab12/channel/stream'), { status: 403 });
 });
 
-test('the phone stream passes the real host loopback guard and relays hub progress', async t => {
+async function realHostHub(t, conversations) {
   const hub = new EventHub();
-  const conversations = { list: () => ({ conversations: [] }) };
   const hostServer = http.createServer((req, res) => {
     if (req.url === '/api/events') return addConversationEvents({ req, res, hub, conversations, port: hostServer.address().port });
     res.writeHead(404); res.end();
   });
   await new Promise(resolve => hostServer.listen(0, '127.0.0.1', resolve));
   t.after(() => { hostServer.closeAllConnections(); hostServer.close(); });
-  const { bridge } = await fixture(t, new HostClient({ upstream: `http://127.0.0.1:${hostServer.address().port}` }));
+  return { hub, origin: `http://127.0.0.1:${hostServer.address().port}` };
+}
+
+test('the phone stream passes the real host loopback guard and relays hub progress', async t => {
+  const { hub, origin } = await realHostHub(t, { list: () => ({ conversations: [] }) });
+  const { bridge } = await fixture(t, new HostClient({ upstream: origin }));
   const { token } = bridge.authority.pair(bridge.authority.code, 'QA-TEST-real-phone');
   const { state } = openEvents(bridge, token);
   await until(() => state.status === 200);
   hub.send('task.progress', { conversationId: 's_real1', step: 4, toolName: 'qa_test_real_tool', secret: 'QA-TEST-DROP' });
   await until(() => state.text.includes('event: task.progress'));
   assert.deepEqual(progressFrame(state), { conversationId: 's_real1', step: 4, toolName: 'qa_test_real_tool' });
+});
+
+const bigTranscript = () => `QA-TEST-BIG-${'x'.repeat(1_100_000)}`;
+const bigConversation = content => ({ id: 's_big', title: 'QA-TEST-big', updatedAt: '2026-10-23T00:00:00Z', revision: 1, active: false, status: null, messages: [{ id: 'm_big', role: 'user', content }] });
+
+test('an over-1MB initial conversation snapshot never crosses and never ends the stream', async t => {
+  const content = bigTranscript();
+  const { hub, origin } = await realHostHub(t, { list: () => ({ conversations: [bigConversation(content)] }) });
+  const { bridge } = await fixture(t, new HostClient({ upstream: origin }));
+  const { token } = bridge.authority.pair(bridge.authority.code, 'QA-TEST-big-phone');
+  const { state } = openEvents(bridge, token);
+  await until(() => state.status === 200);
+  hub.send('task.progress', { conversationId: 's_big', step: 1, toolName: 'qa_test_after_big' });
+  await until(() => state.text.includes('event: task.progress'));
+  assert.deepEqual(progressFrame(state), { conversationId: 's_big', step: 1, toolName: 'qa_test_after_big' });
+  assert.ok(!state.text.includes('QA-TEST-BIG'));
+  assert.equal(state.ended, false);
+});
+
+test('an over-1MB mid-stream conversation update is skipped and later progress still arrives', async t => {
+  const { hub, origin } = await realHostHub(t, { list: () => ({ conversations: [] }) });
+  const { bridge } = await fixture(t, new HostClient({ upstream: origin }));
+  const { token } = bridge.authority.pair(bridge.authority.code, 'QA-TEST-big-phone');
+  const { state } = openEvents(bridge, token);
+  await until(() => state.status === 200);
+  hub.send('task.progress', { conversationId: 's_live', step: 1, toolName: 'qa_test_before_big' });
+  await until(() => state.text.includes('qa_test_before_big'));
+  hub.send('conversation', { conversation: bigConversation(bigTranscript()) });
+  hub.send('task.progress', { conversationId: 's_live', step: 2, toolName: 'qa_test_after_big' });
+  await until(() => state.text.includes('qa_test_after_big'));
+  assert.ok(!state.text.includes('QA-TEST-BIG'));
+  assert.equal(state.ended, false);
+  const frames = state.text.split('\n\n').filter(part => part.trim().startsWith('event: task.progress'));
+  assert.equal(frames.length, 2);
+});
+
+test('frames split across arbitrary chunk boundaries still parse, including skipped giants', async t => {
+  const { bridge, host } = await fixture(t);
+  const { token } = bridge.authority.pair(bridge.authority.code, 'QA-TEST-phone');
+  const { state } = openEvents(bridge, token);
+  await until(() => host.streams.length === 1);
+  const upstream = host.streams[0];
+  const giant = `event: conversation\ndata: {"content":"QA-TEST-CHUNK-${'y'.repeat(300_000)}"}\n\n`;
+  for (let i = 0; i < giant.length; i += 4096) upstream.push(giant.slice(i, i + 4096));
+  const frame = 'event: task.progress\ndata: {"conversationId":"s_chunk","step":3,"toolName":"qa_test_chunked"}\n\n';
+  for (let i = 0; i < frame.length; i += 7) upstream.push(frame.slice(i, i + 7));
+  await until(() => state.text.includes('event: task.progress'));
+  assert.deepEqual(progressFrame(state), { conversationId: 's_chunk', step: 3, toolName: 'qa_test_chunked' });
+  assert.ok(!state.text.includes('QA-TEST-CHUNK'));
+  assert.equal(state.ended, false);
+});
+
+test('an over-limit task.progress frame is dropped and the stream keeps forwarding', async t => {
+  const { bridge, host } = await fixture(t);
+  const { token } = bridge.authority.pair(bridge.authority.code, 'QA-TEST-phone');
+  const { state } = openEvents(bridge, token);
+  await until(() => host.streams.length === 1);
+  const upstream = host.streams[0];
+  upstream.push(`event: task.progress\ndata: {"conversationId":"s_fat","step":1,"toolName":"qa_test_${'z'.repeat(70_000)}"}\n\n`);
+  upstream.push('event: task.progress\ndata: {"conversationId":"s_fat","step":2,"toolName":"qa_test_slim"}\n\n');
+  await until(() => state.text.includes('event: task.progress'));
+  assert.deepEqual(progressFrame(state), { conversationId: 's_fat', step: 2, toolName: 'qa_test_slim' });
+  assert.equal(state.text.split('event: task.progress').length - 1, 1);
+  assert.ok(!state.text.includes('zzzz'));
+  assert.equal(state.ended, false);
 });

@@ -769,19 +769,26 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
         active.set(key, request);
         const disconnected = () => { if (!res.writableEnded) abort.abort(); };
         req.once('aborted', disconnected); res.once('close', disconnected);
-        let eventName = null; const dataLines = [];
-        const dispatch = () => {
-          const name = eventName, data = dataLines.join('\n');
-          eventName = null; dataLines.length = 0;
-          if (name !== 'task.progress' || !data || res.writableEnded) return;
-          const projected = projectProgress(data);
+        // Progress frames are tiny; unrelated hub events (full conversation snapshots)
+        // are discarded line by line and are never accumulated.
+        let eventName = null, skipping = true, oversize = false, partialDiscarded = false, dataBytes = 0;
+        const dataLines = [];
+        const endFrame = () => {
+          const name = eventName, parts = dataLines.slice(), dropped = oversize;
+          eventName = null; skipping = true; oversize = false; dataBytes = 0; dataLines.length = 0;
+          if (name !== 'task.progress' || dropped || !parts.length || res.writableEnded) return;
+          const projected = projectProgress(parts.join('\n'));
           if (projected) res.write(`event: task.progress\ndata: ${JSON.stringify(projected)}\n\n`);
         };
         const consume = line => {
-          if (!line) return dispatch();
+          if (!line) return endFrame();
           if (line.startsWith(':')) { if (!res.writableEnded) res.write(': ping\n\n'); return; }
-          if (line.startsWith('event:')) eventName = line.slice(6).trim();
-          else if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
+          if (line.startsWith('event:')) { eventName = line.slice(6).trim(); skipping = eventName !== 'task.progress'; return; }
+          if (!line.startsWith('data:') || skipping || oversize) return;
+          const text = line.slice(5).trimStart();
+          dataBytes += text.length + 1; dataLines.push(text);
+          // A task.progress payload is a handful of bounded fields; an over-limit one is dropped, not buffered.
+          if (dataBytes > 64_000 || dataLines.length > 8) { oversize = true; dataBytes = 0; dataLines.length = 0; }
         };
         try {
           const upstream = await host.stream('/api/events', { signal: abort.signal });
@@ -792,12 +799,27 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
           const decoder = new TextDecoder();
           for await (const chunk of upstream.body) {
             buffer += decoder.decode(chunk, { stream: true });
-            if (buffer.length > 1_000_000) throw new Error('Strata returned an oversized event frame.');
-            let boundary;
-            while ((boundary = buffer.indexOf('\n')) >= 0) { const line = buffer.slice(0, boundary).trimEnd(); buffer = buffer.slice(boundary + 1); consume(line); }
+            for (;;) {
+              if (partialDiscarded) {
+                // The discarded part of this line was not empty, so its '\n' never ends a frame.
+                const end = buffer.indexOf('\n');
+                if (end < 0) { buffer = ''; break; }
+                buffer = buffer.slice(end + 1); partialDiscarded = false; continue;
+              }
+              const boundary = buffer.indexOf('\n');
+              if (boundary >= 0) { const line = buffer.slice(0, boundary).trimEnd(); buffer = buffer.slice(boundary + 1); consume(line); continue; }
+              // Inside a skipped or dropped frame every remaining line is a data line: shed it without buffering.
+              if (eventName !== null && (skipping || oversize)) { if (buffer) { buffer = ''; partialDiscarded = true; } break; }
+              if (buffer.length > 64_000) {
+                // Between frames the host sends only short event/comment lines; an over-limit line there is corrupt framing.
+                if (eventName === null) throw new Error('Strata returned a corrupt event stream.');
+                oversize = true; dataBytes = 0; dataLines.length = 0; buffer = ''; partialDiscarded = true;
+              }
+              break;
+            }
           }
           buffer += decoder.decode();
-          consume(buffer);
+          if (buffer && !partialDiscarded) consume(buffer);
         } catch (error) {
           // Aborts end the stream quietly; the phone reconnects for live progress.
           if (!res.headersSent && !abort.signal.aborted) sendJSON(res, error.status ?? 502, { error: error.status ? error.message : 'Strata could not open the event stream. Check the Mac app.' });
