@@ -6,9 +6,11 @@ async function source(path) { const {code}=await transform(await readFile(new UR
 const bots=await source('../src/lib/bots.ts'),connections=await source('../src/lib/bot-connections.ts');
 test('capable hosts allow full team rosters and all available teammates while older hosts keep their protocol',()=>{
   const roster=Array.from({length:42},(_,i)=>({id:`member_${i}`}));
-  const draft={name:'Whole studio',memberIds:roster.map(bot=>bot.id),coordinatorId:roster[0].id,limits:{...bots.DEFAULT_BOT_TEAM_LIMITS,maxParallel:0},briefing:{instructions:'Work together',members:roster.map(bot=>({botId:bot.id,role:'Teammate',instructions:''}))}};
+  const members=roster.slice(0,12);
+  const draft={name:'Whole studio',memberIds:members.map(bot=>bot.id),coordinatorId:members[0].id,limits:{...bots.DEFAULT_BOT_TEAM_LIMITS,maxParallel:0},briefing:{instructions:'Work together',members:members.map(bot=>({botId:bot.id,role:'Teammate',instructions:''}))}};
   assert.equal(bots.botTeamDraftError(draft,roster,undefined,true),null);
   assert.ok(bots.botTeamDraftError(draft,roster,undefined,false));
+  assert.ok(bots.botTeamDraftError({...draft,memberIds:roster.slice(0,13).map(bot=>bot.id)},roster,undefined,true));
   assert.equal(bots.botTeamDraftError({...draft,limits:{...draft.limits,maxParallel:42}},roster,undefined,true),null);
   for(const value of [-1,1.5,Infinity,Number.MAX_SAFE_INTEGER+1]) assert.ok(bots.botTeamDraftError({...draft,limits:{...draft.limits,maxParallel:value}},roster,undefined,true));
   assert.ok(bots.botTeamDraftError({...draft,memberIds:[...draft.memberIds,roster[0].id]},roster,undefined,true));
@@ -20,6 +22,10 @@ test('capable hosts allow full team rosters and all available teammates while ol
 test('team validation rejects missing members, stale bot identity, foreign coordinators and unbounded work',()=>{
   const draft={name:'Crew',memberIds:['a','b'],coordinatorId:'a',limits:{...bots.DEFAULT_BOT_TEAM_LIMITS}},roster=[{id:'a'},{id:'b'}];
   assert.equal(bots.botTeamDraftError(draft,roster),null);
+  assert.equal(bots.botTeamDraftError({...draft,talkativeness:{a:0,b:100},bidding:true},roster),null);
+  assert.ok(bots.botTeamDraftError({...draft,talkativeness:{a:101}},roster));
+  assert.ok(bots.botTeamDraftError({...draft,talkativeness:{a:-1}},roster));
+  assert.ok(bots.botTeamDraftError({...draft,bidding:'yes'},roster));
   for(const changes of [{memberIds:[]},{memberIds:['a','a']},{memberIds:['a','removed']},{coordinatorId:'outside'},{limits:{...draft.limits,maxDurationMs:59999}},{limits:{...draft.limits,maxParallel:9}},{limits:{...draft.limits,maxDepth:1.5}}])assert.ok(bots.botTeamDraftError({...draft,...changes},roster));
   assert.equal(bots.botTeamRunActive('cleanup_pending'),true);assert.equal(bots.botTeamRunActive('cancelled'),false);assert.equal(bots.botActivityLabel('cleanup_pending'),'Checking cleanup');
 });

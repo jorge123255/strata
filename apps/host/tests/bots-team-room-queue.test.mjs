@@ -319,6 +319,55 @@ test('a bot named by another bot speaks next, and a later hop past the limit doe
   assert.equal(f.service.detail(team.id, run.id).run.state, 'completed');
 });
 
+test('a near-duplicate reply is dropped and the chain pauses', async t => {
+  const calls = [];
+  const rounds = [['bot_1'], ['bot_0'], ['bot_2']];
+  const f = journal(t, 3, { selectSpeakers() { calls.push(calls.length); return { speakers: rounds.shift() ?? [] }; } });
+  const team = f.make(3);
+  const run = f.service.message(team.id, { message: 'What should we ship?', requestId: 'duplicate' }).run;
+  f.service.tick();
+  const first = f.context(f.jobs(run.id).find(job => job.state === 'running'));
+  f.service.begin(first); f.service.end(first, { publicReply: 'Ship the small fix today and tell the user.' });
+  f.service.tick();
+  const second = f.context(f.jobs(run.id).find(job => job.state === 'running'));
+  assert.equal(second.bot.id, 'bot_0');
+  f.service.begin(second); f.service.end(second, { publicReply: 'Ship the small fix today and tell the user now.' });
+  f.service.tick();
+  assert.deepEqual(replies(f.service.channel(team.id)), ['Ship the small fix today and tell the user.']);
+  assert.equal(f.jobs(run.id).some(job => job.botId === 'bot_2'), false);
+  assert.equal(calls.length, 2);
+  assert.equal(f.service.detail(team.id, run.id).run.state, 'completed');
+});
+
+test('bidding mode skips the selector and starts the most urgent candidate', async t => {
+  const asked = [];
+  const f = journal(t, 3, {
+    selectSpeakers() { throw new Error('The selector stays quiet while bidding is on.'); },
+    bidSpeaker(input) { asked.push(input.candidate.id); return input.candidate.id === 'bot_1' ? { pass: true } : { urgency: 6 }; },
+  });
+  const team = f.make(3, { bidding: true, talkativeness: { bot_0: 0, bot_1: 80, bot_2: 100 } });
+  assert.deepEqual(team.talkativeness, { bot_0: 0, bot_1: 80, bot_2: 100 });
+  assert.equal(team.bidding, true);
+  const run = f.service.message(team.id, { message: 'Hello room', requestId: 'bid-mode' }).run;
+  f.service.tick();
+  assert.deepEqual(asked, ['bot_1', 'bot_2']);
+  assert.equal(f.jobs(run.id).filter(job => job.state === 'running').map(job => job.botId).join(), 'bot_2');
+});
+
+test('talkativeness accepts 0 to 100, omits the default, and bidding is stored only when on', async t => {
+  const f = journal(t, 3);
+  const team = f.make(3, { talkativeness: { bot_0: 0, bot_1: 50, bot_2: 100 }, bidding: false });
+  assert.deepEqual(team.talkativeness, { bot_0: 0, bot_2: 100 });
+  assert.equal(Object.hasOwn(team, 'bidding'), false);
+  for (const value of [-1, 101, 1.5]) assert.throws(() => f.service.update(team.id, { talkativeness: { bot_0: value } }), { status: 400 });
+  const saved = f.service.update(team.id, { talkativeness: { bot_0: 50, bot_2: 50 }, bidding: true }).team;
+  assert.equal(saved.talkativeness, undefined);
+  assert.equal(saved.bidding, true);
+  const cleared = f.service.update(saved.id, { bidding: false }).team;
+  assert.equal(Object.hasOwn(cleared, 'bidding'), false);
+  assert.equal(Object.hasOwn(f.snapshot().teams.find(row => row.id === team.id), 'bidding'), false);
+});
+
 test('a direct question asks the selector twice and then bids once', async t => {
   const calls = { select: 0, bid: 0 };
   const f = journal(t, 3, {
