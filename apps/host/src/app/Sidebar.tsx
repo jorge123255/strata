@@ -17,6 +17,7 @@ import type { Session } from '../lib/types';
 import { MOD, runCommand } from '../lib/commands';
 import { bindingFor, bindingKeys, useBindings } from '../lib/shortcut-bindings';
 import { Btn, Dialog, Icon, IconBtn } from '../components/ui';
+import { PaneCollapse } from '../components/ChatMotion';
 import { SidebarRoster } from './SidebarRoster';
 import { useSidebarLayout } from '../lib/use-sidebar-layout';
 import { useSidebarRoster } from '../lib/use-sidebar-roster';
@@ -101,7 +102,7 @@ export function Sidebar({ containerRef }: {
                         closeSearch();
                     }
                 }}/><IconBtn name="x" title={tr("Close chat search")} onClick={closeSearch}/></div> : <><button type="button" className="ws__name nav-chats__toggle" aria-expanded={chatsOpen} onClick={() => sections.setChatsCollapsed(!sections.layout.chatsCollapsed)}><Icon name="chevron" size={14} className={cx('ws__chev', chatsOpen && 'is-open')}/><span>{tr("Chats")}</span></button><div className="ws__tools"><IconBtn name="new-chat" title={tr("New chat")} onClick={() => runCommand('new')}/><button ref={searchTrigger} type="button" className="st-btn st-btn--icon" aria-label={tr("Search chats")} title={tr("Search chats")} onClick={() => setSearchOpen(true)}><Icon name="search" size={18}/></button><IconBtn name="folder-plus" title={tr("Add a workspace folder")} onClick={() => { void pickWorkspace().then(path => path ? addWorkspace(path) : undefined); }}/></div></>)}</div>
-          {chatsOpen ? workspaces.map(w => {
+          <PaneCollapse open={chatsOpen}>{workspaces.map(w => {
                 const expanded = folders[w.id] !== false || !!q;
                 const rows = matching.filter(s => s.workspace === w.path || !!w.aliases?.includes(s.workspace));
                 const shown = q ? rows : rows.slice(0, 20);
@@ -115,7 +116,7 @@ export function Sidebar({ containerRef }: {
                 {tr(!q && rows.length > shown.length ? <button className="ws-view small" onClick={() => { setNavOpen(false); setRecentOpen(true); }}>{tr("View all chats")}</button> : null)}
               </div> : null)}
             </div>;
-            }) : null}
+            })}</PaneCollapse>
         </div> : null}
       </div>
       <div className="nav__foot">

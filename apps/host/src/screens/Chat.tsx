@@ -26,6 +26,7 @@ import { mainResult, previewOf } from '../lib/deliverables';
 import { noModelNotice } from '../lib/no-model';
 import { ReasoningBlock } from '../components/ReasoningBlock';
 import { StatusLine } from '../components/StatusLine';
+import { TypingDots, useMessageEntrances } from '../components/ChatMotion';
 import { GoalBar } from '../components/GoalBar';
 import { PlanCard, PlanPanel, QueuedMessages } from '../components/PlanCard';
 import { FolderChip } from '../components/FolderChip';
@@ -407,6 +408,7 @@ export function ChatScreen({ embedded = false, sessionId, onComputer }: { embedd
         });
     }
     function onComposerKey(_e: React.KeyboardEvent) { }
+    const entrances = useMessageEntrances(session?.id ?? 'none', (session?.messages ?? []).map(message => ({ id: message.id, own: message.role === 'user' })), !!session);
     if (!session && embedded) return <div className="bot-chat-empty"><p>{tr('This conversation is no longer available. Choose another conversation from this bot’s history.')}</p></div>;
     if (!session) {
         return (<>
@@ -450,7 +452,7 @@ export function ChatScreen({ embedded = false, sessionId, onComputer }: { embedd
 
             <div className="chat__inner">
               {tr(session.messages.length === 0 ? (botId ? <div className="bot-chat-empty"><CuaBotAvatar config={session.preferences?.botAvatarConfig} name={session.preferences?.botName} size={72}/><h2 className="h3">{session.preferences?.botName ?? tr('Your bot')}</h2><p className="xs muted">{[session.preferences?.botComputer, session.preferences?.botModel].filter(Boolean).join(' · ')}</p><p className="small">{tr('Send a message to start work. Replies, supported thinking and tool activity stay in this conversation on your Mac and paired iPhone.')}</p><a className="small" href={href('bots', botId)}>{tr('Open bot profile')}</a></div> : session.statsAvailable === false ? <p className="small muted">{tr("Editing from an earlier message. Update the prompt below.")}</p> :
-            <UsageDashboard loaded={!!loaded}/>) : (session.messages.map((m, i) => (<Message key={m.id} message={m} isLast={i === session.messages.length - 1} onEditPrompt={editPrompt} onPreview={openPreview} onOpenTimeSkip={openTimeSkip} timeSkipDone={!!allTimeSkipRuns.find(r => r.id === m.timeSkipId)?.completedAt} timeSkipReal={!!allTimeSkipRuns.find(r => r.id === m.timeSkipId)?.job} timeSkipRun={allTimeSkipRuns.find(r => r.id === m.timeSkipId)} onOpenLink={openLink}/>))))}
+            <UsageDashboard loaded={!!loaded}/>) : (session.messages.map((m, i) => (<Message key={m.id} message={m} isLast={i === session.messages.length - 1} entrance={entrances.get(m.id)} onEditPrompt={editPrompt} onPreview={openPreview} onOpenTimeSkip={openTimeSkip} timeSkipDone={!!allTimeSkipRuns.find(r => r.id === m.timeSkipId)?.completedAt} timeSkipReal={!!allTimeSkipRuns.find(r => r.id === m.timeSkipId)?.job} timeSkipRun={allTimeSkipRuns.find(r => r.id === m.timeSkipId)} onOpenLink={openLink}/>))))}
               <QueuedMessages chatId={session.id}/>
             </div>
           </div>
@@ -598,7 +600,7 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
         }}/>
           <div className="st-composer__bar">
             <ComposerControls draft={draft} onDraft={setDraft} session={session} onPreview={onPreview} streaming={streaming} onSlash={() => { setSlashDismissed(false); setSlashOpen(true); requestAnimationFrame(() => textareaRef.current?.focus()); }} onError={setFileError} onAttach={(name, text) => { setDraft(`${draft}${draft ? '\n\n' : ''}Attached ${name}\n\n${text}`); requestAnimationFrame(() => textareaRef.current?.focus()); }}/>
-            {tr(streaming ? (<Btn variant="secondary" size="sm" icon="stop" onClick={() => { if (session) selectSession(session.id); stopStreaming(); }}>{tr("Stop")}</Btn>) : (<Btn variant="primary" size="sm" icon="send" disabled={(!draft.trim() && !photos.length) || draft.trim() === '/' || (!canChat && timeSkipPrompt(draft) === null)} onClick={onSubmit}>{tr("Send")}</Btn>))}
+            {tr(streaming ? (<Btn variant="secondary" size="sm" icon="stop" onClick={() => { if (session) selectSession(session.id); stopStreaming(); }}>{tr("Stop")}</Btn>) : (<Btn variant="primary" size="sm" className="composer-send" icon="send" disabled={(!draft.trim() && !photos.length) || draft.trim() === '/' || (!canChat && timeSkipPrompt(draft) === null)} onClick={onSubmit}>{tr("Send")}</Btn>))}
           </div>
         </div>
         {!bot ? <ChatTelemetry session={session}/> : null}
@@ -617,9 +619,10 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
         </div>) : null)}
     </div>);
 }
-function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOpenTimeSkip, timeSkipDone, timeSkipReal, timeSkipRun, }: {
+function Message({ message: m, isLast, entrance, onEditPrompt, onPreview, onOpenLink, onOpenTimeSkip, timeSkipDone, timeSkipReal, timeSkipRun, }: {
     message: ChatMessage;
     isLast: boolean;
+    entrance?: { ms: number; delay: number };
     onEditPrompt: (text: string) => void;
     onPreview: (a: PreviewArtifact) => void;
     onOpenLink: (url: string) => void;
@@ -639,8 +642,10 @@ function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOp
     // A reply with activity lines is drawn piece by piece in the order it came; one without is the plain text it always was.
     const grouped = !!m.blocks?.some(b => b.kind === 'group');
     const [sentTime, setSentTime] = useState(() => relTime(m.at));
+    const motion = entrance ? 'msg-enter' : undefined;
+    const motionStyle = entrance ? { animationDuration: `${entrance.ms}ms`, animationDelay: `${entrance.delay}ms` } : undefined;
     if (m.role === 'user') {
-        return (<div className="st-msg st-msg--user" onMouseEnter={() => setSentTime(relTime(m.at))} onFocus={() => setSentTime(relTime(m.at))}>
+        return (<div className={cx('st-msg st-msg--user', motion)} style={motionStyle} onMouseEnter={() => setSentTime(relTime(m.at))} onFocus={() => setSentTime(relTime(m.at))}>
         <div className="st-bubble">{tr(m.photos?.length ? <ChatPhotos photos={m.photos}/> : null)}{m.markdown ? <Markdown text={m.content} onOpenLink={onOpenLink}/> : m.content}</div>
         <div className="st-msg__meta">
           <time dateTime={m.at} title={tr(new Date(m.at).toLocaleString(localeTag()))}>{tr(sentTime)}</time>
@@ -656,7 +661,7 @@ function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOp
         </div>
       </div>);
     }
-    return (<div className="st-msg st-msg--assistant" data-error={m.error ? 'true' : undefined}>
+    return (<div className={cx('st-msg st-msg--assistant', motion)} style={motionStyle} data-error={m.error ? 'true' : undefined}>
       {tr(m.reasoning ? <ReasoningBlock message={m}/> : null)}
 
 
@@ -666,11 +671,7 @@ function Message({ message: m, isLast, onEditPrompt, onPreview, onOpenLink, onOp
         {tr(planCard ? <PlanCard chatId={activeSession} planId={m.planId!}/> : null)}
         {tr(m.error ? (<ErrorNotice message={m.error} next={tr("Try sending the message again.")}/>) : null)}
         {tr(grouped && !planCard && !m.timeSkipId ? m.blocks!.map((b, i) => b.kind === 'group' ? <ActivityLine key={b.id} group={b} sessionId={activeSession ?? ''} onPreview={onPreview}/> : <Markdown key={i} text={b.text} onOpenLink={onOpenLink} onPreviewHtml={content => onPreview({ id: m.id + '-html-' + i, kind: 'website', title: 'HTML preview', content })}/>) : null)}
-        {tr(m.content && !planCard && !grouped ? (<Markdown text={m.timeSkipId && !timeSkipReal ? hostLive ? tr('This was a sample run made while the app could not reach its host.') : timeSkipDone ? tr('The result is ready. Switch between Original and Updated, or compare them side by side. This example uses sample outputs and simulated checks.') : tr('Revising the saved draft. Follow the result in the sidebar. This example uses sample outputs and simulated checks.') : m.content} onOpenLink={onOpenLink} onPreviewHtml={content => onPreview({ id: m.id + '-html', kind: 'website', title: 'HTML preview', content })}/>) : !m.error && m.streaming && !liveStatus ? (<span className="typing" aria-label={tr("Generating")}>
-            <i />
-            <i />
-            <i />
-          </span>) : null)}
+        {tr(m.content && !planCard && !grouped ? (<Markdown text={m.timeSkipId && !timeSkipReal ? hostLive ? tr('This was a sample run made while the app could not reach its host.') : timeSkipDone ? tr('The result is ready. Switch between Original and Updated, or compare them side by side. This example uses sample outputs and simulated checks.') : tr('Revising the saved draft. Follow the result in the sidebar. This example uses sample outputs and simulated checks.') : m.content} onOpenLink={onOpenLink} onPreviewHtml={content => onPreview({ id: m.id + '-html', kind: 'website', title: 'HTML preview', content })}/>) : !m.error && m.streaming && !liveStatus ? <TypingDots label={tr("Generating")}/> : null)}
         {tr(m.streaming && m.content ? <span className="caret" aria-hidden="true"/> : null)}
       </div> : null)}
       {tr(m.skills?.length && !m.streaming ? <SkillsUsed skills={m.skills}/> : null)}

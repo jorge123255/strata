@@ -123,4 +123,53 @@ final class ThinkingTimelineTests: XCTestCase {
             }
         }
     }
+
+    func testCoucouSpringsMatchTheSharedMotion() {
+        XCTAssertEqual(CoucouMotion.springResponse, 0.28, accuracy: 0.0001)
+        XCTAssertEqual(CoucouMotion.springDamping, 0.82, accuracy: 0.0001)
+        XCTAssertEqual(CoucouMotion.messageRise, 8, accuracy: 0.0001)
+        XCTAssertEqual(CoucouMotion.messageStagger, 0.04, accuracy: 0.0001)
+        XCTAssertEqual(CoucouMotion.typingDot, 5, accuracy: 0.0001)
+        XCTAssertEqual(CoucouMotion.typingScaleMin, 0.6, accuracy: 0.0001)
+        XCTAssertEqual(CoucouMotion.typingScaleMax, 1.2, accuracy: 0.0001)
+        XCTAssertEqual(CoucouMotion.typingCycle, 0.9, accuracy: 0.0001)
+        XCTAssertEqual(CoucouMotion.typingStagger, 0.14, accuracy: 0.0001)
+        XCTAssertEqual(CoucouMotion.shimmerDuration, 2.2, accuracy: 0.0001)
+    }
+
+    func testCoucouHistoryStaysStillAndNewTurnsRise() {
+        let arrivals = CoucouArrivals()
+        let history = [CoucouRow(id: "m1", own: true), CoucouRow(id: "m2", own: false)]
+        arrivals.begin(key: "chat", rows: history, ready: false)
+        XCTAssertNil(arrivals.entrance(id: "m1"))
+        arrivals.begin(key: "chat", rows: history, ready: true)
+        XCTAssertNil(arrivals.entrance(id: "m1"))
+        XCTAssertNil(arrivals.entrance(id: "m2"))
+        arrivals.begin(key: "chat", rows: history + [CoucouRow(id: "m3", own: true)], ready: true)
+        XCTAssertEqual(arrivals.entrance(id: "m3")?.fast, true)
+        XCTAssertEqual(arrivals.entrance(id: "m3")?.delay ?? -1, 0, accuracy: 0.0001)
+        arrivals.finish(id: "m3")
+        XCTAssertNil(arrivals.entrance(id: "m3"))
+        let burst = history + [CoucouRow(id: "m3", own: true), CoucouRow(id: "b1", own: false), CoucouRow(id: "b2", own: false)]
+        arrivals.begin(key: "chat", rows: burst, ready: true)
+        XCTAssertNil(arrivals.entrance(id: "m3"))
+        XCTAssertEqual(arrivals.entrance(id: "b1")?.delay ?? -1, 0, accuracy: 0.0001)
+        XCTAssertEqual(arrivals.entrance(id: "b2")?.delay ?? -1, 0.04, accuracy: 0.0001)
+        XCTAssertEqual(arrivals.entrance(id: "b1")?.fast, false)
+    }
+
+    func testCoucouPrependAndEmptyReady() {
+        let arrivals = CoucouArrivals()
+        arrivals.begin(key: "room", rows: [], ready: true)
+        arrivals.begin(key: "room", rows: [CoucouRow(id: "m1", own: true)], ready: true)
+        XCTAssertEqual(arrivals.entrance(id: "m1")?.fast, true)
+        arrivals.finish(id: "m1")
+        XCTAssertNil(arrivals.entrance(id: "m1"))
+        arrivals.begin(key: "room", rows: [CoucouRow(id: "old", own: false), CoucouRow(id: "m1", own: true)], ready: true)
+        XCTAssertNil(arrivals.entrance(id: "old"))
+        arrivals.begin(key: "room", rows: [CoucouRow(id: "old", own: false), CoucouRow(id: "m1", own: true), CoucouRow(id: "solo", own: false)], ready: true)
+        XCTAssertEqual(arrivals.entrance(id: "solo")?.delay ?? -1, 0, accuracy: 0.0001)
+        arrivals.begin(key: "other", rows: [CoucouRow(id: "m1", own: false)], ready: true)
+        XCTAssertNil(arrivals.entrance(id: "m1"))
+    }
 }

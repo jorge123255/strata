@@ -230,33 +230,46 @@ struct BotsView: View {
     private func botCard(_ bot: CompanionBot) -> some View {
         let latest = store.botRosterConversations(bot).first
         return HStack(spacing: 14) {
-            KoalaAvatar(bot.face, mood: store.botMood(bot), animated: false).frame(width: 58, height: 58)
+            ZStack(alignment: .bottomTrailing) {
+                KoalaAvatar(bot.face, mood: store.botMood(bot), animated: false).frame(width: 58, height: 58)
+                BreathingStatusDot(kind: coucouKind(mood: store.botMood(bot), paused: bot.paused == true)).offset(x: 2, y: 2)
+            }
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(bot.name).font(.body.weight(.semibold)).foregroundStyle(StrataTheme.ink).lineLimit(1)
                     Spacer(minLength: 0)
                     rosterDate(latest?.updatedAt.flatMap(rosterTimestamp))
                 }
-                Text(latest?.preview.flatMap { $0.isEmpty ? nil : $0 } ?? bot.capabilityLabel).font(.subheadline).foregroundStyle(StrataTheme.secondaryInk).lineLimit(2)
+                if store.botIsWorking(bot) && bot.paused != true {
+                    ShimmerText(text: latest?.preview.flatMap { $0.isEmpty ? nil : $0 } ?? bot.capabilityLabel).font(.subheadline).lineLimit(2)
+                } else {
+                    Text(latest?.preview.flatMap { $0.isEmpty ? nil : $0 } ?? bot.capabilityLabel).font(.subheadline).foregroundStyle(StrataTheme.secondaryInk).lineLimit(2)
+                }
             }
             if store.openingBotConversationId == bot.id { ProgressView().accessibilityLabel("Opening conversation") }
             else if bot.paused == true { Image(systemName: "pause.circle").foregroundStyle(.secondary) }
-            else if store.botIsWorking(bot) { ProgressView().controlSize(.small) }
         }.padding(.vertical, 10)
     }
     private func teamCard(_ team: BotTeam, catalog: CompanionBots) -> some View {
         let preview = previewForTeam(team)
+        let working = workspace?.teams?.runs.contains(where: { $0.teamId == team.id && $0.isActive }) == true
         return HStack(spacing: 14) {
-            StrataTeamAvatars(bots: team.memberIds.compactMap { id in catalog.bots.first { $0.id == id } }, size: 58)
+            ZStack(alignment: .bottomTrailing) {
+                StrataTeamAvatars(bots: team.memberIds.compactMap { id in catalog.bots.first { $0.id == id } }, size: 58)
+                if working { BreathingStatusDot(kind: .working).offset(x: 2, y: 2) }
+            }
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(team.name).font(.body.weight(.semibold)).foregroundStyle(StrataTheme.ink).lineLimit(1)
                     Spacer(minLength: 0); rosterDate(preview?.createdAt.date ?? team.createdAt?.date)
                 }
-                Text(preview?.line ?? (team.enabled ? "Start a conversation with your team" : "Review and enable this team"))
-                    .font(.subheadline).foregroundStyle(StrataTheme.secondaryInk).lineLimit(2).accessibilityIdentifier("teamRosterPreview-\(team.id)")
+                if working {
+                    ShimmerText(text: preview?.line ?? (team.enabled ? "Start a conversation with your team" : "Review and enable this team")).font(.subheadline).lineLimit(2).accessibilityIdentifier("teamRosterPreview-\(team.id)")
+                } else {
+                    Text(preview?.line ?? (team.enabled ? "Start a conversation with your team" : "Review and enable this team"))
+                        .font(.subheadline).foregroundStyle(StrataTheme.secondaryInk).lineLimit(2).accessibilityIdentifier("teamRosterPreview-\(team.id)")
+                }
             }
-            if workspace?.teams?.runs.contains(where: { $0.teamId == team.id && $0.isActive }) == true { ProgressView().controlSize(.small) }
         }.padding(.vertical, 10)
     }
     private func previewForTeam(_ team: BotTeam) -> BotTeamChannelPreview? {

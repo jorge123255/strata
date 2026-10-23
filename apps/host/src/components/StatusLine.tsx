@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { ShimmerText, useOnScreen } from './ChatMotion';
 import { tr } from '../lib/i18n';
 import { elapsedText, isPlayful, statusWords, useLiveStatus } from '../lib/live-status';
 
@@ -8,6 +9,7 @@ import { elapsedText, isPlayful, statusWords, useLiveStatus } from '../lib/live-
  */
 export function StatusLine({ sessionId, startedAt, tokens }: { sessionId: string | null; startedAt: number; tokens?: number }) {
   const frame = useLiveStatus(sessionId);
+  const screen = useOnScreen<HTMLDivElement>();
   const [now, setNow] = useState(() => Date.now());
   const [rotation, setRotation] = useState(0);
   useEffect(() => {
@@ -23,9 +25,10 @@ export function StatusLine({ sessionId, startedAt, tokens }: { sessionId: string
   }, [playful]);
   if (!frame) return null;
   const count = frame.tokens ?? tokens;
-  return <div className="live-status" data-phase={frame.phase} aria-live="off">
+  const verb = statusWords(frame, rotation);
+  return <div ref={screen.ref} className="live-status" data-phase={frame.phase} data-visible={screen.visible || undefined} aria-live="off">
     <span className="live-status__pulse" aria-hidden="true"><i/><i/></span>
-    <span className="live-status__verb" key={playful ? rotation : frame.code + String(frame.args?.target ?? '')} title={statusWords(frame, rotation)}>{statusWords(frame, rotation)}</span>
+    <ShimmerText className="live-status__verb" key={playful ? rotation : frame.code + String(frame.args?.target ?? '')} title={verb} text={verb}/>
     <span className="live-status__time">{elapsedText(startedAt, now)}</span>
     <span className="live-status__tokens">{count ? tr('{0} tokens', [count.toLocaleString()]) : ''}</span>
   </div>;

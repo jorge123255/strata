@@ -1,4 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { applyMessagePartial, clearStreams, createFollowScroller, hasLiveStream, prefersReducedMotion, type RoomDraft } from '../lib/chat-motion';
+import { ShimmerText, StreamedBody, TypingDots, useMessageEntrances } from '../components/ChatMotion';
+import { cx } from '../lib/format';
 import { ApiError, api } from '../lib/client';
 import { botActivityLabel, botTeamRunActive, mergeBotTeamChannelMessages, type Bot, type BotTeam, type BotTeamChannelMessage, type BotTeamChannelSnapshot, type BotTeamPresence, type BotTeamRun } from '../lib/bots';
 import { useStore } from '../lib/store';
@@ -88,24 +91,19 @@ function useTeamChannel(teamId: string, visible: boolean, onUnsupported: () => v
   return { messages, activeRuns, presence, loading, error, hasEarlier, loadingEarlier, accept: acceptPosted, refresh, loadEarlier };
 }
 
-type RoomDraft = { messageId: string; botId: string; seq: number; text: string };
-
 /** Live reply text for this room. A saved message with the same id replaces the draft. */
 function useRoomDrafts(teamId: string) {
   const [drafts, setDrafts] = useState<RoomDraft[]>([]);
-  useEffect(() => { setDrafts([]); }, [teamId]);
+  const room = useRef(teamId);
+  if (room.current !== teamId) {
+    room.current = teamId;
+    clearStreams();
+  }
+  useEffect(() => { setDrafts([]); clearStreams(); }, [teamId]);
   useEffect(() => {
     const onPartial = (event: Event) => {
-      const detail = (event as CustomEvent<Record<string, unknown>>).detail;
-      if (!detail || detail.teamId !== teamId) return;
-      const { messageId, botId, seq, text, done } = detail;
-      if (typeof messageId !== 'string' || typeof botId !== 'string' || typeof seq !== 'number' || typeof text !== 'string') return;
-      setDrafts(current => {
-        if (done === true && text === '') return current.filter(row => row.messageId !== messageId);
-        const previous = current.find(row => row.messageId === messageId);
-        if (previous && previous.seq >= seq) return current;
-        return [...current.filter(row => row.messageId !== messageId), { messageId, botId, seq, text }];
-      });
+      const detail = (event as CustomEvent<unknown>).detail;
+      setDrafts(current => applyMessagePartial(current, detail, teamId));
     };
     window.addEventListener('strata:message-partial', onPartial);
     return () => window.removeEventListener('strata:message-partial', onPartial);
@@ -122,6 +120,8 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
   const drafts = useRoomDrafts(team.id);
   const [quiet, setQuiet] = useState(false);
   const liveDrafts = drafts.filter(row => row.text && !channel.messages.some(message => message.id === row.messageId));
+  const entrances = useMessageEntrances(team.id, [...channel.messages.map(message => ({ id: message.id, own: message.author.type === 'user' })), ...liveDrafts.map(draft => ({ id: draft.messageId, own: false }))], !channel.loading);
+  const follower = useRef(createFollowScroller(() => prefersReducedMotion()));
   useEffect(() => {
     const onRoom = (event: Event) => {
       const detail = (event as CustomEvent<{ teamId?: string; presence?: unknown[] }>).detail;
@@ -143,7 +143,7 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
   const members = team.memberIds.map(id => bots.find(bot => bot.id === id)).filter((bot): bot is Bot => !!bot);
   const active = channel.activeRuns.filter(run => botTeamRunActive(run.state));
   const ready = current && !channel.error && !channel.loading;
-  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; follower.current.stop(); }; }, []);
   useEffect(() => { if (!visible) { setPicker(false); setActions(false); } }, [visible]);
   useEffect(() => {
     if (!visible || !team.enabled) return undefined;
@@ -156,22 +156,22 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
   useEffect(() => {
     const element = feed.current; if (!element || !visible) return;
     const observer = new ResizeObserver(() => {
-      if (follow.current) element.scrollTop = element.scrollHeight;
-      setAway(element.scrollHeight - element.scrollTop - element.clientHeight >= 80);
+      if (follow.current) follower.current.follow(element);
+      else setAway(element.scrollHeight - element.scrollTop - element.clientHeight >= 80);
     });
     observer.observe(element); return () => observer.disconnect();
   }, [visible]);
   useLayoutEffect(() => {
     const element = feed.current; if (!element || !visible) return;
     if (olderAnchor.current) { const anchor = olderAnchor.current; element.scrollTop = anchor.top + element.scrollHeight - anchor.height; olderAnchor.current = null; }
-    else if (follow.current) { element.scrollTop = element.scrollHeight; setUnread(0); }
+    else if (follow.current) { follower.current.follow(element); setUnread(0); }
     else {
       const arrived = channel.messages.filter(row => row.sequence > previousLast.current).length;
       if (arrived && previousLast.current) setUnread(value => value + arrived);
     }
     previousLast.current = channel.messages.at(-1)?.sequence ?? previousLast.current;
-  }, [channel.messages, visible]);
-  function jumpToLatest() { follow.current = true; setAway(false); setUnread(0); if (feed.current) feed.current.scrollTop = feed.current.scrollHeight; }
+  }, [channel.messages, channel.presence, liveDrafts.map(row => `${row.messageId}:${row.text.length}`).join('|'), visible]);
+  function jumpToLatest() { follow.current = true; setAway(false); setUnread(0); if (feed.current) follower.current.follow(feed.current); }
   function changeRecipients(next: string[]) { setRecipients(next); requestId.current = null; }
   function reply(message: BotTeamChannelMessage) {
     setReplyTo(message); requestId.current = null;
@@ -202,21 +202,21 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
   const recipientLabel = recipients.length === team.memberIds.length ? 'Everyone' : recipients.length ? recipients.map(id => bots.find(bot => bot.id === id)?.name ?? 'Unavailable teammate').join(', ') : 'Team';
   return <div className="bot-room" hidden={!visible} aria-label={`${team.name} channel`}>
     {channel.error ? <ErrorNotice message={channel.error} next="Showing saved messages. Refresh to verify current team work before sending." action="Refresh channel" onRetry={() => void channel.refresh()}/> : null}
-    <div className="bot-room-feed" ref={feed} role="region" aria-label="Team conversation" tabIndex={0} onScroll={() => { const element = feed.current; if (element) { follow.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80; setAway(!follow.current); if (follow.current) setUnread(0); } }}>
+    <div className="bot-room-feed" ref={feed} role="region" aria-label="Team conversation" tabIndex={0} onScroll={() => { if (follower.current.owns()) return; const element = feed.current; if (element) { follow.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80; setAway(!follow.current); if (follow.current) setUnread(0); } }}>
       {channel.loading ? <p role="status" className="bot-room-loading">Opening the team channel…</p> : null}
       {channel.hasEarlier ? <div className="bot-room-earlier"><Btn size="sm" disabled={channel.loadingEarlier} onClick={() => { if (feed.current) olderAnchor.current = { height: feed.current.scrollHeight, top: feed.current.scrollTop }; void channel.loadEarlier().then(ok => { if (!ok) olderAnchor.current = null; }); }}>{channel.loadingEarlier ? 'Loading earlier…' : 'Load earlier messages'}</Btn></div> : null}
       {!channel.loading && !channel.messages.length && !channel.error ? <div className="bot-room-welcome"><div className="bot-room-welcome-faces">{members.slice(0, 4).map(bot => <CuaBotAvatar key={bot.id} name={bot.name} config={bot.avatarConfig} size={56}/>)}</div><h3>Your team, together</h3><p>Say hello, share an idea, or give the team something to work on. Everyone can join the conversation; {bots.find(bot => bot.id === team.coordinatorId)?.name ?? 'your coordinator'} organizes the work.</p><div><button type="button" disabled={!ready || !team.enabled} onClick={() => { setWorkMode('chat'); setPrompt('Hi everyone!'); changeRecipients([...team.memberIds]); composer.current?.focus(); }}>Say hi to everyone</button><button type="button" disabled={!ready || !team.enabled} onClick={() => { setPrompt('Who wants to help with '); changeRecipients([]); composer.current?.focus(); }}>Find the right teammate</button></div></div> : null}
-      {channel.messages.map(message => <TeamChannelMessage key={message.id} message={message} team={team} bots={bots} messages={channel.messages} disabled={sending} onReply={() => reply(message)} onOpenConversation={chatId => void onOpenConversation(chatId).catch(cause => { if (mounted.current) setError(messageError(cause)); })}/>)}
+      {channel.messages.map(message => <TeamChannelMessage key={message.id} message={message} team={team} bots={bots} messages={channel.messages} entrance={entrances.get(message.id)} disabled={sending} onReply={() => reply(message)} onOpenConversation={chatId => void onOpenConversation(chatId).catch(cause => { if (mounted.current) setError(messageError(cause)); })}/>)}
       {liveDrafts.map(draft => {
-        const bot = bots.find(item => item.id === draft.botId), name = bot?.name ?? 'A teammate';
-        return <article key={draft.messageId} className="bot-room-message bot-room-draft" data-author="bot" aria-live="polite" aria-busy="true" aria-label={`${name} is replying`}>
+        const bot = bots.find(item => item.id === draft.botId), name = bot?.name ?? 'A teammate', entrance = entrances.get(draft.messageId);
+        return <article key={draft.messageId} className={cx('bot-room-message bot-room-draft', entrance && 'msg-enter')} style={entrance ? { animationDuration: `${entrance.ms}ms`, animationDelay: `${entrance.delay}ms` } : undefined} data-author="bot" aria-live="polite" aria-busy="true" aria-label={`${name} is replying`}>
           <div className="bot-room-message-face">{bot ? <CuaBotAvatar name={name} config={bot.avatarConfig} size={38}/> : <span className="bot-room-person" aria-hidden="true"><Icon name="experts" size={17}/></span>}</div>
-          <div className="bot-room-message-main"><header><strong>{name}</strong></header><div className="bot-room-message-bubble"><div className="bot-room-message-body">{draft.text}</div></div></div>
+          <div className="bot-room-message-main"><header><strong>{name}</strong></header><div className="bot-room-message-bubble"><div className="bot-room-message-body"><StreamedBody id={draft.messageId} text={draft.text} done={draft.done} render={text => <ChannelMarkdown text={text}/>}/></div></div></div>
         </article>;
       })}
       {quiet && !channel.presence.length ? <p className="bot-room-quiet" role="status">The room stayed quiet.</p> : null}
-      {channel.presence.filter(row => row.state === 'working' && !liveDrafts.some(draft => draft.botId === row.botId)).map(row => <div className="bot-room-working" key={row.jobId}><span className="bot-room-working-dot" aria-hidden="true"/><span>{bots.find(bot => bot.id === row.botId)?.name ?? 'A teammate'} is working…</span></div>)}
-      {active.map(run => { const limited = !Object.values(run.limits).every(value => value === 0); return <div className="bot-room-working" key={run.id}><span className="bot-room-working-dot" aria-hidden="true"/><span><strong>{botActivityLabel(run.state)}</strong><small>{limited ? 'Working with the team' : 'Until finished or stopped'}</small></span><Btn size="sm" variant="danger" disabled={!!stopping || run.state === 'stopping'} onClick={() => void stop(run)}>{stopping === run.id ? 'Stopping…' : run.state === 'cleanup_pending' ? 'Retry Stop' : 'Stop team'}</Btn></div>; })}
+      {channel.presence.filter(row => row.state === 'working' && !liveDrafts.some(draft => draft.botId === row.botId)).map(row => { const label = `${bots.find(bot => bot.id === row.botId)?.name ?? 'A teammate'} is working…`; return <div className="bot-room-working" key={row.jobId}><TypingDots label={label} hiddenLabel/><ShimmerText text={label}/></div>; })}
+      {active.map(run => { const limited = !Object.values(run.limits).every(value => value === 0); const label = botActivityLabel(run.state); return <div className="bot-room-working" key={run.id}><TypingDots label={label} hiddenLabel/><span><ShimmerText text={label}/><small>{limited ? 'Working with the team' : 'Until finished or stopped'}</small></span><Btn size="sm" variant="danger" disabled={!!stopping || run.state === 'stopping'} onClick={() => void stop(run)}>{stopping === run.id ? 'Stopping…' : run.state === 'cleanup_pending' ? 'Retry Stop' : 'Stop team'}</Btn></div>; })}
     </div>
     {unread || away ? <div className="bot-room-new"><button type="button" onClick={jumpToLatest}>{unread ? `${unread} new ${unread === 1 ? 'message' : 'messages'} · ` : ''}Latest <Icon name="chevron" size={14}/></button></div> : null}
     {error ? <ErrorNotice message={error} action="Dismiss" onRetry={() => setError('')}/> : null}
@@ -225,14 +225,14 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
       <div className="bot-room-composer-top"><button className="bot-room-to" type="button" aria-expanded={picker} aria-controls={`team-recipients-${team.id}`} disabled={sending} onClick={() => setPicker(value => !value)}><Icon name="experts" size={14}/><span>To: <strong>{recipientLabel}</strong></span><Icon name="chevron" size={12}/></button><span className="bot-room-device-note">Shared on Mac and iPhone</span></div>
       {coordinatorWorkToolsSupported ? <div className="bot-room-work-mode"><div role="group" aria-label="Team message mode">{(['chat', 'work'] as const).map(mode => <button key={mode} type="button" aria-pressed={workMode === mode} disabled={sending} onClick={() => { setWorkMode(mode); requestId.current = null; }}>{mode === 'chat' ? 'Chat' : 'Work'}</button>)}</div><p>{workMode === 'work' ? (workPlansSupported ? 'Your coordinator plans tasks, chooses teammates and follows their saved checkpoints through review.' : 'Coordinator and teammates can use their saved tools, approvals and selected team computer/folder.') : 'Talk with the team. Your coordinator can bring in teammates.'}</p></div> : null}
       {picker ? <fieldset className="bot-room-recipient-picker" disabled={sending} id={`team-recipients-${team.id}`}><legend>Who should respond?</legend><div><button type="button" aria-pressed={!recipients.length} onClick={() => changeRecipients([])}>Let the team decide</button><button type="button" aria-pressed={recipients.length === team.memberIds.length} onClick={() => changeRecipients([...team.memberIds])}>@everyone</button></div>{members.map(bot => <label key={bot.id}><input type="checkbox" checked={recipients.includes(bot.id)} onChange={() => changeRecipients(recipients.includes(bot.id) ? recipients.filter(id => id !== bot.id) : [...recipients, bot.id])}/><CuaBotAvatar name={bot.name} config={bot.avatarConfig} size={24}/><span>{bot.name}{bot.paused ? ' · Paused' : ''}</span></label>)}</fieldset> : null}
-      <div className="bot-room-composer-row"><button type="button" className="bot-room-add" aria-label="Team actions" aria-haspopup="dialog" disabled={sending} onClick={() => setActions(true)}><Icon name="plus" size={22}/></button><div className="bot-room-input-pill"><label className="bot-room-input"><span className="sr-only">Message team</span><textarea ref={composer} rows={1} maxLength={16000} aria-label="Message team" value={prompt} disabled={sending} onChange={event => { setPrompt(event.target.value); requestId.current = null; }} onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); void send(); } }} placeholder={team.enabled ? `Message ${team.name}…` : 'Collaboration is turned off'}/></label><button className="bot-room-send" type="submit" aria-label={sending ? 'Sending…' : 'Send'} disabled={sending || !team.enabled || !prompt.trim() || !ready}><Icon name="send" size={19}/></button></div></div>
+      <div className="bot-room-composer-row"><button type="button" className="bot-room-add" aria-label="Team actions" aria-haspopup="dialog" disabled={sending} onClick={() => setActions(true)}><Icon name="plus" size={22}/></button><div className="bot-room-input-pill"><label className="bot-room-input"><span className="sr-only">Message team</span><textarea ref={composer} rows={1} maxLength={16000} aria-label="Message team" value={prompt} disabled={sending} onChange={event => { setPrompt(event.target.value); requestId.current = null; }} onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); void send(); } }} placeholder={team.enabled ? `Message ${team.name}…` : 'Collaboration is turned off'}/></label><button className="bot-room-send" type="submit" aria-label={sending ? 'Sending…' : 'Send'} data-ready={prompt.trim() && team.enabled && ready && !sending ? 'true' : 'false'} disabled={sending || !team.enabled || !prompt.trim() || !ready}><span className="send-morph"><Icon name="mic" size={19}/><Icon name="send" size={19}/></span></button></div></div>
       <div className="bot-room-composer-bottom"><p>{!team.enabled ? 'Turn on collaboration in Team settings to send.' : active.length ? 'Your team is working. You can keep the conversation going.' : recipients.length ? 'Selected teammates respond using their own models and permissions.' : 'Your coordinator brings in the right teammates.'}</p></div>
     </form>
     {actions ? <Dialog open title="Team actions" compact className="bot-room-actions-dialog" onClose={() => setActions(false)} actions={<Btn onClick={() => setActions(false)}>Done</Btn>}><div className="bot-room-action-list"><NotificationMuteButton destination={{ type: 'team', id: team.id }}/><Btn icon="experts" onClick={() => { setActions(false); setPicker(true); }}>Choose teammates</Btn><Btn icon="chat" disabled={!ready || !team.enabled} onClick={() => { setActions(false); setWorkMode('chat'); setPrompt('Hi everyone!'); changeRecipients([...team.memberIds]); }}>Draft a greeting to everyone</Btn><Btn icon="info" onClick={() => { setActions(false); onDetails(); }}>Team details</Btn><Btn icon="activity" onClick={() => { setActions(false); onShowWork(); }}>View team work</Btn></div><p className="small muted">Drafting a message starts no work. Send it when you are ready.</p></Dialog> : null}
   </div>;
 }
 
-function TeamChannelMessage({ message, team, bots, messages, disabled, onReply, onOpenConversation }: { message: BotTeamChannelMessage; team: BotTeam; bots: Bot[]; messages: BotTeamChannelMessage[]; disabled: boolean; onReply: () => void; onOpenConversation: (id: string) => void }) {
+function TeamChannelMessage({ message, team, bots, messages, entrance, disabled, onReply, onOpenConversation }: { message: BotTeamChannelMessage; team: BotTeam; bots: Bot[]; messages: BotTeamChannelMessage[]; entrance?: { ms: number; delay: number }; disabled: boolean; onReply: () => void; onOpenConversation: (id: string) => void }) {
   const author = message.author, bot = bots.find(item => item.id === author.botId), replying = messages.find(item => item.id === message.replyToId);
   const implicitRootReply = !!message.runId && replying?.author.type === 'user' && replying.runId === message.runId;
   const addressedEveryone = !!team.memberIds.length && message.recipientIds?.length === team.memberIds.length && team.memberIds.every(id => message.recipientIds?.includes(id));
@@ -240,12 +240,12 @@ function TeamChannelMessage({ message, team, bots, messages, disabled, onReply, 
   const folded = message.kind === 'assignment' || message.kind === 'report' && message.content.length > 1800;
   const preview = message.content.split('\n').find(line => line.trim())?.slice(0, 140) ?? '';
   const date = new Date(message.createdAt), validDate = Number.isFinite(date.getTime());
-  return <article className="bot-room-message" data-kind={message.kind} data-author={author.type} data-message-id={message.id} aria-label={`${author.name}${kind ? ` · ${kind}` : ''}`}>
+  return <article className={cx('bot-room-message', entrance && 'msg-enter')} style={entrance ? { animationDuration: `${entrance.ms}ms`, animationDelay: `${entrance.delay}ms` } : undefined} data-kind={message.kind} data-author={author.type} data-message-id={message.id} aria-label={`${author.name}${kind ? ` · ${kind}` : ''}`}>
     <div className="bot-room-message-face">{author.type === 'bot' ? <CuaBotAvatar name={author.name} config={author.avatarConfig ?? bot?.avatarConfig} size={38}/> : <span className="bot-room-person" aria-hidden="true">{author.type === 'user' ? <Icon name="chat" size={17}/> : <Icon name="experts" size={17}/>}</span>}</div>
     <div className="bot-room-message-main"><header><strong>{author.name}</strong>{author.botId === team.coordinatorId ? <span className="bot-room-role">Coordinator</span> : null}{kind ? <span className="bot-room-kind">{kind}</span> : null}{validDate ? <time dateTime={message.createdAt} title={date.toLocaleString()}>{date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time> : null}</header>
       <div className="bot-room-message-bubble">{message.recipientIds?.length && !addressedEveryone ? <p className="bot-room-addressed">To {message.recipientIds.map(id => bots.find(item => item.id === id)?.name ?? 'Former teammate').join(', ')}</p> : null}
       {message.replyToId && !implicitRootReply ? <blockquote className="bot-room-reply-context"><strong>{replying?.author.name ?? 'Earlier message'}</strong><span>Related message</span></blockquote> : null}
-      <div className="bot-room-message-body">{folded ? <details className="bot-room-message-disclosure"><summary><strong>{message.kind === 'assignment' ? 'Task assignment' : 'Read full report'}</strong><span>{preview}</span></summary><ChannelMarkdown key={currentLanguage()} text={message.content}/></details> : <ChannelMarkdown key={currentLanguage()} text={message.content}/>}</div>
+      <div className="bot-room-message-body">{hasLiveStream(message.id) ? <StreamedBody id={message.id} text={message.content} done render={text => <ChannelMarkdown text={text}/>}/> : folded ? <details className="bot-room-message-disclosure"><summary><strong>{message.kind === 'assignment' ? 'Task assignment' : 'Read full report'}</strong><span>{preview}</span></summary><ChannelMarkdown key={currentLanguage()} text={message.content}/></details> : <ChannelMarkdown key={currentLanguage()} text={message.content}/>}</div>
       <footer><button type="button" disabled={disabled} onClick={onReply}>Reply<span className="sr-only"> to {author.name}</span></button>{message.chatId ? <button type="button" onClick={() => onOpenConversation(message.chatId!)}><Icon name="activity" size={12}/>Thinking & tools</button> : null}{message.state && ['error', 'interrupted', 'cancelled'].includes(message.state) ? <span>{botActivityLabel(message.state)}</span> : null}</footer></div>
     </div>
   </article>;

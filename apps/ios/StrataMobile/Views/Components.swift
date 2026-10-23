@@ -250,3 +250,232 @@ struct StrataTeamAvatars: View {
         }.frame(width: horizontal ? size * 1.50 : size, height: size).accessibilityHidden(true)
     }
 }
+
+/// Coucou chat motion. Springs stay at response 0.28 and damping 0.82.
+enum CoucouMotion {
+    static let springResponse = 0.28
+    static let springDamping = 0.82
+    static let messageRise: CGFloat = 8
+    static let messageStagger = 0.04
+    static let typingDot: CGFloat = 5
+    static let typingScaleMin: CGFloat = 0.6
+    static let typingScaleMax: CGFloat = 1.2
+    static let typingCycle = 0.9
+    static let typingStagger = 0.14
+    static let shimmerDuration = 2.2
+    static let statusCycle = 1.8
+}
+
+struct CoucouRow: Equatable {
+    var id: String
+    var own: Bool
+}
+
+struct CoucouEntrance: Equatable {
+    var delay: Double
+    var fast: Bool
+}
+
+/// The first ready snapshot is history. Later rows rise in. A prepend does not.
+final class CoucouArrivals {
+    private var scope = ""
+    private var primed = false
+    private var seen = Set<String>()
+    private var signature = ""
+    private var entrances: [String: CoucouEntrance] = [:]
+
+    func begin(key: String, rows: [CoucouRow], ready: Bool) {
+        if key != scope {
+            scope = key
+            primed = false
+            seen = []
+            signature = ""
+            entrances = [:]
+        }
+        guard ready else {
+            primed = false
+            signature = ""
+            return
+        }
+        let nextSignature = rows.map { "\($0.own ? "1" : "0"):\($0.id)" }.joined(separator: "\n")
+        if !primed {
+            primed = true
+            seen = Set(rows.map(\.id))
+            signature = nextSignature
+            entrances = [:]
+            return
+        }
+        if nextSignature == signature { return }
+        signature = nextSignature
+        if let first = rows.first, !seen.contains(first.id), !seen.isEmpty {
+            for row in rows { seen.insert(row.id) }
+            return
+        }
+        let freshBots = rows.filter { !$0.own && !seen.contains($0.id) }.count
+        var botIndex = 0
+        for row in rows {
+            if seen.contains(row.id) { continue }
+            seen.insert(row.id)
+            let delay = !row.own && freshBots > 1 ? Double(botIndex) * CoucouMotion.messageStagger : 0
+            if !row.own { botIndex += 1 }
+            entrances[row.id] = CoucouEntrance(delay: delay, fast: row.own)
+        }
+    }
+
+    func entrance(id: String) -> CoucouEntrance? { entrances[id] }
+
+    func finish(id: String) { entrances.removeValue(forKey: id) }
+}
+
+struct CoucouMessageEnter<Content: View>: View {
+    let entrance: CoucouEntrance?
+    let onDone: () -> Void
+    let content: Content
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var shown = false
+    @State private var started = false
+
+    init(entrance: CoucouEntrance?, onDone: @escaping () -> Void, @ViewBuilder content: () -> Content) {
+        self.entrance = entrance
+        self.onDone = onDone
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .opacity(reduceMotion || entrance == nil || shown ? 1 : 0)
+            .offset(y: reduceMotion || entrance == nil || shown ? 0 : CoucouMotion.messageRise)
+            .onAppear {
+                guard !started else { return }
+                started = true
+                guard let entrance, !reduceMotion else { return }
+                withAnimation(.spring(response: CoucouMotion.springResponse, dampingFraction: CoucouMotion.springDamping).delay(entrance.delay)) {
+                    shown = true
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + entrance.delay + CoucouMotion.springResponse) { onDone() }
+            }
+    }
+}
+
+struct TypingDots: View {
+    var label: String
+    var hiddenLabel = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var visible = true
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(0..<3, id: \.self) { index in
+                Circle()
+                    .fill(Color(red: 107 / 255, green: 112 / 255, blue: 121 / 255))
+                    .frame(width: CoucouMotion.typingDot, height: CoucouMotion.typingDot)
+                    .modifier(CoucouTypingWave(index: index, active: visible && !reduceMotion))
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(hiddenLabel ? "" : label)
+        .accessibilityHidden(hiddenLabel)
+        .modifier(CoucouVisibility(visible: $visible))
+    }
+}
+
+private struct CoucouTypingWave: ViewModifier {
+    let index: Int
+    let active: Bool
+    @State private var lifted = false
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(active && lifted ? CoucouMotion.typingScaleMax : CoucouMotion.typingScaleMin)
+            .opacity(active && lifted ? 1 : 0.4)
+            .onAppear { restart() }
+            .onChange(of: active) { _, _ in restart() }
+    }
+
+    private func restart() {
+        lifted = false
+        guard active else { return }
+        withAnimation(.easeInOut(duration: CoucouMotion.typingCycle).repeatForever(autoreverses: true).delay(Double(index) * CoucouMotion.typingStagger)) {
+            lifted = true
+        }
+    }
+}
+
+struct ShimmerText: View {
+    let text: String
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var visible = true
+
+    var body: some View {
+        Text(text)
+            .foregroundStyle(reduceMotion || !visible ? AnyShapeStyle(StrataTheme.secondaryInk) : AnyShapeStyle(Color.clear))
+            .overlay { band }
+            .modifier(CoucouVisibility(visible: $visible))
+    }
+
+    @ViewBuilder private var band: some View {
+        if !reduceMotion && visible {
+            TimelineView(.animation(minimumInterval: 1.0 / 20.0, paused: false)) { context in
+                let phase = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: CoucouMotion.shimmerDuration) / CoucouMotion.shimmerDuration
+                GeometryReader { geometry in
+                    LinearGradient(stops: [
+                        .init(color: Color(red: 124 / 255, green: 129 / 255, blue: 138 / 255), location: 0),
+                        .init(color: Color(red: 242 / 255, green: 243 / 255, blue: 245 / 255), location: 0.4),
+                        .init(color: Color(red: 124 / 255, green: 129 / 255, blue: 138 / 255), location: 0.7)
+                    ], startPoint: .leading, endPoint: .trailing)
+                    .frame(width: geometry.size.width * 2.6)
+                    .offset(x: geometry.size.width * 2.6 * (0.5 - phase) - geometry.size.width * 0.8)
+                }
+                .mask(Text(text))
+            }
+        }
+    }
+}
+
+struct BreathingStatusDot: View {
+    enum Kind { case idle, working, paused, attention }
+    var kind: Kind
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var visible = true
+    @State private var lifted = false
+
+    private var breathes: Bool { kind == .idle || kind == .working }
+
+    var body: some View {
+        Circle()
+            .fill(kind == .attention ? StrataTheme.warning : kind == .paused ? StrataTheme.secondaryInk : StrataTheme.success)
+            .frame(width: 8, height: 8)
+            .scaleEffect(breathes && lifted && visible && !reduceMotion ? 1.2 : 1)
+            .opacity(breathes && visible && !reduceMotion ? (lifted ? 1 : 0.45) : 1)
+            .onAppear { restart() }
+            .onChange(of: visible) { _, _ in restart() }
+            .onChange(of: reduceMotion) { _, _ in restart() }
+            .modifier(CoucouVisibility(visible: $visible))
+            .accessibilityHidden(true)
+    }
+
+    private func restart() {
+        lifted = false
+        guard breathes, visible, !reduceMotion else { return }
+        withAnimation(.easeInOut(duration: CoucouMotion.statusCycle / 2).repeatForever(autoreverses: true)) { lifted = true }
+    }
+}
+
+func coucouKind(mood: BotMood, paused: Bool) -> BreathingStatusDot.Kind {
+    if paused || mood == .paused { return .paused }
+    if mood == .needsApproval || mood == .error { return .attention }
+    if mood == .thinking || mood == .working { return .working }
+    return .idle
+}
+
+private struct CoucouVisibility: ViewModifier {
+    @Binding var visible: Bool
+
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content.onScrollVisibilityChange(threshold: 0.01) { visible = $0 }.onDisappear { visible = false }
+        } else {
+            content.onAppear { visible = true }.onDisappear { visible = false }
+        }
+    }
+}
