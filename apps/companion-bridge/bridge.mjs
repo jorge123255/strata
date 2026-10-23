@@ -222,6 +222,7 @@ export class HostClient {
     const notification = notificationRequest(path, method, body, deviceId);
     const summaryConversations = path === '/api/companion/conversations?summary=1';
     const conversation = /^\/api\/companion\/conversations(?:\/[a-zA-Z0-9_-]{1,120}(?:\/(messages|stop|approval))?)?$/.exec(summaryConversations ? '/api/companion/conversations' : path);
+    const teamMembers = /^\/api\/companion\/teams\/team_[a-f0-9-]+\/members$/.test(path);
     const bots = path === '/api/bots' || /^\/api\/bots\/[a-zA-Z0-9_-]{1,120}\/conversations$/.test(path);
     const avatar = /^\/api\/bots\/[a-zA-Z0-9_-]{1,120}$/.test(path) && method === 'PATCH';
     const workspace = botWorkspaceRequest(path, method, body);
@@ -236,7 +237,7 @@ export class HostClient {
       && path !== '/api/native/operations'
       && !/^\/api\/native\/instances\/[a-zA-Z0-9_-]+\/unload$/.test(path)
       && !/^\/api\/serving\/requests\/[a-zA-Z0-9_-]+\/cancel$/.test(path)
-      && !conversation && !management && !bots && !computer && !avatar && !workspace && !profile && !folder && !notification) throw fail(403, 'Unsupported host control.');
+      && !conversation && !teamMembers && !management && !bots && !computer && !avatar && !workspace && !profile && !folder && !notification) throw fail(403, 'Unsupported host control.');
     const mutation = path.endsWith('/load') || path.endsWith('/unload') || path.endsWith('/cancel') || path === '/api/native/operations' || path === '/api/chat/stream';
     if (workspace || profile || folder || notification) {
       // Fully validated narrow collaboration route; no arbitrary tool execution.
@@ -253,6 +254,18 @@ export class HostClient {
       const create = path === '/api/companion/conversations' && method === 'POST';
       if (method !== (conversation[1] || create ? 'POST' : 'GET')) throw fail(403, 'Unsupported host control method.');
       if (path === '/api/companion/conversations/sync') throw fail(403, 'Desktop synchronization is unavailable from iPhone.');
+    } else if (teamMembers) {
+      // The roster editor mirrors the workspace team validation; the guarded
+      // companion host route remains the authority on the result.
+      if (method === 'GET') {
+        if (body !== undefined) throw fail(403, 'Unsupported host control.');
+      } else if (method === 'PATCH' && body) {
+        if (Object.keys(body).some(key => !['memberIds', 'coordinatorId', 'expectedRevision'].includes(key)) || body.memberIds === undefined && body.coordinatorId === undefined) throw fail(403, 'Only team members can be changed from iPhone.');
+        if (body.memberIds !== undefined && (!Array.isArray(body.memberIds) || body.memberIds.length < 2 || new Set(body.memberIds).size !== body.memberIds.length || body.memberIds.some(value => !safeId(value)))) throw fail(403, 'Choose saved bots from the current roster.');
+        if (body.coordinatorId !== undefined && !safeId(body.coordinatorId)) throw fail(403, 'Choose a coordinator.');
+        if (body.memberIds !== undefined && body.coordinatorId !== undefined && !body.memberIds.includes(body.coordinatorId)) throw fail(403, 'The coordinator must be a team member.');
+        if (body.expectedRevision !== undefined && (!Number.isSafeInteger(body.expectedRevision) || body.expectedRevision < 1)) throw fail(403, 'Review the current team revision.');
+      } else throw fail(403, 'Unsupported host control method.');
     } else if (method !== (mutation ? 'POST' : 'GET')) throw fail(403, 'Unsupported host control method.');
     if (path === '/api/native/operations' && (body?.kind !== 'load' || !safeId(body?.args?.model) || Object.keys(body).some(key => !['kind', 'args'].includes(key)) || Object.keys(body.args).some(key => !['model', 'values'].includes(key)) || Object.keys(body.args.values ?? {}).length)) throw fail(403, 'Only an installed model can be loaded from iPhone.');
     const origin = await this.origin();

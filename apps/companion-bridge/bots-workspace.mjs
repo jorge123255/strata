@@ -148,6 +148,7 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
   else {
     const harnessReview = /^\/api\/bots\/harness\/actions\/(ba_[a-f0-9]{64})\/review$/.exec(p);
     const channel = /^\/api\/bots\/teams\/([A-Za-z0-9_-]{1,120})\/(channel|messages)$/.exec(p);
+    const teamMembers = /^\/api\/bots\/teams\/(team_[a-f0-9-]+)\/members$/.exec(p);
     const team = /^\/api\/bots\/teams\/([A-Za-z0-9_-]{1,120})(?:\/runs(?:\/([A-Za-z0-9_-]{1,120})(?:\/(stop))?)?)?$/.exec(p);
     const task = /^\/api\/bots\/teams\/(team_[a-f0-9-]+)\/jobs\/(tj_[a-f0-9-]+)\/(review|recovery|resume)$/.exec(p);
     const skill = /^\/api\/bots\/skills\/([A-Za-z0-9_-]{1,120})$/.exec(p);
@@ -156,6 +157,7 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
     if (harnessReview) route = { kind: 'harnessReview', actionId: harnessReview[1] };
     else if (task) route = { kind: 'task', teamId: task[1], jobId: task[2], action: task[3] };
     else if (channel) route = { kind: channel[2] === 'channel' ? 'channel' : 'channelMessage', teamId: channel[1] };
+    else if (teamMembers) route = { kind: 'teamMembers', teamId: teamMembers[1] };
     else if (team) route = { kind: p.includes('/runs') ? 'run' : 'team', teamId: team[1], runId: team[2], action: team[3] };
     else if (skill) route = { kind: 'skill', skillId: skill[1] };
     else if (createdTool) route = { kind: 'createdTool', toolId: createdTool[1] };
@@ -173,6 +175,7 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
   const allowed = { teams: ['GET', 'POST'], team: ['PATCH'], channel: ['GET'], channelMessage: ['POST'], run: route.action === 'stop' ? ['POST'] : route.runId ? ['GET'] : ['POST'], activity: ['GET'], supervision: ['GET'], skills: ['GET', 'POST'], skill: ['PATCH', 'DELETE'], assignment: ['POST'], connections: ['GET', 'POST'], connection: route.action ? ['POST'] : ['PATCH', 'DELETE'], connectionAuth: ['auth/complete', 'auth/cancel'].includes(route.action) ? ['POST'] : ['GET', 'POST', 'DELETE'], connectorCatalog: ['GET'], providerModels: ['GET'] };
   allowed.createdTools = ['GET', 'POST']; allowed.createdTool = ['PATCH', 'DELETE'];
   allowed.harnessActions = ['GET']; allowed.harnessReview = ['POST'];
+  allowed.teamMembers = ['GET', 'PATCH'];
   if (!(route.kind === 'task' ? route.action === 'recovery' ? ['GET'] : ['POST'] : allowed[route.kind]).includes(method)) throw error(status, 'This workspace action is unavailable from iPhone.');
   if (!validateBody) return route;
   if (route.kind === 'createdTool' && method === 'DELETE') { createdToolProof(body, status); return route; }
@@ -210,6 +213,13 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
       object(body.limits, Object.keys(limits), status);
       if (!continuousLimits(body.limits)) for (const [key, value] of Object.entries(body.limits)) if (!Number.isSafeInteger(value) || value < limits[key][0] || value > limits[key][1]) throw error(status, 'Choose supported team limits.');
     }
+  } else if (route.kind === 'teamMembers') {
+    object(body, ['memberIds', 'coordinatorId', 'expectedRevision'], status);
+    if (body.memberIds === undefined && body.coordinatorId === undefined) throw error(status, 'Choose members or a coordinator to change.');
+    if (body.memberIds !== undefined) { ids(body.memberIds, status, id, Infinity); if (body.memberIds.length < 2) throw error(status, 'Choose at least two bots.'); }
+    if (body.coordinatorId !== undefined && !id(body.coordinatorId)) throw error(status, 'Choose a coordinator.');
+    if (body.memberIds && body.coordinatorId && !body.memberIds.includes(body.coordinatorId)) throw error(status, 'The coordinator must be a team member.');
+    if (body.expectedRevision !== undefined && (!Number.isSafeInteger(body.expectedRevision) || body.expectedRevision < 1)) throw error(status, 'Review the current team revision.');
   } else if (route.kind === 'channelMessage') {
     object(body, ['message', 'requestId', 'recipientIds', 'replyToId', 'workMode', 'durablePlan', 'everyone'], status);
     string(body.message, 16_000, status);
@@ -429,6 +439,20 @@ export function publicBotWorkspace(body, route) {
     }
     return result;
   }
+  if (route.kind === 'teamMembers') {
+    if (!isObject(body.team) || body.team.id !== route.teamId) throw error(502, 'Strata returned an unrelated team.');
+    if (body.members === undefined && body.roster === undefined) return { team: team(body.team) };
+    if (!Array.isArray(body.members) || !Array.isArray(body.roster)) throw error(502, 'Strata returned unreadable team members.');
+    const memberRow = value => {
+      if (!isObject(value) || !id(value.id)) throw error(502, 'Strata returned unreadable team members.');
+      return { id: value.id, name: text(value.name, 200), role: text(value.role, 120), paused: value.paused === true, available: value.available === true };
+    };
+    const rosterRow = value => {
+      if (!isObject(value) || !id(value.id)) throw error(502, 'Strata returned an unreadable bot roster.');
+      return { id: value.id, name: text(value.name, 200), paused: value.paused === true };
+    };
+    return { team: { id: body.team.id, name: text(body.team.name, 200), memberIds: teamIds(body.team.memberIds), coordinatorId: id(body.team.coordinatorId) ? body.team.coordinatorId : '', revision: Number.isSafeInteger(body.team.revision) && body.team.revision > 0 ? body.team.revision : 1 }, members: body.members.slice(0, 50).map(memberRow), roster: body.roster.slice(0, 500).map(rosterRow) };
+  }
   if (route.kind === 'teams' && Array.isArray(body.teams)) return { teams: rows('teams', team), runs: rows('runs', run, id, Infinity), ...(body.teamWorkflowsSupported === true ? { teamWorkflowsSupported: true } : {}), ...(body.teamWorkPlansSupported === true ? { teamWorkPlansSupported: true } : {}), ...(body.teamUnrestrictedSupported === true ? { teamUnrestrictedSupported: true } : {}), ...(body.teamContinuousSupported === true ? { teamContinuousSupported: true } : {}), ...(body.teamWorkReviewSupported === true ? { teamWorkReviewSupported: true } : {}), ...(body.teamCoordinatorWorkToolsSupported === true ? { teamCoordinatorWorkToolsSupported: true } : {}), ...(body.channelsSupported === true ? { channelsSupported: true } : {}), ...(body.teamInstructionsSupported === true ? { teamInstructionsSupported: true } : {}), ...(body.teamSettingsSupported === true ? { teamSettingsSupported: true, teamComputers: (Array.isArray(body.teamComputers) ? body.teamComputers : []).slice(0, 1000).map(teamComputer).filter(Boolean) } : {}) };
   if (body.team && id(body.team.id)) return { team: team(body.team) };
   if (body.run && id(body.run.id)) return { run: run(body.run) };
@@ -454,13 +478,15 @@ export function publicBotWorkspace(body, route) {
 }
 
 export async function handleBotWorkspace({ path, method, req, res, session, host, readBody, sendJSON, requireCurrentSession }) {
-  const upstreamPath = path.replace(/^\/v1\//, '/api/');
-  const route = botWorkspaceRequest(upstreamPath, method, undefined, 405, false);
+  const parsed = path.replace(/^\/v1\//, '/api/');
+  const route = botWorkspaceRequest(parsed, method, undefined, 405, false);
   if (!route) return false;
+  // The roster editor lives on the guarded companion surface; the paired path stays under /v1/bots/.
+  const upstreamPath = route.kind === 'teamMembers' ? `/api/companion/teams/${route.teamId}/members` : parsed;
   const toolDeletion = route.kind === 'createdTool' && method === 'DELETE';
   if (['GET', 'DELETE'].includes(method) && !toolDeletion && (Number(req.headers['content-length'] ?? 0) > 0 || req.headers['transfer-encoding'])) throw error(400, 'This action does not accept settings.');
   const body = ['POST', 'PATCH'].includes(method) || toolDeletion ? await readBody(req, ['createdTools', 'createdTool', 'workflow'].includes(route.kind) ? 256_000 : ['teams', 'team'].includes(route.kind) ? 240_000 : 70_000) : undefined;
-  botWorkspaceRequest(upstreamPath, method, body, 400);
+  botWorkspaceRequest(parsed, method, body, 400);
   requireCurrentSession();
   let workflowSelection;
   let planSelection;
@@ -542,7 +568,7 @@ export async function handleBotWorkspace({ path, method, req, res, session, host
       if (route.kind === 'team' && !selected) throw error(404, 'This team is no longer available.');
       teamBriefing(body.briefing, body.memberIds ?? selected?.memberIds, 409);
     }
-    if ((route.kind === 'teams' || route.kind === 'team') && (body?.memberIds || body?.coordinatorId) || route.kind === 'assignment' || ['connection', 'connections'].includes(route.kind) && body?.botIds) {
+    if ((['teams', 'team', 'teamMembers'].includes(route.kind)) && (body?.memberIds || body?.coordinatorId) || route.kind === 'assignment' || ['connection', 'connections'].includes(route.kind) && body?.botIds) {
       const catalog = await host.json('/api/bots'); requireCurrentSession();
       const botIds = new Set((catalog.bots ?? []).map(bot => bot.id));
       if ((body?.memberIds ?? body?.botIds ?? [body?.botId]).filter(Boolean).some(botId => !botIds.has(botId)) || body?.coordinatorId && !botIds.has(body.coordinatorId)) throw error(409, 'Refresh the saved bots before changing this item.');
