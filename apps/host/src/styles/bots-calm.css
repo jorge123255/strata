@@ -1,0 +1,546 @@
+/* Calm Bots facelift. Tokens live on the app shell only while a Bots
+   screen is open, so Models, Monitor, and the contrast suite keep :root.
+   No new motion. Focus outlines stay on the shared :focus-visible rule. */
+
+.app:has(.bots-workspace) {
+  --st-bg: #f6f7f8;
+  --st-surface: #ffffff;
+  --st-surface-2: #f3f4f6;
+  --st-line: #e3e5ea;
+  --st-line-soft: #eceef2;
+  --st-ink: #1c1c1e;
+  --st-ink-soft: #3c4048;
+  --st-ink-muted: #5c6370;
+  --st-sidebar: #f3f4f6;
+  --st-hover: #e7e9ee;
+  --st-grouped: #eef0f3;
+  --st-accent: #3d6f99;
+  --st-accent-hover: #2f5a7e;
+  --st-accent-text: #1e4e78;
+  --st-accent-tint: #e7eef5;
+  --st-focus: #1e4e78;
+  --st-user-bg: #2c2d31;
+  --st-user-ink: #f7f8fa;
+  --st-action: #1c1c1e;
+  --st-action-hover: #3a3d44;
+  --st-action-ink: #f7f8fa;
+}
+
+[data-theme="dark"] .app:has(.bots-workspace) {
+  --st-bg: #0e0f12;
+  --st-surface: #16171b;
+  --st-surface-2: #1d1f24;
+  --st-line: #2e3138;
+  --st-line-soft: #26282e;
+  --st-ink: #f5f6f8;
+  --st-ink-soft: #d5d8de;
+  --st-ink-muted: #aeb4be;
+  --st-sidebar: #101114;
+  --st-hover: #262830;
+  --st-grouped: #22242a;
+  --st-accent: #9ec0dc;
+  --st-accent-hover: #c5d9ea;
+  --st-accent-text: #d5e4f2;
+  --st-accent-tint: rgba(158, 192, 220, 0.16);
+  --st-focus: #d5e4f2;
+  --st-user-bg: #2a2c31;
+  --st-user-ink: #f5f6f8;
+  --st-action: #f5f6f8;
+  --st-action-hover: #e4e6ea;
+  --st-action-ink: #121316;
+}
+
+/* Sidebar. Selection is a soft wash with the same ink as the page.
+   Accent stays on unread badges and links. */
+.app:has(.bots-workspace) .nav__scroll {
+  padding: 8px 12px 20px;
+  gap: 20px;
+}
+.app:has(.bots-workspace) .nav-create {
+  min-height: 36px;
+  border-radius: 10px;
+  background: transparent;
+  border: 1px solid var(--st-line);
+  font-weight: 550;
+  font-size: 13px;
+}
+.app:has(.bots-workspace) .nav-section__toggle,
+.app:has(.bots-workspace) .nav-chats__toggle {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--st-ink-muted);
+}
+.app:has(.bots-workspace) .nav-roster__open {
+  min-height: 48px;
+}
+.app:has(.bots-workspace) .nav-roster__name {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.app:has(.bots-workspace) .nav-roster__sub {
+  font-size: 13px;
+}
+.app:has(.bots-workspace) .navitem[aria-current="page"],
+.app:has(.bots-workspace) .nav-roster__open[aria-current="page"],
+.app:has(.bots-workspace) .nav-tool[aria-current="page"] {
+  background: var(--st-accent-tint);
+  color: var(--st-ink);
+}
+.app:has(.bots-workspace) .nav-roster__open[aria-current="page"] .nav-roster__sub {
+  color: var(--st-ink-soft);
+}
+
+/* Conversation roster. The shared sidebar rule collapses every child
+   span onto one line, which clips the name and the time. */
+.cua-bots-sidebar {
+  background: transparent;
+  padding: 12px 8px 16px;
+  border-right: 1px solid var(--st-line-soft);
+}
+.cua-bots-sidebar h2 {
+  margin: 20px 10px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+.cua-bots-sidebar .cua-roster-search input,
+.cua-bots-sidebar .cua-roster-filter .select {
+  font-size: 13px;
+}
+.cua-bots-sidebar .cua-sidebar-item.cua-roster-bot {
+  align-items: center;
+  min-height: 56px;
+  padding: 8px 10px;
+  gap: 10px;
+  border-radius: 12px;
+}
+.cua-sidebar-item > span.cua-roster-copy {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 0;
+  white-space: normal;
+  overflow: hidden;
+  text-overflow: unset;
+}
+/* The shared sidebar rule gives every child span flex-grow, so the
+   8px status dot stretches into a bar and squeezes the name. */
+.cua-bots-sidebar .cua-sidebar-item > .status-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  align-self: center;
+}
+.cua-bots-sidebar .cua-roster-title {
+  align-items: baseline;
+  gap: 8px;
+}
+.cua-bots-sidebar .cua-roster-title strong {
+  display: block;
+  -webkit-line-clamp: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  overflow-wrap: normal;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+}
+.cua-bots-sidebar .cua-roster-title time {
+  font-size: 12px;
+  line-height: 1.3;
+}
+.cua-bots-sidebar .cua-roster-bot small {
+  margin-top: 0;
+  font-size: 13px;
+  line-height: 1.35;
+}
+.cua-bots-sidebar .cua-sidebar-item[data-selected] {
+  background: var(--st-accent-tint);
+  color: var(--st-ink);
+}
+.cua-bots-sidebar .cua-roster-bot[data-selected] small {
+  color: var(--st-ink-soft);
+  opacity: 1;
+}
+
+/* Workspace chrome and cards. Soft edge, no shadow. */
+.bots-workspace .bots-destinations > button {
+  min-height: 34px;
+  font-size: 13px;
+  font-weight: 550;
+}
+.bots-workspace .bots-destinations > button[aria-current],
+.bots-workspace .bots-activity-tabs button[aria-current] {
+  background: var(--st-surface-2);
+  border-color: transparent;
+  color: var(--st-ink);
+}
+.bots-workspace .bots-destinations b {
+  font-size: 12px;
+}
+.bots-workspace .bots-page-heading h2,
+.bots-workspace .cua-content-head h2 {
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.03em;
+}
+.bots-workspace .bots-page-heading p,
+.bots-workspace .cua-content-head p {
+  font-size: 14px;
+  line-height: 1.5;
+}
+.bots-workspace .bots-team-card,
+.bots-workspace .bots-activity-card,
+.bots-workspace .bots-capability-row,
+.bots-workspace .bots-request-card,
+.bots-workspace .bots-created-tool-card,
+.bots-workspace .bots-connection-detail,
+.bots-workspace .bots-connector-card,
+.bots-workspace .cua-routine,
+.bots-workspace .cua-approval,
+.bots-workspace .cua-config > section {
+  border: 1px solid var(--st-line-soft);
+  border-radius: 16px;
+  padding: 20px;
+  background: var(--st-surface);
+  box-shadow: none;
+}
+.bots-workspace .bots-team-card {
+  gap: 12px;
+}
+.bots-workspace .bots-team-card:hover {
+  border-color: var(--st-line);
+  background: var(--st-surface-2);
+}
+.bots-workspace .bots-team-card > strong,
+.bots-workspace .bots-created-tool-heading h3,
+.bots-workspace .bots-connector-card h3 {
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+.bots-workspace .bots-team-card > span:not(.bot-team-mark),
+.bots-workspace .bots-team-card small,
+.bots-workspace .bots-activity-card p,
+.bots-workspace .bots-capability-row p,
+.bots-workspace .bots-created-tool-card > p,
+.bots-workspace .bots-connector-card p {
+  font-size: 13px;
+  line-height: 1.45;
+}
+.bots-workspace .cua-bot-profile .cua-profile-identity h2 {
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: -0.03em;
+}
+.bots-workspace .cua-profile-section > h3 {
+  font-size: 12px;
+  font-weight: 600;
+}
+.bots-workspace .cua-profile-section > div {
+  border-color: var(--st-line-soft);
+  border-radius: 16px;
+  box-shadow: none;
+}
+.bots-workspace .st-btn--primary:not(.st-btn--icon),
+.bots-workspace .st-btn--secondary:not(.st-btn--icon) {
+  border-radius: 999px;
+}
+.bots-workspace .st-btn--secondary:not(.st-btn--icon) {
+  border-color: var(--st-line-soft);
+  background: var(--st-surface);
+}
+
+/* Embedded chat. Assistant text is prose. Only the person speaks in a bubble.
+   The inline shadow token is cleared here because the composer sets it in markup. */
+.bot-chat-embedded {
+  --st-sh-bar: none;
+}
+.bot-chat-embedded .chat__inner {
+  gap: 22px;
+  padding-top: 28px;
+}
+.bot-chat-embedded .st-msg--assistant .st-bubble {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 2px 0 0;
+}
+.bot-chat-embedded .st-msg--assistant .st-bubble p,
+.bot-chat-embedded .st-msg--assistant .st-bubble .md-li,
+.bot-chat-embedded .st-msg--user .st-bubble {
+  font-size: 15px;
+  line-height: 1.55;
+}
+.bot-chat-embedded .st-msg--user .st-bubble {
+  background: var(--st-user-bg);
+  color: var(--st-user-ink);
+  border: 1px solid var(--st-line);
+  border-radius: 18px 18px 6px 18px;
+  padding: 10px 14px;
+}
+.bot-chat-embedded .st-msg__actions {
+  opacity: 1;
+}
+.bot-chat-embedded .st-msg__actions .st-btn--icon {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  background: transparent;
+  color: var(--st-ink-muted);
+  box-shadow: none;
+}
+.bot-chat-embedded .st-msg__actions .st-btn--icon:hover {
+  background: var(--st-hover);
+  color: var(--st-ink);
+}
+.bot-chat-embedded .toolcard,
+.bot-chat-embedded .toolcard[data-state="proposed"],
+.bot-chat-embedded .askcard,
+.bot-chat-embedded .askcard[data-state="proposed"] {
+  margin: 8px 0 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.bot-chat-embedded .toolcard__head,
+.bot-chat-embedded .toolcard__disclosure > summary {
+  background: transparent;
+  border-bottom: 0;
+  min-height: 0;
+  padding: 4px 0;
+}
+.bot-chat-embedded .toolcard__disclosure .toolcard__body,
+.bot-chat-embedded .toolcard__body {
+  padding-inline: 0;
+}
+.bot-chat-embedded .toolcard__quick-actions,
+.bot-chat-embedded .askcard__acts {
+  justify-content: flex-start;
+  gap: 4px;
+  margin: 0;
+  padding: 4px 0 0;
+  border-top: 0;
+}
+.bot-chat-embedded .toolcard__quick-actions > span {
+  font-size: 12px;
+}
+.bot-chat-embedded .toolcard__quick-actions .st-btn--primary,
+.bot-chat-embedded .askcard__acts .st-btn--primary {
+  min-height: 32px;
+  padding-inline: 14px;
+  border-radius: 999px;
+}
+.bot-chat-embedded .toolcard__quick-actions .st-btn:not(.st-btn--primary),
+.bot-chat-embedded .askcard__acts .st-btn:not(.st-btn--primary) {
+  min-height: 32px;
+  padding-inline: 10px;
+  border: 0;
+  background: transparent;
+  color: var(--st-ink-muted);
+  box-shadow: none;
+}
+.bot-chat-embedded .composer {
+  padding: 4px 16px 16px;
+  background: transparent;
+}
+.bot-chat-embedded .composer .st-composer {
+  box-shadow: none;
+  border: 1px solid var(--st-line-soft);
+  border-radius: 22px;
+  background: var(--st-surface);
+  padding: 8px 8px 8px 14px;
+}
+.bot-chat-embedded .composer .st-composer textarea {
+  min-height: 40px;
+  height: 40px;
+  padding: 8px 2px;
+  font-size: 15px;
+  line-height: 1.5;
+}
+.bot-chat-embedded .composer .st-composer__bar > .st-btn {
+  min-width: 0;
+  height: 32px;
+  border-radius: 999px;
+}
+.bot-chat-embedded .composer-add,
+.bot-chat-embedded .st-composer__bar .st-btn--secondary,
+.bot-chat-embedded .st-composer__bar .st-btn--ghost {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+/* Team room. Bot lines are prose. The person's lines stay in a calm bubble.
+   Status lines keep the treatment they already have. */
+.bot-room-feed {
+  padding-top: 28px;
+}
+.bot-group-identity {
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+.bot-group-header .bot-group-identity h2 {
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+.bot-group-header .bot-group-identity p,
+.bot-room-to,
+.bot-room-device-note,
+.bot-room-composer-bottom p,
+.bot-room-work-mode p {
+  font-size: 12px;
+  line-height: 1.45;
+}
+.bot-room-message {
+  padding: 10px 4px;
+}
+.bot-room-message:not([data-kind="status"]) header > strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--st-ink);
+}
+.bot-room-message time,
+.bot-room-message footer > span {
+  font-size: 12px;
+}
+.bot-room-message[data-author="bot"]:not([data-kind="status"]) .bot-room-message-bubble {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 0 2px;
+}
+.bot-room-draft.bot-room-message[data-author="bot"] .bot-room-message-bubble {
+  background: transparent;
+  border: 0;
+  border-left: 2px solid var(--st-line);
+  border-radius: 0;
+  padding: 0 2px 0 12px;
+}
+.bot-room-message[data-author="user"]:not([data-kind="status"]) .bot-room-message-bubble {
+  background: var(--st-user-bg);
+  color: var(--st-user-ink);
+  border: 1px solid var(--st-line);
+  border-radius: 18px 18px 6px 18px;
+  padding: 10px 14px;
+}
+.bot-room-message[data-author="user"] .bot-room-message-body,
+.bot-room-message[data-author="user"] header,
+.bot-room-message[data-author="user"] time,
+.bot-room-message[data-author="user"] footer > span,
+.bot-room-message[data-author="user"] footer > button {
+  color: var(--st-user-ink);
+}
+.bot-room-message-body {
+  font-size: 15px;
+  line-height: 1.55;
+}
+.bot-room-message footer > button {
+  padding: 4px 8px;
+  border-radius: 999px;
+  font: 500 13px/1.3 var(--st-font);
+  text-decoration: none;
+}
+.bot-room-message footer > button:hover {
+  background: var(--st-hover);
+  color: var(--st-ink);
+  text-decoration: none;
+}
+.bot-room-message[data-author="user"] footer > button:hover {
+  background: color-mix(in srgb, var(--st-user-ink) 14%, transparent);
+  color: var(--st-user-ink);
+}
+.bot-room-welcome h3 {
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.03em;
+}
+.bot-room-welcome p {
+  font-size: 14px;
+  line-height: 1.55;
+}
+.bot-room .bot-room-welcome > div:last-child > button,
+.bot-room-recipient-picker > div > button,
+.bot-room-choice-actions button {
+  border-radius: 999px;
+  padding: 8px 14px;
+  background: transparent;
+  border: 1px solid var(--st-line);
+  font: 500 13px/1.2 var(--st-font);
+}
+.bot-room .bot-room-welcome > div:last-child > button:hover,
+.bot-room-recipient-picker > div > button:hover,
+.bot-room-choice-actions button:hover:not(:disabled) {
+  background: var(--st-hover);
+}
+.bot-room-choice {
+  border-radius: 16px;
+  border-color: var(--st-line-soft);
+  background: var(--st-surface);
+}
+.bot-room-choice-actions button[data-style="primary"] {
+  background: var(--st-action);
+  color: var(--st-action-ink);
+  border-color: transparent;
+}
+.bot-room-choice-actions button[data-style="danger"] {
+  background: var(--st-danger-tint);
+  color: var(--st-danger-text);
+  border-color: transparent;
+}
+.bot-room-work-mode button {
+  font-size: 13px;
+  font-weight: 550;
+}
+.bot-room-work-mode button[aria-pressed="true"] {
+  box-shadow: none;
+}
+.bot-room-working {
+  background: transparent;
+  border-color: var(--st-line-soft);
+}
+.bot-room-working strong,
+.bot-room-working small {
+  font-size: 13px;
+}
+.bot-room .bot-room-input-pill {
+  border-color: var(--st-line-soft);
+  border-radius: 22px;
+  background: var(--st-surface);
+  padding: 4px 6px 4px 16px;
+}
+.bot-room .bot-room-input textarea {
+  font-size: 15px;
+  line-height: 1.5;
+}
+.bot-room .bot-room-add {
+  width: 36px;
+  height: 36px;
+  border: 0;
+  background: transparent;
+  color: var(--st-ink-muted);
+}
+.bot-room .bot-room-add:hover {
+  background: var(--st-hover);
+  color: var(--st-ink);
+}
+.bot-room .bot-room-send {
+  width: 32px;
+  height: 32px;
+  background: var(--st-action);
+  color: var(--st-action-ink);
+}
+.bot-room .bot-room-send:hover:not(:disabled) {
+  background: var(--st-action-hover);
+}
