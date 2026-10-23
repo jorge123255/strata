@@ -28,3 +28,4 @@ import './styles/onboarding.css';
 import './styles/board.css';
 import './styles/workspace.css';
 import './styles/chat-motion.css';
+import './styles/gpu-roles.css';
