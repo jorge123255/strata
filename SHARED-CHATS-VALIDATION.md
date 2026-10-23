@@ -1,8 +1,14 @@
 # Shared Mac conversations on iPhone
 
+## Rejected team-message correction activated (October 23, 2026)
+
+Mac source **f12de23369aa56142054d70ebc03ea3a36027255** corrects a public-message validation error that could strand a team after completed research. A rejected `text` argument is now a known no-effect error; failed or uncertain publication still requires inspection. Plan diagnostics expose safe, specific receipt/access/cleanup/storage blockers. The host-only correction is active on Mac and available to the existing iPhone app; native/UI/bridge/model settings are unchanged. Maya remains separate.
+
+The final host regression passed **768/768**, including a complete disposable coding/review graph and failure cases. Independent source, staged-artifact and postlaunch reviews passed. All **176 conversations, 656 messages, three paired devices and nine model connections**, plus saved plans and historical receipts, were retained. Existing work was not automatically resumed. Full test scopes, signed artifact, backup and evidence are in [team plans validation](docs/BOTS-TEAM-PLANS-VALIDATION-20261022.md#rejected-public-message-arguments-october-23-2026).
+
 ## Durable team work plans activated (October 22, 2026)
 
-Mac source **38312b48fb851f93e91ac8c389807009a65c0ca7** is active in `/Applications/Strata.app`, and signed iPhone build **37** is installed with fresh device-inventory verification. New explicit team **Work** requests use saved task owners, dependencies, checkpoints, independent review and owner acceptance. Both clients expose the saved plan and proof-bound controls. This is a general controller; no team-specific instruction or Maya setting was changed. Existing Chat and older workflows remain available.
+Mac source **38312b48fb851f93e91ac8c389807009a65c0ca7** was activated in `/Applications/Strata.app`, and signed iPhone build **37** was installed with fresh device-inventory verification. New explicit team **Work** requests use saved task owners, dependencies, checkpoints, independent review and owner acceptance. Both clients expose the saved plan and proof-bound controls. This is a general controller; no team-specific instruction or Maya setting was changed. Existing Chat and older workflows remain available.
 
 Final frozen-source checks passed **411/411 host**, **150/150 bridge**, **7/7 Mac browser**, **301 native iPhone checks with two explicit fixture skips**, **1/1 native iPhone workflow** and **29/29 Rust checks**. A real disposable four-bot Codex group wrote two modules, independently passed all eight unchanged tests and reached owner review in 88 seconds. That bounded result is not all-provider or long-project acceptance.
 
