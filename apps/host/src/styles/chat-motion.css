@@ -133,15 +133,12 @@
   transition: grid-template-columns 0.34s var(--ease-close);
 }
 .cua-bots-shell[data-list] {
-  grid-template-columns: 248px minmax(0, 1fr);
+  grid-template-columns: var(--cua-roster-width, 280px) minmax(0, 1fr);
   transition: grid-template-columns 0.3s var(--ease-pop);
-}
-@media (max-width: 767px) {
-  .cua-bots-shell[data-list] { grid-template-columns: 168px minmax(0, 1fr); }
 }
 @media (max-width: 500px) {
   .cua-bots-shell[data-list] { grid-template-columns: 52px minmax(0, 1fr); }
-  .cua-roster-bot .status-dot { display: none; }
+  .cua-bots-shell[data-list] > .cua-bots-sidebar { min-width: 0; }
 }
 @media (max-width: 760px) {
   .cua-bots-shell[data-list] { grid-template-columns: 52px minmax(0, 1fr); }

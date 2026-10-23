@@ -1,5 +1,5 @@
 // Embedded CUA Bots adaptation. FSL-1.1-MIT; see /cua-bots-LICENSE.txt and /cua-bots-NOTICE.txt.
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { api } from '../lib/client';
 import { navigate, useLocation } from '../lib/router';
 import { useMedia } from '../lib/responsive';
@@ -10,12 +10,13 @@ import { relTime } from '../lib/format';
 import { blankBot, botComputerSelection, botConversationContext, botConversations, botPersonalConversations, botDraftError, botPolicyLabel, botAvatarActivity, botReplySignal, botConversationRoster, botProviderName, botSetupStepError, teamRosterLabel, type BotPolicy, type Bot, type BotDraft, type BotExecution, type BotsSnapshot, type BotTeamsSnapshot } from '../lib/bots';
 import { botReadiness, type BotComputerReadiness } from '../lib/bot-readiness';
 import type { Session } from '../lib/types';
-import { ShimmerText, StatusDot } from '../components/ChatMotion';
 import { CuaBotAvatar, CuaBotAvatarPicker, defaultCuaBotAvatar } from '../components/CuaBotAvatar';
 import { BotComputer } from '../components/BotComputer';
 import { BotHostFolderSettings } from '../components/BotHostFolderSettings';
 import { Screen } from '../components/layout';
 import { Btn, Dialog, ErrorNotice, Icon, IconBtn, Select } from '../components/ui';
+import { ConversationRosterCopy, ConversationRosterFace, ConversationRosterResize } from './ConversationRoster';
+import { CONVERSATION_ROSTER_WIDTH_KEY, readConversationRosterWidth } from '../lib/conversation-roster-width';
 import { ChatScreen } from './Chat';
 import { ComputerPicker, CuaBotsConfig, BotPermissionPicker } from './CuaBotsConfig';
 import { BotMemoryDialog, BotOutputDialog, BotRoutineDialog, BotRulesDialog, BotsWorkView, EMPTY_BOT_WORK, routineScheduleLabel, useBotsWork, type BotRoutine, type BotWorkOutput, type BotsWorkTab } from './CuaBotsWork';
@@ -54,7 +55,7 @@ export function BotsScreen() {
   const [routineFor, setRoutineFor] = useState<{ bot?: Bot; routine?: BotRoutine } | null>(null), [outputFor, setOutputFor] = useState<{ bot: Bot; output: BotWorkOutput } | null>(null);
   const [readinessRevision, setReadinessRevision] = useState(0);
   const [newTeam, setNewTeam] = useState(false);
-  const [rosterQuery, setRosterQuery] = useState(''), [rosterFilter, setRosterFilter] = useState('all');
+  const [rosterQuery, setRosterQuery] = useState(''), [rosterFilter, setRosterFilter] = useState('all'), [rosterWidth, setRosterWidth] = useState(() => readConversationRosterWidth(typeof localStorage === 'undefined' ? null : localStorage));
   const [showRosterFilters, setShowRosterFilters] = useState(false), [showChatHistory, setShowChatHistory] = useState(false);
   const teams = useBotsResource<BotTeamsSnapshot>('/api/bots/teams');
   const [computerReadiness, setComputerReadiness] = useState<{ key: string; computer?: BotComputerReadiness; error?: string; checking?: boolean } | null>(null);
@@ -229,6 +230,10 @@ export function BotsScreen() {
   }
   function toggleComputer() { setShowComputer(previous => { if (!previous) setShowProfile(false); return !previous; }); }
   function updateNew(patch: Partial<BotDraft>) { setEditorError(''); setNewDraft(current => ({ ...current, ...patch })); }
+  function resizeRoster(next: number) {
+    setRosterWidth(next);
+    try { localStorage.setItem(CONVERSATION_ROSTER_WIDTH_KEY, String(next)); } catch { /* This visit keeps the width. */ }
+  }
   function advanceNew() { const error = botSetupStepError(step, newDraft); if (error) setEditorError(error); else { setEditorError(''); setStep(value => value + 1); } }
   const mood = (bot: Bot) => botAvatarActivity(bot, sessions);
   const rosterDetail = (bot: Bot, preview?: {text:string}) => bot.paused ? 'Paused' : mood(bot) === 'needsApproval' ? 'Needs approval' : ['thinking', 'working'].includes(mood(bot)) ? 'Working' : mood(bot) === 'error' ? 'Needs attention' : preview?.text ?? snapshot?.providers.find(provider => provider.id === bot.provider)?.name ?? (bot.provider === 'configured' ? 'Models connection' : bot.provider);
@@ -240,8 +245,8 @@ export function BotsScreen() {
 
   return <Screen title="Bots" titleDetail={route === 'new' ? 'New bot' : route === 'bot' ? selected?.name : undefined} bare actions={<><Btn size="sm" icon="activity" onClick={() => openNotifications()}>Notifications</Btn><IconBtn name="refresh" title="Refresh bots and shared work" disabled={loading || !!pending} onClick={() => { void refresh(true); void refreshWork(); void teams.refresh(); setReadinessRevision(value => value + 1); }}/></>}>
     <div className="bots-workspace"><nav className="bots-destinations" aria-label="Bots workspace">{([{id:'team',label:'Team',icon:'experts'},{id:'activity',label:'Activity',icon:'activity'},{id:'skills',label:'Skills',icon:'skills'},{id:'tools',label:'Tools',icon:'tool'},{id:'connections',label:'Connectors',icon:'link'}] as const).map(tab=><button key={tab.id} aria-current={destination===tab.id?'page':undefined} onClick={()=>tab.id==='connections'?navigate('connectors'):navigate('bots',tab.id==='team'?'teams':tab.id)}><Icon name={tab.icon} size={17}/><span>{tab.label}</span>{tab.id==='activity'&&approvals?<b>{approvals}</b>:null}</button>)}</nav>
-    <div className="cua-bots-shell" data-list={destination==='team'||undefined}>
-      <aside className="cua-bots-sidebar" aria-label="Bots navigation" inert={destination === 'team' ? undefined : true} aria-hidden={destination === 'team' ? undefined : true}><nav>
+    <div className="cua-bots-shell" data-list={destination==='team'||undefined} style={{ '--cua-roster-width': `${rosterWidth}px` } as CSSProperties}>
+      <aside className="cua-bots-sidebar" aria-label="Bots navigation" inert={destination === 'team' ? undefined : true} aria-hidden={destination === 'team' ? undefined : true}><nav id="conversation-roster">
         <button className="cua-sidebar-item cua-sidebar-new" data-selected={route === 'new' || undefined} onClick={startNew} aria-label="New bot"><Icon name="plus" size={16}/><span>New bot</span></button>
         <button className="cua-sidebar-item cua-roster-compact" data-active={!!rosterQuery || rosterFilter !== 'all' || undefined} aria-label="Search and filter bots" aria-haspopup="dialog" aria-expanded={showRosterFilters} onClick={() => setShowRosterFilters(true)}><Icon name="search" size={17}/></button>
         <div className="cua-roster-search"><Icon name="search" size={14}/><input type="search" aria-label="Search bots" placeholder="Search conversations…" value={rosterQuery} onChange={event => setRosterQuery(event.target.value)}/></div><div className="cua-roster-filter"><Select ariaLabel="Filter bots" value={rosterFilter} options={[{value:"all",label:"All conversations"},{value:"attention",label:"Needs attention"},{value:"working",label:"Working"}]} onChange={setRosterFilter}/></div>
@@ -249,17 +254,24 @@ export function BotsScreen() {
         <div className="cua-bot-list">{listedRoster.map(row => {
           if (row.kind === 'team') {
             const team = teams.data?.teams.find(item => item.id === row.id); if (!team) return null;
+            const preview = row.preview ?? (team.enabled ? teamRosterLabel(team.memberIds.length) : 'Collaboration off');
+            const teamStatus = row.state === 'working' ? 'working' : row.state === 'attention' ? 'attention' : 'idle';
             return <button className="cua-sidebar-item cua-roster-bot cua-roster-team" key={`team:${team.id}`} aria-label={`Open team ${team.name}`} title={team.name} data-selected={route === 'teams' && location.query.get('team') === team.id || undefined} data-state={row.state} onClick={() => navigate('bots','teams',{team:team.id})}>
-              <TeamMark team={team} bots={bots} size={26}/><span className="cua-roster-copy"><span className="cua-roster-title"><strong title={team.name}>{team.name}</strong>{Number.isFinite(Date.parse(row.updatedAt)) ? <time dateTime={row.updatedAt}>{relTime(row.updatedAt)}</time> : null}</span><small>{row.state === 'working' ? <ShimmerText text={row.preview ?? (team.enabled ? teamRosterLabel(team.memberIds.length) : 'Collaboration off')}/> : (row.preview ?? (team.enabled ? teamRosterLabel(team.memberIds.length) : 'Collaboration off'))}</small></span>{row.state === 'working' || row.state === 'attention' ? <StatusDot status={row.state === 'working' ? 'working' : 'attention'}/> : null}
+              <ConversationRosterFace status={teamStatus}><TeamMark team={team} bots={bots} size={16}/></ConversationRosterFace>
+              <ConversationRosterCopy name={team.name} timeLabel={Number.isFinite(Date.parse(row.updatedAt)) ? relTime(row.updatedAt) : undefined} timeStamp={row.updatedAt} preview={preview} shimmer={row.state === 'working'}/>
             </button>;
           }
           const bot = bots.find(item => item.id === row.id); if (!bot) return null;
           const detail = pending === `open:${bot.id}` ? 'Opening conversation…' : rosterDetail(bot, row.preview ? { text: row.preview } : undefined);
           const dot = bot.paused || mood(bot) === 'paused' ? 'paused' : mood(bot) === 'needsApproval' || mood(bot) === 'error' ? 'attention' : mood(bot) === 'thinking' || mood(bot) === 'working' ? 'working' : 'idle';
-          return <button key={`bot:${bot.id}`} className="cua-sidebar-item cua-roster-bot" aria-label={`Open ${bot.name}`} title={bot.name} data-selected={selected?.id === bot.id && route === 'bot' || undefined} data-state={mood(bot)} disabled={loading || !!pending} onClick={() => void openPersonalChat(bot)}><CuaBotAvatar config={bot.avatarConfig} name={bot.name} size={40} mood={mood(bot)} messageSignal={botReplySignal(bot.id, sessions)}/><span className="cua-roster-copy"><span className="cua-roster-title"><strong title={bot.name}>{bot.name}</strong>{Number.isFinite(Date.parse(row.updatedAt)) ? <time dateTime={row.updatedAt}>{relTime(row.updatedAt)}</time> : null}</span><small>{dot === 'working' ? <ShimmerText text={detail}/> : detail}</small></span>{bot.paused ? <Icon name="pause" size={12}/> : null}<StatusDot status={dot}/></button>;
+          return <button key={`bot:${bot.id}`} className="cua-sidebar-item cua-roster-bot" aria-label={`Open ${bot.name}`} title={bot.name} data-selected={selected?.id === bot.id && route === 'bot' || undefined} data-state={mood(bot)} disabled={loading || !!pending} onClick={() => void openPersonalChat(bot)}>
+            <ConversationRosterFace status={dot}><CuaBotAvatar config={bot.avatarConfig} name={bot.name} size={32} mood={mood(bot)} messageSignal={botReplySignal(bot.id, sessions)}/></ConversationRosterFace>
+            <ConversationRosterCopy name={bot.name} timeLabel={Number.isFinite(Date.parse(row.updatedAt)) ? relTime(row.updatedAt) : undefined} timeStamp={row.updatedAt} preview={detail} shimmer={dot === 'working'} extra={bot.paused ? <Icon name="pause" size={12}/> : null}/>
+          </button>;
         })}{!listedRoster.length ? <p className="cua-roster-empty">{rosterQuery ? 'No conversations match this search.' : rosterFilter === 'working' ? 'No conversations are active.' : rosterFilter === 'attention' ? 'No conversations need attention.' : 'Create your first bot.'}</p> : null}</div>
         <div className="cua-roster-team-actions"><button className="cua-sidebar-item" data-selected={route==='teams'&&!location.query.get('team')||undefined} onClick={()=>navigate('bots','teams')} aria-label="All teams"><Icon name="experts" size={17}/><span>All teams</span></button><button className="cua-sidebar-item cua-sidebar-new" disabled={bots.length<2} title={bots.length<2?'Add a second bot to create a team':undefined} onClick={()=>setNewTeam(true)} aria-label="New team"><Icon name="plus" size={16}/><span>New team</span></button></div>
       </nav></aside>
+      {destination === 'team' ? <ConversationRosterResize width={rosterWidth} onChange={resizeRoster}/> : null}
       <section className="cua-bots-main">
         {personalChatError ? <div className="cua-inline-error"><ErrorNotice message={personalChatError} action="Dismiss" onRetry={() => setPersonalChatError('')}/></div> : null}
         {error ? <div className="cua-inline-error"><ErrorNotice message={error} action="Refresh" onRetry={() => void refresh(true)}/></div> : null}
