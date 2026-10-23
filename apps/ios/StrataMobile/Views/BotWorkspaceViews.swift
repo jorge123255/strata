@@ -300,6 +300,51 @@ struct BotTeamEditor: View {
     }
 }
 
+private struct TeamReplyGroupRow: View {
+    var name: String
+    var preview: String
+    var face: AvatarConfig
+    var index: Int
+    var animate: Bool
+    var messageId: String
+    var onReply: () -> Void
+    var onDone: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var shown = false
+    @State private var started = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            AvatarBadge(face, size: 26)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(name).font(.caption.weight(.semibold)).foregroundStyle(StrataTheme.ink).lineLimit(1)
+                Text(preview).font(.subheadline).foregroundStyle(StrataTheme.secondaryInk).lineLimit(2)
+            }
+            Spacer(minLength: 8)
+            Button(action: onReply) { Text("Reply") }
+                .font(.caption2)
+                .buttonStyle(.plain)
+                .foregroundStyle(StrataTheme.secondaryInk)
+                .accessibilityLabel("Reply to \(name)")
+        }
+        .padding(.vertical, 2)
+        .opacity(reduceMotion || !animate || shown ? 1 : 0)
+        .offset(y: reduceMotion || !animate || shown ? 0 : CoucouMotion.messageRise)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("teamReply-\(messageId)")
+        .onAppear {
+            guard !started else { return }
+            started = true
+            let delay = RoomReplyGroup.stagger(index)
+            guard animate, !reduceMotion else { onDone(); return }
+            withAnimation(.spring(response: CoucouMotion.springResponse, dampingFraction: CoucouMotion.springDamping).delay(delay)) {
+                shown = true
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay + CoucouMotion.springResponse) { onDone() }
+        }
+    }
+}
+
 struct BotTeamDetailView: View {
     @ObservedObject var store: CompanionStore
     @ObservedObject var workspace: BotWorkspaceStore
@@ -329,6 +374,7 @@ struct BotTeamDetailView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @FocusState private var taskFocused: Bool
     @State private var expandedMessages: Set<String> = []
+    @State private var expandedReplyGroups: Set<String> = []
     @State private var choiceBusy = ""
     @State private var choiceErrors: [String: String] = [:]
     @State private var choiceRetries: [String: String] = [:]
@@ -709,15 +755,77 @@ struct BotTeamDetailView: View {
         }
         choiceBusy = ""
     }
+    private struct RoomFeedItem: Identifiable {
+        var id: String
+        var triggerId: String
+        var messages: [BotTeamChannelMessage]
+        var grouped: Bool
+    }
+    private func feedItems(_ team: BotTeam) -> [RoomFeedItem] {
+        let byId = Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let sources = entries.map { entry in
+            RoomReplySource(id: entry.id, kind: entry.kind, authorType: entry.author.type, content: entry.content, replyToId: entry.replyToId, replyGroupId: entry.replyGroupId, recipientIds: entry.recipientIds, hasRecovery: entry.recovery != nil)
+        }
+        return RoomReplyGroup.group(messages: sources, memberIds: team.memberIds).compactMap { entry in
+            switch entry {
+            case .message(let id):
+                guard let message = byId[id] else { return nil }
+                return RoomFeedItem(id: id, triggerId: "", messages: [message], grouped: false)
+            case .replies(let id, let triggerId, let messageIds):
+                let grouped = messageIds.compactMap { byId[$0] }
+                guard grouped.count >= 2 else { return nil }
+                return RoomFeedItem(id: "replies-" + id, triggerId: triggerId, messages: grouped, grouped: true)
+            }
+        }
+    }
     private func channelMessages(_ team: BotTeam) -> some View {
         let rows = entries.map { CoucouRow(id: $0.id, own: $0.author.type == "user") }
         let ready = channel != nil && !workspace.loading.contains(channelKey)
         arrivals.begin(key: teamId, rows: rows, ready: ready)
-        return ForEach(entries) { entry in
-            CoucouMessageEnter(entrance: arrivals.entrance(id: entry.id), onDone: { arrivals.finish(id: entry.id) }) {
-                channelRow(entry, team: team)
-            }.id(entry.id)
+        return ForEach(feedItems(team)) { item in
+            if item.grouped {
+                replyGroup(item)
+            } else if let entry = item.messages.first {
+                CoucouMessageEnter(entrance: arrivals.entrance(id: entry.id), onDone: { arrivals.finish(id: entry.id) }) {
+                    channelRow(entry, team: team)
+                }.id(entry.id)
+            }
         }
+    }
+    @ViewBuilder private func replyGroup(_ item: RoomFeedItem) -> some View {
+        let expanded = expandedReplyGroups.contains(item.id)
+        let visible = RoomReplyGroup.visibleCount(item.messages.count, expanded: expanded)
+        let label = RoomReplyGroup.label(item.messages.count)
+        VStack(alignment: .leading, spacing: 2) {
+            if item.messages.count > RoomReplyGroup.previewLimit {
+                Button {
+                    if expanded { expandedReplyGroups.remove(item.id) } else { expandedReplyGroups.insert(item.id) }
+                } label: {
+                    Text(label).font(.caption.weight(.semibold)).foregroundStyle(StrataTheme.secondaryInk).frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(label)
+                .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+                .accessibilityIdentifier("teamReplyGroup-\(item.triggerId)")
+            } else {
+                Text(label).font(.caption.weight(.semibold)).foregroundStyle(StrataTheme.secondaryInk).frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("teamReplyGroup-\(item.triggerId)")
+            }
+            ForEach(Array(item.messages.prefix(visible).enumerated()), id: \.element.id) { index, entry in
+                TeamReplyGroupRow(
+                    name: entry.author.name,
+                    preview: RoomReplyGroup.preview(entry.content),
+                    face: entry.author.avatarConfig ?? store.botCatalog?.bots.first { $0.id == entry.author.botId }?.face ?? .default(for: entry.author.name),
+                    index: index,
+                    animate: arrivals.entrance(id: entry.id) != nil,
+                    messageId: entry.id,
+                    onReply: { reply = entry; requestId = UUID().uuidString; taskFocused = true },
+                    onDone: { arrivals.finish(id: entry.id) }
+                )
+            }
+        }
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .contain)
     }
 
     private func channelRow(_ entry: BotTeamChannelMessage, team: BotTeam) -> some View {

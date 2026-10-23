@@ -380,6 +380,142 @@ enum RoomMention {
     }
 }
 
+struct RoomReplySource: Equatable {
+    var id: String
+    var kind: String
+    var authorType: String
+    var content: String
+    var replyToId: String?
+    var replyGroupId: String?
+    var recipientIds: [String]?
+    var hasRecovery: Bool
+}
+
+enum RoomFeedEntry: Equatable {
+    case message(String)
+    case replies(id: String, triggerId: String, messageIds: [String])
+}
+
+/// Stacks bot replies that share replyGroupId. A missing field uses a consecutive run.
+enum RoomReplyGroup {
+    static let previewLimit = 5
+    static let staggerSeconds = 0.06
+    static let previewCharacters = 160
+
+    static func label(_ count: Int) -> String {
+        if count == 1 { return "1 bot replied" }
+        return "\(count) bots replied"
+    }
+
+    static func stagger(_ index: Int) -> Double {
+        Double(max(0, index)) * staggerSeconds
+    }
+
+    static func visibleCount(_ total: Int, expanded: Bool) -> Int {
+        expanded || total <= previewLimit ? total : previewLimit
+    }
+
+    static func preview(_ content: String) -> String {
+        let line = content.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.first { !$0.isEmpty } ?? ""
+        if line.count <= previewCharacters { return String(line) }
+        return String(line.prefix(previewCharacters)) + "…"
+    }
+
+    static func addressesRoom(content: String, recipientIds: [String]?, memberIds: [String]) -> Bool {
+        if RoomMention.addressesEveryone(content) { return true }
+        guard !memberIds.isEmpty, let recipientIds, recipientIds.count == memberIds.count else { return false }
+        let members = Set(memberIds)
+        guard members.count == memberIds.count else { return false }
+        var seen = Set<String>()
+        for id in recipientIds {
+            if !members.contains(id) || seen.contains(id) { return false }
+            seen.insert(id)
+        }
+        return seen.count == members.count
+    }
+
+    static func group(messages: [RoomReplySource], memberIds: [String]) -> [RoomFeedEntry] {
+        var buckets: [String: [Int]] = [:]
+        for (index, message) in messages.enumerated() {
+            let groupId = replyGroupKey(message)
+            guard !groupId.isEmpty, canGroup(message) else { continue }
+            buckets[groupId, default: []].append(index)
+        }
+        var explicit = Set<Int>()
+        for indices in buckets.values where indices.count >= 2 {
+            explicit.formUnion(indices)
+        }
+        var items: [RoomFeedEntry] = []
+        var index = 0
+        while index < messages.count {
+            let message = messages[index]
+            let groupId = replyGroupKey(message)
+            if !groupId.isEmpty, explicit.contains(index), let indices = buckets[groupId] {
+                if indices.first == index {
+                    items.append(.replies(id: messages[indices[0]].id, triggerId: groupId, messageIds: indices.map { messages[$0].id }))
+                }
+                index += 1
+                continue
+            }
+            let run = fallbackRun(messages: messages, start: index, memberIds: memberIds, explicit: explicit)
+            if run.count >= 2 {
+                let first = messages[run[0]]
+                let replyTo = replyKey(first)
+                let triggerId = replyTo.isEmpty ? (index > 0 ? messages[index - 1].id : first.id) : replyTo
+                items.append(.replies(id: first.id, triggerId: triggerId, messageIds: run.map { messages[$0].id }))
+                index = run[run.count - 1] + 1
+                continue
+            }
+            items.append(.message(message.id))
+            index += 1
+        }
+        return items
+    }
+
+    private static func canGroup(_ message: RoomReplySource) -> Bool {
+        message.authorType == "bot" && message.kind == "message" && !message.hasRecovery
+    }
+
+    private static func replyGroupKey(_ message: RoomReplySource) -> String {
+        message.replyGroupId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    private static func replyKey(_ message: RoomReplySource) -> String {
+        message.replyToId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    private static func fallbackRun(messages: [RoomReplySource], start: Int, memberIds: [String], explicit: Set<Int>) -> [Int] {
+        guard messages.indices.contains(start) else { return [] }
+        let first = messages[start]
+        guard !explicit.contains(start), canGroup(first), replyGroupKey(first).isEmpty else { return [] }
+        let replyTo = replyKey(first)
+        if !replyTo.isEmpty {
+            guard let target = messages.first(where: { $0.id == replyTo }), addressesRoom(content: target.content, recipientIds: target.recipientIds, memberIds: memberIds) else { return [] }
+            var run = [start]
+            var cursor = start + 1
+            while cursor < messages.count {
+                let next = messages[cursor]
+                if explicit.contains(cursor) || !canGroup(next) || !replyGroupKey(next).isEmpty || replyKey(next) != replyTo { break }
+                run.append(cursor)
+                cursor += 1
+            }
+            return run.count >= 2 ? run : []
+        }
+        guard start > 0 else { return [] }
+        let previous = messages[start - 1]
+        guard previous.authorType == "user", addressesRoom(content: previous.content, recipientIds: previous.recipientIds, memberIds: memberIds) else { return [] }
+        var run = [start]
+        var cursor = start + 1
+        while cursor < messages.count {
+            let next = messages[cursor]
+            if explicit.contains(cursor) || !canGroup(next) || !replyGroupKey(next).isEmpty || !replyKey(next).isEmpty { break }
+            run.append(cursor)
+            cursor += 1
+        }
+        return run.count >= 2 ? run : []
+    }
+}
+
 struct RoomMentionList: View {
     var choices: [RoomMentionChoice]
     var selected: Int

@@ -179,6 +179,24 @@
 .bot-room-work-mode p { flex:1 1 160px; min-width:0; color:var(--st-ink-muted); font-size:10px; line-height:1.5; margin:0; overflow-wrap:anywhere; }
 @media (max-width:700px) { .bot-room-work-mode { margin-left:0; } }
 .bot-room .error-notice { min-width:0; max-width:100%; flex-wrap:wrap; }
+
+.bot-room-reply-group { display:flex; flex-direction:column; gap:1px; min-width:0; margin:4px 0 8px; }
+.bot-room-reply-group-header { margin:2px 7px 2px 43px; padding:2px 0; border:0; background:transparent; color:var(--st-ink-muted); font:600 12px var(--st-font); text-align:left; }
+button.bot-room-reply-group-header { cursor:pointer; }
+button.bot-room-reply-group-header:hover { color:var(--st-ink); }
+.bot-room-reply-group-header:focus-visible { outline:2px solid var(--st-focus); outline-offset:2px; border-radius:6px; }
+.bot-room-reply-row { display:grid; grid-template-columns:28px minmax(0,1fr) auto; gap:8px; align-items:start; min-width:0; padding:3px 7px; }
+.bot-room-reply-row-copy { min-width:0; }
+.bot-room-reply-row-copy strong { display:block; color:var(--st-ink); font-size:12px; font-weight:600; }
+.bot-room-reply-row-copy p { margin:1px 0 0; color:var(--st-ink-muted); font-size:13px; line-height:1.35; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+.bot-room-reply-row > button { margin-top:1px; padding:4px 0; border:0; background:transparent; color:var(--st-ink-muted); font:10px var(--st-font); cursor:pointer; }
+.bot-room-reply-row > button:hover:not(:disabled) { color:var(--st-ink); text-decoration:underline; }
+.bot-room-reply-row > button:focus-visible { outline:2px solid var(--st-focus); outline-offset:2px; border-radius:6px; }
+.bot-room-reply-row > button:disabled { opacity:.55; cursor:default; }
+@media (max-width:700px) {
+  .bot-room-reply-group-header { margin-left:36px; }
+  .bot-room-reply-row { padding-inline:0; }
+}
 @container bots (max-width: 720px) {
   .bot-group-header .bot-group-identity p { white-space:normal; overflow:visible; text-overflow:unset; }
   .bot-room-work-mode, .bot-room-composer-top, .bot-room-composer-bottom, .bot-room-quiet, .bot-room-choice { margin-left:0; }

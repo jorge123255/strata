@@ -646,6 +646,7 @@ struct BotTeamChannelMessage: Decodable, Identifiable, Equatable {
     var content: String
     var createdAt: BotWorkspaceTimestamp
     var replyToId: String?
+    var replyGroupId: String?
     var recipientIds: [String]?
     var runId: String?
     var chatId: String?

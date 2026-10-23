@@ -107,7 +107,7 @@ export function botTaskWorkLabel(status: string) { return ({working:'Working',re
 export interface BotTeamChannelAuthor { type: 'user'|'bot'|'system'; botId?: string; name: string; avatarConfig?: Bot['avatarConfig'] }
 export interface BotTeamChannelMessage {
   id: string; sequence: number; teamId: string; kind: 'message'|'assignment'|'report'|'status';
-  author: BotTeamChannelAuthor; content: string; createdAt: string; replyToId?: string;
+  author: BotTeamChannelAuthor; content: string; createdAt: string; replyToId?: string; replyGroupId?: string;
   recipientIds?: string[]; runId?: string; chatId?: string; state?: string; workMode?: 'chat'|'work'; planId?: string;
   recovery?: MessageRecovery;
 }
