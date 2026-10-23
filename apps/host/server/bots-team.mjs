@@ -187,7 +187,7 @@ function visibleReply(content, dropJargon) {
 }
 
 export function createBotTeams({ directory, requireBot, conversations, createConversation, discardConversation, stopDirect, isBotBusy = () => false, isChatBusy = () => false, usesComputer = () => false, teamComputers = () => [], resolveExecution = () => undefined, workAuthority = () => undefined, assertRecoveryAvailable = () => {}, workflowAuthority = () => undefined, planAuthority = () => undefined, assertWorkflowReceipts = () => {}, notify = () => {}, now = Date.now, schedule = queueMicrotask, delay = (ms, fn) => setTimeout(fn, ms), roomReadSequence = () => 0, selectSpeakers, bidSpeaker }) {
-  const path = join(directory, 'bot-teams.json'), teams = new Map(), runs = new Map(), jobs = new Map(), startKeys = new Map(), deliveryKeys = new Map(), pendingChats = new Map(), turnJobs = new Map(), recoveryPlans = new Map(), recoveryKeys = new Map();
+  const path = join(directory, 'bot-teams.json'), teams = new Map(), runs = new Map(), jobs = new Map(), startKeys = new Map(), deliveryKeys = new Map(), pendingChats = new Map(), turnJobs = new Map(), turnSteps = new Map(), recoveryPlans = new Map(), recoveryKeys = new Map();
   const storage = privateExtensionStore(directory, 'bot-teams.json', { version: 1, teams: [], runs: [], jobs: [], startKeys: [], deliveryKeys: [] });
   const roomListeners = new Set(), typingTeams = new Set(), roomEpoch = new Map(), roomScheduled = new Set(), retryTimers = new Set();
   function emit(event, data) {
@@ -882,11 +882,19 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
     }
   }
   function end(context, outcome = {}) {
-    const job = turnJobs.get(context.turnId); turnJobs.delete(context.turnId);
+    const job = turnJobs.get(context.turnId); turnJobs.delete(context.turnId); turnSteps.delete(context.turnId);
     if (!job) { queueTick(); return; }
     const run = runs.get(job.runId);
     if (!run || job.generation !== run.generation || job.state !== 'running') { queueTick(); return; }
     finishJob(job, run, outcome);
+  }
+  // Live progress is metadata only: ids, a per-turn tool count and the tool name.
+  function progress(context, toolName) {
+    const job = turnJobs.get(context.turnId), run = runs.get(job?.runId);
+    if (!job || !run || job.generation !== run.generation || job.state !== 'running') return;
+    const step = (turnSteps.get(context.turnId) ?? 0) + 1;
+    turnSteps.set(context.turnId, step);
+    emit('task.progress', { teamId: run.teamId, runId: run.id, jobId: job.id, botId: job.botId, conversationId: job.chatId, step, toolName: String(toolName ?? '').slice(0, 120) });
   }
   function holdForTransientRetry(job, run, outcome) {
     if (!outcome?.error || outcome.cancelled || !['queued', 'running'].includes(run.state)) return false;
@@ -1752,7 +1760,7 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
       if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => key !== 'typing') || typeof input.typing !== 'boolean') throw fault(400, 'Say whether you are typing.');
       if (input.typing) typingTeams.add(teamId); else { typingTeams.delete(teamId); queueTick(); }
       return { typing: input.typing };
-    }, reviewJob, recoveryPlan, resumeJob, detail: (teamId, id) => ({ run: publicRun(requireRun(teamId, id)) }), stop, activity, begin, end, pendingStart, rejectPendingStart, tick, noteRoomDelta, subscribe, roomCard, latestSequence: teamId => { requireTeam(teamId); return channels.latestSequence(teamId); }, botSignal, refreshRoom: emitRoom,
+    }, reviewJob, recoveryPlan, resumeJob, detail: (teamId, id) => ({ run: publicRun(requireRun(teamId, id)) }), stop, activity, begin, end, progress, pendingStart, rejectPendingStart, tick, noteRoomDelta, subscribe, roomCard, latestSequence: teamId => { requireTeam(teamId); return channels.latestSequence(teamId); }, botSignal, refreshRoom: emitRoom,
     modeForChat(chatId, bot) {
       const mode = bot?.teamContext?.channelMode;
       if (!mode) return null;
