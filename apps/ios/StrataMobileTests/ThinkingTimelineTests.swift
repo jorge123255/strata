@@ -233,4 +233,74 @@ final class ThinkingTimelineTests: XCTestCase {
         XCTAssertEqual(RoomMention.audience(text: "@everyone hi", recipient: "bot_dev", memberIds: room), RoomMentionAudience(recipientIds: ["bot_dev"], everyone: nil))
         XCTAssertEqual(RoomMention.audience(text: "hello", recipient: "everyone", memberIds: room), RoomMentionAudience(recipientIds: room, everyone: true))
     }
+
+    func testRoomChoiceUsesTheHostRecoveryFieldAndEvent() {
+        let options = [
+            BotTeamMessageRecoveryOption(id: "retry", label: "Try again"),
+            BotTeamMessageRecoveryOption(id: "skip", label: "Skip this"),
+            BotTeamMessageRecoveryOption(id: "different", label: "Try a different way")
+        ]
+        let sentence = "This stopped because the connection dropped before it finished. What should I do next?"
+        let saved = RoomChoice.fromMessage(id: "tm_1", teamId: "team_1", content: sentence, recovery: BotTeamMessageRecovery(jobId: "tj_1", runId: "tr_1", question: "What should I do next?", options: options, choice: nil, text: nil))
+        XCTAssertEqual(saved?.text, sentence)
+        XCTAssertEqual(saved?.options.map(\.label), ["Try again", "Skip this", "Try a different way"])
+        XCTAssertNil(saved?.choice)
+        let chosen = RoomChoice.fromMessage(id: "tm_1", teamId: "team_1", content: sentence, recovery: BotTeamMessageRecovery(jobId: "tj_1", runId: "tr_1", question: "What should I do next?", options: options, choice: "skip", text: nil))
+        XCTAssertEqual(chosen?.choice, "skip")
+        XCTAssertNil(RoomChoice.fromMessage(id: "tm_1", teamId: "team_1", content: sentence, recovery: nil))
+        let event = RoomChoice.fromEvent(teamId: "team_1", messageId: "tm_1", jobId: "tj_1", runId: "tr_1", text: sentence, question: "What should I do next?", options: options.map { RoomChoiceOption(id: $0.id, label: $0.label, style: nil) })
+        XCTAssertEqual(event?.text, sentence)
+        XCTAssertEqual(event?.options.map(\.id), ["retry", "skip", "different"])
+        XCTAssertEqual(RoomChoice.choiceId("retry"), "retry")
+        XCTAssertEqual(RoomChoice.choiceId("different"), "different")
+        XCTAssertNil(RoomChoice.choiceId("different-approach"))
+        XCTAssertNil(RoomChoice.choiceId("invent"))
+    }
+
+    func testRoomReplyGroupsUseReplyGroupIdThenConsecutiveEveryoneReplies() {
+        func row(_ id: String, author: String = "bot", kind: String = "message", content: String = "Ready.", replyToId: String? = nil, replyGroupId: String? = nil, recipientIds: [String]? = nil, recovery: Bool = false) -> RoomReplySource {
+            RoomReplySource(id: id, kind: kind, authorType: author, content: content, replyToId: replyToId, replyGroupId: replyGroupId, recipientIds: recipientIds, hasRecovery: recovery)
+        }
+        let members = ["bot_a", "bot_b", "bot_c"]
+        let stacked = RoomReplyGroup.group(messages: [
+            row("user", author: "user", content: "Please look"),
+            row("a", replyGroupId: "user", content: "On it"),
+            row("side", author: "user", content: "A side note"),
+            row("b", replyGroupId: " user ", content: "Me too"),
+            row("c", replyGroupId: "other")
+        ], memberIds: members)
+        XCTAssertEqual(stacked, [.message("user"), .replies(id: "a", triggerId: "user", messageIds: ["a", "b"]), .message("side"), .message("c")])
+        let neighboring = RoomReplyGroup.group(messages: [
+            row("user", author: "user", content: "@everyone hi", recipientIds: members),
+            row("a"),
+            row("b"),
+            row("solo", replyGroupId: "user")
+        ], memberIds: members)
+        XCTAssertEqual(neighboring, [.message("user"), .replies(id: "a", triggerId: "user", messageIds: ["a", "b"]), .message("solo")])
+        let between = RoomReplyGroup.group(messages: [
+            row("user", author: "user", content: "@everyone hi"),
+            row("a"),
+            row("solo", replyGroupId: "user"),
+            row("b")
+        ], memberIds: members)
+        XCTAssertEqual(between, [.message("user"), .message("a"), .message("solo"), .message("b")])
+        let kept = RoomReplyGroup.group(messages: [
+            row("a", replyGroupId: "user"),
+            row("task", kind: "assignment", replyGroupId: "user"),
+            row("ask", replyGroupId: "user", recovery: true),
+            row("b", replyGroupId: "user")
+        ], memberIds: members)
+        XCTAssertEqual(kept, [.replies(id: "a", triggerId: "user", messageIds: ["a", "b"]), .message("task"), .message("ask")])
+        let directed = RoomReplyGroup.group(messages: [
+            row("user", author: "user", content: "@Ada can you look?"),
+            row("a", replyToId: "user"),
+            row("b", replyToId: "user")
+        ], memberIds: members)
+        XCTAssertEqual(directed, [.message("user"), .message("a"), .message("b")])
+        XCTAssertEqual(RoomReplyGroup.label(6), "6 bots replied")
+        XCTAssertEqual(RoomReplyGroup.preview(String(repeating: "x", count: 160) + "y\nsecond"), String(repeating: "x", count: 160) + "…")
+        XCTAssertEqual(RoomReplyGroup.stagger(3), 0.18, accuracy: 0.0001)
+        XCTAssertEqual(RoomReplyGroup.visibleCount(6, expanded: false), 5)
+        XCTAssertEqual(RoomReplyGroup.visibleCount(6, expanded: true), 6)
+    }
 }

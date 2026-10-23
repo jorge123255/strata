@@ -380,6 +380,142 @@ enum RoomMention {
     }
 }
 
+struct RoomReplySource: Equatable {
+    var id: String
+    var kind: String
+    var authorType: String
+    var content: String
+    var replyToId: String?
+    var replyGroupId: String?
+    var recipientIds: [String]?
+    var hasRecovery: Bool
+}
+
+enum RoomFeedEntry: Equatable {
+    case message(String)
+    case replies(id: String, triggerId: String, messageIds: [String])
+}
+
+/// Stacks bot replies that share replyGroupId. A missing field uses a consecutive run.
+enum RoomReplyGroup {
+    static let previewLimit = 5
+    static let staggerSeconds = 0.06
+    static let previewCharacters = 160
+
+    static func label(_ count: Int) -> String {
+        if count == 1 { return "1 bot replied" }
+        return "\(count) bots replied"
+    }
+
+    static func stagger(_ index: Int) -> Double {
+        Double(max(0, index)) * staggerSeconds
+    }
+
+    static func visibleCount(_ total: Int, expanded: Bool) -> Int {
+        expanded || total <= previewLimit ? total : previewLimit
+    }
+
+    static func preview(_ content: String) -> String {
+        let line = content.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.first { !$0.isEmpty } ?? ""
+        if line.count <= previewCharacters { return String(line) }
+        return String(line.prefix(previewCharacters)) + "…"
+    }
+
+    static func addressesRoom(content: String, recipientIds: [String]?, memberIds: [String]) -> Bool {
+        if RoomMention.addressesEveryone(content) { return true }
+        guard !memberIds.isEmpty, let recipientIds, recipientIds.count == memberIds.count else { return false }
+        let members = Set(memberIds)
+        guard members.count == memberIds.count else { return false }
+        var seen = Set<String>()
+        for id in recipientIds {
+            if !members.contains(id) || seen.contains(id) { return false }
+            seen.insert(id)
+        }
+        return seen.count == members.count
+    }
+
+    static func group(messages: [RoomReplySource], memberIds: [String]) -> [RoomFeedEntry] {
+        var buckets: [String: [Int]] = [:]
+        for (index, message) in messages.enumerated() {
+            let groupId = replyGroupKey(message)
+            guard !groupId.isEmpty, canGroup(message) else { continue }
+            buckets[groupId, default: []].append(index)
+        }
+        var explicit = Set<Int>()
+        for indices in buckets.values where indices.count >= 2 {
+            explicit.formUnion(indices)
+        }
+        var items: [RoomFeedEntry] = []
+        var index = 0
+        while index < messages.count {
+            let message = messages[index]
+            let groupId = replyGroupKey(message)
+            if !groupId.isEmpty, explicit.contains(index), let indices = buckets[groupId] {
+                if indices.first == index {
+                    items.append(.replies(id: messages[indices[0]].id, triggerId: groupId, messageIds: indices.map { messages[$0].id }))
+                }
+                index += 1
+                continue
+            }
+            let run = fallbackRun(messages: messages, start: index, memberIds: memberIds, explicit: explicit)
+            if run.count >= 2 {
+                let first = messages[run[0]]
+                let replyTo = replyKey(first)
+                let triggerId = replyTo.isEmpty ? (index > 0 ? messages[index - 1].id : first.id) : replyTo
+                items.append(.replies(id: first.id, triggerId: triggerId, messageIds: run.map { messages[$0].id }))
+                index = run[run.count - 1] + 1
+                continue
+            }
+            items.append(.message(message.id))
+            index += 1
+        }
+        return items
+    }
+
+    private static func canGroup(_ message: RoomReplySource) -> Bool {
+        message.authorType == "bot" && message.kind == "message" && !message.hasRecovery
+    }
+
+    private static func replyGroupKey(_ message: RoomReplySource) -> String {
+        message.replyGroupId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    private static func replyKey(_ message: RoomReplySource) -> String {
+        message.replyToId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    private static func fallbackRun(messages: [RoomReplySource], start: Int, memberIds: [String], explicit: Set<Int>) -> [Int] {
+        guard messages.indices.contains(start) else { return [] }
+        let first = messages[start]
+        guard !explicit.contains(start), canGroup(first), replyGroupKey(first).isEmpty else { return [] }
+        let replyTo = replyKey(first)
+        if !replyTo.isEmpty {
+            guard let target = messages.first(where: { $0.id == replyTo }), addressesRoom(content: target.content, recipientIds: target.recipientIds, memberIds: memberIds) else { return [] }
+            var run = [start]
+            var cursor = start + 1
+            while cursor < messages.count {
+                let next = messages[cursor]
+                if explicit.contains(cursor) || !canGroup(next) || !replyGroupKey(next).isEmpty || replyKey(next) != replyTo { break }
+                run.append(cursor)
+                cursor += 1
+            }
+            return run.count >= 2 ? run : []
+        }
+        guard start > 0 else { return [] }
+        let previous = messages[start - 1]
+        guard previous.authorType == "user", addressesRoom(content: previous.content, recipientIds: previous.recipientIds, memberIds: memberIds) else { return [] }
+        var run = [start]
+        var cursor = start + 1
+        while cursor < messages.count {
+            let next = messages[cursor]
+            if explicit.contains(cursor) || !canGroup(next) || !replyGroupKey(next).isEmpty || !replyKey(next).isEmpty { break }
+            run.append(cursor)
+            cursor += 1
+        }
+        return run.count >= 2 ? run : []
+    }
+}
+
 struct RoomMentionList: View {
     var choices: [RoomMentionChoice]
     var selected: Int
@@ -650,6 +786,102 @@ func coucouKind(mood: BotMood, paused: Bool) -> BreathingStatusDot.Kind {
     if mood == .needsApproval || mood == .error { return .attention }
     if mood == .thinking || mood == .working { return .working }
     return .idle
+}
+
+struct RoomChoiceOption: Equatable, Identifiable {
+    var id: String
+    var label: String
+    var style: String?
+}
+
+struct RoomRecoveryPresentation: Equatable {
+    var messageId: String
+    var teamId: String
+    var text: String
+    var question: String
+    var options: [RoomChoiceOption]
+    var choice: String?
+}
+
+/// The room card reads the host's recovery field and the same live event shape. Labels are never invented here.
+enum RoomChoice {
+    static let choiceIds: Set<String> = ["retry", "skip", "different"]
+
+    static func fromMessage(id: String, teamId: String, content: String, recovery: BotTeamMessageRecovery?) -> RoomRecoveryPresentation? {
+        guard let recovery else { return nil }
+        return present(messageId: id, teamId: teamId, jobId: recovery.jobId, runId: recovery.runId, text: recovery.text ?? "", question: recovery.question, options: recovery.options.map { RoomChoiceOption(id: $0.id, label: $0.label, style: nil) }, choice: recovery.choice, fallback: content)
+    }
+
+    static func fromEvent(teamId: String, messageId: String, jobId: String, runId: String, text: String, question: String, options: [RoomChoiceOption]) -> RoomRecoveryPresentation? {
+        present(messageId: messageId, teamId: teamId, jobId: jobId, runId: runId, text: text, question: question, options: options, choice: nil, fallback: "")
+    }
+
+    static func choiceId(_ optionId: String) -> String? {
+        choiceIds.contains(optionId) ? optionId : nil
+    }
+
+    private static func present(messageId: String, teamId: String, jobId: String, runId: String, text: String, question: String, options: [RoomChoiceOption], choice: String?, fallback: String) -> RoomRecoveryPresentation? {
+        let rows = options.compactMap { option -> RoomChoiceOption? in
+            let id = option.id.trimmingCharacters(in: .whitespacesAndNewlines)
+            let label = option.label.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !id.isEmpty, !label.isEmpty else { return nil }
+            return RoomChoiceOption(id: id, label: label, style: option.style)
+        }
+        let asked = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        let body = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? (fallback.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? asked : fallback.trimmingCharacters(in: .whitespacesAndNewlines)) : text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !messageId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !teamId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !jobId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !runId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !asked.isEmpty, !body.isEmpty, !rows.isEmpty else { return nil }
+        let selected = choiceIds.contains(choice ?? "") && rows.contains { $0.id == choice } ? choice : nil
+        return RoomRecoveryPresentation(messageId: messageId, teamId: teamId, text: body, question: asked, options: rows, choice: selected)
+    }
+}
+
+struct RoomChoiceCard: View {
+    var text: String
+    var options: [RoomChoiceOption]
+    var chosen: String?
+    var busy: String
+    var error: String = ""
+    var onChoose: (String) -> Void
+    var onRetry: () -> Void = {}
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var shown = false
+
+    var body: some View {
+        let locked = chosen != nil || !busy.isEmpty
+        VStack(alignment: .leading, spacing: 12) {
+            Text(text).font(.body).foregroundStyle(StrataTheme.ink).fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(options) { option in
+                    Button(busy == option.id ? "Sending…" : option.label) { onChoose(option.id) }
+                        .buttonStyle(.bordered)
+                        .tint(chosen == option.id ? Color.accentColor : (option.style == "danger" ? Color.red : Color.primary))
+                        .disabled(locked)
+                        .accessibilityIdentifier("teamRoomChoice-\(option.id)")
+                        .accessibilityAddTraits(chosen == option.id ? .isSelected : [])
+                }
+            }
+            if chosen == nil, !error.isEmpty {
+                Text(error).font(.caption).foregroundStyle(StrataTheme.warning).fixedSize(horizontal: false, vertical: true)
+                Button("Retry", action: onRetry).font(.caption).accessibilityIdentifier("teamRoomChoiceRetry")
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(StrataTheme.surface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(chosen == nil ? StrataTheme.line.opacity(0.7) : Color.accentColor.opacity(0.7), lineWidth: 1))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("teamRoomChoice")
+        .offset(y: reduceMotion || shown ? 0 : CoucouMotion.messageRise)
+        .opacity(reduceMotion || shown ? 1 : 0)
+        .onAppear {
+            guard !reduceMotion else { shown = true; return }
+            withAnimation(.spring(response: CoucouMotion.springResponse, dampingFraction: CoucouMotion.springDamping)) { shown = true }
+        }
+    }
 }
 
 private struct CoucouVisibility: ViewModifier {

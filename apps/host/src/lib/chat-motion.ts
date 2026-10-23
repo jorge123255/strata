@@ -130,6 +130,12 @@ export function shouldFollowOwnMessage(previousIds: readonly string[], next: rea
   return !previousIds.includes(last.id);
 }
 
+const replyGroupIdPattern = /^[A-Za-z0-9_.:-]{1,160}$/;
+
+export function readReplyGroupId(value: unknown): string | undefined {
+  return typeof value === 'string' && replyGroupIdPattern.test(value) ? value : undefined;
+}
+
 /** Keep the newest full text for a message. A stale or empty done frame drops the draft. */
 export function applyMessagePartial(drafts: readonly RoomDraft[], frame: unknown, teamId: string): RoomDraft[] {
   if (!frame || typeof frame !== 'object') return [...drafts];
@@ -141,9 +147,21 @@ export function applyMessagePartial(drafts: readonly RoomDraft[], frame: unknown
   if (done === true && text === '') return drafts.filter(row => row.messageId !== messageId);
   const previous = drafts.find(row => row.messageId === messageId);
   if (previous && previous.seq >= seq) return [...drafts];
-  const incomingGroup = typeof rawGroup === 'string' && /^[A-Za-z0-9_.:-]{1,160}$/.test(rawGroup) ? rawGroup : undefined;
-  const replyGroupId = incomingGroup ?? previous?.replyGroupId;
+  const replyGroupId = readReplyGroupId(rawGroup) ?? previous?.replyGroupId;
   return [...drafts.filter(row => row.messageId !== messageId), { messageId, botId, seq, text, done: done === true, ...(replyGroupId ? { replyGroupId } : {}) }];
+}
+
+/** The team-channel event names the saved line and its reply group. Stamp that id onto the live draft. */
+export function applyChannelReplyGroup(drafts: readonly RoomDraft[], frame: unknown, teamId: string): RoomDraft[] {
+  const same = drafts as RoomDraft[];
+  if (!frame || typeof frame !== 'object') return same;
+  const detail = frame as Record<string, unknown>;
+  if (detail.teamId !== teamId || typeof detail.messageId !== 'string') return same;
+  const replyGroupId = readReplyGroupId(detail.replyGroupId);
+  if (!replyGroupId) return same;
+  const previous = drafts.find(row => row.messageId === detail.messageId);
+  if (!previous || previous.replyGroupId === replyGroupId) return same;
+  return drafts.map(row => row.messageId === detail.messageId ? { ...row, replyGroupId } : row);
 }
 
 export function easeOutCubic(t: number): number {

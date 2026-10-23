@@ -1,5 +1,6 @@
 /** Bot profiles are separate from model-serving connections and their credentials. */
 import type { Session } from './types';
+import type { MessageRecovery } from './room-choice';
 export const BOT_PROVIDERS = [
   { id: 'claude', name: 'Claude Code' },
   { id: 'codex', name: 'Codex' },
@@ -104,16 +105,11 @@ export interface BotTeamPlansSnapshot { teamWorkPlansSupported: boolean; availab
 export function botTaskWorkLabel(status: string) { return ({working:'Working',ready_for_review:'Ready for review',verified:'Verified',blocked:'Blocked',interrupted:'Interrupted'} as Record<string,string>)[status] ?? 'Needs review'; }
 /** Public, durable room messages are separate from each bot's private work chat. */
 export interface BotTeamChannelAuthor { type: 'user'|'bot'|'system'; botId?: string; name: string; avatarConfig?: Bot['avatarConfig'] }
-/** Button choices for a failed team task. The visible `content` stays plain; Helper renders `options`. */
-export interface BotTeamRecoveryOption { id: 'retry'|'skip'|'different'; label: string }
-export interface BotTeamRecovery {
-  jobId: string; runId: string; question: string; options: BotTeamRecoveryOption[]; choice?: 'retry'|'skip'|'different';
-}
 export interface BotTeamChannelMessage {
   id: string; sequence: number; teamId: string; kind: 'message'|'assignment'|'report'|'status';
   author: BotTeamChannelAuthor; content: string; createdAt: string; replyToId?: string; replyGroupId?: string;
   recipientIds?: string[]; runId?: string; chatId?: string; state?: string; workMode?: 'chat'|'work'; planId?: string;
-  recovery?: BotTeamRecovery;
+  recovery?: MessageRecovery;
 }
 export interface BotTeamChannelPreview { id: string; sequence: number; kind: BotTeamChannelMessage['kind']; author: Pick<BotTeamChannelAuthor, 'type'|'name'|'botId'>; content: string; createdAt: string }
 export interface BotTeamPresence { botId: string; state: 'working' | 'queued'; runId: string; jobId: string }
@@ -168,18 +164,16 @@ export function teamRosterCount(memberIds: readonly string[] | undefined) { retu
 export function teamRosterLabel(count: number) { return count === 1 ? '1 member' : `${count} members`; }
 export function teamOverRosterCap(count: number) { return count > TEAM_MEMBER_CAP; }
 export function botActivityLabel(state: string) { return ({ queued: 'Queued', running: 'Working', completed: 'Completed', error: 'Failed', cancelled: 'Stopped', interrupted: 'Interrupted', stopping: 'Stopping…', cleanup_pending: 'Checking cleanup', delivered: 'Delivered', pending: 'Waiting', accepted: 'Accepted', refused: 'Refused' } as Record<string, string>)[state] ?? state; }
-export function botTeamDraftError(draft: Pick<BotTeam, 'name'|'memberIds'|'coordinatorId'|'limits'> & { execution?: BotTeamExecution; briefing?: BotTeamBriefing; talkativeness?: Record<string, number>; bidding?: boolean; selectorBotId?: string | null }, bots: Pick<Bot,'id'>[], computers?: BotTeamComputer[], unrestricted = false, continuous = false, previousMemberIds?: readonly string[]): string | null {
-  if (!draft.name.trim() || draft.name.trim().length>80) return 'Give this team a name of up to 80 characters.';
-  const prior = Array.isArray(previousMemberIds) ? previousMemberIds : undefined;
-  const known = (id: string) => bots.some(bot => bot.id === id);
-  if (!Array.isArray(draft.memberIds) || new Set(draft.memberIds).size !== draft.memberIds.length) return 'Choose available bots for this team.';
+export function botTeamDraftError(draft: Pick<BotTeam, 'name'|'memberIds'|'coordinatorId'|'limits'> & { execution?: BotTeamExecution; briefing?: BotTeamBriefing; talkativeness?: Record<string, number>; bidding?: boolean; selectorBotId?: string | null }, bots: Pick<Bot,'id'>[], computers?: BotTeamComputer[], unrestricted = false, continuous = false, retainedMemberIds?: readonly string[]): string | null {
+  const prior = Array.isArray(retainedMemberIds) ? retainedMemberIds : undefined;
+  const uniqueMembers = new Set(draft.memberIds);
+  const subset = !!prior && uniqueMembers.size === draft.memberIds.length && draft.memberIds.length <= prior.length && draft.memberIds.every(id => prior.includes(id));
   const added = prior ? draft.memberIds.filter(id => !prior.includes(id)) : [...draft.memberIds];
-  if (added.some(id => !known(id))) return 'Choose available bots for this team.';
-  const resolved = draft.memberIds.filter(id => known(id));
-  if (resolved.length < 2) return 'Choose from 2 to 12 team members.';
-  const priorOver = !!prior && prior.filter(id => known(id)).length > TEAM_MEMBER_CAP;
-  if (resolved.length > TEAM_MEMBER_CAP && !priorOver) return 'Choose from 2 to 12 team members.';
-  if (resolved.length > TEAM_MEMBER_CAP && added.length > 0) return 'Remove members until this team has 12 or fewer before adding anyone.';
+  if (!draft.name.trim() || draft.name.trim().length>80) return 'Give this team a name of up to 80 characters.';
+  if (!Array.isArray(draft.memberIds) || uniqueMembers.size !== draft.memberIds.length) return 'Choose available bots for this team.';
+  if (draft.memberIds.length < 2) return 'Choose from 2 to 12 team members.';
+  if (draft.memberIds.length > TEAM_MEMBER_CAP && !(subset && added.length === 0)) return added.length > 0 && prior ? 'Remove members until this team has 12 or fewer before adding anyone.' : 'Choose from 2 to 12 team members.';
+  if (draft.memberIds.some(id => !bots.some(bot => bot.id === id) && !(subset && prior?.includes(id)))) return 'Choose available bots for this team.';
   if (!draft.memberIds.includes(draft.coordinatorId)) return 'Choose a coordinator from this team.';
   if (draft.bidding !== undefined && typeof draft.bidding !== 'boolean') return 'Choose whether teammates bid to speak.';
   if (draft.selectorBotId !== undefined && draft.selectorBotId !== null && draft.selectorBotId !== '' && !draft.memberIds.includes(draft.selectorBotId)) return 'Choose a teammate to pick the next speaker.';
@@ -189,7 +183,7 @@ export function botTeamDraftError(draft: Pick<BotTeam, 'name'|'memberIds'|'coord
   }
   if (draft.briefing) {
     const cleanText = (value: string, max: number) => typeof value === 'string' && value.length <= max && !value.includes('\0') && !Array.from(value).some(character => { const point = character.codePointAt(0)!; return point >= 0xD800 && point <= 0xDFFF; });
-    if (!cleanText(draft.briefing.instructions, 8000) || !Array.isArray(draft.briefing.members) || draft.briefing.members.length > (unrestricted ? draft.memberIds.length : TEAM_MEMBER_CAP)) return 'Use team instructions of up to 8,000 characters.';
+    if (!cleanText(draft.briefing.instructions, 8000) || !Array.isArray(draft.briefing.members) || draft.briefing.members.length > (unrestricted || subset ? draft.memberIds.length : TEAM_MEMBER_CAP)) return 'Use team instructions of up to 8,000 characters.';
     const seen = new Set<string>();
     let total = draft.briefing.instructions.length;
     for (const member of draft.briefing.members) {

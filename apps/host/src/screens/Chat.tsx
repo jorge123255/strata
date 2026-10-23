@@ -49,6 +49,9 @@ import { getSlashCommands } from '../lib/commands';
 import { useLocation } from '../lib/router';
 import { composerSends } from '../lib/shortcut-bindings';
 import type { ChatMessage, Session, ToolCall } from '../lib/types';
+function copyChatText(text: string) {
+  void navigator.clipboard.writeText(text).then(() => pushToast('success', tr('Copied')), () => pushToast('warn', tr('Couldn’t copy'), tr('Select the message and copy it manually.')));
+}
 export function ChatScreen({ embedded = false, sessionId, onComputer }: { embedded?: boolean; sessionId?: string; onComputer?: () => void } = {}) {
     const location = useLocation();
     const sessions = useStore((s) => s.sessions);
@@ -651,7 +654,7 @@ function Message({ message: m, isLast, entrance, onEditPrompt, onPreview, onOpen
         <div className="st-msg__meta">
           <time dateTime={m.at} title={tr(new Date(m.at).toLocaleString(localeTag()))}>{tr(sentTime)}</time>
           <span className="st-msg__actions">
-            <IconBtn name="copy" title={tr("Copy message")} onClick={() => void navigator.clipboard.writeText(m.content)}/>
+            <IconBtn name="copy" title={tr("Copy message")} onClick={() => copyChatText(m.content)}/>
             {!bot ? <IconBtn name="refresh" title={tr("Rewind to here")} disabled={streaming} onClick={() => {
                 const prompt = rewindTo(m.id);
                 if (prompt !== null)
@@ -686,11 +689,11 @@ function Message({ message: m, isLast, entrance, onEditPrompt, onPreview, onOpen
       {tr(!m.streaming && !m.timeSkipId && (m.content || m.error) ? (<div className="st-msg__meta">
           <span className="st-msg__actions">
             {tr(isLast ? <>
-              <IconBtn name="copy" title={tr("Copy response")} onClick={() => void navigator.clipboard.writeText(m.content)}/>
+              <IconBtn name="copy" title={tr("Copy response")} onClick={() => copyChatText(m.content)}/>
               <IconBtn name="refresh" title={tr("Ask again")} onClick={() => void retryLast(m.id)}/>
             </> : null)}
             <MessageMenu label={tr("More response actions")}>
-              {tr(!isLast ? <><button role="menuitem" className="menu__item" onClick={() => void navigator.clipboard.writeText(m.content)}>{tr("Copy response")}</button><button role="menuitem" className="menu__item" onClick={() => void retryLast(m.id)}>{tr("Ask again")}</button></> : null)}
+              {tr(!isLast ? <><button role="menuitem" className="menu__item" onClick={() => copyChatText(m.content)}>{tr("Copy response")}</button><button role="menuitem" className="menu__item" onClick={() => void retryLast(m.id)}>{tr("Ask again")}</button></> : null)}
               {tr(isLast ? <button role="menuitem" className="menu__item" onClick={() => void continueLast()}>{tr("Continue")}</button> : null)}
               {!bot ? <button role="menuitem" className="menu__item" onClick={() => branchFrom(m.id)}>{tr("Branch from here")}</button> : null}
               {tr(m.tokens || m.tps || m.durationMs ? <p className="xs muted response-stats">{tr(m.tokens ? `${tokens(m.tokens)} tokens` : '')}{tr(m.tps ? ` · ${tps(m.tps)} tok/s` : '')}{tr(m.durationMs ? ` · ${duration(m.durationMs)}` : '')}{tr(m.demo ? ' · Example' : '')}</p> : null)}

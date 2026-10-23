@@ -35,9 +35,9 @@
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: #6b7079;
+  background: var(--st-ink-muted);
   transform: scale(0.6);
-  opacity: 0.4;
+  opacity: 0.72;
   animation: typing-wave 0.9s ease-in-out infinite;
   animation-play-state: paused;
 }
@@ -45,12 +45,12 @@
 .typing i:nth-child(3) { animation-delay: 0.28s; }
 .typing[data-visible] i { animation-play-state: running; }
 @keyframes typing-wave {
-  0%, 100% { opacity: 0.4; transform: scale(0.6); }
+  0%, 100% { opacity: 0.72; transform: scale(0.6); }
   50% { opacity: 1; transform: scale(1.2); }
 }
 
 .shimmer {
-  background-image: linear-gradient(90deg, #7c818a 0%, #f2f3f5 40%, #7c818a 70%);
+  background-image: linear-gradient(90deg, var(--st-ink-muted) 0%, var(--st-ink) 40%, var(--st-ink-muted) 70%);
   background-size: 260% 100%;
   background-position: 130% 0;
   -webkit-background-clip: text;
@@ -214,13 +214,15 @@
   .contextpanel,
   .ws__sessions,
   .cua-bots-shell,
-  .bot-room-mentions {
+  .bot-room-mentions,
+  .bot-room-choice {
     animation: none !important;
     transition: none !important;
   }
   .msg-enter,
   .stream-word,
-  .bot-room-mentions { opacity: 1; transform: none; }
+  .bot-room-mentions,
+  .bot-room-choice { opacity: 1; transform: none; }
   .shimmer,
   .live-status__verb.shimmer {
     color: var(--st-ink-muted);
@@ -249,13 +251,15 @@
 [data-motion='reduced'] .contextpanel,
 [data-motion='reduced'] .ws__sessions,
 [data-motion='reduced'] .cua-bots-shell,
-[data-motion='reduced'] .bot-room-mentions {
+[data-motion='reduced'] .bot-room-mentions,
+[data-motion='reduced'] .bot-room-choice {
   animation: none !important;
   transition: none !important;
 }
 [data-motion='reduced'] .msg-enter,
 [data-motion='reduced'] .stream-word,
-[data-motion='reduced'] .bot-room-mentions { opacity: 1; transform: none; }
+[data-motion='reduced'] .bot-room-mentions,
+[data-motion='reduced'] .bot-room-choice { opacity: 1; transform: none; }
 [data-motion='reduced'] .shimmer,
 [data-motion='reduced'] .live-status__verb.shimmer {
   color: var(--st-ink-muted);

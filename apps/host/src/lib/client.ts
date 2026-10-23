@@ -38,7 +38,7 @@ export const api = {
   del: <T>(path: string, body?: unknown) => request<T>('DELETE', path, body),
 };
 
-/** Delete one team. The host removes its channel and room read, and refuses while the team is working. */
+/** Delete one team. No query and no body. The host refuses while the team is working. */
 export function deleteBotTeam(id: string) {
   return api.del<{ deleted: string }>(`/api/bots/teams/${encodeURIComponent(id)}`);
 }
