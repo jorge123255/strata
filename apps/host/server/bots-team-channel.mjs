@@ -13,6 +13,18 @@ const planEvents = new Map([['blocked', 'interrupted'], ['awaiting_review', 'don
 // This is a host status marker, never a model's claim of completion. Existing
 // state values stay compatible with clients that do not know plan events.
 const validPlanEvent = message => message.planEvent === undefined || planEvents.has(message.planEvent) && message.kind === 'status' && planId(message.planId) && ['system', 'bot'].includes(message.author?.type) && (message.author.type !== 'bot' || id(message.author.botId)) && message.state === planEvents.get(message.planEvent);
+const recoveryIds = ['retry', 'skip', 'different'];
+function validRecovery(message) {
+  const recovery = message?.recovery;
+  if (recovery === undefined) return true;
+  if (!recovery || typeof recovery !== 'object' || Array.isArray(recovery)) return false;
+  if (Object.keys(recovery).some(key => !['jobId', 'runId', 'question', 'options', 'choice'].includes(key))) return false;
+  if (!/^tj_[a-f0-9-]+$/.test(recovery.jobId) || !/^tr_[a-f0-9-]+$/.test(recovery.runId)) return false;
+  if (typeof recovery.question !== 'string' || !recovery.question.trim() || recovery.question.length > 240) return false;
+  if (recovery.choice !== undefined && !recoveryIds.includes(recovery.choice)) return false;
+  if (!Array.isArray(recovery.options) || recovery.options.length !== recoveryIds.length) return false;
+  return recovery.options.every((option, index) => option && option.id === recoveryIds[index] && typeof option.label === 'string' && option.label.trim() && option.label.length <= 80 && Object.keys(option).every(key => key === 'id' || key === 'label'));
+}
 
 export function createTeamChannels({ directory, now = Date.now, notify = () => {} }) {
   const storage = privateExtensionStore(directory, 'bot-team-channels.json', { version: 1, channels: [], receipts: [] });
@@ -25,6 +37,7 @@ export function createTeamChannels({ directory, now = Date.now, notify = () => {
     for (const message of row.messages) {
       if (message.planId !== undefined && !planId(message.planId)) throw fault(503, 'A saved work-plan reference is invalid.');
       if (!validPlanEvent(message)) throw fault(503, 'A saved work-plan status event is invalid.');
+      if (!validRecovery(message)) throw fault(503, 'A saved recovery choice is invalid.');
       if (!id(message?.id) || seen.has(message.id) || message.teamId !== row.teamId || !cursor(message.sequence) || message.sequence <= previous || message.sequence >= row.nextSequence || !kinds.has(message.kind) || typeof message.content !== 'string' || message.content.length > 16000 || !['user', 'bot', 'system'].includes(message.author?.type) || typeof message.author.name !== 'string' || typeof message.createdAt !== 'string' || message.state && !states.has(message.state) || message.workMode !== undefined && !['chat', 'work'].includes(message.workMode)) throw fault(503, 'A saved team message is invalid.');
       previous = message.sequence; seen.add(message.id);
     }
@@ -42,9 +55,10 @@ export function createTeamChannels({ directory, now = Date.now, notify = () => {
   function append(teamId, input, receipt) {
     if (input.planId !== undefined && !planId(input.planId)) throw fault(400, 'Choose a valid work-plan reference.');
     if (!validPlanEvent(input)) throw fault(400, 'Choose a valid host work-plan status event.');
+    if (!validRecovery(input)) throw fault(400, 'A saved recovery choice is invalid.');
     const old = channels.get(teamId), row = old ?? { teamId, nextSequence: 1, messages: [] };
     if (row.messages.length >= 50000) throw fault(503, 'This team channel reached its history limit. Existing history was retained.');
-    const message = { id: input.id ?? `tm_${randomUUID()}`, sequence: row.nextSequence, teamId, kind: input.kind ?? 'message', author: copy(input.author), content: String(input.content).slice(0, 16000), createdAt: new Date(now()).toISOString(), ...Object.fromEntries(['replyToId', 'recipientIds', 'runId', 'chatId', 'state', 'workMode', 'planId', 'planEvent'].filter(key => input[key] !== undefined).map(key => [key, copy(input[key])])) };
+    const message = { id: input.id ?? `tm_${randomUUID()}`, sequence: row.nextSequence, teamId, kind: input.kind ?? 'message', author: copy(input.author), content: String(input.content).slice(0, 16000), createdAt: new Date(now()).toISOString(), ...Object.fromEntries(['replyToId', 'recipientIds', 'runId', 'chatId', 'state', 'workMode', 'planId', 'planEvent', 'recovery'].filter(key => input[key] !== undefined).map(key => [key, copy(input[key])])) };
     if (row.messages.some(item => item.id === message.id)) return copy(row.messages.find(item => item.id === message.id));
     const receiptKey = receipt ? `${teamId}:${receipt.requestId}` : undefined;
     if (receipt && (receipts.has(receiptKey) || receipts.size >= 20000)) throw fault(503, 'The team channel receipt is unavailable. Existing history was retained.');
@@ -52,6 +66,21 @@ export function createTeamChannels({ directory, now = Date.now, notify = () => {
     if (receipt) receipts.set(receiptKey, { ...copy(receipt), teamId, messageId: message.id });
     try { save(); } catch (error) { old ? channels.set(teamId, old) : channels.delete(teamId); if (receipt) receipts.delete(receiptKey); throw error; }
     notify('bots', { teamsChanged: true, teamChannelChanged: teamId }); return copy(message);
+  }
+  function setRecoveryChoice(teamId, messageId, choice) {
+    if (!recoveryIds.includes(choice)) throw fault(400, 'A saved recovery choice is invalid.');
+    const row = channels.get(teamId), index = row?.messages.findIndex(item => item.id === messageId) ?? -1;
+    if (!row || index < 0 || !row.messages[index].recovery) throw fault(404, 'This choice is unavailable.');
+    const message = copy(row.messages[index]);
+    message.recovery = { ...message.recovery, choice };
+    if (!validRecovery(message)) throw fault(400, 'A saved recovery choice is invalid.');
+    const messages = row.messages.slice();
+    messages[index] = message;
+    const next = { ...row, messages }, old = row;
+    channels.set(teamId, next);
+    try { save(); } catch (error) { channels.set(teamId, old); throw error; }
+    notify('bots', { teamsChanged: true, teamChannelChanged: teamId });
+    return copy(message);
   }
   function snapshot(teamId, options = {}) {
     if (!options || typeof options !== 'object' || Array.isArray(options) || Object.keys(options).some(key => !['after', 'before'].includes(key)) || options.after !== undefined && !cursor(options.after) || options.before !== undefined && !cursor(options.before) || options.after !== undefined && options.before !== undefined) throw fault(400, 'Choose one valid team channel cursor.');
@@ -94,7 +123,7 @@ export function createTeamChannels({ directory, now = Date.now, notify = () => {
     return { id: teamId, latestSequence: row ? row.nextSequence - 1 : 0, messages: selected.map(message => ({ id: message.id, sequence: message.sequence, kind: message.kind, author: { type: message.author.type, ...(message.author.botId ? { botId: message.author.botId } : {}) }, state: message.state, createdAt: message.createdAt, ...(message.planEvent !== undefined ? { planId: message.planId, planEvent: message.planEvent } : {}) })) };
   }
   return {
-    append, appendAndRemember: append, snapshot, preview, notificationSources, latestSequence, unreadCount, summaryLine,
+    append, appendAndRemember: append, setRecoveryChoice, snapshot, preview, notificationSources, latestSequence, unreadCount, summaryLine,
     find: (teamId, messageId) => copy(channels.get(teamId)?.messages.find(row => row.id === messageId)),
     recent: (teamId, limit = 30) => copy((channels.get(teamId)?.messages ?? []).slice(-limit)),
     receipt: (teamId, requestId) => copy(receipts.get(`${teamId}:${requestId}`)),
