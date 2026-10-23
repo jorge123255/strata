@@ -11,6 +11,11 @@ export function createConversationRoutes({ conversations, port }) {
       if (url.pathname === root && req.method === 'GET') return json(res, 200, conversations.list(url.searchParams.get('summary') === '1' ? { summary: true } : undefined));
       if (url.pathname === root && req.method === 'POST') return json(res, 201, conversations.create(await readBody(req)));
       if (url.pathname === root + '/sync' && req.method === 'POST') return json(res, 200, conversations.sync((await readBody(req, 64 * 1024 * 1024)).sessions));
+      const choice = /^\/api\/companion\/conversations\/([A-Za-z0-9_.:-]{1,160})\/messages\/([A-Za-z0-9_.:-]{1,160})\/choice$/.exec(url.pathname);
+      if (choice) {
+        if (req.method !== 'POST') return error(res, 405, 'Choose continue.');
+        return json(res, 200, conversations.choose(choice[1], choice[2], await readBody(req)));
+      }
       const match = /^\/api\/companion\/conversations\/([A-Za-z0-9_.:-]{1,160})(?:\/(messages|stop|approval|preferences))?$/.exec(url.pathname);
       if (!match) return error(res, 404, 'Unknown conversation action.');
       const [, id, action] = match;

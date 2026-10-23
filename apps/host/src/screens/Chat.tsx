@@ -35,6 +35,8 @@ import { ActivityLine, EditedFiles, FileCard, SkillsUsed } from '../components/D
 import { queueMessage, usePlan, usePlanQuiet } from '../lib/plan';
 import { plainFailureText } from '../lib/plain-errors';
 import { contextRecovery } from '../lib/context-recovery';
+import { RoomChoiceCard } from '../components/RoomChoiceCard';
+import { choicePayload } from '../lib/room-choice';
 import { useLiveStatus } from '../lib/live-status';
 import { askQuestion, askSub, askIcon } from '../lib/ask';
 import { artifactFromUrl, type PreviewArtifact } from '../lib/artifacts';
@@ -44,7 +46,7 @@ import { Markdown } from '../components/Markdown';
 import { Btn, Icon, IconBtn, ErrorNotice, type IconName } from '../components/ui';
 import { composerCap, scrollBehavior } from '../lib/responsive';
 import { relTime, cx, duration, tokens, tps } from '../lib/format';
-import { createSubagentExample, pushToast, setPreviewTabClosed, branchFrom, continueLast, markRead, resolveTool, retryLast, selectSession, rewindTo, sendMessage, stopStreaming, useStore, } from '../lib/store';
+import { continuePausedChat, createSubagentExample, pushToast, setPreviewTabClosed, branchFrom, continueLast, markRead, resolveTool, retryLast, selectSession, rewindTo, sendMessage, stopStreaming, useStore, } from '../lib/store';
 import { getSlashCommands } from '../lib/commands';
 import { useLocation } from '../lib/router';
 import { composerSends } from '../lib/shortcut-bindings';
@@ -645,6 +647,8 @@ function Message({ message: m, isLast, entrance, onEditPrompt, onPreview, onOpen
     const planCard = !!m.planId && storedPlan?.id === m.planId;
     // A reply with activity lines is drawn piece by piece in the order it came; one without is the plain text it always was.
     const grouped = !!m.blocks?.some(b => b.kind === 'group');
+    const paused = m.recovery?.kind === 'paused' && m.recovery.options.some(option => option.id === 'continue') ? m.recovery : null;
+    const hidePausedBody = !!paused && m.content.trim() === paused.text.trim();
     const [sentTime, setSentTime] = useState(() => relTime(m.at));
     const motion = entrance ? 'msg-enter' : undefined;
     const motionStyle = entrance ? { animationDuration: `${entrance.ms}ms`, animationDelay: `${entrance.delay}ms` } : undefined;
@@ -671,13 +675,14 @@ function Message({ message: m, isLast, entrance, onEditPrompt, onPreview, onOpen
 
       {tr((m.tools ?? []).filter(t => !grouped || t.state !== 'done').map((t) => (<ToolCard key={t.id} messageId={m.id} tool={t}/>)))}
 
-      {tr(!(m.timeSkipId && timeSkipReal && !timeSkipDone) && (m.content || m.error || !m.streaming || !liveStatus) ? <div className="st-bubble">
+      {tr(!(hidePausedBody && !m.error && !grouped && !planCard) && !(m.timeSkipId && timeSkipReal && !timeSkipDone) && (m.content || m.error || !m.streaming || !liveStatus) ? <div className="st-bubble">
         {tr(planCard ? <PlanCard chatId={activeSession} planId={m.planId!}/> : null)}
         {tr(m.error ? (<ErrorNotice message={m.error} detail={m.errorDetail} {...contextRecovery(m.errorCode)}/>) : null)}
         {tr(grouped && !planCard && !m.timeSkipId ? m.blocks!.map((b, i) => b.kind === 'group' ? <ActivityLine key={b.id} group={b} sessionId={activeSession ?? ''} onPreview={onPreview}/> : <Markdown key={i} text={b.text} onOpenLink={onOpenLink} imageSession={activeSession} onPreviewHtml={content => onPreview({ id: m.id + '-html-' + i, kind: 'website', title: 'HTML preview', content })}/>) : null)}
-        {tr(m.content && !planCard && !grouped ? (<Markdown text={m.timeSkipId && !timeSkipReal ? hostLive ? tr('This was a sample run made while the app could not reach its host.') : timeSkipDone ? tr('The result is ready. Switch between Original and Updated, or compare them side by side. This example uses sample outputs and simulated checks.') : tr('Revising the saved draft. Follow the result in the sidebar. This example uses sample outputs and simulated checks.') : m.content} onOpenLink={onOpenLink} imageSession={activeSession} onPreviewHtml={content => onPreview({ id: m.id + '-html', kind: 'website', title: 'HTML preview', content })}/>) : !m.error && m.streaming && !liveStatus ? <TypingDots label={tr("Generating")}/> : null)}
+        {tr(m.content && !planCard && !grouped && !hidePausedBody ? (<Markdown text={m.timeSkipId && !timeSkipReal ? hostLive ? tr('This was a sample run made while the app could not reach its host.') : timeSkipDone ? tr('The result is ready. Switch between Original and Updated, or compare them side by side. This example uses sample outputs and simulated checks.') : tr('Revising the saved draft. Follow the result in the sidebar. This example uses sample outputs and simulated checks.') : m.content} onOpenLink={onOpenLink} imageSession={activeSession} onPreviewHtml={content => onPreview({ id: m.id + '-html', kind: 'website', title: 'HTML preview', content })}/>) : !m.error && m.streaming && !liveStatus ? <TypingDots label={tr("Generating")}/> : null)}
         {tr(m.streaming && m.content ? <span className="caret" aria-hidden="true"/> : null)}
       </div> : null)}
+      {tr(paused && !m.streaming && activeSession ? <ChatPauseChoice sessionId={activeSession} messageId={m.id} recovery={paused} disabled={streaming}/> : null)}
       {tr(m.skills?.length && !m.streaming ? <SkillsUsed skills={m.skills}/> : null)}
       {tr(m.deliverables?.length && !m.streaming ? <div className="deliverables">{m.deliverables.map(f => <FileCard key={f.path} file={f} sessionId={activeSession ?? ''} onPreview={onPreview}/>)}<EditedFiles files={m.deliverables} sessionId={activeSession ?? ''} onPreview={onPreview}/></div> : null)}
       {tr(m.streaming && isLast && !m.timeSkipId ? <StatusLine sessionId={activeSession} startedAt={Date.parse(m.at) || Date.now()} tokens={m.tokens}/> : null)}
@@ -701,6 +706,25 @@ function Message({ message: m, isLast, entrance, onEditPrompt, onPreview, onOpen
           </span>
         </div>) : null)}
     </div>);
+}
+function ChatPauseChoice({ sessionId, messageId, recovery, disabled }: { sessionId: string; messageId: string; recovery: NonNullable<ChatMessage['recovery']>; disabled: boolean }) {
+    const [busy, setBusy] = useState('');
+    const [error, setError] = useState('');
+    const [chosen, setChosen] = useState(recovery.choice ?? '');
+    async function choose(optionId: string) {
+        if (!choicePayload(optionId) || optionId !== 'continue') return;
+        setBusy(optionId);
+        setError('');
+        try {
+            await continuePausedChat(sessionId, messageId);
+            setChosen(optionId);
+        } catch (cause) {
+            setError(cause instanceof Error ? cause.message : 'The choice was not saved.');
+        } finally {
+            setBusy('');
+        }
+    }
+    return <RoomChoiceCard text={recovery.text} options={recovery.options} chosen={chosen} busy={busy} disabled={disabled} error={error} onChoose={id => void choose(id)} onRetry={() => { if (!busy) void choose('continue'); }}/>;
 }
 function MessageMenu({ label, children }: {
     label: string;

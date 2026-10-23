@@ -33,7 +33,7 @@ function journal(t, count = 4, hooks = {}) {
   const context = job => ({ bot: bots.get(job.botId), chatId: job.chatId, turnId: `turn_${job.id}`, toolCallId: `call_${job.id}`, assertLive() {}, requestPermission: async () => true, requestTeamPermission: async () => true });
   return { bots, sent, service, snapshot, writeDraft, make, jobs, context, advance: delta => { clock += delta; } };
 }
-const replies = channel => channel.messages.filter(row => row.author.type === 'bot').map(row => row.content);
+const replies = channel => channel.messages.filter(row => row.author.type === 'bot' && row.kind !== 'pass').map(row => row.content);
 
 test('team defaults are finite, saved limits persist, and explicit zeros stay continuous', async t => {
   const f = journal(t, 2);
@@ -270,8 +270,18 @@ test('a room speaker can pass without publishing, and a later speaker still answ
   assert.match(f.service.instructions(passing), /Address teammates by name/);
   assert.match(f.service.instructions(passing), /Recent room, with authors/);
   assert.match(f.service.instructions(passing), /pass_team_turn/);
+  const passedEvents = [];
+  const stopPassed = f.service.subscribe((event, data) => { if (event === 'team-channel' && data?.passed) passedEvents.push(data); });
   assert.deepEqual(await f.service.execute('pass_team_turn', {}, passing), { passed: true, notice: 'You passed. Nothing will be published for this turn.' });
   f.service.end(passing, { publicReply: 'This pass must stay private' });
+  stopPassed();
+  const marker = f.service.channel(team.id).messages.find(row => row.id === `tm_${first.id}`);
+  assert.equal(marker.kind, 'pass');
+  assert.equal(marker.content, '');
+  assert.equal(marker.author.botId, 'bot_0');
+  assert.equal(marker.replyGroupId, undefined);
+  assert.equal(marker.state, undefined);
+  assert.deepEqual(passedEvents, [{ teamId: team.id, botId: 'bot_0', passed: true, at: marker.createdAt }]);
   assert.deepEqual(replies(f.service.channel(team.id)), []);
   f.service.tick();
   const second = f.jobs(run.id).find(job => job.state === 'running');
@@ -671,8 +681,37 @@ test('a passed turn clears a live draft and does not publish it', async t => {
   const messageId = `tm_${job.id}`;
   assert.equal(cleared.name, 'message.partial');
   assert.equal(cleared.json, JSON.stringify({ messageId, botId: 'bot_1', seq: 2, text: '', delta: '', done: true }));
-  assert.equal(f.service.channel(team.id).messages.some(row => row.id === messageId), false);
+  const marker = stream.parse(await stream.readEvent());
+  const saved = f.service.channel(team.id).messages.find(row => row.id === messageId);
+  assert.equal(saved.kind, 'pass');
+  assert.equal(saved.content, '');
+  assert.equal(marker.name, 'team-channel');
+  assert.equal(marker.data.passed, true);
+  assert.equal(marker.data.botId, 'bot_1');
+  assert.equal(marker.data.at, saved.createdAt);
   await stream.cancel();
+});
+
+test('an empty answer in an everyone reply saves a pass and does not count as a message', async t => {
+  const f = journal(t, 2);
+  const team = f.make(2);
+  const sent = f.service.message(team.id, { message: 'Hello everyone', requestId: 'empty-everyone', everyone: true });
+  const opening = sent.channel.messages.find(row => row.content === 'Hello everyone');
+  f.service.tick();
+  const job = f.jobs(sent.run.id).find(row => row.state === 'running');
+  const ctx = f.context(job);
+  f.service.begin(ctx);
+  const events = [];
+  const stop = f.service.subscribe((event, data) => { if (event === 'team-channel' && data?.passed) events.push(data); });
+  f.service.end(ctx, { publicReply: '   ' });
+  stop();
+  const marker = f.service.channel(team.id).messages.find(row => row.id === `tm_${job.id}`);
+  assert.equal(marker.kind, 'pass');
+  assert.equal(marker.content, '');
+  assert.equal(marker.replyGroupId, opening.id);
+  assert.deepEqual(events, [{ teamId: team.id, botId: job.botId, replyGroupId: opening.id, passed: true, at: marker.createdAt }]);
+  assert.deepEqual(replies(f.service.channel(team.id)), []);
+  assert.equal(f.service.channel(team.id).messages.some(row => row.kind === 'pass'), true);
 });
 
 test('an empty selector for a plain greeting still answers once, and a later empty selection settles', async t => {

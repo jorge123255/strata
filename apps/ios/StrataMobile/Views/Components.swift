@@ -805,7 +805,7 @@ struct RoomRecoveryPresentation: Equatable {
 
 /// The room card reads the host's recovery field and the same live event shape. Labels are never invented here.
 enum RoomChoice {
-    static let choiceIds: Set<String> = ["retry", "skip", "different"]
+    static let choiceIds: Set<String> = ["retry", "skip", "different", "continue"]
 
     static func fromMessage(id: String, teamId: String, content: String, recovery: BotTeamMessageRecovery?) -> RoomRecoveryPresentation? {
         guard let recovery else { return nil }

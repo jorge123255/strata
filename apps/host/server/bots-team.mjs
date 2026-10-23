@@ -8,6 +8,7 @@ import { normalizeTeamBriefing, teamBriefingContext } from './bots-team-instruct
 import { createTeamWorkflows, WORKFLOW_TOOLS } from './bots-workflows.mjs';
 import { createTeamPlans, TEAM_PLAN_TOOLS } from './bots-team-plans.mjs';
 import { markNoEffect } from './bots-runtime/tool-outcome.mjs';
+import { isStepLimitMessage, pauseFields, stepLimitPause } from './bots-runtime/step-budget.mjs';
 import { teamPlanResourcesOverlap } from './bots-team-plan-resources.mjs';
 import { initialWork, publicWork, normalizeResult, nextWork, validateSavedWork } from './bots-team-work.mjs';
 
@@ -116,7 +117,7 @@ function publicFailure(error) {
   if (/configured model API returned HTTP 402\b/i.test(value)) return 'The configured model provider rejected the request (HTTP 402). Check its billing, credits or access in Models before retrying. Ask the owner to resolve this before a new explicit request; do not automatically retry or reassign this task.';
   if (/configured model API returned HTTP (401|403)\b/i.test(value)) return 'The configured model provider refused access. Check its credentials and model permissions in Models before retrying.';
   if (/configured model API returned HTTP 429\b/i.test(value)) return 'The configured model provider reached a request or usage limit (HTTP 429). Check its limits before retrying.';
-  if (/reached its \d+-step limit\b/i.test(value)) return 'This bot reached its step limit before finishing. Review the linked conversation and continue explicitly if more work is needed.';
+  if (isStepLimitMessage(value)) return 'This bot paused before the work was finished. Continue it to keep going.';
   if (error?.cleanupUnconfirmed || ['cua_cleanup_unconfirmed', 'ssh_cleanup_unconfirmed'].includes(error?.code) || /cleanup (?:is |was |could not be )?unconfirmed|could not confirm.*stop|could not be confirmed/i.test(value)) return 'Computer cleanup could not be confirmed. Review the linked conversation and verify the computer before starting new work.';
   if (/person has control|release control|completing another control action/i.test(value)) return 'A person is controlling this computer. Release control before retrying this task.';
   if (/another (?:bot conversation|teammate|conversation|Bots worker).*(?:computer|CUA)|shared computer.*(?:busy|in use)/i.test(value)) return 'This task could not start because its selected computer is in use. Wait for that work to finish before retrying.';
@@ -154,7 +155,7 @@ function transientFailure(error) {
 function userFailureReason(error) {
   const category = failureCategory(error);
   const value = String(error?.message ?? error ?? '');
-  if (category === 'provider_limit' && /step limit/i.test(value)) return 'This stopped because it ran out of steps before it finished.';
+  if (category === 'provider_limit' && /step limit|paused before the work was finished/i.test(value)) return 'This stopped before the work was finished.';
   if (category === 'provider_limit') return 'This stopped because the model provider hit a usage limit.';
   if (category === 'provider_billing') return 'This stopped because the model provider reported a billing or credits problem.';
   if (category === 'provider_access' && /HTTP (401|403)\b/i.test(value)) return 'This stopped because the model provider refused access.';
@@ -236,7 +237,7 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
     catch { throw fault(503, 'Saved team work could not be read. Its file was left unchanged.'); }
     for (const row of value.teams) { if (!row || !/^team_[a-f0-9-]+$/.test(row.id) || !Array.isArray(row.memberIds) || !row.memberIds.includes(row.coordinatorId) || !row.limits || row.revision !== undefined && (!Number.isSafeInteger(row.revision) || row.revision < 1) || row.execution !== undefined && (!row.execution || !['individual', 'shared'].includes(row.execution.mode) || Object.keys(row.execution).some(key => !(row.execution.mode === 'individual' ? ['mode'] : ['mode', 'computerId', 'workspace']).includes(key)) || row.execution.mode === 'shared' && (typeof row.execution.computerId !== 'string' || typeof row.execution.workspace !== 'string')) || Object.keys(bounds).some(key => !Number.isInteger(row.limits[key]) || row.limits[key] < bounds[key][0] || row.limits[key] > bounds[key][1])) throw fault(503, 'A saved team is invalid.'); let briefing; try { briefing = normalizeTeamBriefing(row.briefing, row.memberIds); } catch { throw fault(503, 'A saved team briefing is invalid. Its file was left unchanged.'); } const voice = savedVoice(row); teams.set(row.id, { ...row, ...voice, limits: { ...DEFAULT_TEAM_LIMITS, ...row.limits }, briefing, revision: row.revision ?? 1, execution: row.execution ?? { mode: 'individual' } }); }
     for (const row of value.runs) { if (!row || !/^tr_[a-f0-9-]+$/.test(row.id) || !teams.has(row.teamId) || !Number.isInteger(row.generation)) throw fault(503, 'A saved team run is invalid.'); runs.set(row.id, liveStates.has(row.state) ? { ...row, generation: row.generation + 1, state: 'interrupted', detail: 'Strata restarted. Previous work was retained and was not replayed.', updatedAt: stamp() } : row); }
-    for (const row of value.jobs) { if (!row || !/^tj_[a-f0-9-]+$/.test(row.id) || !runs.has(row.runId)) throw fault(503, 'A saved team assignment is invalid.'); validateSavedWork(row.work); const interrupted = ['queued', 'running', 'stopping'].includes(row.state); jobs.set(row.id, interrupted ? { ...row, state: 'interrupted', ...(row.work ? { work: nextWork(row.work, { status: 'interrupted', summary: 'Strata restarted. Inspect existing progress before resuming.' }) } : {}), updatedAt: stamp() } : row); }
+    for (const row of value.jobs) { if (!row || !/^tj_[a-f0-9-]+$/.test(row.id) || !runs.has(row.runId)) throw fault(503, 'A saved team assignment is invalid.'); validateSavedWork(row.work); const interrupted = ['queued', 'running', 'stopping', 'paused'].includes(row.state); jobs.set(row.id, interrupted ? { ...row, state: 'interrupted', ...(row.work ? { work: nextWork(row.work, { status: 'interrupted', summary: 'Strata restarted. Inspect existing progress before resuming.' }) } : {}), updatedAt: stamp() } : row); }
     // A synthesis continuation owns its original assignment ledger. On restart
     // its transport row is interrupted, but its completed ancestor also needs
     // an interrupted work status so the owner can recover that unfinished work.
@@ -447,7 +448,7 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
     }
   }
   function selectorInput(team, run) {
-    const history = channels.recent(team.id, 12).map(row => ({ authorName: row.author?.name || 'Someone', authorType: row.author?.type, botId: row.author?.botId, content: String(row.content ?? '').replace(/\s+/g, ' ').slice(0, 240) }));
+    const history = channels.recent(team.id, 24).filter(row => row.kind !== 'pass').slice(-12).map(row => ({ authorName: row.author?.name || 'Someone', authorType: row.author?.type, botId: row.author?.botId, content: String(row.content ?? '').replace(/\s+/g, ' ').slice(0, 240) }));
     const latestBot = [...history].reverse().find(row => row.authorType === 'bot');
     const members = team.memberIds.map(id => {
       let bot; try { bot = requireBot(id); } catch { bot = { id, name: 'Unavailable teammate', paused: true }; }
@@ -773,7 +774,7 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
     continueConversation(run);
     if (participationChanged || resultChanged || continuationState !== `${run.bidSummaryQueued}:${run.conversationSummaryQueued}`) { changed(run); queueTick(); }
     const rows = runJobs(run.id);
-    if (rows.some(job => ['queued', 'running'].includes(job.state) || job.heldReply)) return;
+    if (rows.some(job => ['queued', 'running', 'paused'].includes(job.state) || job.heldReply)) return;
     run.state = run.followupFailed || rows.some(job => job.state === 'error') ? 'error' : 'completed'; changed(run);
   }
   function invitationKey(run, job, replyToId, botId, purpose) {
@@ -914,26 +915,35 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
     if (timer) retryTimers.add(timer);
     return true;
   }
+  function pauseAsk(job, run, pause) {
+    const text = pause.text;
+    const options = (pause.options ?? pauseFields(text).options).map(option => ({ id: option.id, label: option.label }));
+    const field = { kind: 'paused', text, question: pause.question || 'Keep going?', options, jobId: job.id, runId: run.id };
+    return { text, field, event: { teamId: run.teamId, jobId: job.id, runId: run.id, text, question: field.question, options, recovery: { kind: 'paused', text, question: field.question, options } } };
+  }
   function finishJob(job, run, outcome) {
+    const pause = !outcome?.cancelled && (outcome?.pause?.kind === 'paused' ? outcome.pause : (isStepLimitMessage(outcome?.error) ? stepLimitPause() : null));
+    if (pause) outcome = { ...outcome, error: undefined, pause, publicReply: outcome?.publicReply || pause.text };
     if (holdForTransientRetry(job, run, outcome)) { queueTick(); return; }
-    job.state = outcome.cancelled ? 'cancelled' : outcome.error ? 'error' : 'completed'; job.updatedAt = stamp();
+    job.state = outcome.cancelled ? 'cancelled' : outcome.error ? 'error' : pause ? 'paused' : 'completed'; job.updatedAt = stamp();
     const workOwner = assignedWorkOwner(job);
-    if (workOwner?.work) { const submitted = workOwner.workSubmittedTurnId === job.turnId, status = outcome.cancelled ? 'interrupted' : outcome.error ? 'blocked' : submitted ? workOwner.work.resultHistory.at(-1)?.outcome ?? 'ready_for_review' : 'blocked'; workOwner.work = nextWork(workOwner.work, { status, ...(status === 'blocked' ? { summary: outcome.error ? publicFailure(outcome.error) : submitted && workOwner.work.resultHistory.at(-1)?.outcome === 'blocked' ? workOwner.work.resultHistory.at(-1).summary : unsubmittedWorkSummary } : status === 'interrupted' ? { summary: 'This task was interrupted. Inspect existing progress before continuing.' } : {}) }); workOwner.updatedAt = stamp(); }
+    if (workOwner?.work && !pause) { const submitted = workOwner.workSubmittedTurnId === job.turnId, status = outcome.cancelled ? 'interrupted' : outcome.error ? 'blocked' : submitted ? workOwner.work.resultHistory.at(-1)?.outcome ?? 'ready_for_review' : 'blocked'; workOwner.work = nextWork(workOwner.work, { status, ...(status === 'blocked' ? { summary: outcome.error ? publicFailure(outcome.error) : submitted && workOwner.work.resultHistory.at(-1)?.outcome === 'blocked' ? workOwner.work.resultHistory.at(-1).summary : unsubmittedWorkSummary } : status === 'interrupted' ? { summary: 'This task was interrupted. Inspect existing progress before continuing.' } : {}) }); workOwner.updatedAt = stamp(); }
     if (outcome.error) job.detail = String(outcome.error?.message ?? outcome.error).slice(0, 1000);
     if (outcome.error) job.failureCategory = failureCategory(outcome.error);
     if (outcome.error && (modelAccountFailure(outcome.error) || modelVerificationFailure(outcome.error))) job.retryRequiresOwner = true;
     if (job.channelMode && !job.workflowId && !job.planId) try {
       let content = '';
       try { content = typeof outcome.publicReply === 'string' ? outcome.publicReply : conversations().detail(job.chatId).conversation.messages.filter(m => m.role === 'assistant').at(-1)?.content ?? ''; } catch {}
-      const ask = outcome.error && asksOwner(job) ? taskRecovery(job, run, outcome.error) : null;
-      if (outcome.error) content = ask ? ask.text : publicFailureReport(outcome.error);
+      const ask = pause ? pauseAsk(job, run, pause) : (outcome.error && asksOwner(job) ? taskRecovery(job, run, outcome.error) : null);
+      if (pause) content = pause.text;
+      else if (outcome.error) content = ask ? ask.text : publicFailureReport(outcome.error);
       if (outcome.cancelled) content = outcome.limitNotice ?? 'This team turn was interrupted.';
       if (job.passed && !outcome.error && !outcome.cancelled) content = '';
       if (job.roomOrder !== undefined && ['routing', 'conversation', 'bid', 'task'].includes(job.channelMode) && earlierPending(job)) job.heldReply = { content, cancelled: outcome.cancelled === true, error: !!outcome.error, ask };
       else publishRoomLine(job, run, content, { ...outcome, ask });
       releaseHeld(run);
     } catch { job.state = 'error'; job.detail = 'The public team report could not be saved. The original bot conversation was retained.'; if (workOwner?.work) workOwner.work = nextWork(workOwner.work, { status: 'blocked', summary: job.detail }); }
-    if (job.channelMode && !job.workflowId && !job.planId && !outcome.cancelled && !job.heldReply && job.state !== 'error') noteRoomReply(job, run);
+    if (job.channelMode && !job.workflowId && !job.planId && !outcome.cancelled && !job.heldReply && job.state !== 'error' && job.state !== 'paused') noteRoomReply(job, run);
     if (job.resultBatch) {
       // A delegated worker may yield while its own children run. Its later
       // synthesis is the latest report for that original assignment, while
@@ -945,8 +955,8 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
       }
     }
     // One bounded completion wake, not an acknowledgement loop. Completion wakes never reply to themselves.
-    if (!job.planId && !outcome.cancelled && job.replyToChatId && run.channelMessageId) job.resultPending = true;
-    if (!job.planId && !outcome.cancelled && job.replyToChatId && !run.channelMessageId) {
+    if (!pause && !job.planId && !outcome.cancelled && job.replyToChatId && run.channelMessageId) job.resultPending = true;
+    if (!pause && !job.planId && !outcome.cancelled && job.replyToChatId && !run.channelMessageId) {
       let content = outcome.error ? `${publicFailureReport(outcome.error)} Do not assume the task completed.` : '';
       if (!content) try { content = typeof outcome.publicReply === 'string' ? outcome.publicReply : conversations().detail(job.chatId).conversation.messages.filter(m => m.role === 'assistant').at(-1)?.content ?? ''; } catch {}
       const label = (() => { try { return requireBot(job.botId).name; } catch { return 'Teammate'; } })();
@@ -1032,9 +1042,21 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
       if (!state || content.startsWith(state.text) && content.length > state.text.length) emitPartial(job, content, false);
     }
   }
+  function recordPass(job, run) {
+    const bot = (() => { try { return requireBot(job.botId); } catch { return { id: job.botId, name: 'Unavailable teammate' }; } })();
+    const replyGroupId = job.everyoneReply ? job.channelMessageId : undefined;
+    const saved = channels.append(run.teamId, { id: partialMessageId(job), kind: 'pass', author: author(bot), content: '', replyToId: job.channelMessageId, runId: run.id, chatId: job.chatId, ...(replyGroupId ? { replyGroupId } : {}) });
+    job.publicReportId = saved.id;
+    emit('team-channel', { teamId: run.teamId, botId: job.botId, ...(replyGroupId ? { replyGroupId } : {}), passed: true, at: saved.createdAt });
+  }
   function publishRoomLine(job, run, content, outcome) {
-    if (!outcome?.error && !outcome?.cancelled) content = visibleReply(content, !!(job.completion || job.conversationSummary || job.resultBatch));
-    if (!content?.trim()) { if (partials.has(job.id)) emitPartial(job, '', true); return; }
+    if (!outcome?.error && !outcome?.cancelled && !outcome?.pause) content = visibleReply(content, !!(job.completion || job.conversationSummary || job.resultBatch));
+    if (!content?.trim()) {
+      if (partials.has(job.id)) emitPartial(job, '', true);
+      const replyGroupId = job.everyoneReply ? job.channelMessageId : undefined;
+      if (job.passed || replyGroupId) recordPass(job, run);
+      return;
+    }
     if (run.roomConversation && job.channelMode === 'conversation' && !outcome?.error && !outcome?.cancelled && nearDuplicate(run.teamId, content)) { job.suppressedDuplicate = true; if (partials.has(job.id)) emitPartial(job, '', true); return; }
     const existing = channels.recent(run.teamId, 100).find(row => row.chatId === job.chatId && row.content === content && row.author?.botId === job.botId);
     if (existing) { job.publicReportId = existing.id; if (partials.has(job.id)) emitPartial(job, '', true); return; }
@@ -1101,10 +1123,11 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
             }
             const bot = requireBot(job.botId); if (bot.paused) throw fault(409, 'This teammate is paused.');
             if (accountBlocked(run, job.botId, job)) throw fault(409, accountRetryDetail);
-            const freeRetry = job.freeRetry === true;
-            delete job.retryAfter; delete job.freeRetry;
+            const freeRetry = job.freeRetry === true || job.resumeCheckpoint === true;
+            const outbound = job.continuationMessage || job.message;
+            delete job.retryAfter; delete job.freeRetry; delete job.resumeCheckpoint; delete job.continuationMessage;
             job.state = 'running'; job.updatedAt = stamp(); pendingChats.set(job.chatId, job.id); if (!freeRetry) run.consumedTurns++; run.state = 'running'; lastScheduledRun = run.id; if (isRoomChat(job)) roomRunning++; else if (countsAsWork(job)) workRunning++; changed(run);
-            conversations().send(job.chatId, job.message);
+            conversations().send(job.chatId, outbound);
           } catch (error) { pendingChats.delete(job.chatId); finishJob(job, run, { error }); }
         }
         settle(run);
@@ -1121,7 +1144,7 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
     run.generation++; run.state = 'stopping'; run.detail = reason;
     if (run.channelMessageId) try { channels.append(run.teamId, { kind: 'status', author: { type: 'system', name: 'Strata' }, content: reason, runId: run.id, replyToId: run.channelMessageId, state: 'interrupted' }); } catch { run.detail = `${reason} The public stop notice could not be saved.`; }
     const active = runJobs(id).filter(job => job.state === 'running' || job.state === 'stopping');
-    for (const job of runJobs(id)) { if (job.state === 'queued') job.state = 'cancelled'; else if (job.state === 'running') job.state = 'stopping'; if (['cancelled', 'stopping'].includes(job.state)) { const owner = assignedWorkOwner(job); if (owner?.work && !['verified', 'interrupted'].includes(owner.work.status)) owner.work = nextWork(owner.work, { status: 'interrupted', summary: reason }); } pendingChats.delete(job.chatId); job.updatedAt = stamp(); }
+    for (const job of runJobs(id)) { if (job.state === 'queued' || job.state === 'paused') job.state = 'cancelled'; else if (job.state === 'running') job.state = 'stopping'; if (['cancelled', 'stopping'].includes(job.state)) { const owner = assignedWorkOwner(job); if (owner?.work && !['verified', 'interrupted'].includes(owner.work.status)) owner.work = nextWork(owner.work, { status: 'interrupted', summary: reason }); } pendingChats.delete(job.chatId); job.updatedAt = stamp(); }
     let saveError;
     try { changed(run); } catch (error) { if (!run.planId) throw error; saveError = error; }
     const results = await Promise.allSettled(active.map(async job => { await stopDirect(job.chatId); await conversations().stop(job.chatId); job.state = 'cancelled'; job.updatedAt = stamp(); }));
@@ -1266,13 +1289,27 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
   }
   function chooseTaskRecovery(teamId, messageId, input) {
     requireTeam(teamId);
-    if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => key !== 'choice') || !['retry', 'skip', 'different'].includes(input.choice)) throw fault(400, 'Choose try again, skip, or a different way.');
+    if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => key !== 'choice') || !['retry', 'skip', 'different', 'continue'].includes(input.choice)) throw fault(400, 'Choose try again, skip, a different way, or continue.');
     const choice = input.choice;
     const message = channels.find(teamId, messageId);
     if (!message?.recovery || message.recovery.jobId === undefined) throw fault(404, 'This choice is unavailable.');
+    const paused = message.recovery.kind === 'paused';
+    if (paused ? choice !== 'continue' : choice === 'continue') throw fault(400, paused ? 'Choose continue.' : 'Choose try again, skip, or a different way.');
     if (message.recovery.choice === choice) return { accepted: true, choice, message: channels.find(teamId, messageId) };
     const job = jobs.get(message.recovery.jobId), run = runs.get(message.recovery.runId);
     if (!job || !run || job.teamId !== teamId || run.teamId !== teamId || job.runId !== run.id) throw fault(404, 'This task is unavailable.');
+    if (choice === 'continue') {
+      if (job.state !== 'paused') throw fault(409, 'This turn is not waiting to continue.');
+      if (!['queued', 'running'].includes(run.state)) throw fault(409, 'This team turn is no longer waiting.');
+      job.continuationMessage = 'Continue from the checkpoint.';
+      job.resumeCheckpoint = true;
+      job.state = 'queued';
+      delete job.turnId;
+      job.updatedAt = stamp();
+      const saved = channels.setRecoveryChoice(teamId, messageId, choice);
+      changed(run); queueTick();
+      return { accepted: true, choice, message: saved };
+    }
     if (choice === 'retry') {
       if (job.state !== 'error') throw fault(409, 'This task is not waiting for a choice.');
       if (['queued', 'running', 'stopping', 'cleanup_pending'].includes(run.state)) throw fault(409, 'Wait until this team task stops before trying again.');
@@ -1783,7 +1820,7 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
       const publicRoster = roster(context.bot.id).find(row => row.id === team.id);
       const ownerMessage = channels.find(team.id, run.channelMessageId);
       const ownerScope = ownerMessage?.author.type === 'user' && ownerMessage.kind === 'message' && ownerMessage.runId === run.id ? JSON.stringify({ id: ownerMessage.id, authorType: 'user', content: ownerMessage.content, ...(ownerMessage.workMode ? { workMode: ownerMessage.workMode } : {}) }) : '';
-      const sharedRows = channels.recent(team.id, 24);
+      const sharedRows = channels.recent(team.id, 24).filter(row => row.kind !== 'pass');
       const shared = sharedRows.map(row => ({ id: row.id, author: row.author.name, authorType: row.author.type, botId: row.author.botId, kind: row.kind, content: row.content.slice(0, 1200), ...(row.workMode ? { workMode: row.workMode } : {}), ...(row.content.length > 1200 ? { truncated: true, totalLength: row.content.length } : {}), recipientIds: row.recipientIds, replyToId: row.replyToId })).map(row => JSON.stringify(row)).join('\n');
       const roomTranscript = ['conversation', 'bid'].includes(job.channelMode) ? `\nRecent room, with authors:\n${sharedRows.slice(-12).map(row => `${row.author?.name || 'Someone'}: ${String(row.content).replace(/\s+/g, ' ').slice(0, 400)}`).join('\n') || 'No earlier lines.'}\n` : '';
       const role = job.channelMode === 'routing'

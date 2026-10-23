@@ -904,7 +904,8 @@ struct BotTeamDetailView: View {
                             if let optionId = choiceRetries[entry.id] { Task { await chooseRoomRecovery(recovery, optionId: optionId) } }
                         }
                     }
-                    if entry.kind != "message" { Text(entry.kind.replacingOccurrences(of: "_", with: " ").capitalized).font(.caption2.weight(.medium)).foregroundStyle(.secondary) }
+                    if entry.kind == "pass" { Text("passed").font(.caption2.weight(.medium)).foregroundStyle(.secondary) }
+                    else if entry.kind != "message" { Text(entry.kind.replacingOccurrences(of: "_", with: " ").capitalized).font(.caption2.weight(.medium)).foregroundStyle(.secondary) }
                 }.padding(.horizontal, 15).padding(.vertical, 12)
                     .background(human ? StrataTheme.grouped : StrataTheme.surface, in: RoundedRectangle(cornerRadius: 23))
                 HStack(spacing: 8) {

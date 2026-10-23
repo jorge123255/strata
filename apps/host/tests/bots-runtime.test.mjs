@@ -190,6 +190,23 @@ test('Grok and Kimi actual stdio protocols use native session load and decline p
     assert.equal((await stat(plans[0].args[profileIndex + 1])).mode & 0o777, 0o600); runtime.close();
   }
 });
+test('a prefixed pass_team_turn call executes the listed tool and is not listed twice', async () => {
+  const pass = { name: 'pass_team_turn', description: 'Decline this team message. This uses your one reply and publishes nothing.', inputSchema: { type: 'object', properties: {} } };
+  let called;
+  const bridge = await startToolBridge({ tools: [pass], executeTool: async (name, args) => { called = { name, args }; return { passed: true }; } });
+  const rpc = jsonRpcProcess({ command: bridge.command, args: bridge.args, env: { ...process.env, ...bridge.env }, cwd: root });
+  try {
+    await rpc.request('initialize', {});
+    const listed = await rpc.request('tools/list', {});
+    assert.deepEqual(listed.tools.map(tool => tool.name), ['pass_team_turn']);
+    const result = await rpc.request('tools/call', { name: 'mcp__strata__pass_team_turn', arguments: {} });
+    assert.equal(called.name, 'pass_team_turn');
+    assert.deepEqual(called.args, {});
+    assert.match(result.content[0].text, /passed/);
+    const plain = await rpc.request('tools/call', { name: 'pass_team_turn', arguments: {} });
+    assert.match(plain.content[0].text, /passed/);
+  } finally { await rpc.close(); await bridge.close(); }
+});
 test('MCP tool bridge transports image results and rejects unlisted tools', async () => {
   const bridge = await startToolBridge({ tools, executeTool: async () => ({ content: [{ type: 'image', data: 'ZmFrZQ==', mimeType: 'image/png' }] }) });
   const rpc = jsonRpcProcess({ command: bridge.command, args: bridge.args, env: { ...process.env, ...bridge.env }, cwd: root });

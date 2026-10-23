@@ -18,28 +18,69 @@ test.after(() => rm(directory, { recursive: true, force: true }));
 const immediate = () => new Promise(resolve => setImmediate(resolve));
 const tool = { name: 'inspect', description: 'Inert fixture', inputSchema: { type: 'object', properties: {} } };
 const bot = (provider, continuousTeam) => ({ id: 'bot_fixture', name: 'Fixture', provider, model: 'fixture:cloud', workspace: directory, execution: { kind: 'local' }, continuousTeam });
-const answer = (round, terminal = 40) => round <= terminal ? { text: `Progress ${round}`, toolCalls: [{ id: `call_${round}`, name: 'inspect', args: {} }] } : { text: 'Final report', toolCalls: [] };
+const answer = (round, terminal = 40) => round <= terminal ? { text: `Progress ${round}`, toolCalls: [{ id: `call_${round}`, name: 'inspect', args: { step: round } }] } : { text: 'Final report', toolCalls: [] };
 const sse = event => new Response(`data: ${JSON.stringify(event)}\n\ndata: [DONE]\n\n`);
 
-for (const continuousTeam of [false, true]) test(`configured model ${continuousTeam ? 'continues beyond 32 steps' : 'keeps the standalone 32-step behavior'}`, async () => {
+for (const continuousTeam of [false, true]) test(`configured model continues past 32 steps while it is still making progress (${continuousTeam ? 'continuous team' : 'standalone'})`, async () => {
   let requests = 0, executions = 0, saved = 0;
   const context = { bot: bot('configured', continuousTeam), history: [], message: 'Fixture', tools: [tool], signal: new AbortController().signal, frame() {}, save() { saved++; },
     modelRequest: async () => answer(++requests), execute: async () => { executions++; return { content: [{ type: 'text', text: 'Inert result' }] }; } };
-  if (continuousTeam) { await runConfiguredBot(context); assert.equal(requests, 41); assert.equal(executions, 40); assert.equal(saved, 1); assert.equal(context.publicReply, 'Final report'); }
-  else { await assert.rejects(runConfiguredBot(context), /32-step/); assert.equal(requests, 32); assert.equal(executions, 32); assert.equal(saved, 0); }
+  await runConfiguredBot(context);
+  assert.equal(requests, 41); assert.equal(executions, 40); assert.equal(saved, 1); assert.equal(context.publicReply, 'Final report');
+  assert.equal(context.pause, undefined);
 });
 
-for (const continuousTeam of [false, true]) test(`Ollama ${continuousTeam ? 'continues beyond 32 steps' : 'keeps the standalone 32-step behavior'}`, async () => {
+for (const continuousTeam of [false, true]) test(`Ollama continues past 32 steps while it is still making progress (${continuousTeam ? 'continuous team' : 'standalone'})`, async () => {
   let requests = 0, executions = 0;
   const runtime = createBotRuntime({ env: { OLLAMA_API_KEY: 'inert-fixture-key' }, fetch: async () => {
     const result = answer(++requests);
-    return sse({ choices: [{ delta: result.toolCalls.length ? { content: result.text, tool_calls: [{ index: 0, id: result.toolCalls[0].id, function: { name: 'inspect', arguments: '{}' } }] } : { content: result.text }, finish_reason: result.toolCalls.length ? 'tool_calls' : 'stop' }] });
+    const call = result.toolCalls[0];
+    return sse({ choices: [{ delta: call ? { content: result.text, tool_calls: [{ index: 0, id: call.id, function: { name: 'inspect', arguments: JSON.stringify(call.args) } }] } : { content: result.text }, finish_reason: call ? 'tool_calls' : 'stop' }] });
   } });
   try {
-    const pending = runtime.run({ bot: bot('ollama', continuousTeam), history: [], message: 'Fixture', tools: [tool], executeTool: async () => { executions++; return 'Inert result'; } });
-    if (continuousTeam) { const result = await pending; assert.equal(requests, 41); assert.equal(executions, 40); assert.equal(result.publicReply, 'Final report'); assert.match(result.text, /Progress 1/); }
-    else { await assert.rejects(pending, /32-step/); assert.equal(requests, 32); assert.equal(executions, 32); }
+    const result = await runtime.run({ bot: bot('ollama', continuousTeam), history: [], message: 'Fixture', tools: [tool], executeTool: async () => { executions++; return 'Inert result'; } });
+    assert.equal(requests, 41); assert.equal(executions, 40); assert.equal(result.publicReply, 'Final report'); assert.match(result.text, /Progress 1/);
+    assert.equal(result.pause, undefined);
   } finally { await runtime.close(); }
+});
+
+test('a repeated tool call pauses with a plain sentence and no step-limit wording', async () => {
+  let requests = 0, executions = 0;
+  const context = { bot: bot('configured', false), history: [], message: 'Fixture', tools: [tool], signal: new AbortController().signal, frame() {}, save() {},
+    modelRequest: async () => ({ text: 'Working', toolCalls: [{ id: `call_${++requests}`, name: 'inspect', args: { step: 1 } }] }),
+    execute: async () => { executions++; return { content: [{ type: 'text', text: 'Inert result' }] }; } };
+  await runConfiguredBot(context);
+  assert.equal(requests, 2);
+  assert.equal(executions, 1);
+  assert.equal(context.pause.kind, 'paused');
+  assert.deepEqual(context.pause.options, [{ id: 'continue', label: 'Keep going' }]);
+  assert.match(context.pause.text, /same step was repeating/);
+  assert.equal(/step limit|32-step/i.test(context.pause.text), false);
+  assert.equal(context.publicReply, context.pause.text);
+});
+
+test('a zero continuation budget pauses at the chunk boundary without another request', async () => {
+  let requests = 0;
+  const context = { bot: { ...bot('configured', false), stepContinuations: 0 }, history: [], message: 'Fixture', tools: [tool], signal: new AbortController().signal, frame() {}, save() {},
+    modelRequest: async () => answer(++requests, 100), execute: async () => ({ content: [{ type: 'text', text: 'Inert result' }] }) };
+  await runConfiguredBot(context);
+  assert.equal(requests, 32);
+  assert.equal(context.pause.kind, 'paused');
+  assert.match(context.pause.text, /still left/);
+  assert.equal(/step limit|32-step/i.test(context.pause.text), false);
+});
+
+test('a saved step checkpoint resumes and finishes the remaining answer', async () => {
+  let requests = 0;
+  const first = { bot: { ...bot('configured', false), stepContinuations: 0 }, history: [], message: 'Fixture', tools: [tool], signal: new AbortController().signal, frame() {}, save() {},
+    modelRequest: async () => ({ text: `Progress ${++requests}`, toolCalls: [{ id: `call_${requests}`, name: 'inspect', args: { step: requests } }] }),
+    execute: async () => ({ content: [{ type: 'text', text: 'Inert result' }] }) };
+  await runConfiguredBot(first);
+  const second = { bot: first.bot, history: [], message: 'Continue', tools: [tool], signal: new AbortController().signal, frame() {}, save() {}, checkpoint: { stepResume: first.pause.stepResume },
+    modelRequest: async () => ({ text: 'Final report', toolCalls: [] }), execute: async () => ({ content: [{ type: 'text', text: 'unused' }] }) };
+  await runConfiguredBot(second);
+  assert.equal(second.publicReply, 'Final report');
+  assert.equal(second.pause, undefined);
 });
 
 test('continuous configured API accepts more than 500 protocol messages but retains the byte bound', async () => {

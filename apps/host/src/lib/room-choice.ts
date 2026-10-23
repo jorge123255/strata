@@ -1,6 +1,6 @@
 /** Buttons for a failed team task. Labels and the sentence come from the host. */
 export type RoomChoiceStyle = 'primary' | 'neutral' | 'danger';
-export type RecoveryChoiceId = 'retry' | 'skip' | 'different';
+export type RecoveryChoiceId = 'retry' | 'skip' | 'different' | 'continue';
 
 export interface RoomChoiceOption {
   id: string;
@@ -16,6 +16,7 @@ export interface MessageRecovery {
   options: RoomChoiceOption[];
   choice?: RecoveryChoiceId;
   text?: string;
+  kind?: 'paused';
 }
 
 /** Live `task.recovery` and the web event `strata:task-recovery`. */
@@ -40,7 +41,7 @@ export interface RecoveryPresentation {
   choice?: RecoveryChoiceId;
 }
 
-const CHOICE_IDS: readonly RecoveryChoiceId[] = ['retry', 'skip', 'different'];
+const CHOICE_IDS: readonly RecoveryChoiceId[] = ['retry', 'skip', 'different', 'continue'];
 
 function textOf(value: unknown) {
   return typeof value === 'string' ? value.trim() : '';

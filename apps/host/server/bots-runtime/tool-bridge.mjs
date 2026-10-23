@@ -19,8 +19,10 @@ export async function startToolBridge({ tools, executeTool, signal }) {
     socket.on('data', chunk => { buffer += chunk; if (buffer.length > 8 * 1024 * 1024) { socket.destroy(); return; }
       for (let end; (end = buffer.indexOf('\n')) >= 0;) { const line = buffer.slice(0, end); buffer = buffer.slice(end + 1); let m; try { m = JSON.parse(line); } catch { continue; }
         void (async () => { let result; try {
-          signal?.throwIfAborted(); if (!tools.some(t => t.name === m.name)) throw new Error('Unknown Strata bot tool.');
-          result = toolResult(await executeTool(m.name, m.args ?? {}));
+          signal?.throwIfAborted();
+          const name = tools.some(t => t.name === m.name) ? m.name : (typeof m.name === 'string' && m.name.startsWith('mcp__strata__') && tools.some(t => t.name === m.name.slice('mcp__strata__'.length)) ? m.name.slice('mcp__strata__'.length) : '');
+          if (!name) throw new Error('Unknown Strata bot tool.');
+          result = toolResult(await executeTool(name, m.args ?? {}));
         } catch (error) { result = { content: [{ type: 'text', text: redact(error) }], isError: true }; }
         if (!socket.destroyed) socket.write(`${JSON.stringify({ id: m.id, result })}\n`);
         })();

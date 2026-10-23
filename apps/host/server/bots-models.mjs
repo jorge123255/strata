@@ -1,6 +1,7 @@
 /** Saved model APIs provide inference; tools and credentials retain separate owners. */
 import { randomUUID, createHash } from 'node:crypto';
 import { botContextLimits, compactBotContext, contextLimitsFromResult, emitContextCompaction } from './bots-runtime/context.mjs';
+import { STEP_CHUNK, createStepTracker, pauseFields } from './bots-runtime/step-budget.mjs';
 
 const failure = message => { throw new Error(message); };
 const MAX = 16 * 1024 * 1024;
@@ -28,12 +29,20 @@ function historyText(message) {
 export async function runConfiguredBot(c) {
   if (typeof c.modelRequest !== 'function') failure('Configured model inference is unavailable. Reconnect to the Mac and try again.');
   const current = { role: 'user', content: c.message };
-  let messages = [...c.history.filter(m => ['user', 'assistant'].includes(m.role)).map(m => ({ role: m.role, content: historyText(m) })), current];
+  const tracker = createStepTracker(c.bot, c.checkpoint?.stepResume);
+  let messages = tracker.resumeMessages
+    ? [...tracker.resumeMessages, ...(c.message ? [{ role: 'user', content: c.message }] : [])]
+    : [...c.history.filter(m => ['user', 'assistant'].includes(m.role)).map(m => ({ role: m.role, content: historyText(m) })), current];
   const system = c.bot.instructions || 'You are a Strata bot. Use the provided tools for coding and computer tasks.';
   let contextState, limits = botContextLimits();
   let tokensIn = 0, tokensOut = 0;
   const executedIds = new Set();
-  for (let round = 0; c.bot.continuousTeam === true || round < 32; round++) {
+  const pause = looping => {
+    const text = tracker.sentence(looping);
+    c.publicReply = text;
+    c.pause = { ...pauseFields(text), stepResume: tracker.checkpoint(messages) };
+  };
+  for (let round = 0; round < STEP_CHUNK * (1 + tracker.budget); round++) {
     c.signal.throwIfAborted();
     const compacted = compactBotContext({ messages, system, tools: c.tools, limits, state: contextState, anchor: current });
     messages = compacted.messages; contextState = compacted.state; emitContextCompaction(c.frame, compacted);
@@ -47,25 +56,41 @@ export async function runConfiguredBot(c) {
     }
     tokensIn += result.tokensIn ?? 0; tokensOut += result.tokensOut ?? 0;
     c.frame({ type: 'stats', tokensIn, tokensOut });
+    tracker.noteText(result.text);
     if (!result.toolCalls.length) {
       if (!result.text.trim()) failure('The configured model returned no answer. Choose a model with text and tool support.');
       c.publicReply = result.text;
       await c.save(null); return;
     }
     if (result.toolCalls.length > 100) failure('The configured model requested too many tools.');
-    messages.push({ role: 'assistant', content: result.text, tool_calls: result.toolCalls.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.args) } })), ...(result.providerOutput ? { providerOutput: result.providerOutput } : {}) });
     for (const call of result.toolCalls) {
-      c.signal.throwIfAborted();
       if (typeof call.id !== 'string' || !call.id || typeof call.name !== 'string' || !call.args || typeof call.args !== 'object' || Array.isArray(call.args)) failure('The configured model returned invalid tool arguments.');
       if (executedIds.has(call.id)) failure('The model repeated a completed tool identity. Continue in this chat to retry safely.');
+    }
+    let loopAt = -1;
+    for (let index = 0; index < result.toolCalls.length; index++) {
+      if (tracker.noteTool(result.toolCalls[index].name, result.toolCalls[index].args) === 'loop') { loopAt = index; break; }
+    }
+    const calls = loopAt < 0 ? result.toolCalls : result.toolCalls.slice(0, loopAt);
+    if (!calls.length) { pause(true); return; }
+    messages.push({ role: 'assistant', content: result.text, tool_calls: calls.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.args) } })), ...(result.providerOutput && loopAt < 0 ? { providerOutput: result.providerOutput } : {}) });
+    for (const call of calls) {
+      c.signal.throwIfAborted();
       executedIds.add(call.id);
       const toolResult = await c.execute(call.name, call.args, call.id);
       messages.push({ role: 'tool', tool_call_id: call.id, content: textOf(toolResult.content), isError: toolResult.isError === true });
       const pictures = (toolResult.content ?? []).filter(item => item.type === 'image');
       if (pictures.length) messages.push({ role: 'user', content: [{ type: 'text', text: `Images returned by ${call.name}:` }, ...pictures.map(item => ({ type: 'image_url', image_url: { url: `data:${item.mimeType};base64,${item.data}` } }))] });
     }
+    if (loopAt >= 0) { pause(true); return; }
+    const boundary = tracker.boundary();
+    if (boundary === 'continue') {
+      const summary = tracker.summary();
+      messages.push({ role: 'user', content: summary });
+      c.frame({ type: 'status', text: summary });
+    } else if (boundary === 'pause') { pause(false); return; }
   }
-  failure('The bot reached its 32-step limit. Continue in this chat to proceed.');
+  pause(false);
 }
 
 function anthropicContent(value, vision) {

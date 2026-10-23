@@ -149,7 +149,7 @@ for (const protocol of ['anthropic', 'openai-responses']) test(`${protocol} actu
 test('continuous configured loop stays bounded through 100 tool exchanges, retains anchor and does not replay mutations', async () => {
   const frames = [], payloads = [], calls = [], anchor = 'Keep current request exactly.';
   const c = { bot: { continuousTeam: true, instructions: 'Pinned system' }, history: history(100), message: anchor, tools: [tool], signal: signal(), frame: frame => frames.push(frame), save() {},
-    modelRequest: async payload => { payloads.push(structuredClone(payload)); const round = payloads.length; return { text: round <= 100 ? `Progress ${round}` : 'Final', toolCalls: round <= 100 ? [{ id: `call_${round}`, name: 'inspect', args: {} }] : [], contextBudget: botContextLimits({ contextMax: 16384, maxOutput: 2048 }) }; },
+    modelRequest: async payload => { payloads.push(structuredClone(payload)); const round = payloads.length; return { text: round <= 100 ? `Progress ${round}` : 'Final', toolCalls: round <= 100 ? [{ id: `call_${round}`, name: 'inspect', args: { step: round } }] : [], contextBudget: botContextLimits({ contextMax: 16384, maxOutput: 2048 }) }; },
     execute: async (_name, _args, id) => { calls.push(id); return { content: [{ type: 'text', text: `Result ${id}: ${'x'.repeat(12000)}` }] }; } };
   await runConfiguredBot(c);
   assert.equal(payloads.length, 101); assert.equal(calls.length, 100); assert.equal(new Set(calls).size, 100); assert.equal(c.publicReply, 'Final');
@@ -165,7 +165,7 @@ test('a short configured history beyond 40 rows reaches inference unchanged inst
 
 test('Ollama long-running loop shares compaction, preserves current input and does not contact another endpoint', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'strata-context-ollama-')), requests = [], frames = []; let executions = 0;
-  const runtime = createBotRuntime({ env: { OLLAMA_API_KEY: 'synthetic-key' }, fetch: async (url, options) => { assert.equal(String(url), 'https://ollama.com/v1/chat/completions'); const payload = JSON.parse(options.body); requests.push(payload); const round = requests.length; return round <= 40 ? sse([{ choices: [{ delta: { content: `Progress ${round}`, tool_calls: [{ index: 0, id: `call_${round}`, function: { name: 'inspect', arguments: '{}' } }] }, finish_reason: 'tool_calls' }] }]) : complete('Done'); } });
+  const runtime = createBotRuntime({ env: { OLLAMA_API_KEY: 'synthetic-key' }, fetch: async (url, options) => { assert.equal(String(url), 'https://ollama.com/v1/chat/completions'); const payload = JSON.parse(options.body); requests.push(payload); const round = requests.length; return round <= 40 ? sse([{ choices: [{ delta: { content: `Progress ${round}`, tool_calls: [{ index: 0, id: `call_${round}`, function: { name: 'inspect', arguments: JSON.stringify({ step: round }) } }] }, finish_reason: 'tool_calls' }] }]) : complete('Done'); } });
   try {
     await runtime.run({ bot: { id: 'fixture', provider: 'ollama', model: 'fixture:cloud', instructions: 'Pinned system', workspace: directory, execution: { kind: 'local' }, continuousTeam: true }, history: history(100), message: 'Keep current', tools: [tool], onFrame: frame => frames.push(frame), executeTool: async () => { executions++; return 'x'.repeat(15000); } });
     assert.equal(executions, 40); assert.equal(requests.length, 41); assert.ok(requests.at(-1).messages.length < 30);

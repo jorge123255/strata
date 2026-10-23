@@ -1946,6 +1946,16 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
           // What the context holds after each model request of an agent turn: the meter follows the turn instead of waiting for its end.
           const used = Number(frame.contextTokens), max = Number(frame.contextMax);
           if (Number.isFinite(used) && used > 0) patchAssistant((m) => ({ ...m, contextUsed: used, ...(Number.isFinite(max) && max > 0 ? { contextMax: max } : {}) }));
+        } else if (type === 'pause') {
+          const recovery = frame.recovery as { kind?: unknown; text?: unknown; question?: unknown; options?: unknown } | undefined;
+          if (recovery?.kind === 'paused' && typeof recovery.text === 'string' && recovery.text.trim()) {
+            const text = recovery.text.trim();
+            const options = Array.isArray(recovery.options) ? recovery.options.flatMap(option => {
+              const row = option as { id?: unknown; label?: unknown };
+              return row?.id === 'continue' && typeof row.label === 'string' && row.label.trim() ? [{ id: 'continue', label: row.label.trim() }] : [];
+            }).slice(0, 1) : [];
+            if (options.length) patchAssistant(m => ({ ...m, recovery: { kind: 'paused', text, question: typeof recovery.question === 'string' && recovery.question.trim() ? recovery.question.trim() : 'Keep going?', options }, content: m.content.includes(text) ? m.content : (m.content ? `${m.content}\n${text}` : text) }));
+          }
         } else if (type === 'error') {
           clearStatus(sessionId);
           // A sentence the host wrote for the person (it carries its catalog key) is shown in their language as it is; anything else is made plain here.
@@ -2031,6 +2041,13 @@ function answerAgentTool(sessionId: string, messageId: string, tool: ToolCall, a
     setState('proposed');
     pushToast('error', 'That answer was not delivered', error instanceof Error ? error.message : undefined);
   });
+}
+
+/** Posts Continue for a paused one-to-one bot reply. The host resumes that chat from its checkpoint. */
+export async function continuePausedChat(sessionId: string, messageId: string) {
+  const result = await api.post<{ conversation?: Session }>(`/api/companion/conversations/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/choice`, { choice: 'continue' });
+  if (result.conversation) applySharedConversation(result);
+  return result;
 }
 
 /**

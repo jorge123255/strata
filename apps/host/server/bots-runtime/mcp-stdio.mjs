@@ -13,6 +13,11 @@ process.stdin.setEncoding('utf8'); process.stdin.on('end', () => socket.destroy(
 process.stdin.on('data', chunk => { input += chunk; for (let end; (end = input.indexOf('\n')) >= 0;) { const line = input.slice(0, end); input = input.slice(end + 1); if (!line.trim()) continue; let m; try { m = JSON.parse(line); } catch { continue; }
   if (m.method === 'initialize') output({ id: m.id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'strata-bot-tools', version: '1.0.0' } } });
   else if (m.method === 'tools/list') output({ id: m.id, result: { tools } });
-  else if (m.method === 'tools/call') { const id = ++next; pending.set(id, m.id); socket.write(`${JSON.stringify({ id, name: m.params?.name, args: m.params?.arguments ?? {} })}\n`); }
+  else if (m.method === 'tools/call') {
+    const requested = m.params?.name;
+    const prefixed = typeof requested === 'string' && requested.startsWith('mcp__strata__') ? requested.slice('mcp__strata__'.length) : '';
+    const name = tools.some(tool => tool.name === requested) ? requested : (prefixed && tools.some(tool => tool.name === prefixed) ? prefixed : requested);
+    const id = ++next; pending.set(id, m.id); socket.write(`${JSON.stringify({ id, name, args: m.params?.arguments ?? {} })}\n`);
+  }
   else if (m.id !== undefined) output({ id: m.id, error: { code: -32601, message: 'Method not found' } });
 } });

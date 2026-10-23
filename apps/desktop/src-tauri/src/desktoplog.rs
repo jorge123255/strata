@@ -19,7 +19,7 @@
 #![allow(dead_code)]
 
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -136,6 +136,7 @@ impl Log {
         if let Ok(mut guard) = self.file.lock() {
             if let Some(f) = guard.as_mut() {
                 let _ = writeln!(f, "[{who}] {text}");
+                let _ = f.flush();
             }
         }
     }
@@ -147,27 +148,126 @@ pub fn say(log: &Log, text: &str) {
     log.line("shell", text);
 }
 
-/// Copy a child's output line by line: to our own stdout/stderr (as before), to the log file, and into the ring.
+/// Read until the pipe really ends. The log and the ring are written before any console echo,
+/// so a closed or full console cannot drop the line or stall the host pipe.
+fn copy_lines<R: Read>(reader: R, who: &str, echo: &mut dyn FnMut(&str), ring: &Ring, log: &Log) {
+    let mut r = BufReader::new(reader);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        match r.read_until(b'\n', &mut buf) {
+            Ok(0) => break,
+            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+            Err(_) => break,
+            Ok(_) => {
+                let text = String::from_utf8_lossy(&buf);
+                let text = text.trim_end_matches(['\r', '\n']);
+                ring.push(text.to_string());
+                log.line(who, text);
+                echo(text);
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+extern "C" {
+    fn dup(fd: i32) -> i32;
+    fn fcntl(fd: i32, cmd: i32, ...) -> i32;
+    fn write(fd: i32, buf: *const u8, count: usize) -> isize;
+    fn close(fd: i32) -> i32;
+}
+
+#[cfg(unix)]
+fn errno() -> i32 {
+    #[cfg(target_os = "linux")]
+    {
+        extern "C" {
+            fn __errno_location() -> *mut i32;
+        }
+        unsafe { *__errno_location() }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        extern "C" {
+            fn __error() -> *mut i32;
+        }
+        unsafe { *__error() }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        0
+    }
+}
+
+#[cfg(unix)]
+fn echo_fd(to_stderr: bool) -> i32 {
+    const F_GETFL: i32 = 3;
+    const F_SETFL: i32 = 4;
+    // Do not set this on the process stdout. A duplicate can fail a write without stopping the reader.
+    let nonblock: i32 = if cfg!(any(target_os = "linux", target_os = "android")) { 0o4000 } else { 0x0004 };
+    let source = if to_stderr { 2 } else { 1 };
+    unsafe {
+        let fd = dup(source);
+        if fd < 0 {
+            return -1;
+        }
+        let flags = fcntl(fd, F_GETFL);
+        if flags < 0 || fcntl(fd, F_SETFL, flags | nonblock) < 0 {
+            close(fd);
+            return -1;
+        }
+        fd
+    }
+}
+
+#[cfg(unix)]
+fn write_line(fd: i32, text: &str) {
+    if fd < 0 {
+        return;
+    }
+    let mut bytes = Vec::with_capacity(text.len() + 1);
+    bytes.extend_from_slice(text.as_bytes());
+    bytes.push(b'\n');
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let n = unsafe { write(fd, bytes[offset..].as_ptr(), bytes.len() - offset) };
+        if n > 0 {
+            offset += n as usize;
+            continue;
+        }
+        let err = errno();
+        // EINTR is 4 on Linux and macOS. EAGAIN is 11 / 35. EPIPE is 32. EBADF is 9.
+        if err == 4 {
+            continue;
+        }
+        if err == 11 || err == 35 || err == 32 || err == 9 || err == 0 {
+            break;
+        }
+        break;
+    }
+}
+
+#[cfg(not(unix))]
+fn echo_fd(to_stderr: bool) -> i32 {
+    if to_stderr { -2 } else { -3 }
+}
+
+#[cfg(not(unix))]
+fn write_line(fd: i32, text: &str) {
+    let _ = if fd == -2 { writeln!(std::io::stderr(), "{text}") } else { writeln!(std::io::stdout(), "{text}") };
+}
+
+/// Copy a child's output line by line into the log and the ring, then echo it.
+/// The echo uses a non-blocking copy of stdout or stderr, so a closed Finder console
+/// or a pipe nobody reads cannot kill this thread or fill the host's pipe.
 pub fn tee<R: Read + Send + 'static>(reader: R, who: &'static str, to_stderr: bool, ring: Ring, log: Log) {
     std::thread::spawn(move || {
-        let mut r = BufReader::new(reader);
-        let mut buf = Vec::new();
-        loop {
-            buf.clear();
-            match r.read_until(b'\n', &mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {
-                    let text = String::from_utf8_lossy(&buf);
-                    let text = text.trim_end_matches(['\r', '\n']);
-                    if to_stderr {
-                        eprintln!("{text}");
-                    } else {
-                        println!("{text}");
-                    }
-                    ring.push(text.to_string());
-                    log.line(who, text);
-                }
-            }
+        let fd = echo_fd(to_stderr);
+        copy_lines(reader, who, &mut |text| write_line(fd, text), &ring, &log);
+        #[cfg(unix)]
+        if fd >= 0 {
+            unsafe { close(fd); }
         }
     });
 }
@@ -588,6 +688,54 @@ mod tests {
             assert!(text.contains(needle), "{needle}");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn host_lines_are_kept_when_the_console_cannot_take_them() {
+        let dir = std::env::temp_dir().join(format!("strata-tee-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("host.log");
+        let file = std::fs::OpenOptions::new().create(true).append(true).open(&path).unwrap();
+        let log = Log { file: Arc::new(Mutex::new(Some(file))), path: Some(path.clone()) };
+        let ring = Ring::default();
+        let (mut tx, rx) = std::os::unix::net::UnixStream::pair().unwrap();
+        let logged = path.clone();
+        let worker = std::thread::spawn(move || {
+            copy_lines(rx, "host", &mut |line| {
+                let saved = std::fs::read_to_string(&logged).unwrap_or_default();
+                assert!(saved.contains(line), "the log is written before the console echo");
+                let _ = write_line(-1, line);
+            }, &ring, &log);
+            assert!(ring.tail(5).iter().any(|line| line.contains("room selection")));
+        });
+        writeln!(tx, "room selection · run fixture").unwrap();
+        drop(tx);
+        worker.join().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[host] room selection · run fixture"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_full_console_echo_returns_without_blocking_the_reader() {
+        use std::os::unix::io::AsRawFd;
+        let (read, mut write) = std::os::unix::net::UnixStream::pair().unwrap();
+        read.set_nonblocking(true).unwrap();
+        write.set_nonblocking(true).unwrap();
+        let filler = vec![b'x'; 64 * 1024];
+        loop {
+            match write.write(&filler) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+        let started = std::time::Instant::now();
+        write_line(write.as_raw_fd(), "room selection · blocked");
+        assert!(started.elapsed() < Duration::from_millis(500));
+        drop(read);
     }
 
     #[cfg(windows)]

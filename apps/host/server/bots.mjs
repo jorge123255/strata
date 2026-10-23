@@ -4,6 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve, posix } from 'node:path';
 import { json, error, readBody } from './util.mjs';
+import { isStepLimitMessage, stepLimitPause } from './bots-runtime/step-budget.mjs';
 import { isLocalCompanionRequest } from './companion-routes.mjs';
 import { botModelDestination } from './bots-models.mjs';
 import { createBotComputers } from './bots-computers.mjs';
@@ -719,13 +720,19 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
           const toolFrame = frame => { if (frame.type === 'agent-tool') { if (frame.tool?.state === 'running') started = true; if (frame.tool?.state === 'denied') denied = true; } emit(frame); };
           return actionJournal.execute({ ...actionScope, name, args, toolCallId, noEffect: () => denied && !started }, () => tools.execute({ bot, chatId: session.id, name, args, toolCallId, toolDefinitions: localTools, signal: combined, onFrame: toolFrame, requestPermission, ...(createdTools ? { authorizeCreatedTool: value => { assertLive(); return createdTools.authorize(value, context); } } : {}) })).then(result => recordVerification(name, args, result));
         },
-        checkpoint: !conversationOnly && oldCheckpoint?.fingerprint === runtimeFingerprint ? oldCheckpoint.value : null,
-        onCheckpoint: value => { if (!conversationOnly && active.get(session.id) === owner) { checkpoints.set(session.id, { fingerprint: runtimeFingerprint, value }); save(); } } });
+        checkpoint: oldCheckpoint?.fingerprint === runtimeFingerprint ? (conversationOnly ? (oldCheckpoint.value?.stepResume ? { provider: bot.provider, workspace: bot.workspace, model: bot.model ?? '', stepResume: oldCheckpoint.value.stepResume } : null) : oldCheckpoint.value) : null,
+        onCheckpoint: value => { if (active.get(session.id) === owner && (!conversationOnly || value?.stepResume)) { checkpoints.set(session.id, { fingerprint: runtimeFingerprint, value }); save(); } } });
     } catch (failure) {
-      runFailure = failure;
-      if (failure.code === 'ssh_cleanup_unconfirmed' || failure.cleanupUnconfirmed) { uncertainTargets.set(failure.code === 'cua_cleanup_unconfirmed' || failure.cleanupUnconfirmed && failure.code !== 'ssh_cleanup_unconfirmed' ? cuaResource(bot) : target, 'Remote cleanup could not be confirmed. Use Check SSH computer on the Mac before starting another turn.'); save(); owner.cleanupFailure = failure; terminal = { type: 'error', message: failure.message }; throw failure; }
-      if (combined.aborted) terminal = { type: 'done', cancelled: true };
-      else throw failure;
+      const paused = !combined.aborted && isStepLimitMessage(failure) ? stepLimitPause() : null;
+      if (paused) {
+        onFrame({ type: 'pause', recovery: paused, text: paused.text });
+        terminal = { type: 'done', publicReply: paused.text, pause: paused };
+      } else {
+        runFailure = failure;
+        if (failure.code === 'ssh_cleanup_unconfirmed' || failure.cleanupUnconfirmed) { uncertainTargets.set(failure.code === 'cua_cleanup_unconfirmed' || failure.cleanupUnconfirmed && failure.code !== 'ssh_cleanup_unconfirmed' ? cuaResource(bot) : target, 'Remote cleanup could not be confirmed. Use Check SSH computer on the Mac before starting another turn.'); save(); owner.cleanupFailure = failure; terminal = { type: 'error', message: failure.message }; throw failure; }
+        if (combined.aborted) terminal = { type: 'done', cancelled: true };
+        else throw failure;
+      }
     } finally {
       const cancelledBeforeCleanup = combined.aborted;
       harnessObserver.phase(session.id, 'cleanup');
@@ -748,7 +755,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
         if (bot.execution.kind === 'ssh') actionJournal.markRemoteUncertain(session.id);
         if (active.get(session.id) === owner) active.delete(session.id);
         if (terminal) onFrame(terminal);
-        team.end(context, { cancelled: cancelledBeforeCleanup, error: owner.cleanupFailure?.message ?? (runFailure && !cancelledBeforeCleanup ? runFailure.message : undefined), ...(typeof terminal?.publicReply === 'string' ? { publicReply: terminal.publicReply } : {}) });
+        team.end(context, { cancelled: cancelledBeforeCleanup, error: owner.cleanupFailure?.message ?? (runFailure && !cancelledBeforeCleanup ? runFailure.message : undefined), ...(typeof terminal?.publicReply === 'string' ? { publicReply: terminal.publicReply } : {}), ...(terminal?.pause ? { pause: terminal.pause } : {}) });
       } finally { harnessObserver.finish(session.id, {outcome: cancelledBeforeCleanup ? 'interrupted' : owner.cleanupFailure || runFailure ? 'error' : 'completed'}); if (active.get(session.id) === owner) active.delete(session.id); ended(); }
     }
   }
@@ -945,8 +952,8 @@ export function createBotRoutes({ bots, port }) {
           }
           if (event === 'room.quiet') res.write(`event: room.quiet\ndata: ${JSON.stringify({ teamId: data.teamId, runId: data.runId, ...(data.messageId ? { messageId: data.messageId } : {}) })}\n\n`);
           if (event === 'task.recovery') {
-            const { messageId, jobId, runId, text, question, options } = data;
-            res.write(`event: task.recovery\ndata: ${JSON.stringify({ teamId: data.teamId, messageId, jobId, runId, text, question, options })}\n\n`);
+            const { messageId, jobId, runId, text, question, options, recovery } = data;
+            res.write(`event: task.recovery\ndata: ${JSON.stringify({ teamId: data.teamId, messageId, jobId, runId, text, question, options, ...(recovery ? { recovery } : {}) })}\n\n`);
           }
         });
         const ping = setInterval(() => { if (!res.writableEnded) res.write(': ping\n\n'); }, 15000);
