@@ -329,10 +329,9 @@ struct BotTeamDetailView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @FocusState private var taskFocused: Bool
     @State private var expandedMessages: Set<String> = []
-    @State private var dismissedChoices: Set<String> = []
     @State private var choiceBusy = ""
-    @State private var choiceNote = ""
-    @State private var choiceResumeKey = UUID().uuidString
+    @State private var choiceErrors: [String: String] = [:]
+    @State private var choiceRetries: [String: String] = [:]
     private var team: BotTeam? { workspace.teams?.teams.first { $0.id == teamId } }
     private var channel: BotTeamChannel? { workspace.channels[teamId] }
     private var channelKey: String { BotWorkspaceStore.channelKey(teamId) }
@@ -383,12 +382,6 @@ struct BotTeamDetailView: View {
                             }
                             if entries.isEmpty { emptyChannel(team) }
                             channelMessages(team)
-                            if let resolved = roomChoice {
-                                RoomChoiceCard(question: resolved.choice.question, options: resolved.choice.options, busy: choiceBusy) { optionId in
-                                    Task { await chooseRoomChoice(resolved, optionId: optionId) }
-                                }
-                                if !choiceNote.isEmpty { Text(choiceNote).font(.caption).foregroundStyle(StrataTheme.warning).fixedSize(horizontal: false, vertical: true) }
-                            }
                         } else if let channel {
                             Text(channel.reason ?? "Shared team channels require a newer Strata on your Mac.")
                                 .font(.callout).foregroundStyle(.secondary).padding(.vertical, 24)
@@ -699,59 +692,22 @@ struct BotTeamDetailView: View {
             .accessibilityIdentifier("toggleBotTeamEnabledButton")
     }
 
-    private var roomChoice: RoomChoiceResolved? {
-        let event = channel?.needsChoice.map { value in
-            RoomChoiceEvent(type: value.type, id: value.id ?? "", teamId: value.teamId ?? "", jobId: value.jobId ?? "", runId: value.runId ?? "", question: value.question, options: value.options.map { RoomChoiceOption(id: $0.id, label: $0.label, style: $0.style) })
-        }
-        return RoomChoice.resolve(roomTeamId: teamId, event: event, tasks: ordinaryTeamActivity.map { item in
-            RoomChoiceTask(id: item.id, teamId: item.teamId, runId: item.runId, state: item.state, updatedAt: choiceStamp(item.updatedAt), status: item.work?.status.rawValue ?? "", revision: item.work?.revision ?? 0, recoveryJobId: item.work?.recoveryJobId, legacy: item.work?.legacy == true)
-        }, activeRunIds: activeRuns.map(\.id), dismissedIds: dismissedChoices)
-    }
-    private func choiceStamp(_ value: BotWorkspaceTimestamp?) -> String {
-        switch value {
-        case .iso8601(let text): return text
-        case .milliseconds(let number): return String(format: "%016.0f", number)
-        case nil: return ""
-        }
-    }
-    private func chooseRoomChoice(_ resolved: RoomChoiceResolved, optionId: String) async {
-        guard choiceBusy.isEmpty, let action = RoomChoice.action(optionId, teamId: resolved.teamId.isEmpty ? teamId : resolved.teamId, jobId: resolved.jobId, runId: resolved.runId, revision: resolved.revision) else {
-            choiceNote = "That choice is not available yet."
+    private func chooseRoomRecovery(_ card: RoomRecoveryPresentation, optionId: String) async {
+        guard choiceBusy.isEmpty else { return }
+        guard let choice = RoomChoice.choiceId(optionId) else {
+            choiceErrors[card.messageId] = "That choice is not available yet."
             return
         }
-        choiceNote = ""
-        switch action {
-        case .skip:
-            dismissedChoices.insert(resolved.key)
-        case .different:
-            dismissedChoices.insert(resolved.key)
-            taskFocused = true
-        case .stop(_, let runId):
-            guard let run = activeRuns.first(where: { $0.id == runId }) ?? runs.first(where: { $0.id == runId }) else {
-                choiceNote = "That work is no longer running."
-                return
-            }
-            choiceBusy = optionId
-            await workspace.stopRun(run)
-            dismissedChoices.insert(resolved.key)
-            await workspace.refreshChannel(teamId)
-            choiceBusy = ""
-        case .resume(let team, let jobId, _):
-            guard let item = workspace.activity.first(where: { $0.id == jobId && $0.teamId == team }) else {
-                choiceNote = "That work is no longer in this room."
-                return
-            }
-            choiceBusy = optionId
-            await workspace.refreshRecovery(item)
-            if let plan = workspace.recoveryPlans[item.id], plan.canResume, await workspace.resumeWork(item, plan: plan, idempotencyKey: choiceResumeKey) != nil {
-                dismissedChoices.insert(resolved.key)
-                choiceNote = ""
-                choiceResumeKey = UUID().uuidString
-            } else {
-                choiceNote = workspace.messages[BotWorkspaceStore.workKey(item.id)] ?? "This work cannot continue yet."
-            }
-            choiceBusy = ""
+        choiceBusy = card.messageId + ":" + choice
+        choiceErrors[card.messageId] = nil
+        choiceRetries[card.messageId] = choice
+        if let error = await workspace.chooseMessageRecovery(teamId: card.teamId, messageId: card.messageId, choice: choice) {
+            choiceErrors[card.messageId] = error
+        } else {
+            choiceErrors[card.messageId] = nil
+            choiceRetries[card.messageId] = nil
         }
+        choiceBusy = ""
     }
     private func channelMessages(_ team: BotTeam) -> some View {
         let rows = entries.map { CoucouRow(id: $0.id, own: $0.author.type == "user") }
@@ -786,7 +742,15 @@ struct BotTeamDetailView: View {
                         Text("To " + recipients.map { id in store.botCatalog?.bots.first { $0.id == id }?.name ?? "Teammate" }.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary)
                     }
                     if human, entry.workMode == .work { Label("Work request", systemImage: "hammer").font(.caption.weight(.medium)).foregroundStyle(.secondary).accessibilityIdentifier("teamMessageWorkRequest-" + entry.id) }
-                    messageContent(entry)
+                    let recovery = RoomChoice.fromMessage(id: entry.id, teamId: entry.teamId, content: entry.content, recovery: entry.recovery)
+                    if recovery?.text != entry.content.trimmingCharacters(in: .whitespacesAndNewlines) { messageContent(entry) }
+                    if let recovery {
+                        RoomChoiceCard(text: recovery.text, options: recovery.options, chosen: recovery.choice, busy: choiceBusy.hasPrefix(entry.id + ":") ? String(choiceBusy.dropFirst(entry.id.count + 1)) : "", error: choiceErrors[entry.id] ?? "") { optionId in
+                            Task { await chooseRoomRecovery(recovery, optionId: optionId) }
+                        } onRetry: {
+                            if let optionId = choiceRetries[entry.id] { Task { await chooseRoomRecovery(recovery, optionId: optionId) } }
+                        }
+                    }
                     if entry.kind != "message" { Text(entry.kind.replacingOccurrences(of: "_", with: " ").capitalized).font(.caption2.weight(.medium)).foregroundStyle(.secondary) }
                 }.padding(.horizontal, 15).padding(.vertical, 12)
                     .background(human ? StrataTheme.grouped : StrataTheme.surface, in: RoundedRectangle(cornerRadius: 23))

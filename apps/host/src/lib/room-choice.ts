@@ -1,5 +1,6 @@
-/** A room choice card. The host can send this shape later; today's stalled tasks use the same props. */
+/** Buttons for a failed team task. Labels and the sentence come from the host. */
 export type RoomChoiceStyle = 'primary' | 'neutral' | 'danger';
+export type RecoveryChoiceId = 'retry' | 'skip' | 'different';
 
 export interface RoomChoiceOption {
   id: string;
@@ -7,146 +8,106 @@ export interface RoomChoiceOption {
   style?: RoomChoiceStyle;
 }
 
-export interface RoomChoice {
+/** Saved on the channel message as `recovery`. `choice` appears only after a tap. */
+export interface MessageRecovery {
+  jobId: string;
+  runId: string;
+  question: string;
+  options: RoomChoiceOption[];
+  choice?: RecoveryChoiceId;
+  text?: string;
+}
+
+/** Live `task.recovery` and the web event `strata:task-recovery`. */
+export interface TaskRecoveryEvent {
+  teamId: string;
+  messageId: string;
+  jobId: string;
+  runId: string;
+  text: string;
   question: string;
   options: RoomChoiceOption[];
 }
 
-/** Event the card reads. Bot Strata Dev can emit this after an automatic retry still needs the owner. */
-export interface NeedsChoiceEvent {
-  type: 'needs-choice';
-  id?: string;
-  teamId?: string;
-  jobId?: string;
-  runId?: string;
-  question: string;
-  options: Array<{ id: string; label: string; style?: string }>;
-}
-
-export interface StalledRecoveryTask {
-  id: string;
+export interface RecoveryPresentation {
+  messageId: string;
   teamId: string;
+  jobId: string;
   runId: string;
-  title?: string;
-  state?: string;
-  updatedAt?: string;
-  work?: { status?: string; revision?: number; recoveryJobId?: string; legacy?: boolean };
+  text: string;
+  question: string;
+  options: RoomChoiceOption[];
+  choice?: RecoveryChoiceId;
 }
 
-export type RoomChoiceAction =
-  | { kind: 'resume'; teamId: string; jobId: string; revision?: number }
-  | { kind: 'stop'; teamId: string; runId: string }
-  | { kind: 'skip' }
-  | { kind: 'different' };
+const CHOICE_IDS: readonly RecoveryChoiceId[] = ['retry', 'skip', 'different'];
 
-export interface RoomChoicePresentation {
-  key: string;
-  source: 'event' | 'recovery';
-  choice: RoomChoice;
-  teamId: string;
-  jobId?: string;
-  runId?: string;
-  revision?: number;
+function textOf(value: unknown) {
+  return typeof value === 'string' ? value.trim() : '';
 }
 
-const STALLED_QUESTION = 'The work stopped partway through. Want me to try again?';
-const ACTIVE_RUN = new Set(['queued', 'running', 'stopping', 'cleanup_pending']);
-
-function cleanOption(value: unknown): RoomChoiceOption | null {
-  if (!value || typeof value !== 'object') return null;
-  const row = value as { id?: unknown; label?: unknown; style?: unknown };
-  if (typeof row.id !== 'string' || !row.id.trim() || typeof row.label !== 'string' || !row.label.trim()) return null;
-  const option: RoomChoiceOption = { id: row.id.trim(), label: row.label.trim() };
-  if (row.style === 'primary' || row.style === 'neutral' || row.style === 'danger') option.style = row.style;
-  return option;
+function choiceId(value: unknown): RecoveryChoiceId | undefined {
+  return CHOICE_IDS.find(id => id === value);
 }
 
-export function roomChoiceFromEvent(event: NeedsChoiceEvent | null | undefined): RoomChoice | null {
-  if (!event || event.type !== 'needs-choice') return null;
-  const question = typeof event.question === 'string' ? event.question.trim() : '';
-  const options = Array.isArray(event.options) ? event.options.flatMap(row => { const option = cleanOption(row); return option ? [option] : []; }) : [];
-  if (!question || !options.length) return null;
-  return { question, options };
+function cleanOptions(value: unknown): RoomChoiceOption[] {
+  if (!Array.isArray(value)) return [];
+  const options: RoomChoiceOption[] = [];
+  for (const row of value) {
+    if (!row || typeof row !== 'object') continue;
+    const item = row as { id?: unknown; label?: unknown; style?: unknown };
+    const id = textOf(item.id);
+    const label = textOf(item.label);
+    if (!id || !label) continue;
+    const option: RoomChoiceOption = { id, label };
+    if (item.style === 'primary' || item.style === 'neutral' || item.style === 'danger') option.style = item.style;
+    options.push(option);
+  }
+  return options;
 }
 
-function needsRecovery(task: StalledRecoveryTask, activeRunIds: ReadonlySet<string>) {
-  const work = task.work;
-  if (!work || work.legacy === true) return false;
-  if (typeof work.recoveryJobId === 'string' && work.recoveryJobId.length > 0) return false;
-  if (work.status !== 'blocked' && work.status !== 'interrupted') return false;
-  if (ACTIVE_RUN.has(task.state ?? '') || activeRunIds.has(task.runId)) return false;
-  return true;
+export function recoveryFromEvent(detail: unknown): TaskRecoveryEvent | null {
+  if (!detail || typeof detail !== 'object') return null;
+  const row = detail as Record<string, unknown>;
+  const teamId = textOf(row.teamId);
+  const messageId = textOf(row.messageId);
+  const jobId = textOf(row.jobId);
+  const runId = textOf(row.runId);
+  const question = textOf(row.question);
+  const text = textOf(row.text) || question;
+  const options = cleanOptions(row.options);
+  if (!teamId || !messageId || !jobId || !runId || !text || !options.length) return null;
+  return { teamId, messageId, jobId, runId, text, question: question || text, options };
 }
 
-function stalledChoice(tasks: readonly StalledRecoveryTask[], activeRunIds: readonly string[], dismissed: ReadonlySet<string>): RoomChoicePresentation | null {
-  const active = new Set(activeRunIds);
-  const rows = tasks.filter(task => needsRecovery(task, active) && !dismissed.has(`job:${task.id}`) && !dismissed.has(task.id));
-  if (!rows.length) return null;
-  const task = [...rows].sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '') || b.id.localeCompare(a.id))[0]!;
+export function recoveryFromMessage(message: { id?: string; teamId?: string; content?: string; recovery?: unknown } | null | undefined): RecoveryPresentation | null {
+  if (!message?.recovery || typeof message.recovery !== 'object') return null;
+  const recovery = message.recovery as Record<string, unknown>;
+  const messageId = textOf(message.id);
+  const teamId = textOf(message.teamId);
+  const jobId = textOf(recovery.jobId);
+  const runId = textOf(recovery.runId);
+  const question = textOf(recovery.question);
+  const options = cleanOptions(recovery.options);
+  if (!messageId || !teamId || !jobId || !runId || !question || !options.length) return null;
+  const text = textOf(recovery.text) || textOf(message.content) || question;
+  const choice = choiceId(recovery.choice);
   return {
-    key: `job:${task.id}`,
-    source: 'recovery',
-    teamId: task.teamId,
-    jobId: task.id,
-    runId: task.runId,
-    revision: typeof task.work?.revision === 'number' ? task.work.revision : undefined,
-    choice: {
-      question: STALLED_QUESTION,
-      options: [
-        { id: 'retry', label: 'Try again', style: 'primary' },
-        { id: 'skip', label: 'Skip it', style: 'neutral' },
-        { id: 'other', label: 'A different approach', style: 'neutral' },
-      ],
-    },
+    messageId, teamId, jobId, runId, text, question, options,
+    ...(choice && options.some(option => option.id === choice) ? { choice } : {}),
   };
 }
 
-export function resolveRoomChoice(input: {
-  roomTeamId: string;
-  event?: NeedsChoiceEvent | null;
-  tasks?: readonly StalledRecoveryTask[];
-  activeRunIds?: readonly string[];
-  dismissedIds?: readonly string[];
-}): RoomChoicePresentation | null {
-  const dismissed = new Set(input.dismissedIds ?? []);
-  const event = input.event;
-  const fromEvent = roomChoiceFromEvent(event);
-  if (event && fromEvent) {
-    const key = (typeof event.id === 'string' && event.id.trim()) || `needs-choice:${event.jobId ?? fromEvent.question}`;
-    const jobKey = event.jobId ? `job:${event.jobId}` : '';
-    if (!dismissed.has(key) && !(jobKey && dismissed.has(jobKey))) {
-      const match = (input.tasks ?? []).find(task => task.id === event.jobId);
-      return {
-        key,
-        source: 'event',
-        choice: fromEvent,
-        teamId: event.teamId || input.roomTeamId,
-        jobId: event.jobId,
-        runId: event.runId,
-        revision: typeof match?.work?.revision === 'number' ? match.work.revision : undefined,
-      };
-    }
+/** A live event fills the card immediately. A saved choice still wins. */
+export function presentRecovery(message: { id?: string; teamId?: string; content?: string; recovery?: unknown }, live?: TaskRecoveryEvent | null): RecoveryPresentation | null {
+  const saved = recoveryFromMessage(message);
+  if (live && live.messageId === textOf(message.id) && live.teamId === textOf(message.teamId)) {
+    return { ...live, ...(saved?.choice ? { choice: saved.choice } : {}) };
   }
-  return stalledChoice(input.tasks ?? [], input.activeRunIds ?? [], dismissed);
+  return saved;
 }
 
-function actionId(id: string) {
-  return id.trim().toLowerCase().replace(/[\s-]+/g, '_');
-}
-
-/** Maps a card option onto a recovery call the app already makes. Unknown ids do nothing. */
-export function choiceAction(optionId: string, context: { teamId?: string; jobId?: string; runId?: string; revision?: number }): RoomChoiceAction | null {
-  const id = actionId(optionId);
-  const teamId = context.teamId ?? '';
-  if (id === 'retry' || id === 'try_again' || id === 'resume') {
-    if (!teamId || !context.jobId) return null;
-    return { kind: 'resume', teamId, jobId: context.jobId, ...(typeof context.revision === 'number' ? { revision: context.revision } : {}) };
-  }
-  if (id === 'skip' || id === 'dismiss') return { kind: 'skip' };
-  if (id === 'other' || id === 'different' || id === 'different_approach') return { kind: 'different' };
-  if (id === 'stop') {
-    if (!teamId || !context.runId) return null;
-    return { kind: 'stop', teamId, runId: context.runId };
-  }
-  return null;
+export function choicePayload(optionId: string): { choice: RecoveryChoiceId } | null {
+  const choice = choiceId(optionId);
+  return choice ? { choice } : null;
 }

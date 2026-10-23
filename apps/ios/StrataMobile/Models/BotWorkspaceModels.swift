@@ -623,6 +623,20 @@ struct BotTeamChannelAuthor: Decodable, Equatable {
     var avatarConfig: AvatarConfig?
 }
 
+struct BotTeamMessageRecoveryOption: Decodable, Equatable {
+    var id: String
+    var label: String
+}
+
+struct BotTeamMessageRecovery: Decodable, Equatable {
+    var jobId: String
+    var runId: String
+    var question: String
+    var options: [BotTeamMessageRecoveryOption]
+    var choice: String?
+    var text: String?
+}
+
 struct BotTeamChannelMessage: Decodable, Identifiable, Equatable {
     var id: String
     var sequence: Int
@@ -638,6 +652,7 @@ struct BotTeamChannelMessage: Decodable, Identifiable, Equatable {
     var state: String?
     var workMode: BotTeamMessageWorkMode?
     var planId: String?
+    var recovery: BotTeamMessageRecovery?
     var usesCompactCard: Bool { kind == "assignment" || kind == "report" && content.count > 1_800 }
     var compactPreview: String {
         let first = content.split(whereSeparator: \.isNewline).first.map(String.init) ?? content

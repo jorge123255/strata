@@ -599,6 +599,26 @@ final class BotWorkspaceStore: ObservableObject {
     }
     static func channelKey(_ teamId: String) -> String { "channel-" + teamId }
 
+    /// Posts the host's recovery choice. The saved message comes back with `recovery.choice` set.
+    func chooseMessageRecovery(teamId: String, messageId: String, choice: String) async -> String? {
+        guard CompanionClient.isSafeIdentifier(teamId), CompanionClient.isSafeIdentifier(messageId), ["retry", "skip", "different"].contains(choice) else {
+            return "That choice is not available yet."
+        }
+        struct Body: Encodable { var choice: String }
+        struct Result: Decodable { var accepted: Bool; var choice: String; var message: BotTeamChannelMessage }
+        let key = "recovery-choice-" + messageId
+        let value: Result? = await change(key, path: "/v1/bots/teams/\(teamId)/messages/\(messageId)/choice", body: Body(choice: choice))
+        guard let value, value.accepted, value.choice == choice, value.message.id == messageId, value.message.teamId == teamId else {
+            return messages[key] ?? "The choice was not saved. Try again."
+        }
+        if var channel = channels[teamId], let index = channel.messages.firstIndex(where: { $0.id == messageId && $0.sequence == value.message.sequence }) {
+            channel.messages[index] = value.message
+            channels[teamId] = channel
+        }
+        await refreshChannel(teamId)
+        return nil
+    }
+
     func refreshChannel(_ teamId: String, reset: Bool = false, older: Bool = false) async {
         guard let client, isCurrent(), CompanionClient.isSafeIdentifier(teamId) else { return }
         let key = Self.channelKey(teamId)

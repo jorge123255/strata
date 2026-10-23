@@ -8,112 +8,78 @@ const source = fileURLToPath(new URL('../src/lib/room-choice.ts', import.meta.ur
 const compiled = await build({ entryPoints: [source], bundle: true, write: false, format: 'esm', platform: 'node' });
 const choice = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
 
-const question = 'The work stopped partway through. Want me to try again?';
+const options = [
+  { id: 'retry', label: 'Try again' },
+  { id: 'skip', label: 'Skip this' },
+  { id: 'different', label: 'Try a different way' },
+];
+const text = 'This stopped because the connection dropped before it finished. What should I do next?';
 
-function task(overrides = {}) {
-  return {
-    id: 'job_fix',
-    teamId: 'team_1',
-    runId: 'run_1',
-    title: 'implement_fix',
-    state: 'error',
-    updatedAt: '2026-10-22T12:00:00.000Z',
-    work: { status: 'blocked', revision: 3 },
-    ...overrides,
-  };
+function message(recovery, content = text) {
+  return { id: 'tm_1', teamId: 'team_1', content, recovery };
 }
 
-test('a stalled task becomes a plain choice and hides internal ids', () => {
-  const resolved = choice.resolveRoomChoice({ roomTeamId: 'team_1', tasks: [task()] });
-  assert.equal(resolved.source, 'recovery');
-  assert.equal(resolved.jobId, 'job_fix');
-  assert.equal(resolved.choice.question, question);
-  assert.deepEqual(resolved.choice.options, [
-    { id: 'retry', label: 'Try again', style: 'primary' },
-    { id: 'skip', label: 'Skip it', style: 'neutral' },
-    { id: 'other', label: 'A different approach', style: 'neutral' },
-  ]);
-  const text = JSON.stringify(resolved.choice);
-  assert.equal(text.includes('implement_fix'), false);
-  assert.equal(text.includes('Recovery'), false);
-  assert.equal(text.includes('Activity'), false);
-  assert.equal(choice.resolveRoomChoice({ roomTeamId: 'team_1', tasks: [task({ work: { status: 'interrupted', revision: 2 } })] }).jobId, 'job_fix');
+test('a saved recovery field uses the host sentence and option labels', () => {
+  const resolved = choice.recoveryFromMessage(message({ jobId: 'tj_1', runId: 'tr_1', question: 'What should I do next?', options }));
+  assert.equal(resolved.messageId, 'tm_1');
+  assert.equal(resolved.text, text);
+  assert.equal(resolved.question, 'What should I do next?');
+  assert.deepEqual(resolved.options.map(option => option.label), ['Try again', 'Skip this', 'Try a different way']);
+  assert.equal(resolved.choice, undefined);
+  assert.equal(JSON.stringify(resolved).includes('implement_fix'), false);
+  const chosen = choice.recoveryFromMessage(message({ jobId: 'tj_1', runId: 'tr_1', question: 'What should I do next?', options, choice: 'skip' }));
+  assert.equal(chosen.choice, 'skip');
+  assert.equal(choice.recoveryFromMessage(message({ jobId: 'tj_1', runId: 'tr_1', question: 'What should I do next?', options, choice: 'resume' })).choice, undefined);
+  assert.equal(choice.recoveryFromMessage({ id: 'tm_1', teamId: 'team_1', content: text }), null);
 });
 
-test('ready, verified, continued, legacy, and still-running work stay out of the card', () => {
-  const hidden = [
-    task({ work: { status: 'ready_for_review', revision: 1 } }),
-    task({ work: { status: 'verified', revision: 1 } }),
-    task({ work: { status: 'working', revision: 1 } }),
-    task({ work: { status: 'blocked', revision: 1, recoveryJobId: 'job_next' } }),
-    task({ work: { status: 'blocked', revision: 1, legacy: true } }),
-    task({ work: { status: 'blocked', revision: 1 }, state: 'running' }),
-    task({ id: 'job_active', work: { status: 'interrupted', revision: 1 } }),
-    task({ work: undefined, state: 'error' }),
-  ];
-  for (const row of hidden) {
-    const active = row.id === 'job_active' ? ['run_1'] : [];
-    assert.equal(choice.resolveRoomChoice({ roomTeamId: 'team_1', tasks: [row], activeRunIds: active }), null);
-  }
-  const newest = choice.resolveRoomChoice({
-    roomTeamId: 'team_1',
-    tasks: [task({ id: 'older', updatedAt: '2026-10-21T00:00:00.000Z' }), task({ id: 'newer', updatedAt: '2026-10-23T00:00:00.000Z' })],
-  });
-  assert.equal(newest.jobId, 'newer');
-  assert.equal(choice.resolveRoomChoice({ roomTeamId: 'team_1', tasks: [task()], dismissedIds: ['job:job_fix'] }), null);
-});
-
-test('a needs-choice event drives the same card and known ids map to recovery actions', () => {
+test('the live event and the web event use the same shape, and text is the body', () => {
   const event = {
-    type: 'needs-choice',
-    id: 'choice_1',
-    teamId: 'team_1',
-    jobId: 'job_fix',
-    runId: 'run_1',
-    question: 'Try a different folder?',
-    options: [
-      { id: 'retry', label: 'Retry', style: 'primary' },
-      { id: 'skip', label: 'Skip' },
-      { id: 'different-approach', label: 'Another way', style: 'weird' },
-    ],
+    teamId: 'team_1', messageId: 'tm_1', jobId: 'tj_1', runId: 'tr_1',
+    text, question: 'What should I do next?', options,
   };
-  const resolved = choice.resolveRoomChoice({ roomTeamId: 'team_1', event, tasks: [task({ title: 'should not win' })] });
-  assert.equal(resolved.source, 'event');
-  assert.equal(resolved.key, 'choice_1');
-  assert.equal(resolved.choice.question, 'Try a different folder?');
-  assert.equal(resolved.choice.options[2].style, undefined);
-  assert.equal(choice.resolveRoomChoice({ roomTeamId: 'team_1', event, tasks: [task()], dismissedIds: ['choice_1'] }).source, 'recovery');
-  assert.equal(choice.resolveRoomChoice({ roomTeamId: 'team_9', event: { type: 'needs-choice', question: '  ', options: [] }, tasks: [task()] }).jobId, 'job_fix');
-  const context = { teamId: 'team_1', jobId: 'job_fix', runId: 'run_1', revision: 3 };
-  assert.deepEqual(choice.choiceAction('retry', context), { kind: 'resume', teamId: 'team_1', jobId: 'job_fix', revision: 3 });
-  assert.deepEqual(choice.choiceAction('try-again', context).kind, 'resume');
-  assert.deepEqual(choice.choiceAction('skip', context), { kind: 'skip' });
-  assert.deepEqual(choice.choiceAction('different-approach', context), { kind: 'different' });
-  assert.deepEqual(choice.choiceAction('other', context), { kind: 'different' });
-  assert.deepEqual(choice.choiceAction('stop', context), { kind: 'stop', teamId: 'team_1', runId: 'run_1' });
-  assert.equal(choice.choiceAction('retry', { teamId: 'team_1' }), null);
-  assert.equal(choice.choiceAction('stop', { teamId: 'team_1', jobId: 'job_fix' }), null);
-  assert.equal(choice.choiceAction('invent', context), null);
+  assert.deepEqual(choice.recoveryFromEvent(event), { ...event, options });
+  const live = choice.presentRecovery(message(undefined, 'older line'), event);
+  assert.equal(live.text, text);
+  assert.equal(live.choice, undefined);
+  const saved = choice.presentRecovery(message({ jobId: 'tj_1', runId: 'tr_1', question: 'What should I do next?', options, choice: 'retry' }), event);
+  assert.equal(saved.choice, 'retry');
+  assert.equal(saved.text, text);
+  assert.equal(choice.recoveryFromEvent({ ...event, messageId: '' }), null);
+  assert.equal(choice.recoveryFromEvent(null), null);
 });
 
-test('the chat card is generic and the room renders it with the coucou spring', async () => {
-  const root = fileURLToPath(new URL('..', import.meta.url));
-  const [card, channel, css, motion, review] = await Promise.all([
+test('a button posts only retry, skip, or different', () => {
+  assert.deepEqual(choice.choicePayload('retry'), { choice: 'retry' });
+  assert.deepEqual(choice.choicePayload('skip'), { choice: 'skip' });
+  assert.deepEqual(choice.choicePayload('different'), { choice: 'different' });
+  assert.equal(choice.choicePayload('other'), null);
+  assert.equal(choice.choicePayload('different-approach'), null);
+  assert.equal(choice.choicePayload('Try again'), null);
+});
+
+test('the room card renders host labels, marks a saved choice, and retries a failed post', async () => {
+  const [card, channel, css, client, store] = await Promise.all([
     readFile(new URL('../src/components/RoomChoiceCard.tsx', import.meta.url), 'utf8'),
     readFile(new URL('../src/screens/BotTeamChannel.tsx', import.meta.url), 'utf8'),
     readFile(new URL('../src/screens/BotTeamChannel.css', import.meta.url), 'utf8'),
-    readFile(new URL('../src/styles/chat-motion.css', import.meta.url), 'utf8'),
-    readFile(new URL('../src/screens/BotTaskReview.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/lib/client.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../src/lib/store.ts', import.meta.url), 'utf8'),
   ]);
-  assert.match(card, /question/);
-  assert.match(card, /options/);
-  assert.match(card, /data-style/);
-  assert.doesNotMatch(card, /implement_fix|Recovery action|\/recovery|\/resume/);
-  assert.match(channel, /RoomChoiceCard/);
-  assert.match(channel, /resolveRoomChoice/);
-  assert.match(channel, /choiceAction/);
-  assert.match(css, /\.bot-room-choice[\s\S]*var\(--ease-pop\)/);
-  assert.match(motion, /\.bot-room-choice/);
-  assert.equal(review.includes('Review recovery'), false);
-  assert.equal(root.length > 0, true);
+  assert.match(card, /\{body\}/);
+  assert.match(card, /option\.label/);
+  assert.match(card, /aria-pressed=\{selected\}/);
+  assert.match(card, /onRetry/);
+  assert.doesNotMatch(card, /Try again|Skip this|Skip it|A different approach|implement_fix/);
+  assert.match(channel, /recoveryFromEvent/);
+  assert.match(channel, /presentRecovery/);
+  assert.match(channel, /strata:task-recovery/);
+  assert.match(channel, /\/messages\/\$\{encodeURIComponent\(card\.messageId\)\}\/choice/);
+  assert.match(channel, /choicePayload/);
+  assert.doesNotMatch(channel, /\/jobs\/\$\{encodeURIComponent|\/resume/);
+  assert.match(css, /\.bot-room-choice-actions button\[aria-pressed='true'\]/);
+  assert.match(css, /\.bot-room-choice-error/);
+  assert.match(client, /'task\.recovery'/);
+  assert.match(store, /case 'task\.recovery':/);
+  assert.match(store, /strata:task-recovery/);
 });
