@@ -1,8 +1,10 @@
 # Shared Mac conversations on iPhone
 
-## Proactive team reliability correction (October 23, 2026)
+## Proactive team reliability correction activated (October 23, 2026)
 
 The next production hold was detected during read-only observation: source triage finished, but a timed-out directory search held implementation before dispatch. Its uncertain receipt remains unchanged. The source correction distinguishes pure pre-effect tool validation from uncertain execution, refreshes resumed task summaries and routes trusted blocked/review-ready plan events through existing opt-in notifications. **787/787 frozen-source host checks passed**, zero failures or skips. This host-only increment leaves iPhone build 37, UI, bridge, team instructions and Maya unchanged. Activation and remaining reliability work are recorded in [team plans validation](docs/BOTS-TEAM-PLANS-VALIDATION-20261022.md#proactive-reliability-audit-october-23-2026).
+
+Mac source **8a1f74e05335a4c6440831b0fdfa57b1d0aa448c** was activated at **03:03:13 UTC** after two complete idle snapshots and a fresh prequit check. The signed installed package and unique backup passed independent review. All **177 conversations, 658 complete messages, preferences, three paired devices and nine model connections** were retained, along with plans and receipts. Opening Bots advanced one existing chat's read marker and its revision by one; the initial exact-store failure and narrow, independently checked exception are recorded explicitly. No held work was resumed. Mac notification preferences remain off; the new alerts use existing opt-in delivery.
 
 ## Rejected team-message correction activated (October 23, 2026)
 
