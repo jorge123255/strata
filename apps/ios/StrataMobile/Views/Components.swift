@@ -652,6 +652,169 @@ func coucouKind(mood: BotMood, paused: Bool) -> BreathingStatusDot.Kind {
     return .idle
 }
 
+struct RoomChoiceOption: Equatable {
+    var id: String
+    var label: String
+    var style: String?
+}
+
+struct RoomChoiceCardModel: Equatable {
+    var question: String
+    var options: [RoomChoiceOption]
+}
+
+struct RoomChoiceTask: Equatable {
+    var id: String
+    var teamId: String
+    var runId: String
+    var state: String
+    var updatedAt: String
+    var status: String
+    var revision: Int
+    var recoveryJobId: String?
+    var legacy: Bool
+}
+
+struct RoomChoiceEvent: Equatable {
+    var type: String
+    var id: String
+    var teamId: String
+    var jobId: String
+    var runId: String
+    var question: String
+    var options: [RoomChoiceOption]
+}
+
+struct RoomChoiceResolved: Equatable {
+    var key: String
+    var source: String
+    var teamId: String
+    var jobId: String
+    var runId: String
+    var revision: Int
+    var choice: RoomChoiceCardModel
+}
+
+enum RoomChoiceActionKind: Equatable {
+    case resume(teamId: String, jobId: String, revision: Int)
+    case stop(teamId: String, runId: String)
+    case skip
+    case different
+}
+
+/// Same choice card as the Mac room. An event wins; otherwise a stalled task supplies plain buttons.
+enum RoomChoice {
+    static let stalledQuestion = "The work stopped partway through. Want me to try again?"
+    private static let activeRun: Set<String> = ["queued", "running", "stopping", "cleanup_pending"]
+
+    static func resolve(roomTeamId: String, event: RoomChoiceEvent?, tasks: [RoomChoiceTask], activeRunIds: [String], dismissedIds: Set<String>) -> RoomChoiceResolved? {
+        if let event, let choice = card(from: event) {
+            let key = event.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "needs-choice:\(event.jobId.isEmpty ? choice.question : event.jobId)" : event.id
+            let jobKey = event.jobId.isEmpty ? "" : "job:\(event.jobId)"
+            if !dismissedIds.contains(key), jobKey.isEmpty || !dismissedIds.contains(jobKey) {
+                let revision = tasks.first { $0.id == event.jobId }?.revision ?? 0
+                return RoomChoiceResolved(key: key, source: "event", teamId: event.teamId.isEmpty ? roomTeamId : event.teamId, jobId: event.jobId, runId: event.runId, revision: revision, choice: choice)
+            }
+        }
+        let active = Set(activeRunIds)
+        let rows = tasks.filter { needsRecovery($0, active: active) && !dismissedIds.contains("job:\($0.id)") && !dismissedIds.contains($0.id) }
+            .sorted { $0.updatedAt == $1.updatedAt ? $0.id > $1.id : $0.updatedAt > $1.updatedAt }
+        guard let task = rows.first else { return nil }
+        return RoomChoiceResolved(key: "job:\(task.id)", source: "recovery", teamId: task.teamId, jobId: task.id, runId: task.runId, revision: task.revision, choice: RoomChoiceCardModel(question: stalledQuestion, options: [
+            RoomChoiceOption(id: "retry", label: "Try again", style: "primary"),
+            RoomChoiceOption(id: "skip", label: "Skip it", style: "neutral"),
+            RoomChoiceOption(id: "other", label: "A different approach", style: "neutral")
+        ]))
+    }
+
+    static func action(_ optionId: String, teamId: String, jobId: String, runId: String, revision: Int) -> RoomChoiceActionKind? {
+        let id = optionId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().replacingOccurrences(of: " ", with: "_").replacingOccurrences(of: "-", with: "_")
+        switch id {
+        case "retry", "try_again", "resume":
+            guard !teamId.isEmpty, !jobId.isEmpty else { return nil }
+            return .resume(teamId: teamId, jobId: jobId, revision: revision)
+        case "skip", "dismiss":
+            return .skip
+        case "other", "different", "different_approach":
+            return .different
+        case "stop":
+            guard !teamId.isEmpty, !runId.isEmpty else { return nil }
+            return .stop(teamId: teamId, runId: runId)
+        default:
+            return nil
+        }
+    }
+
+    private static func needsRecovery(_ task: RoomChoiceTask, active: Set<String>) -> Bool {
+        if task.legacy || !(task.recoveryJobId ?? "").isEmpty { return false }
+        if task.status != "blocked" && task.status != "interrupted" { return false }
+        if activeRun.contains(task.state) || active.contains(task.runId) { return false }
+        return true
+    }
+
+    private static func card(from event: RoomChoiceEvent) -> RoomChoiceCardModel? {
+        guard event.type == "needs-choice" else { return nil }
+        let question = event.question.trimmingCharacters(in: .whitespacesAndNewlines)
+        let options = event.options.compactMap { option -> RoomChoiceOption? in
+            let id = option.id.trimmingCharacters(in: .whitespacesAndNewlines)
+            let label = option.label.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !id.isEmpty, !label.isEmpty else { return nil }
+            let style = ["primary", "neutral", "danger"].contains(option.style ?? "") ? option.style : nil
+            return RoomChoiceOption(id: id, label: label, style: style)
+        }
+        guard !question.isEmpty, !options.isEmpty else { return nil }
+        return RoomChoiceCardModel(question: question, options: options)
+    }
+}
+
+struct RoomChoiceCard: View {
+    var question: String
+    var options: [RoomChoiceOption]
+    var busy: String
+    var onChoose: (String) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var shown = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(question).font(.body).foregroundStyle(StrataTheme.ink).fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(options, id: \.id) { option in
+                    if option.style == "primary" {
+                        Button(busy == option.id ? "Working…" : option.label) { onChoose(option.id) }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(!busy.isEmpty)
+                            .accessibilityIdentifier("teamRoomChoice-\(option.id)")
+                    } else if option.style == "danger" {
+                        Button(busy == option.id ? "Working…" : option.label) { onChoose(option.id) }
+                            .buttonStyle(.bordered)
+                            .tint(.red)
+                            .disabled(!busy.isEmpty)
+                            .accessibilityIdentifier("teamRoomChoice-\(option.id)")
+                    } else {
+                        Button(busy == option.id ? "Working…" : option.label) { onChoose(option.id) }
+                            .buttonStyle(.bordered)
+                            .disabled(!busy.isEmpty)
+                            .accessibilityIdentifier("teamRoomChoice-\(option.id)")
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(StrataTheme.surface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(StrataTheme.line.opacity(0.7), lineWidth: 1))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("teamRoomChoice")
+        .offset(y: reduceMotion || shown ? 0 : CoucouMotion.messageRise)
+        .opacity(reduceMotion || shown ? 1 : 0)
+        .onAppear {
+            guard !reduceMotion else { shown = true; return }
+            withAnimation(.spring(response: CoucouMotion.springResponse, dampingFraction: CoucouMotion.springDamping)) { shown = true }
+        }
+    }
+}
+
 private struct CoucouVisibility: ViewModifier {
     @Binding var visible: Bool
 

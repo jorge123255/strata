@@ -79,6 +79,6 @@ export function BotTeamWorkOverview({ groups, bots, stale, disabled, workflows, 
       <p className="small muted">Verified results, dismissed errors and earlier turns stay available here.</p>
       <div className="bot-work-task-list">{groups.history.map(row => task(row))}</div>
     </details> : null}
-    <p className="small muted">Reported results become verified after your review. Opening a result or recovery plan starts no work.</p>
+    <p className="small muted">Reported results become verified after your review. Opening a result starts no work.</p>
   </section>;
 }

@@ -214,13 +214,15 @@
   .contextpanel,
   .ws__sessions,
   .cua-bots-shell,
-  .bot-room-mentions {
+  .bot-room-mentions,
+  .bot-room-choice {
     animation: none !important;
     transition: none !important;
   }
   .msg-enter,
   .stream-word,
-  .bot-room-mentions { opacity: 1; transform: none; }
+  .bot-room-mentions,
+  .bot-room-choice { opacity: 1; transform: none; }
   .shimmer,
   .live-status__verb.shimmer {
     color: var(--st-ink-muted);
@@ -249,13 +251,15 @@
 [data-motion='reduced'] .contextpanel,
 [data-motion='reduced'] .ws__sessions,
 [data-motion='reduced'] .cua-bots-shell,
-[data-motion='reduced'] .bot-room-mentions {
+[data-motion='reduced'] .bot-room-mentions,
+[data-motion='reduced'] .bot-room-choice {
   animation: none !important;
   transition: none !important;
 }
 [data-motion='reduced'] .msg-enter,
 [data-motion='reduced'] .stream-word,
-[data-motion='reduced'] .bot-room-mentions { opacity: 1; transform: none; }
+[data-motion='reduced'] .bot-room-mentions,
+[data-motion='reduced'] .bot-room-choice { opacity: 1; transform: none; }
 [data-motion='reduced'] .shimmer,
 [data-motion='reduced'] .live-status__verb.shimmer {
   color: var(--st-ink-muted);

@@ -233,4 +233,26 @@ final class ThinkingTimelineTests: XCTestCase {
         XCTAssertEqual(RoomMention.audience(text: "@everyone hi", recipient: "bot_dev", memberIds: room), RoomMentionAudience(recipientIds: ["bot_dev"], everyone: nil))
         XCTAssertEqual(RoomMention.audience(text: "hello", recipient: "everyone", memberIds: room), RoomMentionAudience(recipientIds: room, everyone: true))
     }
+
+    func testRoomChoiceUsesPlainButtonsAndKeepsTheEventShape() {
+        let stalled = RoomChoiceTask(id: "job_fix", teamId: "team_1", runId: "run_1", state: "error", updatedAt: "2026-10-22T12:00:00.000Z", status: "blocked", revision: 3, recoveryJobId: nil, legacy: false)
+        let resolved = RoomChoice.resolve(roomTeamId: "team_1", event: nil, tasks: [stalled], activeRunIds: [], dismissedIds: [])
+        XCTAssertEqual(resolved?.source, "recovery")
+        XCTAssertEqual(resolved?.choice.question, "The work stopped partway through. Want me to try again?")
+        XCTAssertEqual(resolved?.choice.options.map(\.label), ["Try again", "Skip it", "A different approach"])
+        XCTAssertFalse(resolved?.choice.question.contains("implement_fix") ?? true)
+        XCTAssertNil(RoomChoice.resolve(roomTeamId: "team_1", event: nil, tasks: [RoomChoiceTask(id: "job_fix", teamId: "team_1", runId: "run_1", state: "running", updatedAt: "", status: "blocked", revision: 1, recoveryJobId: nil, legacy: false)], activeRunIds: [], dismissedIds: []))
+        let event = RoomChoiceEvent(type: "needs-choice", id: "choice_1", teamId: "team_1", jobId: "job_fix", runId: "run_1", question: "Try a different folder?", options: [
+            RoomChoiceOption(id: "retry", label: "Retry", style: "primary"),
+            RoomChoiceOption(id: "different-approach", label: "Another way", style: "weird")
+        ])
+        let fromEvent = RoomChoice.resolve(roomTeamId: "team_1", event: event, tasks: [stalled], activeRunIds: [], dismissedIds: [])
+        XCTAssertEqual(fromEvent?.source, "event")
+        XCTAssertEqual(fromEvent?.choice.question, "Try a different folder?")
+        XCTAssertNil(fromEvent?.choice.options.last?.style)
+        XCTAssertEqual(RoomChoice.action("retry", teamId: "team_1", jobId: "job_fix", runId: "run_1", revision: 3), .resume(teamId: "team_1", jobId: "job_fix", revision: 3))
+        XCTAssertEqual(RoomChoice.action("skip", teamId: "team_1", jobId: "job_fix", runId: "run_1", revision: 3), .skip)
+        XCTAssertEqual(RoomChoice.action("different-approach", teamId: "team_1", jobId: "job_fix", runId: "run_1", revision: 3), .different)
+        XCTAssertNil(RoomChoice.action("invent", teamId: "team_1", jobId: "job_fix", runId: "run_1", revision: 3))
+    }
 }

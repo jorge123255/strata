@@ -4,7 +4,9 @@ import { insertMention, mentionInsertion, mentionKeyAction, mentionKeyStops, men
 import { ShimmerText, StreamedBody, TypingDots, useMessageEntrances } from '../components/ChatMotion';
 import { cx } from '../lib/format';
 import { ApiError, api } from '../lib/client';
-import { botActivityLabel, botTeamRunActive, mergeBotTeamChannelMessages, type Bot, type BotTeam, type BotTeamChannelMessage, type BotTeamChannelSnapshot, type BotTeamPresence, type BotTeamRun } from '../lib/bots';
+import { botActivityLabel, botTeamRunActive, mergeBotTeamChannelMessages, type Bot, type BotTaskRecoveryPlan, type BotTeam, type BotTeamActivity, type BotTeamChannelMessage, type BotTeamChannelSnapshot, type BotTeamPresence, type BotTeamRun } from '../lib/bots';
+import { choiceAction, resolveRoomChoice, type NeedsChoiceEvent } from '../lib/room-choice';
+import { RoomChoiceCard } from '../components/RoomChoiceCard';
 import { useStore } from '../lib/store';
 import type { Session } from '../lib/types';
 import { CuaBotAvatar } from '../components/CuaBotAvatar';
@@ -24,7 +26,7 @@ const ChannelMarkdown = memo(Markdown);
 
 /** A room's polling never creates a chat, resumes a bot or executes a tool. */
 function useTeamChannel(teamId: string, visible: boolean, onUnsupported: () => void, live = false) {
-  const [messages, setMessages] = useState<BotTeamChannelMessage[]>([]), [activeRuns, setActiveRuns] = useState<BotTeamRun[]>([]), [presence, setPresence] = useState<BotTeamPresence[]>([]);
+  const [messages, setMessages] = useState<BotTeamChannelMessage[]>([]), [activeRuns, setActiveRuns] = useState<BotTeamRun[]>([]), [presence, setPresence] = useState<BotTeamPresence[]>([]), [needsChoice, setNeedsChoice] = useState<NeedsChoiceEvent | null>(null);
   const [loading, setLoading] = useState(true), [loadingEarlier, setLoadingEarlier] = useState(false), [error, setError] = useState(''), [hasEarlier, setHasEarlier] = useState(false);
   const cached = useRef<BotTeamChannelMessage[]>([]);
   const alive = useRef(false), generation = useRef(0), pending = useRef(false), earlierPending = useRef(false), cursor = useRef<number | null>(null), first = useRef(0), unsupported = useRef(onUnsupported);
@@ -39,6 +41,10 @@ function useTeamChannel(teamId: string, visible: boolean, onUnsupported: () => v
     if (Number.isFinite(lowest)) first.current = first.current ? Math.min(first.current, lowest) : lowest;
     cached.current = merged; setMessages(merged);
     if (!older) setActiveRuns(previous => JSON.stringify(previous) === JSON.stringify(snapshot.activeRuns) ? previous : snapshot.activeRuns);
+    if (!older) {
+      const incoming = snapshot.needsChoice?.type === 'needs-choice' ? snapshot.needsChoice : null;
+      setNeedsChoice(previous => JSON.stringify(previous) === JSON.stringify(incoming) ? previous : incoming);
+    }
     if (!older && Array.isArray(snapshot.presence)) setPresence(snapshot.presence.filter(row => !!row && typeof row.botId === 'string' && (row.state === 'working' || row.state === 'queued') && typeof row.runId === 'string' && typeof row.jobId === 'string'));
     if (older || first.current === lowest) setHasEarlier(!!snapshot.hasMoreBefore);
     setError(''); setLoading(false);
@@ -89,7 +95,7 @@ function useTeamChannel(teamId: string, visible: boolean, onUnsupported: () => v
     // A POST returns the latest page; drain a missed interval before advancing past it.
     if (previousCursor !== null && snapshot.messages[0]?.sequence > previousCursor + 1) cursor.current = previousCursor;
   }, [accept]);
-  return { messages, activeRuns, presence, loading, error, hasEarlier, loadingEarlier, accept: acceptPosted, refresh, loadEarlier };
+  return { messages, activeRuns, presence, needsChoice, loading, error, hasEarlier, loadingEarlier, accept: acceptPosted, refresh, loadEarlier };
 }
 
 /** Live reply text for this room. A saved message with the same id replaces the draft. */
@@ -112,9 +118,9 @@ function useRoomDrafts(teamId: string) {
   return drafts;
 }
 
-export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkToolsSupported = false, workPlansSupported = false, onUnsupported, onOpenConversation, onStateChange, onDetails, onShowWork }: {
-  team: BotTeam; bots: Bot[]; visible: boolean; current: boolean; continuousSupported?: boolean; coordinatorWorkToolsSupported?: boolean; workPlansSupported?: boolean; onUnsupported: () => void;
-  onOpenConversation: (chatId: string, conversation?: Session) => Promise<void>; onStateChange: () => Promise<void>; onDetails: () => void; onShowWork: () => void;
+export function BotTeamChannel({ team, bots, visible, current, tasks = [], coordinatorWorkToolsSupported = false, workPlansSupported = false, onUnsupported, onOpenConversation, onStateChange, onWorkChanged, onDetails, onShowWork }: {
+  team: BotTeam; bots: Bot[]; visible: boolean; current: boolean; tasks?: BotTeamActivity[]; continuousSupported?: boolean; coordinatorWorkToolsSupported?: boolean; workPlansSupported?: boolean; onUnsupported: () => void;
+  onOpenConversation: (chatId: string, conversation?: Session) => Promise<void>; onStateChange: () => Promise<void>; onWorkChanged?: () => Promise<void>; onDetails: () => void; onShowWork: () => void;
 }) {
   const connection = useStore(state => state.connection);
   const channel = useTeamChannel(team.id, visible, onUnsupported, connection === 'live');
@@ -140,8 +146,8 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
   const [workMode, setWorkMode] = useState<'chat' | 'work'>('chat');
   const [prompt, setPrompt] = useState(''), [recipients, setRecipients] = useState<string[]>([]), [picker, setPicker] = useState(false), [replyTo, setReplyTo] = useState<BotTeamChannelMessage | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0), [mentionDismissed, setMentionDismissed] = useState<number | null>(null), [caret, setCaret] = useState(0);
-  const [actions, setActions] = useState(false), [sending, setSending] = useState(false), [stopping, setStopping] = useState(''), [error, setError] = useState(''), [unread, setUnread] = useState(0), [away, setAway] = useState(false);
-  const requestId = useRef<string | null>(null), mounted = useRef(true), sendingRef = useRef(false), feed = useRef<HTMLDivElement>(null), composer = useRef<HTMLTextAreaElement>(null), pendingCaret = useRef<number | null>(null), follow = useRef(true), previousLast = useRef(0), olderAnchor = useRef<{ height: number; top: number } | null>(null), seenMessageIds = useRef<string[]>([]);
+  const [actions, setActions] = useState(false), [sending, setSending] = useState(false), [stopping, setStopping] = useState(''), [choiceBusy, setChoiceBusy] = useState(''), [dismissedChoices, setDismissedChoices] = useState<string[]>([]), [error, setError] = useState(''), [unread, setUnread] = useState(0), [away, setAway] = useState(false);
+  const requestId = useRef<string | null>(null), mounted = useRef(true), sendingRef = useRef(false), resumeKeys = useRef(new Map<string, string>()), feed = useRef<HTMLDivElement>(null), composer = useRef<HTMLTextAreaElement>(null), pendingCaret = useRef<number | null>(null), follow = useRef(true), previousLast = useRef(0), olderAnchor = useRef<{ height: number; top: number } | null>(null), seenMessageIds = useRef<string[]>([]);
   const members = team.memberIds.map(id => bots.find(bot => bot.id === id)).filter((bot): bot is Bot => !!bot);
   const mentionRoster = team.memberIds.map(id => ({ id, name: bots.find(bot => bot.id === id)?.name ?? '' }));
   const activeMention = mentionQuery(prompt, caret);
@@ -150,6 +156,7 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
   const mentionCursor = mentionChoices.length ? Math.min(mentionIndex, mentionChoices.length - 1) : 0;
   const activeMentionDomId = showMentions ? `team-mention-${team.id}-${mentionChoices[mentionCursor]!.kind}-${mentionChoices[mentionCursor]!.id}` : undefined;
   const active = channel.activeRuns.filter(run => botTeamRunActive(run.state));
+  const roomChoice = resolveRoomChoice({ roomTeamId: team.id, event: channel.needsChoice, tasks, activeRunIds: active.map(run => run.id), dismissedIds: dismissedChoices });
   const ready = current && !channel.error && !channel.loading;
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; follower.current.stop(); }; }, []);
   useEffect(() => { if (!visible) { setPicker(false); setActions(false); } }, [visible]);
@@ -229,10 +236,44 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
     finally { sendingRef.current = false; if (mounted.current) setSending(false); }
   }
   async function stop(run: BotTeamRun) {
-    if (stopping) return; setStopping(run.id); setError('');
-    try { await api.post(`${roomPath(team.id)}/runs/${encodeURIComponent(run.id)}/stop`, {}); if (mounted.current) await Promise.allSettled([channel.refresh(), onStateChange()]); }
-    catch (cause) { if (mounted.current) setError(messageError(cause)); }
+    if (stopping) return false; setStopping(run.id); setError('');
+    try { await api.post(`${roomPath(team.id)}/runs/${encodeURIComponent(run.id)}/stop`, {}); if (mounted.current) await Promise.allSettled([channel.refresh(), onWorkChanged?.() ?? onStateChange()]); return true; }
+    catch (cause) { if (mounted.current) setError(messageError(cause)); return false; }
     finally { if (mounted.current) setStopping(''); }
+  }
+  function dismissChoice(key: string) { setDismissedChoices(ids => ids.includes(key) ? ids : [...ids, key]); }
+  async function choose(optionId: string) {
+    if (!roomChoice || choiceBusy || stopping) return;
+    const action = choiceAction(optionId, { teamId: roomChoice.teamId || team.id, jobId: roomChoice.jobId, runId: roomChoice.runId, revision: roomChoice.revision });
+    if (!action) { setError('That choice is not available yet.'); return; }
+    if (action.kind === 'skip' || action.kind === 'different') {
+      dismissChoice(roomChoice.key);
+      if (action.kind === 'different') composer.current?.focus();
+      return;
+    }
+    if (action.kind === 'stop') {
+      const key = roomChoice.key;
+      setChoiceBusy(optionId);
+      try { if (await stop({ id: action.runId, teamId: action.teamId } as BotTeamRun)) dismissChoice(key); }
+      finally { if (mounted.current) setChoiceBusy(''); }
+      return;
+    }
+    const key = roomChoice.key;
+    setChoiceBusy(optionId); setError('');
+    try {
+      const path = `${roomPath(action.teamId)}/jobs/${encodeURIComponent(action.jobId)}`;
+      const result = await api.get<{ plan: BotTaskRecoveryPlan }>(`${path}/recovery`);
+      const plan = result.plan;
+      if (!plan?.canResume || plan.jobId !== action.jobId) throw new Error(plan?.blockedReason || 'This work cannot continue yet.');
+      if (typeof action.revision === 'number' && plan.expectedRevision !== action.revision) throw new Error('This work changed. Refresh the room before trying again.');
+      const idempotencyKey = resumeKeys.current.get(action.jobId) ?? crypto.randomUUID();
+      resumeKeys.current.set(action.jobId, idempotencyKey);
+      await api.post(`${path}/resume`, { planId: plan.id, expectedRevision: plan.expectedRevision, idempotencyKey });
+      resumeKeys.current.delete(action.jobId);
+      dismissChoice(key);
+      if (mounted.current) await Promise.allSettled([channel.refresh(), onWorkChanged?.() ?? onStateChange()]);
+    } catch (cause) { if (mounted.current) setError(messageError(cause)); }
+    finally { if (mounted.current) setChoiceBusy(''); }
   }
   const recipientLabel = recipients.length === team.memberIds.length ? 'Everyone' : recipients.length ? recipients.map(id => bots.find(bot => bot.id === id)?.name ?? 'Unavailable teammate').join(', ') : 'Team';
   return <div className="bot-room" hidden={!visible} aria-label={`${team.name} channel`}>
@@ -249,6 +290,7 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
           <div className="bot-room-message-main"><header><strong>{name}</strong></header><div className="bot-room-message-bubble"><div className="bot-room-message-body"><StreamedBody id={draft.messageId} text={draft.text} done={draft.done} render={text => <ChannelMarkdown text={text}/>}/></div></div></div>
         </article>;
       })}
+      {roomChoice ? <RoomChoiceCard question={roomChoice.choice.question} options={roomChoice.choice.options} busy={choiceBusy} disabled={!ready || !!stopping} onChoose={id => void choose(id)}/> : null}
       {quiet && !channel.presence.length ? <p className="bot-room-quiet" role="status">The room stayed quiet.</p> : null}
       {channel.presence.filter(row => row.state === 'working' && !liveDrafts.some(draft => draft.botId === row.botId)).map(row => { const label = `${bots.find(bot => bot.id === row.botId)?.name ?? 'A teammate'} is working…`; return <div className="bot-room-working" key={row.jobId}><TypingDots label={label} hiddenLabel/><ShimmerText text={label}/></div>; })}
       {active.map(run => { const limited = !Object.values(run.limits).every(value => value === 0); const label = botActivityLabel(run.state); return <div className="bot-room-working" key={run.id}><TypingDots label={label} hiddenLabel/><span><ShimmerText text={label}/><small>{limited ? 'Working with the team' : 'Until finished or stopped'}</small></span><Btn size="sm" variant="danger" disabled={!!stopping || run.state === 'stopping'} onClick={() => void stop(run)}>{stopping === run.id ? 'Stopping…' : run.state === 'cleanup_pending' ? 'Retry Stop' : 'Stop team'}</Btn></div>; })}

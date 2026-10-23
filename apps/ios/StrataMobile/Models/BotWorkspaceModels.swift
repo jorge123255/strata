@@ -654,6 +654,22 @@ struct BotTeamPresence: Decodable, Equatable, Identifiable {
     var id: String { jobId }
 }
 
+struct BotTeamNeedsChoiceOption: Decodable, Equatable {
+    var id: String
+    var label: String
+    var style: String?
+}
+
+struct BotTeamNeedsChoice: Decodable, Equatable {
+    var type: String
+    var id: String?
+    var teamId: String?
+    var jobId: String?
+    var runId: String?
+    var question: String
+    var options: [BotTeamNeedsChoiceOption]
+}
+
 struct BotTeamChannel: Decodable, Equatable {
     var teamId: String
     var supported: Bool
@@ -664,6 +680,39 @@ struct BotTeamChannel: Decodable, Equatable {
     var hasMoreBefore: Bool?
     var reason: String?
     var presence: [BotTeamPresence]?
+    var needsChoice: BotTeamNeedsChoice?
+
+    init(teamId: String, supported: Bool, messages: [BotTeamChannelMessage], activeRuns: [BotTeamRun], nextSequence: Int, hasMore: Bool? = nil, hasMoreBefore: Bool? = nil, reason: String? = nil, presence: [BotTeamPresence]? = nil, needsChoice: BotTeamNeedsChoice? = nil) {
+        self.teamId = teamId
+        self.supported = supported
+        self.messages = messages
+        self.activeRuns = activeRuns
+        self.nextSequence = nextSequence
+        self.hasMore = hasMore
+        self.hasMoreBefore = hasMoreBefore
+        self.reason = reason
+        self.presence = presence
+        self.needsChoice = needsChoice
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case teamId, supported, messages, activeRuns, nextSequence, hasMore, hasMoreBefore, reason, presence, needsChoice
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        teamId = try container.decode(String.self, forKey: .teamId)
+        supported = try container.decode(Bool.self, forKey: .supported)
+        messages = try container.decode([BotTeamChannelMessage].self, forKey: .messages)
+        activeRuns = try container.decode([BotTeamRun].self, forKey: .activeRuns)
+        nextSequence = try container.decode(Int.self, forKey: .nextSequence)
+        hasMore = try container.decodeIfPresent(Bool.self, forKey: .hasMore)
+        hasMoreBefore = try container.decodeIfPresent(Bool.self, forKey: .hasMoreBefore)
+        reason = try container.decodeIfPresent(String.self, forKey: .reason)
+        presence = try container.decodeIfPresent([BotTeamPresence].self, forKey: .presence)
+        needsChoice = try? container.decode(BotTeamNeedsChoice.self, forKey: .needsChoice)
+        if needsChoice?.type != "needs-choice" { needsChoice = nil }
+    }
 }
 
 enum BotTeamMessageWorkMode: String, Codable, CaseIterable { case chat, work }

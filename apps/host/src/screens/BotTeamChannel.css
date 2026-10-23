@@ -74,6 +74,14 @@
 .bot-room-draft .bot-room-message-body { white-space:pre-wrap; }
 .bot-room-draft .bot-room-message-bubble { border-style:dashed; }
 .bot-room-quiet { margin:24px 7px 0 44px; min-width:0; color:var(--st-ink-muted); font-size:13px; overflow-wrap:anywhere; }
+.bot-room-choice { margin:24px 7px 0 44px; max-width:min(560px, calc(100% - 51px)); min-width:0; padding:14px 17px 12px; border:1px solid var(--st-line-soft); border-radius:22px 22px 22px 9px; background:var(--st-surface-2); animation:mentionIn 0.3s var(--ease-pop) both; }
+.bot-room-choice p { margin:0; color:var(--st-ink); font-size:14px; line-height:1.55; overflow-wrap:anywhere; }
+.bot-room-choice-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+.bot-room-choice-actions button { border:1px solid var(--st-line-soft); border-radius:13px; padding:8px 12px; background:var(--st-surface); color:var(--st-ink); font:12px var(--st-font); cursor:pointer; }
+.bot-room-choice-actions button[data-style='primary'] { background:var(--st-action); color:var(--st-action-ink); border-color:transparent; }
+.bot-room-choice-actions button[data-style='danger'] { background:var(--st-danger-tint); color:var(--st-danger-text); border-color:transparent; }
+.bot-room-choice-actions button:disabled { opacity:.55; cursor:default; }
+.bot-room-choice-actions button:focus-visible { outline:2px solid var(--st-focus); outline-offset:3px; }
 .bot-room-working { display:flex; align-items:center; gap:11px; margin:24px 7px 0 44px; padding:12px 15px; border:1px solid var(--st-line-soft); border-radius:16px; background:var(--st-surface); }
 .bot-room-working > span:nth-child(2) { flex:1; min-width:0; }
 .bot-room-working strong { display:block; color:var(--st-ink); font-size:11px; font-weight:500; }
@@ -135,7 +143,7 @@
   .bot-room-message-bubble { padding:12px 13px 7px; border-radius:19px 19px 19px 7px; }
   .bot-room-message[data-author='user'] { padding-left:20px; }
   .bot-room-message[data-author='user'] .bot-room-message-main { max-width:90%; }
-  .bot-room-quiet,.bot-room-working { margin-left:0; flex-wrap:wrap; }
+  .bot-room-quiet,.bot-room-working,.bot-room-choice { margin-left:0; max-width:100%; flex-wrap:wrap; }
   .bot-room-composer-row { gap:7px; }
   .bot-room-add { width:36px; height:36px; margin-bottom:6px; }
   .bot-room-composer-top,.bot-room-composer-bottom { margin-left:0; margin-right:0; }
@@ -158,5 +166,5 @@
 .bot-room .error-notice { min-width:0; max-width:100%; flex-wrap:wrap; }
 @container bots (max-width: 720px) {
   .bot-group-header .bot-group-identity p { white-space:normal; overflow:visible; text-overflow:unset; }
-  .bot-room-work-mode, .bot-room-composer-top, .bot-room-composer-bottom, .bot-room-quiet { margin-left:0; }
+  .bot-room-work-mode, .bot-room-composer-top, .bot-room-composer-bottom, .bot-room-quiet, .bot-room-choice { margin-left:0; }
 }
