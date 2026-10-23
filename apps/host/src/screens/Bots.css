@@ -37,8 +37,8 @@
 .cua-sidebar-item[data-selected] > svg { color: currentColor; }
 .cua-roster-bot { min-height: 72px; margin-bottom: 4px; gap: 12px; }
 .cua-roster-bot > .cua-bot-avatar { flex: none; }
-.cua-roster-bot strong { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 14px; line-height: 20px; font-weight: 550; }
-.cua-roster-title { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
+.cua-roster-title strong { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; flex: 1; min-width: 0; overflow: hidden; white-space: normal; overflow-wrap: anywhere; font-size: 14px; line-height: 20px; font-weight: 550; }
+.cua-roster-title { display: flex; align-items: flex-start; gap: 7px; min-width: 0; }
 .cua-roster-title strong { flex: 1; }
 .cua-roster-title time { flex: none; color: var(--st-ink-muted); font-size: 9px; font-weight: 400; }
 .cua-roster-bot small { display: block; overflow: hidden; text-overflow: ellipsis; font-size: 12px; line-height: 18px; margin-top: 3px; color: var(--st-ink-muted); }
@@ -437,5 +437,11 @@ button.cua-profile-row:disabled { opacity: .5; cursor: default; }
 .bots-connector-auth { padding: 16px; background: var(--st-surface-2); border-radius: var(--st-r-md); margin: 18px 0; }
 .bots-connector-auth > strong { font-size: 13px; }
 .bots-connector-auth .row { gap: 8px; flex-wrap: wrap; }
+@media (max-width: 760px) {
+  .cua-bots-shell[data-list] { grid-template-columns: 52px minmax(0, 1fr); }
+  .cua-bots-shell[data-list] > .cua-bots-sidebar { display: flex; }
+  .cua-work > .error-notice { margin-inline: 0; max-width: 100%; }
+  .bots-page-heading, .bots-workspace-page, .cua-bots-main { min-width: 0; max-width: 100%; }
+}
 .bots-connector-auth > .input-field { margin: 14px 0; }
 .bots-connection-detail > .input-field { margin: 20px 0 12px; }

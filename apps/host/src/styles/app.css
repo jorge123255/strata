@@ -6235,6 +6235,8 @@ textarea {
    color:var(--st-ink-soft);
    
 }
+.error-notice strong,
+.error-notice p { overflow-wrap: anywhere; }
 
 .st-input[aria-invalid='true'] {
    border-color:var(--st-danger-text);

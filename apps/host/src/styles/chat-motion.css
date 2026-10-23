@@ -143,6 +143,10 @@
   .cua-bots-shell[data-list] { grid-template-columns: 52px minmax(0, 1fr); }
   .cua-roster-bot .status-dot { display: none; }
 }
+@media (max-width: 760px) {
+  .cua-bots-shell[data-list] { grid-template-columns: 52px minmax(0, 1fr); }
+  .cua-bots-shell[data-list] > .cua-bots-sidebar { display: flex; }
+}
 .cua-bots-sidebar { overflow: hidden; min-width: 0; }
 
 .cua-bot-profile.spring-pane {
