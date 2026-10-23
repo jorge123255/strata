@@ -40,7 +40,7 @@ export function ReplyGroupStack({ messages, triggerId, roster, live, records = [
     {gaps.map(botId => {
       const bot = bots.find(item => item.id === botId);
       const name = bot?.name || 'Teammate';
-      const state = memberReplyState({ hasReply: false, roundLive: live, passed: memberChoseToPass(botId, records) });
+      const state = memberReplyState({ hasReply: false, roundLive: live, passed: memberChoseToPass(botId, records, triggerId) });
       return <article key={`missing-${botId}`} className="bot-room-reply-row is-missing" data-missing={botId} data-reply-state={state} aria-label={memberReplyLabel(name, state)}>
         <div className="bot-room-message-face"><CuaBotAvatar name={name} config={bot?.avatarConfig} size={28}/></div>
         <div className="bot-room-reply-row-copy"><strong>{name}</strong><p>{memberReplyLine(state)}</p></div>

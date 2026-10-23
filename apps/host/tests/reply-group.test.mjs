@@ -149,8 +149,25 @@ test('the header counts the send-time roster and names who has not replied', () 
   assert.equal(replies.memberReplyState({ hasReply: false, roundLive: true, passed: true }), 'passed');
   assert.equal(replies.memberReplyState({ hasReply: false, roundLive: true, passed: false }), 'working');
   assert.equal(replies.memberReplyState({ hasReply: false, roundLive: false, passed: false }), 'absent');
-  assert.equal(replies.memberChoseToPass('bot_b', [{ author: { botId: 'bot_b' }, kind: 'message', content: '' }]), false);
-  assert.equal(replies.memberChoseToPass('bot_b', []), false);
+  const pass = { kind: 'pass', teamId: 'team_1', botId: 'bot_c', replyGroupId: 'user', passed: true, at: '2026-10-23T17:00:00.000Z' };
+  assert.equal(replies.memberChoseToPass('bot_c', [pass], 'user'), true);
+  assert.equal(replies.memberChoseToPass('bot_c', [pass], 'other'), false);
+  assert.equal(replies.memberChoseToPass('bot_b', [pass], 'user'), false);
+  assert.equal(replies.memberChoseToPass('bot_c', [{ ...pass, passed: false }], 'user'), false);
+  assert.equal(replies.memberChoseToPass('bot_c', [{ ...pass, kind: 'message' }], 'user'), false);
+  assert.equal(replies.memberChoseToPass('bot_b', [], 'user'), false);
+  assert.equal(replies.readChannelPass(pass, 'team_1')?.botId, 'bot_c');
+  assert.equal(replies.readChannelPass(pass, 'team_2'), null);
+  assert.equal(replies.passFromChannelEvent({ teamId: 'team_1', presence: [], pass }, 'team_1')?.replyGroupId, 'user');
+  assert.equal(replies.passFromChannelEvent(pass, 'team_1')?.botId, 'bot_c');
+  const split = replies.partitionChannelFeed([
+    { id: 'm', sequence: 1, teamId: 'team_1', kind: 'message' },
+    pass,
+    { id: 'later', sequence: 3, teamId: 'team_1', kind: 'message' },
+  ], 'team_1');
+  assert.deepEqual(split.messages.map(row => row.id), ['m', 'later']);
+  assert.equal(split.passes.length, 1);
+  assert.equal(replies.mergeChannelPasses([], split.passes)[0].botId, 'bot_c');
   assert.equal(replies.memberReplyLine('passed'), 'passed');
   assert.equal(replies.memberReplyLine('working'), 'Still working');
   assert.equal(replies.memberReplyLine('absent'), "didn't reply");
@@ -188,9 +205,13 @@ test('the room renders the stack, collapses past five, and the phone uses the sa
   assert.match(channel, /ReplyGroupStack/);
   assert.match(channel, /replyGroupRoster/);
   assert.match(channel, /replyRoundIsLive/);
+  assert.match(channel, /partitionChannelFeed/);
+  assert.match(channel, /passFromChannelEvent/);
+  assert.match(channel, /channel\.notePass/);
+  assert.match(channel, /records=\{channel\.passes\}/);
   assert.match(stack, /replyGroupLabel/);
   assert.match(stack, /memberReplyState/);
-  assert.match(stack, /memberChoseToPass/);
+  assert.match(stack, /memberChoseToPass\(botId, records, triggerId\)/);
   assert.match(stack, /memberReplyLine/);
   assert.match(stack, /is-missing/);
   assert.match(stack, /replyGroupPreview/);
@@ -202,6 +223,8 @@ test('the room renders the stack, collapses past five, and the phone uses the sa
   assert.match(css, /\.bot-room-reply-row\.is-missing/);
   assert.match(css, /\.bot-room-reply-group-header:focus-visible/);
   assert.match(model, /var replyGroupId: String\?/);
+  assert.match(model, /kind == "pass"/);
+  assert.match(model, /var passes: \[TeamChannelPass\]/);
   assert.match(logic, /static let previewLimit = 5/);
   assert.match(logic, /static let staggerSeconds = 0\.06/);
   assert.match(logic, /of \\\(expected\) bots replied/);
@@ -212,6 +235,8 @@ test('the room renders the stack, collapses past five, and the phone uses the sa
   assert.match(logic, /didn't reply/);
   assert.match(phone, /memberReplyState/);
   assert.match(phone, /memberChoseToPass/);
+  assert.match(phone, /replyGroupId: item\.triggerId/);
+  assert.match(phone, /channel\?\.passes/);
   assert.match(phone, /state\.line/);
   assert.match(phone, /RoomReplyGroup\.label\(replied:/);
   assert.match(phone, /RoomReplyGroup\.group/);
@@ -239,9 +264,10 @@ import ${JSON.stringify(join(src, 'screens/BotTeamChannel.css'))};
 const bots = ${JSON.stringify(bots)};
 const messages = ${JSON.stringify(messages)};
 const props = { messages, bots, entranceFor: () => undefined, disabled: false, onReply: () => {} };
+const cleoPassed = [{ kind: 'pass', teamId: 'team', botId: 'bot_c', replyGroupId: 'done', passed: true, at: '2026-10-23T17:00:00.000Z' }];
 function App() {
   return <main style={{ width: '420px', padding: '20px' }}>
-    <ReplyGroupStack {...props} triggerId="done" roster={['bot_a', 'bot_b', 'bot_c', 'bot_d']} live={false}/>
+    <ReplyGroupStack {...props} triggerId="done" roster={['bot_a', 'bot_b', 'bot_c', 'bot_d']} live={false} records={cleoPassed}/>
     <ReplyGroupStack {...props} triggerId="live" roster={['bot_a', 'bot_b', 'bot_c']} live={true}/>
   </main>;
 }
@@ -270,14 +296,15 @@ createRoot(document.getElementById('root')).render(<App/>);`;
   await page.getByRole('region', { name: '2 of 3 bots replied' }).waitFor();
   const finished = page.getByRole('region', { name: '2 of 4 bots replied' });
   const running = page.getByRole('region', { name: '2 of 3 bots replied' });
-  assert.equal(await finished.getByRole('article', { name: "Cleo didn't reply" }).count(), 1);
+  assert.equal(await finished.getByRole('article', { name: 'Cleo passed' }).count(), 1);
   assert.equal(await finished.getByRole('article', { name: "Dot didn't reply" }).count(), 1);
   assert.equal(await finished.locator('[data-missing] button').count(), 0);
   assert.equal(await finished.getByRole('button', { name: 'Reply to Ada' }).count(), 1);
   assert.equal(await running.getByRole('article', { name: 'Cleo. Still working' }).count(), 1);
   assert.equal(await running.locator('[data-reply-state="working"]').count(), 1);
-  assert.equal(await finished.locator('[data-reply-state="absent"]').count(), 2);
-  assert.equal(await page.locator('[data-reply-state="passed"]').count(), 0);
+  assert.equal(await finished.locator('[data-reply-state="passed"]').count(), 1);
+  assert.equal(await finished.locator('[data-reply-state="absent"]').count(), 1);
+  assert.equal(await running.locator('[data-reply-state="passed"]').count(), 0);
   assert.deepEqual(errors, []);
   const shots = '/opt/cursor/artifacts/screenshots';
   mkdirSync(shots, { recursive: true });

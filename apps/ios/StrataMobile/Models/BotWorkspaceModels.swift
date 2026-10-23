@@ -637,6 +637,33 @@ struct BotTeamMessageRecovery: Decodable, Equatable {
     var text: String?
 }
 
+struct TeamChannelPass: Decodable, Equatable {
+    var kind: String
+    var teamId: String
+    var botId: String
+    var replyGroupId: String
+    var passed: Bool
+    var at: String
+    var sequence: Int?
+    var isValid: Bool {
+        kind == "pass" && passed && !teamId.isEmpty && !botId.isEmpty && !replyGroupId.isEmpty && !at.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
+private struct ChannelFeedItem: Decodable {
+    var message: BotTeamChannelMessage?
+    var pass: TeamChannelPass?
+    init(from decoder: Decoder) throws {
+        let probe = try decoder.container(keyedBy: Probe.self)
+        if try probe.decodeIfPresent(String.self, forKey: .kind) == "pass" {
+            if let parsed = try? TeamChannelPass(from: decoder), parsed.isValid { pass = parsed }
+            return
+        }
+        message = try BotTeamChannelMessage(from: decoder)
+    }
+    private enum Probe: String, CodingKey { case kind }
+}
+
 struct BotTeamChannelMessage: Decodable, Identifiable, Equatable {
     var id: String
     var sequence: Int
@@ -690,6 +717,7 @@ struct BotTeamChannel: Decodable, Equatable {
     var teamId: String
     var supported: Bool
     var messages: [BotTeamChannelMessage]
+    var passes: [TeamChannelPass]
     var activeRuns: [BotTeamRun]
     var nextSequence: Int
     var hasMore: Bool?
@@ -698,10 +726,11 @@ struct BotTeamChannel: Decodable, Equatable {
     var presence: [BotTeamPresence]?
     var needsChoice: BotTeamNeedsChoice?
 
-    init(teamId: String, supported: Bool, messages: [BotTeamChannelMessage], activeRuns: [BotTeamRun], nextSequence: Int, hasMore: Bool? = nil, hasMoreBefore: Bool? = nil, reason: String? = nil, presence: [BotTeamPresence]? = nil, needsChoice: BotTeamNeedsChoice? = nil) {
+    init(teamId: String, supported: Bool, messages: [BotTeamChannelMessage], activeRuns: [BotTeamRun], nextSequence: Int, hasMore: Bool? = nil, hasMoreBefore: Bool? = nil, reason: String? = nil, presence: [BotTeamPresence]? = nil, needsChoice: BotTeamNeedsChoice? = nil, passes: [TeamChannelPass] = []) {
         self.teamId = teamId
         self.supported = supported
         self.messages = messages
+        self.passes = passes
         self.activeRuns = activeRuns
         self.nextSequence = nextSequence
         self.hasMore = hasMore
@@ -719,7 +748,9 @@ struct BotTeamChannel: Decodable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         teamId = try container.decode(String.self, forKey: .teamId)
         supported = try container.decode(Bool.self, forKey: .supported)
-        messages = try container.decode([BotTeamChannelMessage].self, forKey: .messages)
+        let feed = try container.decode([ChannelFeedItem].self, forKey: .messages)
+        messages = feed.compactMap(\.message)
+        passes = feed.compactMap(\.pass)
         activeRuns = try container.decode([BotTeamRun].self, forKey: .activeRuns)
         nextSequence = try container.decode(Int.self, forKey: .nextSequence)
         hasMore = try container.decodeIfPresent(Bool.self, forKey: .hasMore)

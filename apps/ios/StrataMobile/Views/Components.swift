@@ -402,6 +402,11 @@ enum MemberReplyState: String, Equatable {
 
 struct MemberPassRecord: Equatable {
     var botId: String
+    var replyGroupId: String = ""
+    var kind: String = ""
+    var passed = false
+    var at: String = ""
+    var teamId: String = ""
 }
 
 struct ReplyRoundPresence: Equatable {
@@ -467,12 +472,14 @@ enum RoomReplyGroup {
         return .absent
     }
 
-    /// The host has not named the pass field. Until it does, a member with no message has not passed.
-    static func memberChoseToPass(botId: String, records: [MemberPassRecord]) -> Bool {
+    /// A pass is kind `pass` for this member and this reply group.
+    static func memberChoseToPass(botId: String, records: [MemberPassRecord], replyGroupId: String = "") -> Bool {
         let id = botId.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !id.isEmpty, records.contains(where: { $0.botId == id }) else { return false }
-        // Read the named pass field on `records` here. Until then, a saved row is not a pass.
-        return false
+        let group = replyGroupId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty, !group.isEmpty else { return false }
+        return records.contains { row in
+            row.kind == "pass" && row.passed && row.botId == id && row.replyGroupId == group && !row.at.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
     }
 
     /// A round is live while its run is active, a reply is still streaming, or a missing teammate is queued or working.

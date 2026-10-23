@@ -886,10 +886,9 @@ struct BotTeamDetailView: View {
             ForEach(missing, id: \.self) { botId in
                 let known = store.botCatalog?.bots.first { $0.id == botId }
                 let name = known?.name ?? "Teammate"
-                let state = RoomReplyGroup.memberReplyState(hasReply: false, roundLive: live, passed: RoomReplyGroup.memberChoseToPass(botId: botId, records: entries.compactMap { entry in
-                    guard let id = entry.author.botId else { return nil }
-                    return MemberPassRecord(botId: id)
-                }))
+                let state = RoomReplyGroup.memberReplyState(hasReply: false, roundLive: live, passed: RoomReplyGroup.memberChoseToPass(botId: botId, records: (channel?.passes ?? []).map { pass in
+                    MemberPassRecord(botId: pass.botId, replyGroupId: pass.replyGroupId, kind: pass.kind, passed: pass.passed, at: pass.at, teamId: pass.teamId)
+                }, replyGroupId: item.triggerId))
                 TeamReplyGroupRow(
                     name: name,
                     preview: state.line,
