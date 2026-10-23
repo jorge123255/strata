@@ -3,7 +3,8 @@
  *
  * The live source is GET /api/bots/summary (and /api/bots/summary/stream):
  * `applySidebarSummary` maps that payload onto these rows. `parseSidebarSummary`
- * accepts only that shape.
+ * accepts only that shape. A `message.partial` frame on the same stream is not a
+ * summary and does not change unread. Unread counts the host's finished rows.
  *
  * PLACEHOLDER, used when that endpoint returns 404: status, unread count, room
  * member count, last message and typing are derived from the bot list, team
@@ -111,7 +112,7 @@ export interface SidebarRosterSource {
 const STATUSES: readonly SidebarBotStatus[] = ['working', 'idle', 'paused', 'error'];
 
 function count(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 100000 ? value : undefined;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
 function oneLine(text: string, max = 48): string {
@@ -183,6 +184,14 @@ function text(value: unknown, max: number): string | undefined {
   return clean;
 }
 
+/** Host captions are already trimmed. An empty author or preview is still a last line. */
+function caption(value: unknown, max: number): string | undefined {
+  if (typeof value !== 'string' || value.includes('\0')) return undefined;
+  const clean = value.replace(/\s+/g, ' ').trim();
+  if (clean.length > max) return undefined;
+  return clean;
+}
+
 function summaryBot(value: unknown): BotSummaryRow | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const row = value as Record<string, unknown>;
@@ -207,9 +216,9 @@ function summaryRoom(value: unknown): BotRoomSummary | undefined {
     if (!row.lastMessage || typeof row.lastMessage !== 'object' || Array.isArray(row.lastMessage)) return undefined;
     const message = row.lastMessage as Record<string, unknown>;
     const at = text(message.at, 40);
-    const preview = text(message.preview, 300);
-    const authorName = text(message.authorName, 120);
-    if (!at || !Number.isFinite(Date.parse(at)) || !preview || !authorName) return undefined;
+    const preview = caption(message.preview, 300);
+    const authorName = caption(message.authorName, 120);
+    if (!at || !Number.isFinite(Date.parse(at)) || preview === undefined || authorName === undefined) return undefined;
     lastMessage = { at, preview, authorName };
   }
   if (!Array.isArray(row.working)) return undefined;
@@ -244,6 +253,17 @@ export function parseSidebarSummary(value: unknown): BotSidebarSummary | null {
     bots.push(bot);
   }
   return { rooms, bots };
+}
+
+/**
+ * One SSE frame from /api/bots/summary/stream.
+ * `message.partial` is a draft reply `{messageId, botId, seq, text, delta, done}`.
+ * It is not a saved team-channel line, so the summary (and its unread count) stays put.
+ * Only a parsed `bot-summary` replaces the document. A bad frame keeps the last good one.
+ */
+export function sidebarStreamSummary(current: BotSidebarSummary | null, event: string, data: unknown): BotSidebarSummary | null {
+  if (event !== 'bot-summary') return current;
+  return parseSidebarSummary(data) ?? current;
 }
 
 function facesFor(memberIds: string[], memberCount: number, bots: SidebarRosterBot[]): SidebarRoomFace[] {
@@ -318,7 +338,9 @@ function overlayRoom(row: SidebarRoomRow | undefined, live: BotRoomSummary, cata
   const faces = facesFor(team?.memberIds ?? [], live.memberCount, catalog.bots);
   const names = live.working.filter(member => member.state === 'working').map(member => member.name).filter((name, index, all) => all.indexOf(name) === index).slice(0, 8);
   const typing = names.length > 0;
-  const written = live.lastMessage ? `${live.lastMessage.authorName}: ${live.lastMessage.preview}` : undefined;
+  const author = live.lastMessage?.authorName ?? '';
+  const preview = live.lastMessage?.preview ?? '';
+  const written = author && preview ? `${author}: ${preview}` : author || preview || undefined;
   return {
     id: live.id,
     name: live.name || row?.name || 'Room',

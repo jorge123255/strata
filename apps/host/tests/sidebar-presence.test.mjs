@@ -200,3 +200,69 @@ test('a paused bot stays paused when the summary says idle, and a bad summary is
   assert.equal(open.bots[0].unread, 0);
   assert.equal(presence.applySidebarSummary(derived, summary, { bots, teams: [] }).bots[0].unread, 3);
 });
+
+test('a host summary keeps empty captions and large unread counts', () => {
+  const parsed = presence.parseSidebarSummary({
+    rooms: [{
+      id: 'team_release',
+      name: 'Release',
+      memberCount: 2,
+      unreadCount: 100001,
+      lastMessage: { at: '2026-10-08T00:00:00.000Z', preview: '', authorName: '' },
+      working: [{ botId: 'bot_bea', name: 'Unavailable teammate', state: 'queued', runId: 'run_1', jobId: 'job_1' }],
+      extra: true,
+    }, {
+      id: 'team_notes',
+      name: 'Notes',
+      memberCount: 1,
+      unreadCount: 0,
+      lastMessage: { at: '2026-10-08T01:00:00.000Z', preview: 'All clear', authorName: '' },
+      working: [],
+    }],
+    bots: [{ id: 'bot_ada', name: 'Ada', status: 'idle', unreadCount: 0, paused: true }],
+  });
+  assert.equal(parsed.rooms[0].unreadCount, 100001);
+  assert.equal(parsed.rooms[0].lastMessage.preview, '');
+  assert.equal(parsed.rooms[0].lastMessage.authorName, '');
+  assert.equal(parsed.rooms[0].working[0].name, 'Unavailable teammate');
+  assert.equal(parsed.rooms[0].working[0].runId, undefined);
+  const bots = [bot('bot_ada', 'Ada'), bot('bot_bea', 'Bea')];
+  const teams = [team('team_release', 'Release', ['bot_ada', 'bot_bea']), team('team_notes', 'Notes', ['bot_ada'])];
+  const rows = presence.applySidebarSummary(presence.sidebarRoster({ bots, teams, sessions: [] }), parsed, { bots, teams });
+  assert.equal(rows.rooms.find(row => row.id === 'team_release').unread, 100001);
+  assert.equal(rows.rooms.find(row => row.id === 'team_release').lastMessage, undefined);
+  assert.equal(rows.rooms.find(row => row.id === 'team_release').typing, false);
+  assert.equal(rows.rooms.find(row => row.id === 'team_notes').lastMessage, 'All clear');
+});
+
+test('a message.partial frame does not change unread or the last line', () => {
+  const current = presence.parseSidebarSummary({
+    bots: [{ id: 'bot_ada', name: 'Ada', status: 'idle', unreadCount: 1 }],
+    rooms: [{
+      id: 'team_release',
+      name: 'Release',
+      memberCount: 2,
+      unreadCount: 1,
+      lastMessage: { at: '2026-10-08T00:00:00.000Z', preview: 'Ship the small fix', authorName: 'Ada' },
+      working: [],
+    }],
+  });
+  const partial = { messageId: 'tm_job', botId: 'bot_bea', seq: 2, text: 'Ship the', delta: 'the', done: false };
+  assert.equal(presence.sidebarStreamSummary(current, 'message.partial', partial), current);
+  assert.equal(presence.sidebarStreamSummary(current, 'message.partial', { ...partial, text: 'Ship the fix today', delta: ' fix today', done: true, unreadCount: 9 }), current);
+  assert.equal(presence.sidebarStreamSummary(null, 'message.partial', partial), null);
+  assert.equal(presence.parseSidebarSummary(partial), null);
+  assert.equal(presence.sidebarStreamSummary(current, 'bot-summary', partial), current);
+  const finished = presence.sidebarStreamSummary(current, 'bot-summary', {
+    bots: current.bots,
+    rooms: [{
+      ...current.rooms[0],
+      unreadCount: 2,
+      lastMessage: { at: '2026-10-08T02:00:00.000Z', preview: 'Ship the fix today', authorName: 'Bea' },
+    }],
+  });
+  assert.notEqual(finished, current);
+  assert.equal(finished.rooms[0].unreadCount, 2);
+  assert.equal(finished.rooms[0].lastMessage.preview, 'Ship the fix today');
+  assert.equal(current.rooms[0].unreadCount, 1);
+});

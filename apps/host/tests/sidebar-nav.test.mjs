@@ -17,5 +17,7 @@ test('the sidebar still opens chat dialogs from a closed menu and lists bots and
   const hook = await readFile(new URL('../src/lib/use-sidebar-roster.ts', import.meta.url), 'utf8');
   assert.match(hook, /\/api\/bots\/summary\/stream/);
   assert.match(hook, /parseSidebarSummary/);
+  assert.match(hook, /sidebarStreamSummary/);
+  assert.match(hook, /message\.partial/);
   assert.match(hook, /status === 404/);
 });

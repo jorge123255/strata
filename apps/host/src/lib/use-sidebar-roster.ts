@@ -3,7 +3,7 @@ import { ApiError, api } from './client';
 import { botPersonalConversations } from './bots';
 import { getState, isUnread, markRead, useStore } from './store';
 import type { Bot, BotSidebarSummary, BotTeam, BotTeamRun, BotsSnapshot, BotTeamsSnapshot } from './bots';
-import { applySidebarSummary, clearSummaryUnread, openedSidebarRead, parseSidebarSummary, sidebarRoster, type SidebarBotRow, type SidebarRoomRow } from './sidebar-presence';
+import { applySidebarSummary, clearSummaryUnread, openedSidebarRead, parseSidebarSummary, sidebarRoster, sidebarStreamSummary, type SidebarBotRow, type SidebarRoomRow } from './sidebar-presence';
 import { noteSidebarSummary, onSidebarRead, sidebarReadTarget } from './sidebar-reads';
 import { useLocation } from './router';
 import type { SidebarCatalogItem } from './sidebar-sections';
@@ -17,6 +17,8 @@ const HOST = (globalThis as { __STRATA_HOST__?: string }).__STRATA_HOST__ ?? '';
  *
  * Live status, unread, room member count, last message and who is replying come
  * from GET /api/bots/summary. /api/bots/summary/stream pushes the same document.
+ * `message.partial` frames on that socket are draft replies and are ignored.
+ * Unread changes only when a `bot-summary` frame replaces the document.
  * If that socket drops, the summary is polled until the stream returns.
  *
  * PLACEHOLDER: a 404 on the summary route keeps the derived rows from
@@ -106,17 +108,20 @@ export function useSidebarRoster(): {
     const openStream = () => {
       if (source || mode.current === 'missing') return;
       source = new EventSource(`${HOST}${SUMMARY_STREAM}`);
-      source.addEventListener('bot-summary', event => {
+      const takeFrame = (eventName: string, data: string) => {
         try {
-          const parsed = parseSidebarSummary(JSON.parse((event as MessageEvent).data));
-          if (!parsed || !alive.current) return;
+          const next = sidebarStreamSummary(summaryRef.current, eventName, JSON.parse(data));
+          if (!alive.current || next === summaryRef.current) return;
+          if (!next) return;
           mode.current = 'live';
-          summaryRef.current = parsed;
-          setSummary(parsed);
+          summaryRef.current = next;
+          setSummary(next);
           noteSidebarSummary(true);
           stopPoll();
         } catch { /* A bad frame leaves the last good summary on screen. */ }
-      });
+      };
+      source.addEventListener('bot-summary', event => takeFrame('bot-summary', (event as MessageEvent).data));
+      source.addEventListener('message.partial', event => takeFrame('message.partial', (event as MessageEvent).data));
       source.addEventListener('error', () => { if (alive.current && mode.current !== 'missing') startPoll(); });
     };
     void refresh().then(() => { if (alive.current && mode.current !== 'missing') openStream(); });
