@@ -12,6 +12,9 @@ struct ChatView: View {
     @State private var setupBot: CompanionBot?
     @FocusState private var composerFocused: Bool
     @State private var arrivals = CoucouArrivals()
+    @State private var stoppedPauses = Set<String>()
+    @State private var continuedPauses = Set<String>()
+    @State private var continuingPause: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -267,7 +270,9 @@ struct ChatView: View {
                 ForEach(message.timelineItems) { item in
                     switch item {
                     case .text(_, let text):
-                        messageText(text, isUser: isUser)
+                        if !(message.isStepPause && message.isPauseNotice(text)) {
+                            messageText(text, isUser: isUser)
+                        }
                     case .group(let group, let tools):
                         MacActivityGroupView(group: group, tools: tools,
                             isLive: isLiveMessage(message),
@@ -277,12 +282,60 @@ struct ChatView: View {
                         activity(tool)
                     }
                 }
-                if let error = message.error, !error.isEmpty {
+                if message.isStepPause {
+                    if message.id == store.currentConversation?.messages.last?.id, !continuedPauses.contains(message.id) {
+                        stepPauseCard(message)
+                    }
+                } else if let error = message.error, !error.isEmpty {
                     Label(error, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(StrataTheme.warning)
                 }
             }
             if !isUser { Spacer(minLength: 0) }
         }
+    }
+
+    private func stepPauseCard(_ message: MacChatMessage) -> some View {
+        let stopped = stoppedPauses.contains(message.id)
+        let busy = continuingPause == message.id
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("Paused after a long run").font(.subheadline.weight(.semibold)).foregroundStyle(StrataTheme.ink)
+            Text(message.stepPauseSummary).font(.subheadline).foregroundStyle(StrataTheme.secondaryInk).fixedSize(horizontal: false, vertical: true)
+            if stopped {
+                Text("Stopped here.").font(.subheadline).foregroundStyle(StrataTheme.secondaryInk)
+            } else {
+                HStack(spacing: 8) {
+                    Button {
+                        Task { await keepGoing(message.id) }
+                    } label: {
+                        Text(busy ? "Continuing…" : "Keep going").font(.subheadline.weight(.semibold))
+                            .padding(.horizontal, 14).padding(.vertical, 8)
+                            .foregroundStyle(StrataTheme.primaryInk)
+                            .background(StrataTheme.primaryFill, in: Capsule())
+                    }
+                    .disabled(busy)
+                    .accessibilityIdentifier("stepPauseContinue")
+                    Button("Stop here") { stoppedPauses.insert(message.id) }
+                        .font(.subheadline)
+                        .disabled(busy)
+                        .accessibilityIdentifier("stepPauseStop")
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(StrataTheme.grouped, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(StrataTheme.line, lineWidth: 1))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("stepPauseCard")
+    }
+
+    private func keepGoing(_ id: String) async {
+        continuingPause = id
+        let before = store.currentConversation?.messages.count ?? store.messages.count
+        await store.sendMessage("Continue from where you left off. Do not repeat what you have already written.")
+        continuingPause = nil
+        let after = store.currentConversation?.messages.count ?? store.messages.count
+        if store.error == nil, after > before { continuedPauses.insert(id) }
     }
 
     private func isLiveMessage(_ message: MacChatMessage) -> Bool {

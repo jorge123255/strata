@@ -1588,13 +1588,20 @@ export function branchFrom(messageId: string): string | null {
  * Sent as an ordinary user turn rather than a special mode, because that is
  * what it is: a continuation is a request, and the transcript should show it.
  */
+/** Sends a continuation into the open conversation. Returns false when a reply is already running. */
+export async function continueConversation() {
+  if (!state.activeSession || state.streaming) return false;
+  await sendMessage('Continue from where you left off. Do not repeat what you have already written.');
+  return true;
+}
+
 export async function continueLast() {
   const sessionId = state.activeSession;
   if (!sessionId || state.streaming) return;
   const session = state.sessions.find((s) => s.id === sessionId);
   const last = session?.messages[session.messages.length - 1];
   if (!last || last.role !== 'assistant' || !last.content.trim()) return;
-  await sendMessage('Continue from where you left off. Do not repeat what you have already written.');
+  await continueConversation();
 }
 
 /**

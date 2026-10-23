@@ -197,6 +197,21 @@
   color: var(--st-accent-text);
 }
 
+.bot-step-pause {
+  margin: 12px 0 4px;
+  max-width: 440px;
+  padding: 14px 16px;
+  border: 1px solid var(--st-line-soft);
+  border-radius: 16px;
+  background: transparent;
+}
+.st-msg .bot-step-pause p { margin: 6px 0 0; font-size: 14px; line-height: 1.5; }
+.bot-step-pause strong { display: block; font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
+.bot-step-pause p,
+.bot-step-pause-note { margin: 6px 0 0; color: var(--st-ink-muted); font-size: 14px; line-height: 1.5; }
+.bot-step-pause-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.bot-step-pause-note { margin: 8px 0 4px; }
+
 .bot-worked { margin: 2px 0 12px; }
 .bot-worked > button {
   border: 0;

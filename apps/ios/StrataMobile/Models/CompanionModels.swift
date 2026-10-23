@@ -420,6 +420,35 @@ struct MacChatMessage: Decodable, Identifiable, Equatable {
         return "Thought for " + String(format: "%.0f", (duration / 1000).rounded()) + "s"
     }
 
+    /// The host may raise or drop the step budget. Any "N-step limit" sentence is this pause.
+    var isStepPause: Bool {
+        guard let error, !error.isEmpty else { return false }
+        let limit = error.range(of: #"reached its (?:\d+-)?step limit"#, options: [.regularExpression, .caseInsensitive]) != nil
+        let spent = error.range(of: "ran out of steps", options: .caseInsensitive) != nil
+        return limit || spent
+    }
+
+    var stepPauseSummary: String {
+        let done = (tools ?? []).filter { $0.state != "proposed" && $0.state != "running" }.count
+        let text = content.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
+        let notice = text.count <= 280 && (isStepPauseText(text) || text.range(of: "try sending the message again", options: .caseInsensitive) != nil)
+        let spoken = notice ? "" : text
+        let body = spoken.count > 140 ? String(spoken.prefix(139)).trimmingCharacters(in: .whitespaces) + "…" : spoken
+        let steps = done > 0 ? "Worked on \(done) \(done == 1 ? "step" : "steps")." : ""
+        let line = [steps, body].filter { !$0.isEmpty }.joined(separator: " ")
+        return line.isEmpty ? "The run paused before it finished." : line
+    }
+
+    func isPauseNotice(_ value: String) -> Bool {
+        let text = value.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.count <= 280 && (isStepPauseText(text) || text.range(of: "try sending the message again", options: .caseInsensitive) != nil)
+    }
+
+    private func isStepPauseText(_ value: String) -> Bool {
+        value.range(of: #"reached its (?:\d+-)?step limit"#, options: [.regularExpression, .caseInsensitive]) != nil
+            || value.range(of: "ran out of steps", options: .caseInsensitive) != nil
+    }
+
     /// Ordered Mac text/activity blocks are authoritative. Tool membership is
     /// explicit; old groups without IDs keep their actions in the flat remainder.
     var timelineItems: [MacMessageTimelineItem] {
