@@ -209,8 +209,8 @@
 .nav-room-faces .cua-bot-avatar:first-child { margin-left: 0; }
 .nav-room-extra { margin-left: -8px; min-width: 22px; height: 22px; padding: 0 4px; border-radius: 999px; background: var(--st-surface-2); color: var(--st-ink-muted); font: 700 10px/22px var(--st-font); text-align: center; }
 .nav-roster__copy { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
-.nav-roster__name { display: flex; align-items: center; gap: 4px; min-width: 0; font-weight: 600; font-size: 13.5px; }
-.nav-roster__name > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nav-roster__name { display: flex; align-items: flex-start; gap: 4px; min-width: 0; font-weight: 600; font-size: 13.5px; line-height: 1.25; }
+.nav-roster__name > span { flex: 1; min-width: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; white-space: normal; overflow-wrap: anywhere; }
 .nav-roster__name .st-icon { flex: none; color: var(--st-ink-muted); }
 .nav-roster__sub { color: var(--st-ink-muted); font-size: 12px; font-weight: 450; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nav-roster__sub.is-typing { color: var(--st-accent-text); }
