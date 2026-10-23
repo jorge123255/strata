@@ -1,7 +1,10 @@
-/* Calm Bots facelift. Tokens live on the app shell only while a Bots
-   screen is open, so Models, Monitor, and the contrast suite keep :root.
+/* Calm Bots facelift. Tokens live on the document while a Bots or
+   Connectors screen is open, so Models, Monitor, and the contrast
+   suite keep :root. Body-portaled dialogs inherit from html.
    No new motion. Focus outlines stay on the shared :focus-visible rule. */
 
+html:has(.bots-workspace),
+html:has(.connector-workspace),
 .app:has(.bots-workspace) {
   --st-bg: #f6f7f8;
   --st-surface: #ffffff;
@@ -24,8 +27,12 @@
   --st-action: #1c1c1e;
   --st-action-hover: #3a3d44;
   --st-action-ink: #f7f8fa;
+  --text-2: var(--st-ink-muted);
+  --line: var(--st-line-soft);
 }
 
+html[data-theme="dark"]:has(.bots-workspace),
+html[data-theme="dark"]:has(.connector-workspace),
 [data-theme="dark"] .app:has(.bots-workspace) {
   --st-bg: #0e0f12;
   --st-surface: #16171b;
@@ -48,6 +55,8 @@
   --st-action: #f5f6f8;
   --st-action-hover: #e4e6ea;
   --st-action-ink: #121316;
+  --text-2: var(--st-ink-muted);
+  --line: var(--st-line-soft);
 }
 
 /* Sidebar. Selection is a soft wash with the same ink as the page.
@@ -98,6 +107,14 @@
   background: transparent;
   padding: 12px 8px 16px;
   border-right: 1px solid var(--st-line-soft);
+}
+/* Team keeps the roster column. Other Bots pages use one column.
+   A zero-width first track still let the roster paint beside Activity. */
+.cua-bots-shell:not([data-list]) {
+  grid-template-columns: minmax(0, 1fr);
+}
+.cua-bots-shell:not([data-list]) > .cua-bots-sidebar {
+  display: none;
 }
 .cua-bots-sidebar h2 {
   margin: 20px 10px 8px;
@@ -543,4 +560,331 @@
 }
 .bot-room .bot-room-send:hover:not(:disabled) {
   background: var(--st-action-hover);
+}
+
+/* Activity, skills, tools, and personal work. Same card rhythm as team cards. */
+.bots-workspace .bots-activity-tabs {
+  border-radius: 999px;
+  padding: 4px;
+}
+.bots-workspace .bots-activity-tabs button {
+  border-radius: 999px;
+  font-size: 13px;
+}
+.bots-workspace .bots-activity-card strong,
+.bots-workspace .bots-capability-row h3,
+.bots-workspace .bots-section-heading h3,
+.bots-workspace .bots-tool-intro strong,
+.bots-workspace .bot-harness-actions h3 {
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+.bots-workspace .bots-state,
+.bots-workspace .bot-work-counts,
+.connector-workspace .bots-state,
+html:has(.bots-workspace) .dialog-surface .bots-state,
+html:has(.connector-workspace) .dialog-surface .bots-state {
+  font-size: 12px;
+}
+.bots-workspace .bots-capability-row small,
+.bots-workspace .bots-created-tool-meta,
+.bots-workspace .bots-tool-list small,
+.bots-workspace .bots-tool-intro p {
+  font-size: 13px;
+  line-height: 1.45;
+}
+.bots-workspace .bots-tool-intro {
+  border: 1px solid var(--st-line-soft);
+  border-radius: 16px;
+  padding: 20px;
+  background: var(--st-surface);
+  box-shadow: none;
+}
+.bots-workspace .cua-work-identity strong,
+.bots-workspace .cua-output-list strong {
+  font-size: 15px;
+  font-weight: 600;
+}
+.bots-workspace .cua-work-identity p,
+.bots-workspace .cua-work-state,
+.bots-workspace .cua-output-list p,
+.bots-workspace .cua-output-list > button > span {
+  font-size: 12px;
+}
+.bots-workspace .cua-output-list {
+  border-color: var(--st-line-soft);
+  border-radius: 16px;
+}
+.bots-workspace .bots-connection-row strong,
+.connector-workspace .bots-connection-row strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+.bots-workspace .bots-connection-row small,
+.connector-workspace .bots-connection-row small {
+  font-size: 12px;
+}
+.bots-workspace .bots-connection-row[data-selected],
+.connector-workspace .bots-connection-row[data-selected] {
+  background: var(--st-accent-tint);
+  color: var(--st-ink);
+}
+
+/* Live supervision on Activity. Selection is a wash. Accent stays off the card edge. */
+.bots-workspace .bot-supervision-card {
+  border: 1px solid var(--st-line-soft);
+  border-radius: 16px;
+  padding: 20px;
+  background: var(--st-surface);
+  box-shadow: none;
+}
+.bots-workspace .bot-supervision-card[data-state="approval"] {
+  border-color: var(--st-line-soft);
+  background: var(--st-surface);
+}
+.bots-workspace .bot-supervision-heading h3 {
+  font-weight: 650;
+  letter-spacing: -0.03em;
+}
+.bots-workspace .bot-supervision-identity strong {
+  font-size: 15px;
+  font-weight: 600;
+}
+.bots-workspace .bot-supervision-eyebrow {
+  color: var(--st-ink-muted);
+}
+.bots-workspace .bot-supervision-eyebrow,
+.bots-workspace .bot-supervision-identity span,
+.bots-workspace .bot-supervision-state,
+.bots-workspace .bot-supervision-tool,
+.bots-workspace .bot-supervision-footer time,
+.bots-workspace .bot-supervision-filters b,
+.bots-workspace .bot-supervision-heading p:last-child {
+  font-size: 12px;
+}
+.bots-workspace .bot-supervision-filters button {
+  border-radius: 999px;
+  font-size: 13px;
+  background: transparent;
+}
+.bots-workspace .bot-supervision-filters button[aria-pressed="true"] {
+  color: var(--st-ink);
+  border-color: transparent;
+  background: var(--st-accent-tint);
+}
+
+/* Profile and toolbar labels inside the Bots shell. */
+.bots-workspace .cua-toolbar-label,
+.bots-workspace .cua-frozen-policy,
+.bots-workspace .cua-profile-menu > span,
+.bots-workspace .cua-readiness,
+.bots-workspace .cua-profile-identity .cua-profile-hint,
+.bots-workspace .cua-profile-row,
+.bots-workspace .cua-profile-note {
+  font-size: 13px;
+}
+.bots-workspace .cua-profile-row small,
+.bots-workspace .cua-profile-setting > span {
+  font-size: 12px;
+}
+
+/* Team room tabs and assigned work. */
+.bots-workspace .bot-room-tabs > button {
+  font-size: 13px;
+  font-weight: 550;
+}
+.bots-workspace .bot-work-task {
+  border: 1px solid var(--st-line-soft);
+  border-radius: 16px;
+  padding: 20px;
+  background: var(--st-surface);
+  box-shadow: none;
+}
+.bots-workspace .bot-work-task-heading h4,
+.bots-workspace .bot-workflow-card h4 {
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+.bots-workspace .bot-work-task p,
+.bots-workspace .bot-work-task-heading p {
+  font-size: 13px;
+  line-height: 1.45;
+}
+.bots-workspace .bot-work-group h4,
+.bots-workspace .bot-work-task-reason strong,
+.bots-workspace .bot-work-history > summary,
+.bots-workspace .bot-work-disclosure > summary,
+.bots-workspace .bot-work-disclosure > summary h3 {
+  font-size: 13px;
+}
+.bots-workspace .bot-work-task-evidence,
+.bots-workspace .bot-work-task-context {
+  font-size: 12px !important;
+}
+.bots-workspace .bot-task-evidence,
+html:has(.bots-workspace) .dialog-surface .bot-task-evidence {
+  border-radius: 16px;
+  padding: 20px;
+}
+.bots-workspace .bot-plan-members p {
+  color: var(--st-ink-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.bots-workspace .bot-plan-action {
+  border: 1px solid var(--st-line-soft);
+  border-radius: 16px;
+  background: var(--st-surface);
+}
+
+/* Workflow cards keep the quiet edge. The open step is a wash, not an accent rule. */
+.bots-workspace .bot-workflow-toolbar strong,
+.bots-workspace .bot-workflow-latest,
+.bots-workspace .bot-workflow-inspector nav > button,
+.bots-workspace .bot-workflow-checks strong,
+.bots-workspace .bot-workflow-goal,
+.bots-workspace .bot-workflow-stage,
+.bots-workspace .bot-workflow-card-heading > small {
+  font-size: 13px;
+}
+.bots-workspace .bot-workflow-toolbar small,
+.bots-workspace .bot-workflow-state,
+.bots-workspace .bot-workflow-inspector nav small,
+.bots-workspace .bot-workflow-details header p,
+.bots-workspace .bot-workflow-rail strong,
+.bots-workspace .bot-workflow-rail small,
+.bots-workspace .bot-workflow-rail li > span,
+.bots-workspace .bot-workflow-checks p,
+.bots-workspace .bot-workflow-checkpoints p,
+.bots-workspace .bot-workflow-plan p,
+.bots-workspace .bot-workflow-plan li,
+.bots-workspace .bot-workflow-check,
+.bots-workspace .bot-workflow-plan summary,
+.bots-workspace .bot-workflow-checkpoints summary,
+.bots-workspace .bot-workflow-checkpoints strong,
+.bots-workspace .bot-workflow-checkpoints small,
+.bots-workspace .bot-workflow-create .input-field small {
+  font-size: 12px;
+}
+.bots-workspace .bot-workflow-card,
+.bots-workspace .bot-workflow-checks > li,
+.bots-workspace .bot-workflow-plan,
+.bots-workspace .bot-workflow-checkpoints > li {
+  border-radius: 16px;
+  border-color: var(--st-line-soft);
+  padding: 20px;
+}
+.bots-workspace .bot-workflow-inspector nav > button[aria-current="true"] {
+  border-color: transparent;
+  background: var(--st-accent-tint);
+  color: var(--st-ink);
+}
+
+/* Team settings and other Bots dialogs. Pills stay on the dialog, not the app sidebar. */
+html:has(.bots-workspace) .bot-team-settings-section,
+html:has(.bots-workspace) .bot-team-member-briefing {
+  padding: 20px;
+  border: 1px solid var(--st-line-soft);
+  border-radius: 16px;
+  background: var(--st-surface);
+}
+html:has(.bots-workspace) .bot-team-settings-heading h3,
+html:has(.bots-workspace) .bot-team-delete h3 {
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+html:has(.bots-workspace) .bot-team-settings-heading p,
+html:has(.bots-workspace) .bot-team-computer-note p,
+html:has(.bots-workspace) .bot-team-delete p,
+html:has(.bots-workspace) .bot-team-public-instructions,
+html:has(.bots-workspace) .bot-team-member-note {
+  font-size: 13px;
+  line-height: 1.5;
+}
+html:has(.bots-workspace) .dialog-surface .st-btn--primary:not(.st-btn--icon),
+html:has(.bots-workspace) .dialog-surface .st-btn--secondary:not(.st-btn--icon),
+html:has(.connector-workspace) .dialog-surface .st-btn--primary:not(.st-btn--icon),
+html:has(.connector-workspace) .dialog-surface .st-btn--secondary:not(.st-btn--icon),
+.connector-workspace .st-btn--primary:not(.st-btn--icon),
+.connector-workspace .st-btn--secondary:not(.st-btn--icon) {
+  border-radius: 999px;
+}
+html:has(.bots-workspace) .dialog-surface .st-btn--secondary:not(.st-btn--icon),
+html:has(.connector-workspace) .dialog-surface .st-btn--secondary:not(.st-btn--icon),
+.connector-workspace .st-btn--secondary:not(.st-btn--icon) {
+  border-color: var(--st-line-soft);
+  background: var(--st-surface);
+}
+
+/* Standalone Connectors. The Bots tab leaves the workspace for this screen. */
+.connector-workspace {
+  --connector-radius: 16px;
+}
+.connector-workspace .connector-heading h2 {
+  font-weight: 650;
+  letter-spacing: -0.03em;
+}
+.connector-workspace .connector-eyebrow,
+.connector-workspace .connector-method,
+.connector-workspace .connector-gallery-meta,
+.connector-workspace .connector-discover-note p,
+.connector-workspace .connector-gallery-more p,
+.connector-workspace .connector-service-card-bottom small,
+.connector-workspace .connector-view-switch button > span,
+.connector-workspace .connector-setup-identity span:not(.connector-service-mark),
+.connector-workspace .connector-advanced-menu > summary {
+  font-size: 12px;
+}
+.connector-workspace .connector-eyebrow {
+  color: var(--st-ink-muted);
+  letter-spacing: 0;
+}
+.connector-workspace .connector-heading p,
+.connector-workspace .connector-service-card > p,
+.connector-workspace .connector-key-intro p,
+.connector-workspace .connector-setup-note {
+  font-size: 13px;
+  line-height: 1.55;
+}
+.connector-workspace .connector-service-card h3 {
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+.connector-workspace .connector-service-card {
+  border-color: var(--st-line-soft);
+  box-shadow: none;
+}
+.connector-workspace .connector-service-card:hover {
+  border-color: var(--st-line);
+  box-shadow: none;
+}
+.connector-workspace .connector-view-switch {
+  border-radius: 999px;
+  box-shadow: none;
+}
+.connector-workspace .connector-view-switch button {
+  border-radius: 999px;
+  font-size: 13px;
+}
+.connector-workspace .connector-view-switch button[aria-pressed="true"] {
+  box-shadow: none;
+  color: var(--st-ink);
+}
+.connector-workspace .connector-category-filter button {
+  border-radius: 999px;
+  font-size: 13px;
+}
+.connector-workspace .connector-category-filter button[aria-pressed="true"] {
+  background: var(--st-accent-tint);
+  border-color: transparent;
+  color: var(--st-ink);
+}
+.connector-workspace .connector-advanced-menu > div {
+  border-radius: 16px;
+  box-shadow: none;
+  border-color: var(--st-line-soft);
 }
