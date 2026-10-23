@@ -532,7 +532,7 @@ final class BotWorkspaceStore: ObservableObject {
         return value != nil && isCurrent()
     }
     func updateTeam(_ team: BotTeam, draft: BotTeamDraft, retainedMemberIds: Set<String>? = nil) async -> Bool {
-        var draft = draft
+        let draft = draft
         let chosenContinuous = draft.limits == .continuous
         guard teams?.teamSettingsSupported == true, CompanionClient.isSafeIdentifier(team.id),
               let revision = team.revision, revision > 0,
