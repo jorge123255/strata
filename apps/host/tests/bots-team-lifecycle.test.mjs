@@ -43,7 +43,7 @@ for (const [diagnostic, expected] of [
       assert.equal(JSON.stringify(status).includes(secret), false); assert.equal(JSON.stringify(input.history).includes(secret), false);
     }
   });
-  const request = { message: 'Assign this task', requestId: 'one-request' };
+  const request = { message: 'Assign this task', requestId: 'one-request', workMode: 'work' };
   const run = f.bots.team.message(f.team.id, request).run; await f.done(run);
   const channel = f.bots.team.channel(f.team.id), report = channel.messages.find(row => row.author.botId === f.worker.id && row.state === 'error');
   assert.match(report.content, expected); assert.equal(report.content.includes(secret), false); assert.equal(report.content.includes(privatePath), false);
@@ -81,10 +81,10 @@ test('an account failure blocks already queued and newly reassigned retries only
       blocked++;
     }
   });
-  const first = f.bots.team.message(f.team.id, { message: 'Assign two checks', requestId: 'initial' }).run; await f.done(first);
+  const first = f.bots.team.message(f.team.id, { message: 'Assign two checks', requestId: 'initial', workMode: 'work' }).run; await f.done(first);
   assert.equal(failures, 1); assert.equal(blocked, 1);
   assert.ok(f.bots.team.channel(f.team.id).messages.some(row => /model account or access failure/.test(row.content)));
-  const next = f.bots.team.message(f.team.id, { message: 'Explicit new request', requestId: 'new-human-request' }).run; await f.done(next);
+  const next = f.bots.team.message(f.team.id, { message: 'Explicit new request', requestId: 'new-human-request', workMode: 'work' }).run; await f.done(next);
   assert.equal(failures, 2); assert.equal(blocked, 2);
   assert.notEqual(first.id, next.id);
 });

@@ -56,10 +56,9 @@ test('shared catalog offers actual Mac and exact member guests without probing o
 test('filesystem verification routes to a real bounded task on shared Mac folder, preserving each bot model and profile',async t=>{
  let f;f=fixture(t,async input=>{
   if(input.message==='Do you see the project folder?'){
-   assert.match(input.bot.instructions,/checking a file, folder, browser, website or computer/);
-   assert.match(input.bot.instructions,/do not claim the team lacks access/);
-   assert.match(input.bot.instructions,/invite_teammates.message is visible public speech/);
-   assert.equal(input.tools.some(x=>x.name==='read_file'),false);
+   assert.match(input.bot.instructions,/assign_team_task/);
+   assert.match(input.bot.instructions,/supplied Strata tools/);
+   assert.equal(input.tools.some(x=>x.name==='read_file'),true);
    await input.executeTool('assign_team_task',{botId:f.b.id,message:'Read marker.txt in the selected shared folder'},'inspect');say(input,'I assigned the folder check.');
   }else if(input.bot.id===f.b.id){
    assert.equal(input.bot.computerMode,'host');assert.equal(input.bot.workspace,resolve(join(f.directory,'project')));assert.equal(input.bot.model,'builder-model');
@@ -69,7 +68,7 @@ test('filesystem verification routes to a real bounded task on shared Mac folder
  const folder=join(f.directory,'project');mkdirSync(folder);writeFileSync(join(folder,'marker.txt'),'shared-folder-marker');
  const profileBefore=(await f.bots.list()).bots.find(b=>b.id===f.b.id);
  f.bots.team.update(f.team.id,{expectedRevision:1,execution:{mode:'shared',computerId:'host:local',workspace:folder}});
- const started=f.bots.team.message(f.team.id,{message:'Do you see the project folder?',requestId:'inspect'});await f.done(started.run);
+ const started=f.bots.team.message(f.team.id,{message:'Do you see the project folder?',requestId:'inspect',workMode:'work'});await f.done(started.run);
  assert.equal(f.effects.length,1);assert.equal(f.effects[0].bot.workspace,folder);assert.equal(f.effects[0].bot.id,f.b.id);
  assert.deepEqual((await f.bots.list()).bots.find(b=>b.id===f.b.id),{...profileBefore,conversations:(await f.bots.list()).bots.find(b=>b.id===f.b.id).conversations});
  assert.ok(f.bots.team.channel(f.team.id).messages.some(row=>row.kind==='report'&&row.content==='The file is present.'));
@@ -78,15 +77,16 @@ test('filesystem verification routes to a real bounded task on shared Mac folder
 test('shared guest is one exact resource; tasks across runs serialize, human lease blocks both members, snapshots stay frozen',async t=>{
  let f,release,entered;const held=new Promise(r=>release=r),started=new Promise(r=>entered=r);let tasks=0;
  f=fixture(t,async input=>{
-  if(input.bot.teamConversationOnly){if(!input.message.startsWith('[Strata teammate result'))await input.executeTool('assign_team_task',{botId:input.message==='second'?f.a.id:f.b.id,message:input.message},'assign');return;}
+  if(input.message==='first'||input.message==='second'){await input.executeTool('assign_team_task',{botId:input.message==='first'?f.b.id:f.a.id,message:input.message},'assign');return;}
+  if(input.message.startsWith('[Strata teammate result'))return;
   tasks++;assert.equal(input.bot.computerOwnerId,f.a.id);assert.equal(input.bot.workspace,'/workspace/project');assert.equal(cuaSandboxName(input.bot),cuaSandboxName(f.a));
   if(tasks===1){entered();await held;}say(input,'Shared work finished');
  });
  f.bots.team.update(f.team.id,{execution:{mode:'shared',computerId:`cua:${f.a.id}`,workspace:'/workspace/project'}});
- const first=f.bots.team.message(f.team.id,{message:'first',requestId:'first'});await started;
+ const first=f.bots.team.message(f.team.id,{message:'first',requestId:'first',workMode:'work'});await started;
  assert.throws(()=>f.bots.team.update(f.team.id,{memberIds:[f.a.id,f.c.id]}),{status:409,code:'team_busy'});
  assert.throws(()=>f.bots.update(f.a.id,{workspace:'/workspace/redirect'}),{status:409});
- const second=f.bots.team.message(f.team.id,{message:'second',requestId:'second'});await until(()=>f.seen.some(input=>input.message==='second'));await new Promise(r=>setTimeout(r,25));assert.equal(tasks,1);
+ const second=f.bots.team.message(f.team.id,{message:'second',requestId:'second',workMode:'work'});await new Promise(r=>setTimeout(r,25));assert.equal(f.bots.team.detail(f.team.id,second.run.id).run.state,'queued');assert.equal(tasks,1);
  release();await f.done(first.run);await f.done(second.run);assert.equal(tasks,2);
  const child=f.bots.team.channel(f.team.id).messages.find(row=>row.kind==='assignment').chatId;
  const lease=await f.bots.computer.takeover(f.b.id,{chatId:child,owner:'fixture'});
@@ -115,14 +115,16 @@ test('shared Computer Stop and Take over cancel active plus queued siblings afte
  for(const action of ['stop','takeover']) await t.test(action,async sub=>{
   let f,entered;const running=new Promise(r=>entered=r);let tasks=0,guestStops=0;
   f=fixture(sub,async input=>{
-   if(input.bot.teamConversationOnly){if(input.message==='split task'){
+   if(input.message==='split task'){
     await input.executeTool('assign_team_task',{botId:f.b.id,message:'Active child'},'first');
     await input.executeTool('assign_team_task',{botId:f.a.id,message:'Queued sibling'},'second');
-   }return;}
+    return;
+   }
+   if(input.message.startsWith('[Strata teammate result'))return;
    tasks++;entered();await new Promise(r=>{input.signal.addEventListener('abort',r,{once:true});if(input.signal.aborted)r();});
   },{cuaTools:{state:async()=>({available:true,frame:{width:1,height:1,mimeType:'image/png',data:'fixture'}}),stop:async()=>{guestStops++;return{available:false,stopped:true,cleanupConfirmed:true};}}});
   f.bots.team.update(f.team.id,{execution:{mode:'shared',computerId:`cua:${f.a.id}`,workspace:'/workspace'}});
-  const started=f.bots.team.message(f.team.id,{message:'split task',requestId:action});await running;
+  const started=f.bots.team.message(f.team.id,{message:'split task',requestId:action,workMode:'work'});await running;
   await until(()=>!f.chats.detail(started.run.rootChatId).conversation.active);
   assert.equal(tasks,1);
   const result=await f.bots.computer[action](f.a.id,{owner:'fixture'});
@@ -160,14 +162,16 @@ test('failed atomic team save cannot publish a phantom roster/revision or create
 
 
 test('one scheduler tick reserves a shared computer before async provider start, so different sibling bots queue rather than fail', async t => {
- let f;let tasks=0;f=fixture(t,async input=>{
-  if(input.bot.teamConversationOnly){if(input.message==='two independent checks'){
+ let f;let tasks=0; f=fixture(t,async input=>{
+  if(input.message==='two independent checks'){
    await input.executeTool('assign_team_task',{botId:f.b.id,message:'First child'},'first-child');await input.executeTool('assign_team_task',{botId:f.c.id,message:'Second child'},'second-child');
-  }return;}
+   return;
+  }
+  if(input.message.startsWith('[Strata teammate result'))return;
   tasks++;await new Promise(r=>setTimeout(r,15));say(input,'Completed '+input.bot.name);
  });
  f.bots.team.update(f.team.id,{memberIds:[f.a.id,f.b.id,f.c.id],execution:{mode:'shared',computerId:`cua:${f.a.id}`,workspace:'/workspace'}});
- const started=f.bots.team.message(f.team.id,{message:'two independent checks',requestId:'same-tick'});await f.done(started.run);
+ const started=f.bots.team.message(f.team.id,{message:'two independent checks',requestId:'same-tick',workMode:'work'});await f.done(started.run);
  assert.equal(tasks,2);assert.equal(f.bots.team.detail(f.team.id,started.run.id).run.state,'completed');
  const reports=f.bots.team.channel(f.team.id).messages.filter(row=>row.kind==='report');assert.equal(reports.length,2);assert.ok(reports.every(row=>row.state==='done'));
 });

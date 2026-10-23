@@ -8,7 +8,7 @@ import { isLocalCompanionRequest } from './companion-routes.mjs';
 import { botModelDestination } from './bots-models.mjs';
 import { createBotComputers } from './bots-computers.mjs';
 import { createBotWork } from './bots-work.mjs';
-import { createBotTeams } from './bots-team.mjs';
+import { chooseRoomSpeakers, createBotTeams } from './bots-team.mjs';
 import { botWorkAuthorityFingerprint } from './bots-work-authority.mjs';
 import { botSupervisionSnapshot } from './bots-supervision.mjs';
 import { createBotHostFolderTools, botHostFolderAuthority } from './bots-host-folder.mjs';
@@ -249,7 +249,19 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     if (!summary.available) throw Object.assign(fault(409, message), { code: 'team_plan_receipts_unavailable' });
     if (['pending', 'uncertain', 'interrupted'].some(state => summary.counts[state] > 0)) throw Object.assign(fault(409, message), { code: 'team_plan_receipts_unresolved' });
   }
-  const team = createBotTeams({ directory, requireBot, conversations, createConversation: (id, teamContext) => createConversation(id, {}, teamContext), discardConversation: id => { conversations().remove(id); chatProfiles.delete(id); checkpoints.delete(id); save(); }, notify, workAuthority, assertRecoveryAvailable, workflowAuthority, planAuthority: (id, shared, context) => workflowAuthority(id, shared, context, true), assertWorkflowReceipts,
+  function roomSpeakers(input) {
+    const speaker = input?.members?.find(member => member.provider === 'configured' && member.modelSource);
+    if (!speaker || typeof modelRequest !== 'function') return chooseRoomSpeakers(input);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 18000);
+    const prompt = `Recent room:\n${(input.history ?? []).map(row => `${row.authorName}: ${row.content}`).join('\n')}\nMembers:\n${input.members.map(member => `${member.id} ${member.name} role=${member.role || '-'} talkativeness=${member.talkativeness} available=${member.available}`).join('\n')}\nLast speaker: ${input.lastSpeakerId || 'none'}\nAddressed by a teammate: ${input.addressedBotId || 'none'}\nReply with JSON only: {"speakers":["bot_id"]}. Use 0 to 2 ids, ordered. Prefer the addressed teammate. Skip talkativeness 0 unless addressed. Do not pick the last speaker. Use [] when nobody has something new to add.`;
+    return modelRequest({ messages: [{ role: 'user', content: prompt.slice(0, 4000) }], tools: [], system: 'You pick who speaks next in a group chat. JSON only.' }, { id: speaker.id, name: speaker.name, provider: 'configured', modelSource: speaker.modelSource, continuousTeam: false }, controller.signal).then(result => {
+      const match = String(result?.text ?? '').match(/\{[\s\S]*\}/);
+      const parsed = match ? JSON.parse(match[0]) : {};
+      return { speakers: Array.isArray(parsed.speakers) ? parsed.speakers.filter(id => typeof id === 'string').slice(0, 2) : [] };
+    }).catch(() => chooseRoomSpeakers(input)).finally(() => clearTimeout(timer));
+  }
+  const team = createBotTeams({ directory, requireBot, conversations, createConversation: (id, teamContext) => createConversation(id, {}, teamContext), discardConversation: id => { conversations().remove(id); chatProfiles.delete(id); checkpoints.delete(id); save(); }, notify, workAuthority, assertRecoveryAvailable, workflowAuthority, planAuthority: (id, shared, context) => workflowAuthority(id, shared, context, true), assertWorkflowReceipts, selectSpeakers: roomSpeakers,
     usesComputer: (source, target) => { const bot = typeof source === 'string' ? chatProfiles.get(source) : source; return bot?.computerMode === 'cua' && cuaResource(bot) === cuaResource(target); }, teamComputers: teamComputerRows, resolveExecution: resolveTeamExecution, isChatBusy: chatBusy, isBotBusy: id => [...active.values()].some(run => run.botId === id), stopDirect: id => stop(id, { team: false }), roomReadSequence: teamId => { const value = reads.value.teams?.[teamId]; return Number.isSafeInteger(value) && value >= 0 ? value : 0; } });
   const hasOwnedComputer = id => [...ownedComputers, ...uncertainTargets.keys()].some(key => key.startsWith(`cua:${id}:`));
   const markOwned = bot => { ownedComputers.add(cuaResource(bot)); save(); };
@@ -551,6 +563,9 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
       if (frame.type === 'done' || frame.type === 'error') { terminal = frame; return; }
       if (bot.computerMode === 'cua' && frame.type === 'agent-tool' && frame.tool?.state === 'running') markOwned(bot);
       work.record(bot.id, frame);
+      // Record the new piece before the transcript grows, so a snapshot of the
+      // same reply does not publish that piece a second time.
+      if (frame.type === 'delta' && typeof frame.text === 'string' && frame.text) { try { team.noteRoomDelta(session.id, frame.text); } catch { /* A live caption cannot stop the reply. */ } }
       onFrame(frame);
     };
     const fingerprint = createHash('sha256').update(JSON.stringify([bot.id, bot.provider, bot.model, bot.effort, bot.workspace, bot.instructions, bot.policy, bot.capabilities, bot.providerSettings?.baseURL, bot.execution, bot.modelSource, bot.modelDestination, bot.computerMode, bot.extensionSnapshots, folderSnapshot(bot), ...(bot.sharedComputer ? [{ computerOwnerId: bot.computerOwnerId, sharedComputer: true }] : [])])).digest('hex');
@@ -858,10 +873,22 @@ export function createBotRoutes({ bots, port }) {
         const room = typeof bots.team.roomCard === 'function' ? bots.team.roomCard(teamId) : undefined;
         res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive', 'x-accel-buffering': 'no' });
         res.write(`event: team-channel\ndata: ${JSON.stringify({ teamId, presence: snap.presence, activeRuns: snap.activeRuns, nextSequence: snap.nextSequence, ...(room ? { room } : {}) })}\n\n`);
-        const stop = bots.team.subscribe((event, data) => { if (event === 'team-channel' && data?.teamId === teamId && !res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); });
+        const stop = bots.team.subscribe((event, data) => {
+          if (res.writableEnded || data?.teamId !== teamId) return;
+          if (event === 'team-channel') res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+          if (event === 'message.partial') {
+            const { messageId, botId, seq, text, delta, done } = data;
+            res.write(`event: message.partial\ndata: ${JSON.stringify({ messageId, botId, seq, text, delta, done })}\n\n`);
+          }
+        });
         const ping = setInterval(() => { if (!res.writableEnded) res.write(': ping\n\n'); }, 15000);
         req.on('close', () => { clearInterval(ping); stop(); });
         return;
+      }
+      const typingRoute = /^\/api\/bots\/teams\/(team_[a-f0-9-]+)\/typing$/.exec(url.pathname);
+      if (typingRoute) {
+        if (req.method !== 'POST' || [...url.searchParams].length) return error(res, 405, 'Say whether you are typing in the request body.');
+        return json(res, 200, bots.team.setTyping(typingRoute[1], await readBody(req)));
       }
       const channelRoute = /^\/api\/bots\/teams\/(team_[a-f0-9-]+)\/(channel|messages)$/.exec(url.pathname);
       if (channelRoute) {

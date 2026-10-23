@@ -88,12 +88,39 @@ function useTeamChannel(teamId: string, visible: boolean, onUnsupported: () => v
   return { messages, activeRuns, presence, loading, error, hasEarlier, loadingEarlier, accept: acceptPosted, refresh, loadEarlier };
 }
 
+type RoomDraft = { messageId: string; botId: string; seq: number; text: string };
+
+/** Live reply text for this room. A saved message with the same id replaces the draft. */
+function useRoomDrafts(teamId: string) {
+  const [drafts, setDrafts] = useState<RoomDraft[]>([]);
+  useEffect(() => { setDrafts([]); }, [teamId]);
+  useEffect(() => {
+    const onPartial = (event: Event) => {
+      const detail = (event as CustomEvent<Record<string, unknown>>).detail;
+      if (!detail || detail.teamId !== teamId) return;
+      const { messageId, botId, seq, text, done } = detail;
+      if (typeof messageId !== 'string' || typeof botId !== 'string' || typeof seq !== 'number' || typeof text !== 'string') return;
+      setDrafts(current => {
+        if (done === true && text === '') return current.filter(row => row.messageId !== messageId);
+        const previous = current.find(row => row.messageId === messageId);
+        if (previous && previous.seq >= seq) return current;
+        return [...current.filter(row => row.messageId !== messageId), { messageId, botId, seq, text }];
+      });
+    };
+    window.addEventListener('strata:message-partial', onPartial);
+    return () => window.removeEventListener('strata:message-partial', onPartial);
+  }, [teamId]);
+  return drafts;
+}
+
 export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkToolsSupported = false, workPlansSupported = false, onUnsupported, onOpenConversation, onStateChange, onDetails, onShowWork }: {
   team: BotTeam; bots: Bot[]; visible: boolean; current: boolean; continuousSupported?: boolean; coordinatorWorkToolsSupported?: boolean; workPlansSupported?: boolean; onUnsupported: () => void;
   onOpenConversation: (chatId: string, conversation?: Session) => Promise<void>; onStateChange: () => Promise<void>; onDetails: () => void; onShowWork: () => void;
 }) {
   const connection = useStore(state => state.connection);
   const channel = useTeamChannel(team.id, visible, onUnsupported, connection === 'live');
+  const drafts = useRoomDrafts(team.id);
+  const liveDrafts = drafts.filter(row => row.text && !channel.messages.some(message => message.id === row.messageId));
   useEffect(() => {
     const onRoom = (event: Event) => {
       const detail = (event as CustomEvent<{ teamId?: string }>).detail;
@@ -112,6 +139,12 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
   const ready = current && !channel.error && !channel.loading;
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => { if (!visible) { setPicker(false); setActions(false); } }, [visible]);
+  useEffect(() => {
+    if (!visible || !team.enabled) return undefined;
+    const typing = prompt.trim().length > 0 && !sending;
+    const handle = setTimeout(() => { void api.post(`${roomPath(team.id)}/typing`, { typing }).catch(() => {}); }, 250);
+    return () => clearTimeout(handle);
+  }, [prompt, sending, visible, team.id, team.enabled]);
   useEffect(() => { if (!coordinatorWorkToolsSupported) { setWorkMode('chat'); requestId.current = null; } }, [coordinatorWorkToolsSupported]);
   useLayoutEffect(() => { const element = composer.current; if (element) { element.style.height = 'auto'; element.style.height = `${Math.min(160, element.scrollHeight)}px`; } }, [prompt]);
   useEffect(() => {
@@ -168,8 +201,15 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
       {channel.hasEarlier ? <div className="bot-room-earlier"><Btn size="sm" disabled={channel.loadingEarlier} onClick={() => { if (feed.current) olderAnchor.current = { height: feed.current.scrollHeight, top: feed.current.scrollTop }; void channel.loadEarlier().then(ok => { if (!ok) olderAnchor.current = null; }); }}>{channel.loadingEarlier ? 'Loading earlier…' : 'Load earlier messages'}</Btn></div> : null}
       {!channel.loading && !channel.messages.length && !channel.error ? <div className="bot-room-welcome"><div className="bot-room-welcome-faces">{members.slice(0, 4).map(bot => <CuaBotAvatar key={bot.id} name={bot.name} config={bot.avatarConfig} size={56}/>)}</div><h3>Your team, together</h3><p>Say hello, share an idea, or give the team something to work on. Everyone can join the conversation; {bots.find(bot => bot.id === team.coordinatorId)?.name ?? 'your coordinator'} organizes the work.</p><div><button type="button" disabled={!ready || !team.enabled} onClick={() => { setWorkMode('chat'); setPrompt('Hi everyone!'); changeRecipients([...team.memberIds]); composer.current?.focus(); }}>Say hi to everyone</button><button type="button" disabled={!ready || !team.enabled} onClick={() => { setPrompt('Who wants to help with '); changeRecipients([]); composer.current?.focus(); }}>Find the right teammate</button></div></div> : null}
       {channel.messages.map(message => <TeamChannelMessage key={message.id} message={message} team={team} bots={bots} messages={channel.messages} disabled={sending} onReply={() => reply(message)} onOpenConversation={chatId => void onOpenConversation(chatId).catch(cause => { if (mounted.current) setError(messageError(cause)); })}/>)}
-      {channel.presence.filter(row => row.state === 'working').map(row => <div className="bot-room-working" key={row.jobId}><span className="bot-room-working-dot" aria-hidden="true"/><span>{bots.find(bot => bot.id === row.botId)?.name ?? 'A teammate'} is working…</span></div>)}
-      {active.map(run => { const limited = !Object.values(run.limits).every(value => value === 0); return <div className="bot-room-working" key={run.id}><span className="bot-room-working-dot" aria-hidden="true"/><span><strong>{botActivityLabel(run.state)}</strong><small>{limited ? `${run.consumedTurns} of ${run.limits.maxTurns} turns · depth ${run.limits.maxDepth} · ${run.limits.maxHops} hops · ${Math.round(run.limits.maxDurationMs / 60000)} min` : `${run.consumedTurns} turns used · Until finished or stopped`}</small></span><Btn size="sm" variant="danger" disabled={!!stopping || run.state === 'stopping'} onClick={() => void stop(run)}>{stopping === run.id ? 'Stopping…' : run.state === 'cleanup_pending' ? 'Retry Stop' : 'Stop team'}</Btn></div>; })}
+      {liveDrafts.map(draft => {
+        const bot = bots.find(item => item.id === draft.botId), name = bot?.name ?? 'A teammate';
+        return <article key={draft.messageId} className="bot-room-message bot-room-draft" data-author="bot" aria-live="polite" aria-busy="true" aria-label={`${name} is replying`}>
+          <div className="bot-room-message-face">{bot ? <CuaBotAvatar name={name} config={bot.avatarConfig} size={38}/> : <span className="bot-room-person" aria-hidden="true"><Icon name="experts" size={17}/></span>}</div>
+          <div className="bot-room-message-main"><header><strong>{name}</strong></header><div className="bot-room-message-bubble"><div className="bot-room-message-body">{draft.text}</div></div></div>
+        </article>;
+      })}
+      {channel.presence.filter(row => row.state === 'working' && !liveDrafts.some(draft => draft.botId === row.botId)).map(row => <div className="bot-room-working" key={row.jobId}><span className="bot-room-working-dot" aria-hidden="true"/><span>{bots.find(bot => bot.id === row.botId)?.name ?? 'A teammate'} is working…</span></div>)}
+      {active.map(run => { const limited = !Object.values(run.limits).every(value => value === 0); return <div className="bot-room-working" key={run.id}><span className="bot-room-working-dot" aria-hidden="true"/><span><strong>{botActivityLabel(run.state)}</strong><small>{limited ? 'Working with the team' : 'Until finished or stopped'}</small></span><Btn size="sm" variant="danger" disabled={!!stopping || run.state === 'stopping'} onClick={() => void stop(run)}>{stopping === run.id ? 'Stopping…' : run.state === 'cleanup_pending' ? 'Retry Stop' : 'Stop team'}</Btn></div>; })}
     </div>
     {unread || away ? <div className="bot-room-new"><button type="button" onClick={jumpToLatest}>{unread ? `${unread} new ${unread === 1 ? 'message' : 'messages'} · ` : ''}Latest <Icon name="chevron" size={14}/></button></div> : null}
     {error ? <ErrorNotice message={error} action="Dismiss" onRetry={() => setError('')}/> : null}

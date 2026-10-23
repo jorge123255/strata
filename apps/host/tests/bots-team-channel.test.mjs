@@ -75,8 +75,9 @@ test('coordinator routes a group greeting semantically, each member replies once
   assert.equal(snapshot.messages.filter(row => row.author.type === 'user').length, 1); assert.equal(snapshot.activeRuns.length, 0); assert.equal(f.effects.length, 0);
   assert.equal(statSync(join(f.directory, 'bot-team-channels.json')).mode & 0o777, 0o600);
   assert.throws(() => f.send('Different', { requestId: 'same-greeting' }), /another team message/);
-  // Completed routing chats cannot silently become ordinary unrestricted bot chats.
-  f.chats.send(first.run.rootChatId, 'Write a file'); await until(() => !f.chats.detail(first.run.rootChatId).conversation.active);
+  // The speaker is chosen after the message returns. A finished room chat cannot silently become ordinary unrestricted work.
+  const rootChatId = f.bots.team.detail(f.team.id, first.run.id).run.rootChatId;
+  f.chats.send(rootChatId, 'Write a file'); await until(() => !f.chats.detail(rootChatId).conversation.active);
   assert.equal(f.seen.length, 4); assert.equal(f.effects.length, 0);
 });
 
@@ -93,7 +94,9 @@ test('Everyone addressing includes paused members as context but invites only av
   await f.bots.pause(f.c.id, { paused: true });
   const draft = { requestId: 'everyone-paused', recipientIds: f.team.memberIds };
   const started = f.send('Hi everyone', draft); await f.done(started.run);
-  assert.deepEqual(f.seen.map(input => input.bot.id).sort(), [f.a.id, f.b.id].sort());
+  assert.ok(f.seen.some(input => input.bot.id === f.a.id));
+  assert.ok(f.seen.some(input => input.bot.id === f.b.id));
+  assert.equal(f.seen.some(input => input.bot.id === f.c.id), false);
   const channel = f.bots.team.channel(f.team.id), user = channel.messages.find(row => row.author.type === 'user');
   assert.deepEqual(user.recipientIds, [...f.team.memberIds].sort());
   assert.equal(channel.messages.some(row => row.author.botId === f.c.id), false);
@@ -121,7 +124,7 @@ test('provider failure details stay out of the public room and all subsequent co
       say(input, 'The task needs attention. Review its linked conversation.');
     }
   });
-  const started = f.send('Assign failing work'); await f.done(started.run);
+  const started = f.send('Assign failing work', { workMode: 'work' }); await f.done(started.run);
   const publicJournal = readFileSync(join(f.directory, 'bot-team-channels.json'), 'utf8');
   assert.equal(publicJournal.includes(marker), false); assert.equal(publicJournal.includes('/Users/private/provider/config'), false);
   assert.ok(f.bots.team.channel(f.team.id).messages.some(row => row.state === 'error' && row.content.includes('could not finish')));
@@ -321,7 +324,10 @@ test('a coordinator paused after yielding leaves an honest follow-up failure ins
     }
   });
   const started = f.send('Discuss the implementation');
-  await until(() => releasePeer && !f.chats.detail(started.run.rootChatId).conversation.active);
+  await until(() => {
+    const rootChatId = f.bots.team.detail(f.team.id, started.run.id).run.rootChatId;
+    return !!(releasePeer && rootChatId && !f.chats.detail(rootChatId).conversation.active);
+  });
   await f.bots.pause(f.a.id, { paused: true });
   releasePeer(); await f.done(started.run);
   assert.equal(f.bots.team.detail(f.team.id, started.run.id).run.state, 'error');
@@ -357,7 +363,7 @@ test('active coordinator saves only public role instructions for later turns and
       await assert.rejects(input.executeTool('update_team_instructions', { expectedRevision: 2, briefing: {}, policy: 'bypass' }, 'forged-policy'), /current team revision and public briefing/);
       await input.executeTool('assign_team_task', { botId: f.b.id, message: 'Review the requested feature' }, 'review-role');
       say(input, 'Builder is the verifier for this team.');
-    } else if (!input.bot.teamConversationOnly) {
+    } else if (input.bot.id === f.b.id) {
       nextInstructions = input.bot.instructions;
       assert.match(nextInstructions, /Verifier/); assert.match(nextInstructions, /Review evidence before reporting completion/);
       await assert.rejects(async () => input.executeTool('update_team_instructions', { expectedRevision: 2, briefing: {} }, 'peer-edit'), /not assigned|cannot execute/);
@@ -366,7 +372,7 @@ test('active coordinator saves only public role instructions for later turns and
   });
   f.bots.update(f.b.id, { instructions: 'BUILDER_PRIVATE_PROFILE' });
   const before = (await f.bots.list()).bots.map(({ conversations, active, ...row }) => row);
-  const started = f.send('Give Builder the review role and review the feature'); await f.done(started.run);
+  const started = f.send('Give Builder the review role and review the feature', { workMode: 'work' }); await f.done(started.run);
   assert.match(nextInstructions, /BUILDER_PRIVATE_PROFILE/);
   assert.equal(editResult.accepted, true);
   assert.deepEqual((await f.bots.list()).bots.map(({ conversations, active, ...row }) => row), before);
@@ -382,7 +388,7 @@ test('public instruction edits require coordinator approval and compare revision
     say(input, 'Reviewed instruction changes.');
   });
   f.bots.update(f.a.id, { policy: 'manual' });
-  const started = f.send('Maintain the public project instructions');
+  const started = f.send('Maintain the public project instructions', { workMode: 'work' });
   await until(() => f.bots.pending(started.run.rootChatId).length === 2);
   assert.equal(f.bots.team.list().teams[0].revision, 1);
   await f.bots.approve({ chatId: started.run.rootChatId, callId: 'first', decision: 'approve' });
@@ -423,7 +429,7 @@ test('a saved instruction edit reports a failed public audit honestly and stale 
     await assert.rejects(input.executeTool('update_team_instructions', { expectedRevision: 1, briefing: { instructions: 'Saved public instructions' } }, 'stale-retry'), /team changed/);
     say(input, 'The instructions were saved; the update notice needs attention.');
   });
-  const started = f.send('Update project instructions'); await f.done(started.run);
+  const started = f.send('Update project instructions', { workMode: 'work' }); await f.done(started.run);
   assert.equal(observedFailure.code, 'team_instructions_saved_notice_failed');
   assert.equal(f.bots.team.list().teams[0].revision, 2);
   assert.equal(f.bots.team.list().teams[0].briefing.instructions, 'Saved public instructions');
@@ -432,13 +438,13 @@ test('a saved instruction edit reports a failed public audit honestly and stale 
 test('manual routing approval gates task creation while each assigned bot retains its own policy', async t => {
   let f, taskStarted = false;
   f = fixture(t, async input => {
-    if (input.bot.teamConversationOnly && input.message === 'Make a change') {
+    if (input.bot.teamContext?.channelMode === 'task' && input.message === 'Make a change') {
       await input.executeTool('assign_team_task', { botId: f.b.id, message: 'Make requested change' }, 'dispatch'); say(input, 'Assigned.');
     } else if (!input.bot.teamConversationOnly) { taskStarted = true; assert.equal(input.bot.policy, 'plan'); say(input, 'I can only plan the change.'); }
     else say(input, 'Plan received.');
   });
   f.bots.update(f.a.id, { policy: 'manual' }); f.bots.update(f.b.id, { policy: 'plan' });
-  const started = f.send('Make a change'); await until(() => f.bots.pending(started.run.rootChatId).length === 1);
+  const started = f.send('Make a change', { workMode: 'work' }); await until(() => f.bots.pending(started.run.rootChatId).length === 1);
   assert.equal(taskStarted, false); assert.equal(f.bots.team.channel(f.team.id).messages.some(row => row.kind === 'assignment'), false);
   await f.bots.approve({ chatId: started.run.rootChatId, callId: 'dispatch', decision: 'approve' }); await f.done(started.run);
   assert.equal(taskStarted, true); assert.equal(f.effects.length, 0);
@@ -452,7 +458,7 @@ test('a human can continue completed assigned work with its frozen profile witho
     else say(input, 'Finished.');
   });
   f.bots.update(f.b.id, { model: 'task-model-v1' });
-  const started = f.send('Assign work'); await f.done(started.run);
+  const started = f.send('Assign work', { workMode: 'work' }); await f.done(started.run);
   const before = f.bots.team.channel(f.team.id), task = before.messages.find(row => row.kind === 'assignment');
   f.bots.update(f.b.id, { model: 'task-model-v2', policy: 'plan' });
   f.chats.send(task.chatId, 'Private follow-up'); await until(() => continued && !f.chats.detail(task.chatId).conversation.active);

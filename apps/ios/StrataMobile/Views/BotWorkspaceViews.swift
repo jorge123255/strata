@@ -65,6 +65,8 @@ struct BotTeamEditor: View {
     @State private var computerId: String
     @State private var folder: String
     @State private var briefing: BotTeamBriefing
+    @State private var talkativeness: [String: Int]
+    @State private var bidding: Bool
     @State private var confirmingReload = false
     @FocusState private var focused: Field?
     private enum Field: Hashable { case name, folder, instructions, memberRole(String), memberInstructions(String) }
@@ -83,6 +85,8 @@ struct BotTeamEditor: View {
         _computerId = State(initialValue: team?.execution?.computerId ?? "")
         _folder = State(initialValue: team?.execution?.workspace ?? "")
         _briefing = State(initialValue: team?.briefing ?? BotTeamBriefing())
+        _talkativeness = State(initialValue: team?.talkativeness ?? [:])
+        _bidding = State(initialValue: team?.bidding == true)
     }
     private var supportsSettings: Bool { workspace.teams?.teamSettingsSupported == true }
     private var supportsInstructions: Bool { workspace.teams?.teamInstructionsSupported == true }
@@ -96,7 +100,9 @@ struct BotTeamEditor: View {
     private var draft: BotTeamDraft {
         BotTeamDraft(name: name.trimmingCharacters(in: .whitespacesAndNewlines), memberIds: selected.sorted(), coordinatorId: coordinator, limits: limits.forHost(unrestrictedTeams: unrestrictedTeams, continuousTeams: limits == .continuous),
                      execution: supportsSettings ? (executionMode == "shared" ? BotTeamExecution(mode: "shared", computerId: computerId, workspace: folder.trimmingCharacters(in: .whitespacesAndNewlines)) : .individual) : nil,
-                     briefing: supportsInstructions ? BotTeamBriefing(instructions: briefing.instructions.trimmingCharacters(in: .whitespacesAndNewlines), members: briefing.members.filter { selected.contains($0.botId) }.map { BotTeamMemberBriefing(botId: $0.botId, role: $0.role.trimmingCharacters(in: .whitespacesAndNewlines), instructions: $0.instructions.trimmingCharacters(in: .whitespacesAndNewlines)) }.filter { !$0.role.isEmpty || !$0.instructions.isEmpty }.sorted { $0.botId < $1.botId }) : nil)
+                     briefing: supportsInstructions ? BotTeamBriefing(instructions: briefing.instructions.trimmingCharacters(in: .whitespacesAndNewlines), members: briefing.members.filter { selected.contains($0.botId) }.map { BotTeamMemberBriefing(botId: $0.botId, role: $0.role.trimmingCharacters(in: .whitespacesAndNewlines), instructions: $0.instructions.trimmingCharacters(in: .whitespacesAndNewlines)) }.filter { !$0.role.isEmpty || !$0.instructions.isEmpty }.sorted { $0.botId < $1.botId }) : nil,
+                     talkativeness: { let voice = talkativeness.filter { selected.contains($0.key) && $0.value != 50 }; return voice.isEmpty ? nil : voice }(),
+                     bidding: bidding ? true : nil)
     }
     private var canSave: Bool {
         BotWorkspaceStore.validTeamDraft(draft, unrestrictedTeams: unrestrictedTeams, continuousTeams: limits == .continuous, availableMemberIds: Set(store.botCatalog?.bots.map(\.id) ?? [])) && workspace.mutation == nil && !hasActiveWork && !changed &&
@@ -129,6 +135,15 @@ struct BotTeamEditor: View {
                         ForEach((store.botCatalog?.bots ?? []).filter { selected.contains($0.id) }) { bot in Text(bot.name).tag(bot.id) }
                     }.accessibilityIdentifier("teamCoordinatorPicker")
                     Text("The coordinator assigns work and brings results together. Choose 2–12 teammates.").font(.caption).foregroundStyle(.secondary)
+                    DisclosureGroup("How often each bot speaks") {
+                        Toggle("Let each bot bid to speak", isOn: $bidding).accessibilityIdentifier("teamBiddingToggle")
+                        ForEach(selected.sorted(), id: \.self) { id in
+                            let name = store.botCatalog?.bots.first { $0.id == id }?.name ?? "Teammate"
+                            Stepper("\(name): \(talkativeness[id] ?? 50)", value: Binding(get: { talkativeness[id] ?? 50 }, set: { talkativeness[id] = $0 }), in: 0...100)
+                                .accessibilityIdentifier("teamTalkativeness-\(id)")
+                        }
+                        Text("0 speaks only when mentioned. 50 is a normal share of the room.").font(.caption).foregroundStyle(.secondary)
+                    }
                 } header: { Text("Team members") }
                 if supportsInstructions {
                     Section {
@@ -210,7 +225,7 @@ struct BotTeamEditor: View {
                         Stepper("Message hops: \(limits.maxHops)", value: $limits.maxHops, in: 1...32)
                         Stepper("\(unrestrictedTeams ? "Work turns" : "Conversation turns"): \(limits.maxTurns)", value: $limits.maxTurns, in: 1...100)
                         if unrestrictedTeams && selected.count > 24 && limits.maxTurns >= 24 {
-                            Text("Large teams can answer the opening invitation once each; work and follow-up turns use this budget.").font(.caption).foregroundStyle(.secondary)
+                            Text("Room chat settles when nobody has more to add. Work and follow-up turns use this budget.").font(.caption).foregroundStyle(.secondary)
                         }
                         Stepper("Time limit: \(limits.maxDurationMs / 60_000) minutes", value: Binding(get: { limits.maxDurationMs / 60_000 }, set: { limits.maxDurationMs = $0 * 60_000 }), in: 1...60)
                     }
@@ -263,6 +278,8 @@ struct BotTeamEditor: View {
         baseline = team; name = team.name; selected = Set(team.memberIds); coordinator = team.coordinatorId; limits = team.limits == .continuous ? .continuous : team.limits.forHost(unrestrictedTeams: unrestrictedTeams, continuousTeams: false)
         executionMode = team.execution?.mode ?? "individual"; computerId = team.execution?.computerId ?? ""; folder = team.execution?.workspace ?? ""
         briefing = team.briefing ?? BotTeamBriefing()
+        talkativeness = team.talkativeness ?? [:]
+        bidding = team.bidding == true
     }
     private func memberBriefingBinding(_ botId: String, keyPath: WritableKeyPath<BotTeamMemberBriefing, String>) -> Binding<String> {
         Binding(get: { briefing.members.first { $0.botId == botId }?[keyPath: keyPath] ?? "" }, set: { text in
@@ -759,7 +776,7 @@ struct BotTeamDetailView: View {
     }
     private func runRow(_ run: BotTeamRun) -> some View {
         VStack(alignment: .leading, spacing: 9) {
-            HStack { Text(run.requestStateLabel(workReviewSupported: workspace.workReviewSupported)).font(.subheadline.weight(.semibold)); Spacer(); Text(run.turnLabel(unrestrictedTeams: workspace.unrestrictedTeams, continuousTeams: workspace.continuousTeams)).font(.caption).foregroundStyle(.secondary) }
+            HStack { Text(run.requestStateLabel(workReviewSupported: workspace.workReviewSupported)).font(.subheadline.weight(.semibold)); Spacer(); Text(run.limits == nil || run.limits == .continuous ? run.turnLabel(unrestrictedTeams: workspace.unrestrictedTeams, continuousTeams: workspace.continuousTeams) : "Working with the team").font(.caption).foregroundStyle(.secondary) }
             if let detail = run.detail { Text(detail).font(.caption).foregroundStyle(.secondary) }
             BotSharedConversationButton(store: store, chatId: run.rootChatId, title: "Open task conversation", openChat: { showingDetails = false; openChat() })
             if run.isActive { Button("Stop team task", role: .destructive) { confirmingStop = run }.buttonStyle(.borderless).disabled(workspace.mutation != nil).accessibilityIdentifier("stopBotTeamRunDetails-\(run.id)") }

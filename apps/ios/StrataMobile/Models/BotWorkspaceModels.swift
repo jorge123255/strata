@@ -147,6 +147,8 @@ struct BotTeam: Decodable, Identifiable, Equatable {
     var revision: Int?
     var execution: BotTeamExecution?
     var briefing: BotTeamBriefing?
+    var talkativeness: [String: Int]? = nil
+    var bidding: Bool? = nil
 }
 
 /// Public, team-scoped guidance. A bot's private profile is managed separately.
@@ -684,6 +686,8 @@ struct BotTeamDraft: Encodable {
     var limits = BotTeamLimits()
     var execution: BotTeamExecution?
     var briefing: BotTeamBriefing?
+    var talkativeness: [String: Int]?
+    var bidding: Bool?
 }
 
 struct BotTeamUpdate: Encodable {
@@ -694,6 +698,8 @@ struct BotTeamUpdate: Encodable {
     var limits: BotTeamLimits
     var execution: BotTeamExecution
     var briefing: BotTeamBriefing?
+    var talkativeness: [String: Int]?
+    var bidding: Bool?
 }
 
 struct BotWorkspaceActivity: Decodable, Identifiable, Equatable {

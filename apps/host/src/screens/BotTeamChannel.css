@@ -71,6 +71,8 @@
 .bot-room-reply-context { display:flex; flex-direction:column; gap:3px; margin:0 0 11px; padding:7px 11px; border-left:2px solid var(--st-line); color:var(--st-ink-muted); font-size:10px; overflow-wrap:anywhere; }
 .bot-room-reply-context strong { font-weight:500; }
 .bot-room-reply-context span { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; white-space:pre-wrap; line-height:1.55; }
+.bot-room-draft .bot-room-message-body { white-space:pre-wrap; }
+.bot-room-draft .bot-room-message-bubble { border-style:dashed; }
 .bot-room-working { display:flex; align-items:center; gap:11px; margin:24px 7px 0 44px; padding:12px 15px; border:1px solid var(--st-line-soft); border-radius:16px; background:var(--st-surface); }
 .bot-room-working > span:nth-child(2) { flex:1; min-width:0; }
 .bot-room-working strong { display:block; color:var(--st-ink); font-size:11px; font-weight:500; }

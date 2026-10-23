@@ -643,6 +643,9 @@ function applyEvent(e: StreamEvent) {
     case 'team-channel':
       if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('strata:team-channel', { detail: data }));
       break;
+    case 'message.partial':
+      if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('strata:message-partial', { detail: data }));
+      break;
     case 'bot-summary':
       if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('strata:bot-summary', { detail: data }));
       break;

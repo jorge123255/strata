@@ -95,11 +95,11 @@ test('continuous authority is turn-bound and Stop invalidates it before cleanup,
   assert.equal(f.service.channel(team.id).messages.some(row => row.content.includes('Late reply')), false);
 });
 
-for (const message of ['@everyone please answer', '@all hello']) test('a leading @everyone wakes each member once and does not add a coordinator summary: ' + message, async t => {
+for (const message of ['@everyone please answer', '@all hello']) test('a leading @everyone lets one teammate answer and does not wake the whole room: ' + message, async t => {
   const f = fixture(t, async input => { assert.equal(input.bot.teamConversationOnly, true); assert.equal(input.tools.some(tool => tool.name === 'write_file'), false); say(input, `Answer ${input.bot.id}`); });
   const run = f.send(message).run; await f.done(run);
   const replies = f.bots.team.channel(f.team.id).messages.filter(row => row.content.startsWith('Answer '));
-  assert.equal(replies.length, 4); assert.equal(new Set(replies.map(row => row.author.botId)).size, 4); assert.equal(f.seen.length, 4); assert.equal(f.effects.length, 0);
+  assert.equal(replies.length, 1); assert.equal(f.seen.length, 1); assert.equal(f.effects.length, 0);
   assert.equal(f.bots.team.channel(f.team.id).messages.some(row => row.content.includes('public conversation invitations')), false);
 });
 
@@ -169,9 +169,11 @@ test('channel result arrivals retain every public report but resume the coordina
       say(input, 'Three results reviewed.');
     }
   });
-  const run = f.send('Do the work').run; await until(() => release && f.bots.team.channel(f.team.id).messages.filter(row => row.kind === 'report').length === 2);
-  assert.equal(summaries, 0); release(); await f.done(run); assert.equal(summaries, 1);
-  assert.equal(f.bots.team.channel(f.team.id).messages.filter(row => row.kind === 'report').length, 3);
+  const run = f.send('Do the work', { workMode: 'work' }).run; await until(() => release && f.bots.team.channel(f.team.id).messages.filter(row => row.kind === 'report').length === 2);
+  assert.equal(summaries, 0); release(); await f.done(run);   assert.equal(summaries, 1);
+  const reports = f.bots.team.channel(f.team.id).messages.filter(row => row.kind === 'report');
+  assert.equal(reports.filter(row => row.content.startsWith('Result ')).length, 3);
+  assert.equal(reports.some(row => row.content === 'Three results reviewed.'), true);
 });
 
 test('outer coordinator waits for delegated descendants and receives the workerâ€™s latest synthesis rather than its earlier intention', async t => {
@@ -185,12 +187,12 @@ test('outer coordinator waits for delegated descendants and receives the workerâ
       outer++; const reference = JSON.parse(input.message.split('\n')[1]); assert.match(reference.preview, /Final worker synthesis/); assert.ok(reference.resultJobId); assert.ok(reference.initialReportId); say(input, 'Outer synthesis.');
     }
   });
-  const run = f.send('Perform nested requested work').run; await until(() => release); assert.equal(outer, 0); assert.equal(worker, 0);
+  const run = f.send('Perform nested requested work', { workMode: 'work' }).run; await until(() => release); assert.equal(outer, 0); assert.equal(worker, 0);
   release(); await f.done(run); assert.equal(worker, 1); assert.equal(outer, 1);
 });
 
 test('batch references keep every teammate report without losing later members or reclassifying provider replies as verified success', async t => {
-  const f = journal(t, 12), team = f.team(), run = f.service.message(team.id, { message: 'Do requested work', requestId: 'batch-pages' }).run;
+  const f = journal(t, 12), team = f.team(), run = f.service.message(team.id, { message: 'Do requested work', requestId: 'batch-pages', workMode: 'work' }).run;
   f.service.tick(); const root = f.snapshot().jobs.find(job => job.type === 'run'), context = f.context(root); f.service.begin(context);
   for (const id of [...f.bots.keys()].slice(1)) await f.service.execute('assign_team_task', { botId: id, message: `Actual work ${id}` }, { ...context, toolCallId: id });
   f.service.end(context);
@@ -224,13 +226,15 @@ test('public message reads are scoped to the bound active team, paged, and never
   const f = journal(t), team = f.team(), other = f.team({ name: 'Other team' });
   const first = f.service.message(team.id, { message: 'Public request', requestId: 'public-read' }).run;
   const hidden = f.service.message(other.id, { message: 'Other team private marker', requestId: 'other' }).run;
-  f.chats.get(first.rootChatId).messages.push({ role: 'assistant', content: 'PRIVATE_HISTORY_MARKER' });
-  f.service.tick(); const root = f.snapshot().jobs.find(job => job.runId === first.id), context = f.context(root); f.service.begin(context);
+  f.service.tick();
+  const root = f.snapshot().jobs.find(job => job.runId === first.id);
+  f.chats.get(root.chatId).messages.push({ role: 'assistant', content: 'PRIVATE_HISTORY_MARKER' });
+  const context = f.context(root); f.service.begin(context);
   const message = f.service.channel(team.id).messages[0];
   const read = await f.service.execute('read_team_message', { messageId: message.id }, context); assert.equal(read.message.content, 'Public request'); assert.equal(JSON.stringify(read).includes('PRIVATE_HISTORY_MARKER'), false);
   await assert.rejects(f.service.execute('read_team_results', {}, context), { status: 409 });
   await assert.rejects(f.service.execute('read_team_message', { messageId: hidden.channelMessageId }, context), { status: 404 });
-  await assert.rejects(f.service.execute('read_team_message', { messageId: first.rootChatId }, context), { status: 404 });
+  await assert.rejects(f.service.execute('read_team_message', { messageId: root.chatId }, context), { status: 404 });
   for (const args of [{ messageId: message.id, teamId: other.id }, { messageId: message.id, offset: -1 }, { messageId: message.id, offset: 0.5 }, { messageId: message.id, offset: Number.MAX_SAFE_INTEGER }]) await assert.rejects(f.service.execute('read_team_message', args, context), { status: 400 });
   f.service.end(context); await assert.rejects(f.service.execute('read_team_message', { messageId: message.id }, context), /active team channel turn/);
 });
@@ -245,8 +249,8 @@ test('an exact failed task is not requeued in fresh chats in the same run; chang
       await input.executeTool('assign_team_task', { botId: f.members[1].id, message: 'Different authorized check after resolving the blocker' }, 'different');
     }
   }, 2);
-  const first = f.send('Run this check').run; await f.done(first); assert.equal(attempts, 1); assert.equal(blocked, 1);
-  const next = f.send('Explicitly retry', { requestId: 'new-owner-request' }).run; await f.done(next); assert.equal(attempts, 2); assert.equal(blocked, 2);
+  const first = f.send('Run this check', { workMode: 'work' }).run; await f.done(first); assert.equal(attempts, 1); assert.equal(blocked, 1);
+  const next = f.send('Explicitly retry', { requestId: 'new-owner-request', workMode: 'work' }).run; await f.done(next); assert.equal(attempts, 2); assert.equal(blocked, 2);
   assert.equal(JSON.stringify(f.bots.team.channel(f.team.id)).includes('PRIVATE_SECRET'), false);
 });
 
@@ -261,6 +265,6 @@ for (const diagnostic of ['Devin could not confirm a single native model.', 'Dev
       await assert.rejects(input.executeTool('assign_team_task', { botId: f.members[1].id, message: 'Try another diagnostic' }, 'retry'), /new explicit team request/);
     }
   }, 2);
-  const run = f.send('Check model').run; await f.done(run); assert.equal(f.seen.filter(input => input.bot.id === f.members[1].id).length, 1);
+  const run = f.send('Check model', { workMode: 'work' }).run; await f.done(run); assert.equal(f.seen.filter(input => input.bot.id === f.members[1].id).length, 1);
   assert.equal(JSON.stringify(f.bots.team.channel(f.team.id)).includes('SECRET_NATIVE_MODEL_BODY'), false);
 });

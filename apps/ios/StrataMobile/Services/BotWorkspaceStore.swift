@@ -541,7 +541,7 @@ final class BotWorkspaceStore: ObservableObject {
               Self.validTeamDraft(draft, unrestrictedTeams: unrestrictedTeams, continuousTeams: chosenContinuous, availableMemberIds: currentBotIds()), validTeamExecution(draft), draft.briefing == nil || teams?.teamInstructionsSupported == true else { return false }
         struct Result: Decodable { var team: BotTeam }
         let body = BotTeamUpdate(expectedRevision: revision, name: draft.name, memberIds: draft.memberIds,
-                                 coordinatorId: draft.coordinatorId, limits: draft.limits.forHost(unrestrictedTeams: unrestrictedTeams, continuousTeams: chosenContinuous), execution: draft.execution ?? .individual, briefing: draft.briefing)
+                                 coordinatorId: draft.coordinatorId, limits: draft.limits.forHost(unrestrictedTeams: unrestrictedTeams, continuousTeams: chosenContinuous), execution: draft.execution ?? .individual, briefing: draft.briefing, talkativeness: draft.talkativeness, bidding: draft.bidding)
         let value: Result? = await change("teams", path: "/v1/bots/teams/\(team.id)", method: "PATCH", body: body)
         if value != nil { await refreshTeams() }
         return value != nil && isCurrent()
@@ -562,6 +562,7 @@ final class BotWorkspaceStore: ObservableObject {
               Set(draft.memberIds).count == draft.memberIds.count,
               draft.memberIds.allSatisfy(CompanionClient.isSafeIdentifier), draft.memberIds.contains(draft.coordinatorId),
               availableMemberIds.map({ Set(draft.memberIds).isSubset(of: $0) }) != false, validLimits else { return false }
+        if let voice = draft.talkativeness, voice.contains(where: { !draft.memberIds.contains($0.key) || !(0...100).contains($0.value) }) { return false }
         if let briefing = draft.briefing {
             func validText(_ value: String, max: Int) -> Bool { value.utf16.count <= max && !value.contains("\0") }
             guard validText(briefing.instructions, max: 8_000), briefing.members.count <= draft.memberIds.count,
