@@ -25,6 +25,7 @@ import { useNative } from '../lib/native';
 import { mainResult, previewOf } from '../lib/deliverables';
 import { noModelNotice } from '../lib/no-model';
 import { ReasoningBlock } from '../components/ReasoningBlock';
+import { WorkedSteps } from '../components/WorkedSteps';
 import { StatusLine } from '../components/StatusLine';
 import { TypingDots, useMessageEntrances } from '../components/ChatMotion';
 import { GoalBar } from '../components/GoalBar';
@@ -645,6 +646,8 @@ function Message({ message: m, isLast, entrance, onEditPrompt, onPreview, onOpen
     const planCard = !!m.planId && storedPlan?.id === m.planId;
     // A reply with activity lines is drawn piece by piece in the order it came; one without is the plain text it always was.
     const grouped = !!m.blocks?.some(b => b.kind === 'group');
+    const stepTools = bot && !grouped ? (m.tools ?? []).filter(tool => tool.state !== 'proposed' && tool.state !== 'running') : [];
+    const stepIds = new Set(stepTools.map(tool => tool.id));
     const [sentTime, setSentTime] = useState(() => relTime(m.at));
     const motion = entrance ? 'msg-enter' : undefined;
     const motionStyle = entrance ? { animationDuration: `${entrance.ms}ms`, animationDelay: `${entrance.delay}ms` } : undefined;
@@ -669,7 +672,8 @@ function Message({ message: m, isLast, entrance, onEditPrompt, onPreview, onOpen
       {tr(m.reasoning ? <ReasoningBlock message={m}/> : null)}
 
 
-      {tr((m.tools ?? []).filter(t => !grouped || t.state !== 'done').map((t) => (<ToolCard key={t.id} messageId={m.id} tool={t}/>)))}
+      {tr((m.tools ?? []).filter(t => (!grouped || t.state !== 'done') && !stepIds.has(t.id)).map((t) => (<ToolCard key={t.id} messageId={m.id} tool={t}/>)))}
+      {tr(stepTools.length ? <WorkedSteps tools={stepTools}/> : null)}
 
       {tr(!(m.timeSkipId && timeSkipReal && !timeSkipDone) && (m.content || m.error || !m.streaming || !liveStatus) ? <div className="st-bubble">
         {tr(planCard ? <PlanCard chatId={activeSession} planId={m.planId!}/> : null)}
