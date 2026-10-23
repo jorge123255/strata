@@ -1034,6 +1034,9 @@ let sharedSyncPending = Promise.resolve();
 const botSends = new Set<string>();
 let sharedInitialization: Promise<void> | null = null;
 const sessionWriter = createSessionWriter({
+  // Upstream coalesces a stream to one write a second (#3604). The phone cache still expects the fork's
+  // quarter-second burst: one write, not one per token, and a flush when the turn ends or the page hides.
+  delayMs: 250,
   write: (json) => {
     try {
       localStorage.setItem(SESSION_KEY, json);
@@ -1097,7 +1100,8 @@ function scheduleSharedSync() {
 
 /**
  * Save the chat list. A one-off change (new, rename, delete, pin) is written now; `soon` is for the streaming
- * path, where a write per token grew the renderer to gigabytes (#3604, #3603): those are coalesced to one a second.
+ * path, where a write per token grew the renderer to gigabytes (#3604, #3603): those are coalesced, then flushed
+ * when the turn ends.
  * Local edits also schedule a companion sync so the phone sees them.
  */
 function persistSessions(sessions: Session[], soon = false) {

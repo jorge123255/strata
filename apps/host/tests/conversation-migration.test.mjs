@@ -28,7 +28,7 @@ async function fixture(t) {
   const values = new Map([['strata.sessions.v1', JSON.stringify([session])]]);
   const api = async (method, path, body) => {
     calls.push({ method, path, body: structuredClone(body) });
-    if (path === '/api/companion/conversations') return catalog.list();
+    if (path === '/api/companion/conversations' || path === '/api/companion/conversations?summary=1') return catalog.list(path.endsWith('summary=1') ? { summary: true } : undefined);
     if (path === '/api/companion/conversations/sync') { if (blockedSync) await blockedSync; return catalog.sync(body.sessions); }
     if (path.startsWith('/api/companion/conversations/')) {
       if (path.endsWith('/stop')) return catalog.stop(path.split('/').at(-2));
