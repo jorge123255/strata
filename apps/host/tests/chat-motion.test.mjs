@@ -73,6 +73,35 @@ test('only messages after the first ready snapshot animate, with a faster own me
   assert.ok(earlier.seen.has('old'));
   const alone = motion.planEntrances(earlier.seen, [...earlier.seen].map(id => ({ id, own: false })).concat([{ id: 'solo', own: false }]), true, true);
   assert.deepEqual(alone.entrances, [{ id: 'solo', ms: 220, delay: 0 }]);
+  const seen = new Set(['m1', 'm2']);
+  const mixed = motion.planEntrances(seen, [
+    { id: 'm1', own: true }, { id: 'stale', own: false }, { id: 'm2', own: false }, { id: 'm3', own: true },
+  ], true, true);
+  assert.deepEqual(mixed.entrances, [{ id: 'm3', ms: 180, delay: 0 }]);
+  assert.ok(mixed.seen.has('stale'));
+  assert.equal(mixed.entrances.some(row => row.id === 'stale'), false);
+  const replaced = motion.planEntrances(new Set(['m1']), [{ id: 'x', own: true }, { id: 'y', own: false }], true, true);
+  assert.deepEqual(replaced.entrances, []);
+  assert.ok(replaced.seen.has('y'));
+});
+
+test('a newly appended own message follows the bottom, and older rows do not', () => {
+  const previous = ['m1', 'm2'];
+  assert.equal(motion.shouldFollowOwnMessage(previous, [
+    { id: 'm1', own: true }, { id: 'm2', own: false }, { id: 'm3', own: true },
+  ]), true);
+  assert.equal(motion.shouldFollowOwnMessage(previous, [
+    { id: 'old', own: false }, { id: 'm1', own: true }, { id: 'm2', own: false },
+  ]), false);
+  assert.equal(motion.shouldFollowOwnMessage(previous, [
+    { id: 'm1', own: true }, { id: 'stale', own: false }, { id: 'm2', own: false }, { id: 'm3', own: true },
+  ]), true);
+  assert.equal(motion.shouldFollowOwnMessage(['m3'], [
+    { id: 'm1', own: true }, { id: 'm3', own: true },
+  ]), false);
+  assert.equal(motion.shouldFollowOwnMessage(previous, [
+    { id: 'm1', own: true }, { id: 'm2', own: false }, { id: 'b1', own: false },
+  ]), false);
 });
 
 test('bottom following eases out over 200ms', () => {
@@ -101,4 +130,13 @@ test('the chat motion stylesheet carries the coucou timings and pauses loops', a
   assert.match(css, /cubic-bezier\(\.3,\s*1\.2,\s*\.4,\s*1\)/);
   assert.match(css, /cubic-bezier\(\.45,\s*0,\s*\.2,\s*1\)/);
   assert.match(css, /120ms/);
+  const channel = await readFile(new URL('../src/screens/BotTeamChannel.tsx', import.meta.url), 'utf8');
+  const channelCss = await readFile(new URL('../src/screens/BotTeamChannel.css', import.meta.url), 'utf8');
+  const botsCss = await readFile(new URL('../src/screens/Bots.css', import.meta.url), 'utf8');
+  assert.match(channel, /shouldFollowOwnMessage/);
+  assert.match(channelCss, /\.bot-room-work-mode p \{[^}]*min-width:\s*0/);
+  assert.match(botsCss, /container-name:\s*bots/);
+  assert.match(botsCss, /@container bots \(max-width: 920px\)/);
+  assert.match(botsCss, /@container bots \(max-width: 640px\)/);
+  assert.match(botsCss, /\.bots-workspace-page \{[^}]*min-width:\s*0/);
 });

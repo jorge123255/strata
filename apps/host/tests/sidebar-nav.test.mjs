@@ -20,4 +20,12 @@ test('the sidebar still opens chat dialogs from a closed menu and lists bots and
   assert.match(hook, /sidebarStreamSummary/);
   assert.match(hook, /message\.partial/);
   assert.match(hook, /status === 404/);
+  const roster = await readFile(new URL('../src/app/SidebarRoster.tsx', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles/workspace.css', import.meta.url), 'utf8');
+  assert.match(roster, /teamRosterLabel\(room\.memberCount\)/);
+  assert.match(roster, /title=\{bot\.name\}/);
+  assert.match(roster, /title=\{room\.name\}/);
+  assert.doesNotMatch(roster, /nav-roster__meta/);
+  assert.match(css, /\.nav-roster__row:hover > \.session-overflow/);
+  assert.match(css, /\.nav-roster__row:focus-within > \.session-overflow/);
 });

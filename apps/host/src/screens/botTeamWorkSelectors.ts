@@ -1,15 +1,37 @@
 import { botTeamRunActive, type BotTeamActivity } from '../lib/bots';
 
+export const STALE_TEAM_ERROR_MS = 24 * 60 * 60 * 1000;
+
 export interface TeamWorkGroups {
   needsYou: BotTeamActivity[];
   working: BotTeamActivity[];
   continuing: BotTeamActivity[];
   history: BotTeamActivity[];
+  stale: BotTeamActivity[];
+}
+
+export interface TeamWorkOptions {
+  now?: number;
+  dismissed?: ReadonlySet<string>;
+}
+
+export function staleTeamError(row: BotTeamActivity, now = Date.now()) {
+  if (row.state !== 'error') return false;
+  const updated = Date.parse(row.updatedAt);
+  return Number.isFinite(updated) && now - updated >= STALE_TEAM_ERROR_MS;
+}
+
+/** Drop dismissals that are no longer an errored run older than a day. */
+export function retainedStaleDismissals(rows: readonly BotTeamActivity[], dismissed: ReadonlySet<string>, now = Date.now()) {
+  const staleIds = new Set(rows.filter(row => !!row.work && staleTeamError(row, now)).map(row => row.id));
+  return [...dismissed].filter(id => staleIds.has(id));
 }
 
 /** Presentation only. Every received task stays accessible; links confer no state. */
-export function teamWorkGroups(rows: BotTeamActivity[], teamId: string): TeamWorkGroups {
-  const groups: TeamWorkGroups = { needsYou: [], working: [], continuing: [], history: [] };
+export function teamWorkGroups(rows: BotTeamActivity[], teamId: string, options: TeamWorkOptions = {}): TeamWorkGroups {
+  const now = options.now ?? Date.now();
+  const dismissed = options.dismissed ?? new Set<string>();
+  const groups: TeamWorkGroups = { needsYou: [], working: [], continuing: [], history: [], stale: [] };
   const tasks = rows.filter(row => row.teamId === teamId && row.work).slice().sort((a, b) =>
     b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
   for (const row of tasks) {
@@ -21,6 +43,8 @@ export function teamWorkGroups(rows: BotTeamActivity[], teamId: string): TeamWor
     else if (work.status === 'working') groups.working.push(row);
     else if (work.legacy === true || work.status === 'verified') groups.history.push(row);
     else if (['blocked', 'interrupted'].includes(work.status) && work.recoveryJobId) groups.continuing.push(row);
+    else if (row.state === 'error' && dismissed.has(row.id)) groups.history.push(row);
+    else if (staleTeamError(row, now)) groups.stale.push(row);
     else groups.needsYou.push(row);
   }
   return groups;

@@ -91,31 +91,43 @@ export function splitStreamTail(shown: string): { prefix: string; word: string }
 }
 
 /**
- * The first ready snapshot is history and does not animate. Later rows do.
- * A page of older messages (a new first id while some ids are already known)
- * is history too. Own messages are 180ms; bot messages are 220ms, and a burst
- * of them is staggered by 40ms.
+ * The first ready snapshot is history and does not animate. A full replacement
+ * (no already-seen id remains) is history too. Only rows after the last
+ * already-seen id animate, so an older id inserted in the middle stays still.
+ * Own messages are 180ms; bot messages are 220ms, and a burst of them is
+ * staggered by 40ms.
  */
 export function planEntrances(seen: ReadonlySet<string>, rows: { id: string; own: boolean }[], primed: boolean, ready: boolean): { primed: boolean; seen: Set<string>; entrances: Entrance[] } {
   if (!ready) return { primed: false, seen: new Set(seen), entrances: [] };
   if (!primed) return { primed: true, seen: new Set(rows.map(row => row.id)), entrances: [] };
-  if (rows.length > 0 && seen.size > 0 && !seen.has(rows[0].id)) {
-    const next = new Set(seen);
+  let lastSeen = -1;
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    if (seen.has(rows[index].id)) { lastSeen = index; break; }
+  }
+  const next = new Set(seen);
+  if (lastSeen < 0) {
     for (const row of rows) next.add(row.id);
     return { primed: true, seen: next, entrances: [] };
   }
-  const freshBots = rows.filter(row => !row.own && !seen.has(row.id)).length;
+  for (let index = 0; index <= lastSeen; index += 1) next.add(rows[index].id);
+  const fresh = rows.slice(lastSeen + 1).filter(row => !next.has(row.id));
+  const freshBots = fresh.filter(row => !row.own).length;
   const entrances: Entrance[] = [];
-  const next = new Set(seen);
   let botIndex = 0;
-  for (const row of rows) {
-    if (next.has(row.id)) continue;
+  for (const row of fresh) {
     next.add(row.id);
     const delay = !row.own && freshBots > 1 ? botIndex * 40 : 0;
     if (!row.own) botIndex += 1;
     entrances.push({ id: row.id, ms: row.own ? 180 : 220, delay });
   }
   return { primed: true, seen: next, entrances };
+}
+
+/** Scroll to the latest line when the owner's own message is the new tail. */
+export function shouldFollowOwnMessage(previousIds: readonly string[], next: readonly { id: string; own: boolean }[]): boolean {
+  const last = next.at(-1);
+  if (!last?.own) return false;
+  return !previousIds.includes(last.id);
 }
 
 /** Keep the newest full text for a message. A stale or empty done frame drops the draft. */

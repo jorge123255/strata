@@ -18,9 +18,10 @@ export function TeamWorkCounts({ groups, stale = false, workflows }: { groups: T
   </span>;
 }
 
-export function BotTeamWorkOverview({ groups, bots, stale, disabled, workflows, onChanged, onOpenConversation }: {
+export function BotTeamWorkOverview({ groups, bots, stale, disabled, workflows, onChanged, onOpenConversation, onDismiss }: {
   groups: TeamWorkGroups; bots: Bot[]; stale: boolean; disabled: boolean;
   onChanged: () => Promise<void>; onOpenConversation: (id: string) => void;
+  onDismiss?: (id: string) => void;
   workflows?: { needsYou: number; working: number; unknown?: boolean; partial?: boolean; statusLabel?: string };
 }) {
   const history = useRef<HTMLDetailsElement>(null), earlierUnverified = teamEarlierUnverifiedCount(groups);
@@ -28,7 +29,7 @@ export function BotTeamWorkOverview({ groups, bots, stale, disabled, workflows, 
     const element = history.current;
     if (element) { element.open = true; element.querySelector('summary')?.focus(); element.scrollIntoView({ block: 'nearest' }); }
   }
-  function task(row: BotTeamActivity) {
+  function task(row: BotTeamActivity, dismissible = false) {
     const owner = bots.find(bot => bot.id === row.botId), work = row.work!;
     const active = botTeamRunActive(row.state), legacy = work.legacy === true && !active && work.status !== 'ready_for_review' && work.status !== 'working';
     const review = work.reviewHistory.at(-1), requestedChange = review?.decision === 'reject' ? review.note : undefined;
@@ -48,6 +49,7 @@ export function BotTeamWorkOverview({ groups, bots, stale, disabled, workflows, 
       {work.recoveryJobId ? <p className="bot-work-task-context">A continuation was created. This earlier result remains available.</p> : null}
       <div className="bot-work-task-actions">
         <BotTaskReview row={row} disabled={disabled} onChanged={onChanged}/>
+        {dismissible && onDismiss ? <Btn size="sm" onClick={() => onDismiss(row.id)}>Dismiss</Btn> : null}
         {row.chatId ? <Btn size="sm" onClick={() => onOpenConversation(row.chatId!)}>Open conversation</Btn> : null}
       </div>
     </article>;
@@ -55,22 +57,27 @@ export function BotTeamWorkOverview({ groups, bots, stale, disabled, workflows, 
   function section(title: string, rows: BotTeamActivity[], name: string) {
     return rows.length ? <section className="bot-work-group" aria-label={name}>
       <div className="bots-section-heading"><h4>{title}</h4><span>{rows.length}</span></div>
-      <div className="bot-work-task-list">{rows.map(task)}</div>
+      <div className="bot-work-task-list">{rows.map(row => task(row))}</div>
     </section> : null;
   }
   return <section className="bot-team-work-overview" aria-label="Current team work">
     <div className="bots-section-heading"><h3>Current work</h3><TeamWorkCounts groups={groups} stale={stale} workflows={workflows}/></div>
-    {!groups.needsYou.length && !groups.working.length && !workflows?.needsYou && !workflows?.working && !workflows?.unknown && !workflows?.partial ? <div className="bot-work-empty" role="status">
+    {!groups.needsYou.length && !groups.working.length && !groups.stale.length && !workflows?.needsYou && !workflows?.working && !workflows?.unknown && !workflows?.partial ? <div className="bot-work-empty" role="status">
       <p className="small muted">{stale ? 'At the last check, no current tasks were tracked.' : 'No current tasks are tracked.'}</p>
       {earlierUnverified ? <><p className="small muted">{earlierUnverified} earlier {earlierUnverified === 1 ? 'turn has' : 'turns have'} no verified result.</p><Btn size="sm" onClick={showEarlierWork}>Review earlier work</Btn></> : null}
     </div> : null}
     {!groups.needsYou.length && !groups.working.length && !workflows?.needsYou && !workflows?.working && !workflows?.unknown && workflows?.partial ? <p className="small muted" role="status">No current work in this page. Earlier workflows may still need attention.</p> : null}
     {section('Needs you', groups.needsYou, 'Tasks needing you')}
     {section('Working', groups.working, 'Tasks in progress')}
+    {groups.stale.length ? <section className="bot-work-group" aria-label="Older errors">
+      <div className="bots-section-heading"><h4>Older errors</h4><span>{groups.stale.length}</span></div>
+      <p className="small muted">These runs have been in error for more than a day. Dismiss one when you have seen it.</p>
+      <div className="bot-work-task-list">{groups.stale.map(row => task(row, true))}</div>
+    </section> : null}
     {section('Earlier results with a continuation', groups.continuing, 'Results with a continuation')}
     {groups.history.length ? <details ref={history} className="bot-work-history"><summary>Earlier work <span>{groups.history.length}</span></summary>
-      <p className="small muted">Verified results and earlier turns stay available here.</p>
-      <div className="bot-work-task-list">{groups.history.map(task)}</div>
+      <p className="small muted">Verified results, dismissed errors and earlier turns stay available here.</p>
+      <div className="bot-work-task-list">{groups.history.map(row => task(row))}</div>
     </details> : null}
     <p className="small muted">Reported results become verified after your review. Opening a result or recovery plan starts no work.</p>
   </section>;

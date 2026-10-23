@@ -266,3 +266,19 @@ test('a message.partial frame does not change unread or the last line', () => {
   assert.equal(finished.rooms[0].lastMessage.preview, 'Ship the fix today');
   assert.equal(current.rooms[0].unreadCount, 1);
 });
+
+test('a saved roster longer than 12 is kept, and the open catalog count wins over a shorter summary', () => {
+  const ids = Array.from({ length: 17 }, (_, index) => `bot_${index}`);
+  const bots = ids.map(id => bot(id, id));
+  const room = team('legacy', 'Legacy', ids);
+  assert.equal(presence.sidebarRoster({ bots, teams: [room] }).rooms[0].memberCount, 17);
+  const summary = presence.parseSidebarSummary({
+    bots: [],
+    rooms: [{ id: 'legacy', name: 'Legacy', memberCount: 12, unreadCount: 0, lastMessage: null, working: [] }],
+  });
+  const overlaid = presence.applySidebarSummary(presence.sidebarRoster({ bots, teams: [room] }), summary, { bots, teams: [room] }).rooms[0];
+  assert.equal(overlaid.memberCount, 17);
+  assert.equal(overlaid.extra, 14);
+  const summaryOnly = presence.applySidebarSummary({ bots: [], rooms: [] }, summary, { bots: [], teams: [] }).rooms[0];
+  assert.equal(summaryOnly.memberCount, 12);
+});

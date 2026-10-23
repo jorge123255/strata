@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { applyMessagePartial, clearStreams, createFollowScroller, hasLiveStream, prefersReducedMotion, type RoomDraft } from '../lib/chat-motion';
+import { applyMessagePartial, clearStreams, createFollowScroller, hasLiveStream, prefersReducedMotion, shouldFollowOwnMessage, type RoomDraft } from '../lib/chat-motion';
+import { insertMention, mentionInsertion, mentionKeyAction, mentionKeyStops, mentionListVisible, mentionQuery, moveMentionIndex, roomMentionChoices, roomMessageAudience, type MentionChoice } from '../lib/mention-picker';
 import { ShimmerText, StreamedBody, TypingDots, useMessageEntrances } from '../components/ChatMotion';
 import { cx } from '../lib/format';
 import { ApiError, api } from '../lib/client';
@@ -138,9 +139,16 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
   useNotificationDestination({ type: 'team', id: team.id }, visible);
   const [workMode, setWorkMode] = useState<'chat' | 'work'>('chat');
   const [prompt, setPrompt] = useState(''), [recipients, setRecipients] = useState<string[]>([]), [picker, setPicker] = useState(false), [replyTo, setReplyTo] = useState<BotTeamChannelMessage | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0), [mentionDismissed, setMentionDismissed] = useState<number | null>(null), [caret, setCaret] = useState(0);
   const [actions, setActions] = useState(false), [sending, setSending] = useState(false), [stopping, setStopping] = useState(''), [error, setError] = useState(''), [unread, setUnread] = useState(0), [away, setAway] = useState(false);
-  const requestId = useRef<string | null>(null), mounted = useRef(true), sendingRef = useRef(false), feed = useRef<HTMLDivElement>(null), composer = useRef<HTMLTextAreaElement>(null), follow = useRef(true), previousLast = useRef(0), olderAnchor = useRef<{ height: number; top: number } | null>(null);
+  const requestId = useRef<string | null>(null), mounted = useRef(true), sendingRef = useRef(false), feed = useRef<HTMLDivElement>(null), composer = useRef<HTMLTextAreaElement>(null), pendingCaret = useRef<number | null>(null), follow = useRef(true), previousLast = useRef(0), olderAnchor = useRef<{ height: number; top: number } | null>(null), seenMessageIds = useRef<string[]>([]);
   const members = team.memberIds.map(id => bots.find(bot => bot.id === id)).filter((bot): bot is Bot => !!bot);
+  const mentionRoster = team.memberIds.map(id => ({ id, name: bots.find(bot => bot.id === id)?.name ?? '' }));
+  const activeMention = mentionQuery(prompt, caret);
+  const mentionChoices = activeMention ? roomMentionChoices(mentionRoster, activeMention.query) : [];
+  const showMentions = mentionListVisible(activeMention, mentionDismissed, mentionChoices.length);
+  const mentionCursor = mentionChoices.length ? Math.min(mentionIndex, mentionChoices.length - 1) : 0;
+  const activeMentionDomId = showMentions ? `team-mention-${team.id}-${mentionChoices[mentionCursor]!.kind}-${mentionChoices[mentionCursor]!.id}` : undefined;
   const active = channel.activeRuns.filter(run => botTeamRunActive(run.state));
   const ready = current && !channel.error && !channel.loading;
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; follower.current.stop(); }; }, []);
@@ -152,7 +160,15 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
     return () => clearTimeout(handle);
   }, [prompt, sending, visible, team.id, team.enabled]);
   useEffect(() => { if (!coordinatorWorkToolsSupported) { setWorkMode('chat'); requestId.current = null; } }, [coordinatorWorkToolsSupported]);
-  useLayoutEffect(() => { const element = composer.current; if (element) { element.style.height = 'auto'; element.style.height = `${Math.min(160, element.scrollHeight)}px`; } }, [prompt]);
+  useLayoutEffect(() => {
+    const element = composer.current;
+    if (element) { element.style.height = 'auto'; element.style.height = `${Math.min(160, element.scrollHeight)}px`; }
+    const next = pendingCaret.current;
+    if (element && next !== null) { element.setSelectionRange(next, next); pendingCaret.current = null; setCaret(next); }
+  }, [prompt]);
+  const mentionStart = activeMention ? activeMention.start : -1;
+  useEffect(() => { setMentionIndex(0); }, [activeMention?.start, activeMention?.query]);
+  useEffect(() => { if (mentionStart < 0) setMentionDismissed(null); }, [mentionStart]);
   useEffect(() => {
     const element = feed.current; if (!element || !visible) return;
     const observer = new ResizeObserver(() => {
@@ -163,6 +179,9 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
   }, [visible]);
   useLayoutEffect(() => {
     const element = feed.current; if (!element || !visible) return;
+    const rows = channel.messages.map(message => ({ id: message.id, own: message.author.type === 'user' }));
+    if (shouldFollowOwnMessage(seenMessageIds.current, rows)) { olderAnchor.current = null; follow.current = true; setAway(false); setUnread(0); }
+    seenMessageIds.current = rows.map(row => row.id);
     if (olderAnchor.current) { const anchor = olderAnchor.current; element.scrollTop = anchor.top + element.scrollHeight - anchor.height; olderAnchor.current = null; }
     else if (follow.current) { follower.current.follow(element); setUnread(0); }
     else {
@@ -172,6 +191,22 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
     previousLast.current = channel.messages.at(-1)?.sequence ?? previousLast.current;
   }, [channel.messages, channel.presence, liveDrafts.map(row => `${row.messageId}:${row.text.length}`).join('|'), visible]);
   function jumpToLatest() { follow.current = true; setAway(false); setUnread(0); if (feed.current) follower.current.follow(feed.current); }
+  function rememberCaret(element: HTMLTextAreaElement) { setCaret(element.selectionStart ?? element.value.length); }
+  function pickMention(choice: MentionChoice) {
+    if (!activeMention) return;
+    const next = insertMention(prompt, activeMention, caret, mentionInsertion(choice, mentionRoster));
+    pendingCaret.current = next.cursor; setPrompt(next.text); setCaret(next.cursor); setMentionDismissed(null); requestId.current = null;
+    composer.current?.focus();
+  }
+  function onComposerKeyDown(event: { metaKey: boolean; ctrlKey: boolean; key: string; preventDefault: () => void }) {
+    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); void send(); return; }
+    if (!showMentions || !mentionKeyStops(event.key)) return;
+    event.preventDefault();
+    const action = mentionKeyAction(event.key);
+    if (action === 'down' || action === 'up') setMentionIndex(index => moveMentionIndex(index, mentionChoices.length, action));
+    else if (action === 'pick') { const choice = mentionChoices[Math.min(mentionIndex, Math.max(mentionChoices.length - 1, 0))]; if (choice) pickMention(choice); }
+    else if (event.key === 'Escape' && activeMention) setMentionDismissed(activeMention.start);
+  }
   function changeRecipients(next: string[]) { setRecipients(next); requestId.current = null; }
   function reply(message: BotTeamChannelMessage) {
     setReplyTo(message); requestId.current = null;
@@ -181,8 +216,8 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
   async function send() {
     if (sendingRef.current || !ready || !team.enabled || !prompt.trim()) return;
     sendingRef.current = true; setSending(true); setError(''); requestId.current ??= crypto.randomUUID();
-    const addressedEveryone = recipients.length > 0 && recipients.length === team.memberIds.length && team.memberIds.every(id => recipients.includes(id));
-    const body = { message: prompt.trim(), requestId: requestId.current, ...(recipients.length ? { recipientIds: recipients } : {}), ...(addressedEveryone ? { everyone: true } : {}), ...(replyTo ? { replyToId: replyTo.id } : {}), ...(coordinatorWorkToolsSupported ? { workMode } : {}), ...(workMode === 'work' && coordinatorWorkToolsSupported && workPlansSupported ? { durablePlan: true } : {}) };
+    const audience = roomMessageAudience(prompt.trim(), recipients, team.memberIds);
+    const body = { message: prompt.trim(), requestId: requestId.current, ...audience, ...(replyTo ? { replyToId: replyTo.id } : {}), ...(coordinatorWorkToolsSupported ? { workMode } : {}), ...(workMode === 'work' && coordinatorWorkToolsSupported && workPlansSupported ? { durablePlan: true } : {}) };
     try {
       const result = await api.post<{ channel: BotTeamChannelSnapshot; run?: BotTeamRun; planId?: string; sourceMessageId?: string; sourceMessage?: BotTeamChannelMessage }>(`${roomPath(team.id)}/messages`, body);
       if (!mounted.current) return;
@@ -221,11 +256,15 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
     {unread || away ? <div className="bot-room-new"><button type="button" onClick={jumpToLatest}>{unread ? `${unread} new ${unread === 1 ? 'message' : 'messages'} · ` : ''}Latest <Icon name="chevron" size={14}/></button></div> : null}
     {error ? <ErrorNotice message={error} action="Dismiss" onRetry={() => setError('')}/> : null}
     <form className="bot-room-composer" onSubmit={event => { event.preventDefault(); void send(); }}>
+      {showMentions ? <div className="bot-room-mentions" id={`team-mentions-${team.id}`} role="listbox" aria-label="Mention a teammate">{mentionChoices.map((choice, index) => {
+        const bot = bots.find(item => item.id === choice.id);
+        return <button type="button" role="option" id={`team-mention-${team.id}-${choice.kind}-${choice.id}`} key={`${choice.kind}:${choice.id}`} aria-selected={index === mentionCursor} onMouseDown={event => event.preventDefault()} onMouseEnter={() => setMentionIndex(index)} onClick={() => pickMention(choice)}>{choice.kind === 'everyone' ? <span className="bot-room-mention-group" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M9 11.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4zm7.1.5a2.6 2.6 0 1 0 0-5.2 2.6 2.6 0 0 0 0 5.2zM2.2 18.4c.5-2.9 2.7-4.5 6.8-4.5s6.3 1.6 6.8 4.5c.1.6-.4 1.1-1 1.1H3.2c-.6 0-1.1-.5-1-1.1zm11.3-.2c-.2-1.7.3-3.1 1.4-4.1 1.4-.1 2.6.3 3.5 1.3.9 1 1.3 2.2 1.4 3.3.1.5-.3.9-.8.9h-5c-.3 0-.5-.2-.5-.4z"/></svg></span> : <CuaBotAvatar name={choice.label} config={bot?.avatarConfig} size={28}/>}<span>{choice.label}</span></button>;
+      })}</div> : null}
       {replyTo ? <div className="bot-room-replying"><Icon name="chat" size={14}/><span>Replying to <strong>{replyTo.author.name}</strong><small>{replyTo.content.slice(0, 150)}</small></span><Btn size="sm" variant="ghost" aria-label="Cancel reply" disabled={sending} onClick={() => { setReplyTo(null); requestId.current = null; }}>Cancel</Btn></div> : null}
       <div className="bot-room-composer-top"><button className="bot-room-to" type="button" aria-expanded={picker} aria-controls={`team-recipients-${team.id}`} disabled={sending} onClick={() => setPicker(value => !value)}><Icon name="experts" size={14}/><span>To: <strong>{recipientLabel}</strong></span><Icon name="chevron" size={12}/></button><span className="bot-room-device-note">Shared on Mac and iPhone</span></div>
       {coordinatorWorkToolsSupported ? <div className="bot-room-work-mode"><div role="group" aria-label="Team message mode">{(['chat', 'work'] as const).map(mode => <button key={mode} type="button" aria-pressed={workMode === mode} disabled={sending} onClick={() => { setWorkMode(mode); requestId.current = null; }}>{mode === 'chat' ? 'Chat' : 'Work'}</button>)}</div><p>{workMode === 'work' ? (workPlansSupported ? 'Your coordinator plans tasks, chooses teammates and follows their saved checkpoints through review.' : 'Coordinator and teammates can use their saved tools, approvals and selected team computer/folder.') : 'Talk with the team. Your coordinator can bring in teammates.'}</p></div> : null}
       {picker ? <fieldset className="bot-room-recipient-picker" disabled={sending} id={`team-recipients-${team.id}`}><legend>Who should respond?</legend><div><button type="button" aria-pressed={!recipients.length} onClick={() => changeRecipients([])}>Let the team decide</button><button type="button" aria-pressed={recipients.length === team.memberIds.length} onClick={() => changeRecipients([...team.memberIds])}>@everyone</button></div>{members.map(bot => <label key={bot.id}><input type="checkbox" checked={recipients.includes(bot.id)} onChange={() => changeRecipients(recipients.includes(bot.id) ? recipients.filter(id => id !== bot.id) : [...recipients, bot.id])}/><CuaBotAvatar name={bot.name} config={bot.avatarConfig} size={24}/><span>{bot.name}{bot.paused ? ' · Paused' : ''}</span></label>)}</fieldset> : null}
-      <div className="bot-room-composer-row"><button type="button" className="bot-room-add" aria-label="Team actions" aria-haspopup="dialog" disabled={sending} onClick={() => setActions(true)}><Icon name="plus" size={22}/></button><div className="bot-room-input-pill"><label className="bot-room-input"><span className="sr-only">Message team</span><textarea ref={composer} rows={1} maxLength={16000} aria-label="Message team" value={prompt} disabled={sending} onChange={event => { setPrompt(event.target.value); requestId.current = null; }} onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); void send(); } }} placeholder={team.enabled ? `Message ${team.name}…` : 'Collaboration is turned off'}/></label><button className="bot-room-send" type="submit" aria-label={sending ? 'Sending…' : 'Send'} data-ready={prompt.trim() && team.enabled && ready && !sending ? 'true' : 'false'} disabled={sending || !team.enabled || !prompt.trim() || !ready}><span className="send-morph"><Icon name="mic" size={19}/><Icon name="send" size={19}/></span></button></div></div>
+      <div className="bot-room-composer-row"><button type="button" className="bot-room-add" aria-label="Team actions" aria-haspopup="dialog" disabled={sending} onClick={() => setActions(true)}><Icon name="plus" size={22}/></button><div className="bot-room-input-pill"><label className="bot-room-input"><span className="sr-only">Message team</span><textarea ref={composer} rows={1} maxLength={16000} aria-label="Message team" aria-autocomplete="list" aria-expanded={showMentions} aria-controls={showMentions ? `team-mentions-${team.id}` : undefined} aria-activedescendant={activeMentionDomId} value={prompt} disabled={sending} onChange={event => { setPrompt(event.target.value); rememberCaret(event.target); requestId.current = null; }} onSelect={event => rememberCaret(event.currentTarget)} onKeyUp={event => rememberCaret(event.currentTarget)} onClick={event => rememberCaret(event.currentTarget)} onKeyDown={onComposerKeyDown} placeholder={team.enabled ? `Message ${team.name}…` : 'Collaboration is turned off'}/></label><button className="bot-room-send" type="submit" aria-label={sending ? 'Sending…' : 'Send'} data-ready={prompt.trim() && team.enabled && ready && !sending ? 'true' : 'false'} disabled={sending || !team.enabled || !prompt.trim() || !ready}><span className="send-morph"><Icon name="mic" size={19}/><Icon name="send" size={19}/></span></button></div></div>
       <div className="bot-room-composer-bottom"><p>{!team.enabled ? 'Turn on collaboration in Team settings to send.' : active.length ? 'Your team is working. You can keep the conversation going.' : recipients.length ? 'Selected teammates respond using their own models and permissions.' : 'Your coordinator brings in the right teammates.'}</p></div>
     </form>
     {actions ? <Dialog open title="Team actions" compact className="bot-room-actions-dialog" onClose={() => setActions(false)} actions={<Btn onClick={() => setActions(false)}>Done</Btn>}><div className="bot-room-action-list"><NotificationMuteButton destination={{ type: 'team', id: team.id }}/><Btn icon="experts" onClick={() => { setActions(false); setPicker(true); }}>Choose teammates</Btn><Btn icon="chat" disabled={!ready || !team.enabled} onClick={() => { setActions(false); setWorkMode('chat'); setPrompt('Hi everyone!'); changeRecipients([...team.memberIds]); }}>Draft a greeting to everyone</Btn><Btn icon="info" onClick={() => { setActions(false); onDetails(); }}>Team details</Btn><Btn icon="activity" onClick={() => { setActions(false); onShowWork(); }}>View team work</Btn></div><p className="small muted">Drafting a message starts no work. Send it when you are ready.</p></Dialog> : null}
