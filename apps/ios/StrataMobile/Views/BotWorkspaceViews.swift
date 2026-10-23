@@ -311,6 +311,8 @@ struct BotTeamDetailView: View {
     @State private var recipient = ""
     @State private var workMode: BotTeamMessageWorkMode = .chat
     @State private var reply: BotTeamChannelMessage?
+    @State private var mentionDismissed: Int?
+    @State private var mentionIndex = 0
     @State private var confirmingStop: BotTeamRun?
     @State private var visible = false
     @State private var showingDetails = false
@@ -327,6 +329,10 @@ struct BotTeamDetailView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @FocusState private var taskFocused: Bool
     @State private var expandedMessages: Set<String> = []
+    @State private var dismissedChoices: Set<String> = []
+    @State private var choiceBusy = ""
+    @State private var choiceNote = ""
+    @State private var choiceResumeKey = UUID().uuidString
     private var team: BotTeam? { workspace.teams?.teams.first { $0.id == teamId } }
     private var channel: BotTeamChannel? { workspace.channels[teamId] }
     private var channelKey: String { BotWorkspaceStore.channelKey(teamId) }
@@ -377,6 +383,12 @@ struct BotTeamDetailView: View {
                             }
                             if entries.isEmpty { emptyChannel(team) }
                             channelMessages(team)
+                            if let resolved = roomChoice {
+                                RoomChoiceCard(question: resolved.choice.question, options: resolved.choice.options, busy: choiceBusy) { optionId in
+                                    Task { await chooseRoomChoice(resolved, optionId: optionId) }
+                                }
+                                if !choiceNote.isEmpty { Text(choiceNote).font(.caption).foregroundStyle(StrataTheme.warning).fixedSize(horizontal: false, vertical: true) }
+                            }
                         } else if let channel {
                             Text(channel.reason ?? "Shared team channels require a newer Strata on your Mac.")
                                 .font(.callout).foregroundStyle(.secondary).padding(.vertical, 24)
@@ -597,7 +609,7 @@ struct BotTeamDetailView: View {
                                 BotTeamEarlierWorkNotice(overview: overview, stale: workspace.messages["activity"] != nil) { workHistoryExpanded = true }
                             }
                             BotWorkspaceMessage(workspace: workspace, key: "activity")
-                        } header: { Text("Current work") } footer: { Text("Review submitted evidence or prepare recovery for one unfinished task.") }
+                        } header: { Text("Current work") } footer: { Text("Review submitted evidence, or decide what to do with work that stopped.") }
                         if !overview.history.isEmpty {
                             Section {
                                 Button { workHistoryExpanded.toggle() } label: {
@@ -687,6 +699,60 @@ struct BotTeamDetailView: View {
             .accessibilityIdentifier("toggleBotTeamEnabledButton")
     }
 
+    private var roomChoice: RoomChoiceResolved? {
+        let event = channel?.needsChoice.map { value in
+            RoomChoiceEvent(type: value.type, id: value.id ?? "", teamId: value.teamId ?? "", jobId: value.jobId ?? "", runId: value.runId ?? "", question: value.question, options: value.options.map { RoomChoiceOption(id: $0.id, label: $0.label, style: $0.style) })
+        }
+        return RoomChoice.resolve(roomTeamId: teamId, event: event, tasks: ordinaryTeamActivity.map { item in
+            RoomChoiceTask(id: item.id, teamId: item.teamId, runId: item.runId, state: item.state, updatedAt: choiceStamp(item.updatedAt), status: item.work?.status.rawValue ?? "", revision: item.work?.revision ?? 0, recoveryJobId: item.work?.recoveryJobId, legacy: item.work?.legacy == true)
+        }, activeRunIds: activeRuns.map(\.id), dismissedIds: dismissedChoices)
+    }
+    private func choiceStamp(_ value: BotWorkspaceTimestamp?) -> String {
+        switch value {
+        case .iso8601(let text): return text
+        case .milliseconds(let number): return String(format: "%016.0f", number)
+        case nil: return ""
+        }
+    }
+    private func chooseRoomChoice(_ resolved: RoomChoiceResolved, optionId: String) async {
+        guard choiceBusy.isEmpty, let action = RoomChoice.action(optionId, teamId: resolved.teamId.isEmpty ? teamId : resolved.teamId, jobId: resolved.jobId, runId: resolved.runId, revision: resolved.revision) else {
+            choiceNote = "That choice is not available yet."
+            return
+        }
+        choiceNote = ""
+        switch action {
+        case .skip:
+            dismissedChoices.insert(resolved.key)
+        case .different:
+            dismissedChoices.insert(resolved.key)
+            taskFocused = true
+        case .stop(_, let runId):
+            guard let run = activeRuns.first(where: { $0.id == runId }) ?? runs.first(where: { $0.id == runId }) else {
+                choiceNote = "That work is no longer running."
+                return
+            }
+            choiceBusy = optionId
+            await workspace.stopRun(run)
+            dismissedChoices.insert(resolved.key)
+            await workspace.refreshChannel(teamId)
+            choiceBusy = ""
+        case .resume(let team, let jobId, _):
+            guard let item = workspace.activity.first(where: { $0.id == jobId && $0.teamId == team }) else {
+                choiceNote = "That work is no longer in this room."
+                return
+            }
+            choiceBusy = optionId
+            await workspace.refreshRecovery(item)
+            if let plan = workspace.recoveryPlans[item.id], plan.canResume, await workspace.resumeWork(item, plan: plan, idempotencyKey: choiceResumeKey) != nil {
+                dismissedChoices.insert(resolved.key)
+                choiceNote = ""
+                choiceResumeKey = UUID().uuidString
+            } else {
+                choiceNote = workspace.messages[BotWorkspaceStore.workKey(item.id)] ?? "This work cannot continue yet."
+            }
+            choiceBusy = ""
+        }
+    }
     private func channelMessages(_ team: BotTeam) -> some View {
         let rows = entries.map { CoucouRow(id: $0.id, own: $0.author.type == "user") }
         let ready = channel != nil && !workspace.loading.contains(channelKey)
@@ -794,8 +860,47 @@ struct BotTeamDetailView: View {
             if run.isActive { Button("Stop team task", role: .destructive) { confirmingStop = run }.buttonStyle(.borderless).disabled(workspace.mutation != nil).accessibilityIdentifier("stopBotTeamRunDetails-\(run.id)") }
         }.padding(.vertical, 6)
     }
+    private func mentionRoster(_ team: BotTeam) -> [RoomMentionMember] {
+        team.memberIds.map { id in RoomMentionMember(id: id, name: store.botCatalog?.bots.first { $0.id == id }?.name ?? "") }
+    }
+    private func insertMention(_ choice: RoomMentionChoice, team: BotTeam, active: RoomMentionQuery) {
+        let token = RoomMention.insertion(choice: choice, members: mentionRoster(team))
+        let next = RoomMention.insert(text: message, query: active, cursor: message.count, token: token)
+        message = next.text
+        mentionDismissed = nil
+        requestId = UUID().uuidString
+        taskFocused = true
+    }
+    private func mentionKey(_ team: BotTeam, action: String) -> KeyPress.Result {
+        let roster = mentionRoster(team)
+        guard let active = RoomMention.query(text: message, cursor: message.count) else { return .ignored }
+        let choices = RoomMention.choices(members: roster, query: active.query)
+        guard RoomMention.listVisible(activeStart: active.start, dismissedStart: mentionDismissed, choiceCount: choices.count) else { return .ignored }
+        switch action {
+        case "up", "down":
+            mentionIndex = RoomMention.moveIndex(mentionIndex, count: choices.count, direction: action)
+            return .handled
+        case "pick":
+            insertMention(choices[min(max(mentionIndex, 0), choices.count - 1)], team: team, active: active)
+            return .handled
+        case "close":
+            mentionDismissed = active.start
+            return .handled
+        default:
+            return .ignored
+        }
+    }
     private func composer(_ team: BotTeam) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let roster = mentionRoster(team)
+        let active = RoomMention.query(text: message, cursor: message.count)
+        let choices = active.map { RoomMention.choices(members: roster, query: $0.query) } ?? []
+        let showMentions = RoomMention.listVisible(activeStart: active?.start, dismissedStart: mentionDismissed, choiceCount: choices.count)
+        return VStack(alignment: .leading, spacing: 8) {
+            if showMentions, let active {
+                RoomMentionList(choices: choices, selected: min(mentionIndex, max(choices.count - 1, 0)), face: { choice in
+                    store.botCatalog?.bots.first { $0.id == choice.memberID }?.face ?? .default(for: choice.label)
+                }, onPick: { insertMention($0, team: team, active: active) })
+            }
             if let reply {
                 HStack(alignment: .top) {
                     Text("Replying to \(reply.author.name)").font(.caption).lineLimit(1).accessibilityIdentifier("teamReplyContext")
@@ -841,6 +946,11 @@ struct BotTeamDetailView: View {
                 HStack(alignment: .bottom, spacing: 4) {
                     TextField(channel?.supported == true ? "Message…" : "What should this team do?", text: $message, axis: .vertical).lineLimit(1...5)
                         .focused($taskFocused).padding(.leading, 17).padding(.vertical, 14).accessibilityIdentifier("botTeamTaskInput")
+                        .onKeyPress(.upArrow) { mentionKey(team, action: "up") }
+                        .onKeyPress(.downArrow) { mentionKey(team, action: "down") }
+                        .onKeyPress(.escape) { mentionKey(team, action: "close") }
+                        .onKeyPress(.return) { mentionKey(team, action: "pick") }
+                        .onKeyPress(.tab) { mentionKey(team, action: "pick") }
                     Button { send(team) } label: { Image(systemName: "arrow.up").font(.system(size: 19, weight: .semibold)).frame(width: 40, height: 40).foregroundStyle(StrataTheme.primaryInk).background(StrataTheme.primaryFill, in: Circle()) }
                         .padding(4).accessibilityLabel(channel?.supported == true ? "Send to team" : "Start task")
                         .disabled(channel == nil || !team.enabled || message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || message.utf16.count > 16_000 || workspace.mutation != nil)
@@ -853,6 +963,10 @@ struct BotTeamDetailView: View {
             if !team.enabled { Button("Review and enable your team") { settingsExpanded = true; showingDetails = true }.font(.caption).accessibilityIdentifier("reviewTeamForChatButton") }
         }.padding(.horizontal, 16).padding(.vertical, 10).background(StrataTheme.background)
             .background { GeometryReader { geometry in Color.clear.preference(key: BotTeamLegacyScrollPreference.self, value: .init(bottomInset: geometry.size.height)) } }
+            .onChange(of: message) { _, newValue in
+                if RoomMention.query(text: newValue, cursor: newValue.count) == nil { mentionDismissed = nil }
+                mentionIndex = 0
+            }
     }
     private func recipientPicker(_ team: BotTeam) -> some View {
         Picker("Recipients", selection: $recipient) {
@@ -865,7 +979,8 @@ struct BotTeamDetailView: View {
     private func send(_ team: BotTeam) {
         taskFocused = false
         let generation = navigation, text = message, request = requestId
-        let draft = BotTeamChannelPost(message: text, requestId: request, recipientIds: recipient.isEmpty ? nil : recipient == "everyone" ? team.memberIds : [recipient], replyToId: reply?.id, workMode: supportsCoordinatorWork ? workMode : nil, durablePlan: supportsCoordinatorWork && workspace.workPlansSupported && workMode == .work ? true : nil, everyone: recipient == "everyone" ? true : nil)
+        let audience = RoomMention.audience(text: text, recipient: recipient, memberIds: team.memberIds)
+        let draft = BotTeamChannelPost(message: text, requestId: request, recipientIds: audience.recipientIds, replyToId: reply?.id, workMode: supportsCoordinatorWork ? workMode : nil, durablePlan: supportsCoordinatorWork && workspace.workPlansSupported && workMode == .work ? true : nil, everyone: audience.everyone)
         Task {
             let sent: Bool
             if channel?.supported == true { sent = await workspace.postTeamMessage(team, draft: draft) }
@@ -1049,7 +1164,7 @@ private struct BotActivityView: View {
         VStack(alignment: .leading, spacing: 9) {
             if workspace.workReviewSupported, item.work != nil {
                 BotTeamTaskLabel(item: item, stale: workspace.messages["activity"] != nil, ownerName: item.botId.map(botName))
-                Button("Results & recovery", systemImage: "checklist") { reviewingWork = item }
+                Button("Results", systemImage: "checklist") { reviewingWork = item }
                     .buttonStyle(.borderless).accessibilityIdentifier("openTeamWork-" + item.id)
             } else {
                 HStack(alignment: .top, spacing: 12) {
@@ -1625,12 +1740,12 @@ private struct BotTeamTaskReviewView: View {
                 }
                 if work.canPlanRecovery {
                     Section {
-                        Button("Prepare recovery", systemImage: "arrow.clockwise") { Task { await workspace.refreshRecovery(current) } }
+                        Button("Check what stopped", systemImage: "arrow.clockwise") { Task { await workspace.refreshRecovery(current) } }
                             .disabled(busy).accessibilityIdentifier("prepareTeamRecoveryButton")
                         Text("Review the saved context and exact working computer before you resume this one unfinished task.").font(.caption).foregroundStyle(.secondary)
-                    } header: { Text("Recovery") }
+                    } header: { Text("What stopped") }
                 } else if work.recoveryJobId != nil {
-                    Section("Recovery") { Text("A continuation was already created for this task. Its results appear in the team's task list.").font(.callout).accessibilityIdentifier("teamWorkAlreadyRecovered") }
+                    Section("Already continued") { Text("A continuation was already created for this task. Its results appear in the team's task list.").font(.callout).accessibilityIdentifier("teamWorkAlreadyRecovered") }
                 }
                 if let plan { recoverySection(plan, current: current) }
                 if !work.reviewHistory.isEmpty {
@@ -1711,12 +1826,12 @@ private struct BotTeamTaskReviewView: View {
             if let reason = plan.blockedReason, !reason.isEmpty { Text(reason).font(.callout).foregroundStyle(StrataTheme.warning).accessibilityIdentifier("teamRecoveryBlockedReason") }
             TimelineView(.periodic(from: .now, by: 1)) { clock in
                 let expired = plan.isExpired(at: clock.date)
-                if expired { Text("This recovery plan expired. Prepare a fresh plan before resuming.").font(.caption).foregroundStyle(StrataTheme.warning) }
+                if expired { Text("This check expired. Check again before trying again.").font(.caption).foregroundStyle(StrataTheme.warning) }
                 Button("Resume this task", systemImage: "play.fill") { resumeTarget = current; resumePlan = plan; confirmingResume = true }
                     .disabled(busy || !plan.canResume || expired || work?.canPlanRecovery != true || work?.revision != plan.expectedRevision)
                     .accessibilityIdentifier("resumeTeamWorkButton")
             }
-        } header: { Text("Recovery plan") } footer: { Text("Resume is explicit. Tool approvals and computer permissions still apply.") }
+        } header: { Text("Saved context") } footer: { Text("Resume is explicit. Tool approvals and computer permissions still apply.") }
     }
 }
 

@@ -251,6 +251,190 @@ struct StrataTeamAvatars: View {
     }
 }
 
+struct RoomMentionMember: Equatable {
+    var id: String
+    var name: String
+}
+
+struct RoomMentionQuery: Equatable {
+    var start: Int
+    var query: String
+}
+
+struct RoomMentionChoice: Equatable {
+    var kind: String
+    var memberID: String
+    var label: String
+    var rowID: String { "\(kind):\(memberID)" }
+}
+
+struct RoomMentionEdit: Equatable {
+    var text: String
+    var cursor: Int
+}
+
+struct RoomMentionAudience: Equatable {
+    var recipientIds: [String]?
+    var everyone: Bool?
+}
+
+/// Mention text for a room composer. Inserting a token does not choose recipients.
+enum RoomMention {
+    static func query(text: String, cursor: Int) -> RoomMentionQuery? {
+        let chars = Array(text)
+        let end = max(0, min(cursor, chars.count))
+        guard end > 0 else { return nil }
+        var at = -1
+        var index = end - 1
+        while index >= 0 {
+            let character = chars[index]
+            if character == "@" { at = index; break }
+            if character.isWhitespace { return nil }
+            if index == 0 { break }
+            index -= 1
+        }
+        guard at >= 0 else { return nil }
+        if at > 0, !chars[at - 1].isWhitespace { return nil }
+        let query = String(chars[(at + 1)..<end])
+        if query.contains(where: { $0.isWhitespace || $0 == "@" }) { return nil }
+        return RoomMentionQuery(start: at, query: query)
+    }
+
+    static func choices(members: [RoomMentionMember], query: String) -> [RoomMentionChoice] {
+        let needle = query.lowercased()
+        func matches(_ value: String) -> Bool { value.lowercased().contains(needle) }
+        var rows: [RoomMentionChoice] = []
+        if matches("everyone") || (!needle.isEmpty && "all".hasPrefix(needle)) {
+            rows.append(RoomMentionChoice(kind: "everyone", memberID: "everyone", label: "everyone"))
+        }
+        for member in members {
+            let trimmed = member.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let label = trimmed.isEmpty ? "Unavailable bot" : trimmed
+            if matches(label) || matches(member.id) {
+                rows.append(RoomMentionChoice(kind: "member", memberID: member.id, label: label))
+            }
+        }
+        return rows
+    }
+
+    static func nameRoutes(_ name: String) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > 1 else { return false }
+        let escaped = NSRegularExpression.escapedPattern(for: trimmed)
+        guard let expression = try? NSRegularExpression(pattern: "(?:^|\\s)@\(escaped)\\b", options: [.caseInsensitive]) else { return false }
+        let sample = "@\(trimmed) "
+        return expression.firstMatch(in: sample, range: NSRange(sample.startIndex..., in: sample)) != nil
+    }
+
+    static func insertion(choice: RoomMentionChoice, members: [RoomMentionMember]) -> String {
+        if choice.kind == "everyone" { return "@everyone " }
+        let name = members.first { $0.id == choice.memberID }?.name.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return nameRoutes(name) ? "@\(name) " : "@\(choice.memberID) "
+    }
+
+    static func insert(text: String, query: RoomMentionQuery, cursor: Int, token: String) -> RoomMentionEdit {
+        let chars = Array(text)
+        let start = max(0, min(query.start, chars.count))
+        let end = max(start, min(cursor, chars.count))
+        let next = String(chars[..<start]) + token + String(chars[end...])
+        return RoomMentionEdit(text: next, cursor: start + token.count)
+    }
+
+    static func keyAction(_ key: String) -> String {
+        switch key {
+        case "ArrowDown": return "down"
+        case "ArrowUp": return "up"
+        case "Enter", "Tab": return "pick"
+        case "Escape", " ": return "close"
+        default: return "noop"
+        }
+    }
+
+    static func keyStops(_ key: String) -> Bool {
+        let action = keyAction(key)
+        return action == "down" || action == "up" || action == "pick" || key == "Escape"
+    }
+
+    static func moveIndex(_ index: Int, count: Int, direction: String) -> Int {
+        guard count > 0 else { return 0 }
+        let current = min(max(index, 0), count - 1)
+        return direction == "down" ? min(current + 1, count - 1) : max(current - 1, 0)
+    }
+
+    static func listVisible(activeStart: Int?, dismissedStart: Int?, choiceCount: Int) -> Bool {
+        guard let activeStart, choiceCount > 0 else { return false }
+        return activeStart != dismissedStart
+    }
+
+    static func addressesEveryone(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let expression = try? NSRegularExpression(pattern: "(?:^|\\s)@(?:everyone|all)\\b", options: [.caseInsensitive]) else { return false }
+        return expression.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)) != nil
+    }
+
+    static func audience(text: String, recipient: String, memberIds: [String]) -> RoomMentionAudience {
+        if recipient == "everyone" { return RoomMentionAudience(recipientIds: memberIds, everyone: true) }
+        if !recipient.isEmpty { return RoomMentionAudience(recipientIds: [recipient], everyone: nil) }
+        if addressesEveryone(text) { return RoomMentionAudience(recipientIds: nil, everyone: true) }
+        return RoomMentionAudience(recipientIds: nil, everyone: nil)
+    }
+}
+
+struct RoomMentionList: View {
+    var choices: [RoomMentionChoice]
+    var selected: Int
+    var face: (RoomMentionChoice) -> AvatarConfig
+    var onPick: (RoomMentionChoice) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var shown = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(Array(choices.enumerated()), id: \.element.rowID) { index, choice in
+                Button { onPick(choice) } label: {
+                    HStack(spacing: 10) {
+                        if choice.kind == "everyone" {
+                            Image(systemName: "person.2.fill")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(StrataTheme.ink.opacity(0.72))
+                                .frame(width: 28, height: 28)
+                                .background(StrataTheme.surfaceSecondary, in: Circle())
+                        } else {
+                            AvatarBadge(face(choice), size: 28)
+                        }
+                        Text(choice.label)
+                            .font(.body)
+                            .foregroundStyle(StrataTheme.ink)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(index == selected ? StrataTheme.surfaceSecondary : Color.clear, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier(choice.kind == "everyone" ? "teamMention-everyone" : "teamMention-\(choice.memberID)")
+            }
+        }
+        .padding(8)
+        .background(StrataTheme.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .shadow(color: .black.opacity(0.28), radius: 16, y: 6)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("teamMentionList")
+        .offset(y: reduceMotion || shown ? 0 : CoucouMotion.messageRise)
+        .opacity(reduceMotion || shown ? 1 : 0)
+        .onAppear {
+            guard !reduceMotion else { shown = true; return }
+            withAnimation(.spring(response: CoucouMotion.springResponse, dampingFraction: CoucouMotion.springDamping)) {
+                shown = true
+            }
+        }
+    }
+}
+
 /// Coucou chat motion. Springs stay at response 0.28 and damping 0.82.
 enum CoucouMotion {
     static let springResponse = 0.28
@@ -466,6 +650,169 @@ func coucouKind(mood: BotMood, paused: Bool) -> BreathingStatusDot.Kind {
     if mood == .needsApproval || mood == .error { return .attention }
     if mood == .thinking || mood == .working { return .working }
     return .idle
+}
+
+struct RoomChoiceOption: Equatable {
+    var id: String
+    var label: String
+    var style: String?
+}
+
+struct RoomChoiceCardModel: Equatable {
+    var question: String
+    var options: [RoomChoiceOption]
+}
+
+struct RoomChoiceTask: Equatable {
+    var id: String
+    var teamId: String
+    var runId: String
+    var state: String
+    var updatedAt: String
+    var status: String
+    var revision: Int
+    var recoveryJobId: String?
+    var legacy: Bool
+}
+
+struct RoomChoiceEvent: Equatable {
+    var type: String
+    var id: String
+    var teamId: String
+    var jobId: String
+    var runId: String
+    var question: String
+    var options: [RoomChoiceOption]
+}
+
+struct RoomChoiceResolved: Equatable {
+    var key: String
+    var source: String
+    var teamId: String
+    var jobId: String
+    var runId: String
+    var revision: Int
+    var choice: RoomChoiceCardModel
+}
+
+enum RoomChoiceActionKind: Equatable {
+    case resume(teamId: String, jobId: String, revision: Int)
+    case stop(teamId: String, runId: String)
+    case skip
+    case different
+}
+
+/// Same choice card as the Mac room. An event wins; otherwise a stalled task supplies plain buttons.
+enum RoomChoice {
+    static let stalledQuestion = "The work stopped partway through. Want me to try again?"
+    private static let activeRun: Set<String> = ["queued", "running", "stopping", "cleanup_pending"]
+
+    static func resolve(roomTeamId: String, event: RoomChoiceEvent?, tasks: [RoomChoiceTask], activeRunIds: [String], dismissedIds: Set<String>) -> RoomChoiceResolved? {
+        if let event, let choice = card(from: event) {
+            let key = event.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "needs-choice:\(event.jobId.isEmpty ? choice.question : event.jobId)" : event.id
+            let jobKey = event.jobId.isEmpty ? "" : "job:\(event.jobId)"
+            if !dismissedIds.contains(key), jobKey.isEmpty || !dismissedIds.contains(jobKey) {
+                let revision = tasks.first { $0.id == event.jobId }?.revision ?? 0
+                return RoomChoiceResolved(key: key, source: "event", teamId: event.teamId.isEmpty ? roomTeamId : event.teamId, jobId: event.jobId, runId: event.runId, revision: revision, choice: choice)
+            }
+        }
+        let active = Set(activeRunIds)
+        let rows = tasks.filter { needsRecovery($0, active: active) && !dismissedIds.contains("job:\($0.id)") && !dismissedIds.contains($0.id) }
+            .sorted { $0.updatedAt == $1.updatedAt ? $0.id > $1.id : $0.updatedAt > $1.updatedAt }
+        guard let task = rows.first else { return nil }
+        return RoomChoiceResolved(key: "job:\(task.id)", source: "recovery", teamId: task.teamId, jobId: task.id, runId: task.runId, revision: task.revision, choice: RoomChoiceCardModel(question: stalledQuestion, options: [
+            RoomChoiceOption(id: "retry", label: "Try again", style: "primary"),
+            RoomChoiceOption(id: "skip", label: "Skip it", style: "neutral"),
+            RoomChoiceOption(id: "other", label: "A different approach", style: "neutral")
+        ]))
+    }
+
+    static func action(_ optionId: String, teamId: String, jobId: String, runId: String, revision: Int) -> RoomChoiceActionKind? {
+        let id = optionId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().replacingOccurrences(of: " ", with: "_").replacingOccurrences(of: "-", with: "_")
+        switch id {
+        case "retry", "try_again", "resume":
+            guard !teamId.isEmpty, !jobId.isEmpty else { return nil }
+            return .resume(teamId: teamId, jobId: jobId, revision: revision)
+        case "skip", "dismiss":
+            return .skip
+        case "other", "different", "different_approach":
+            return .different
+        case "stop":
+            guard !teamId.isEmpty, !runId.isEmpty else { return nil }
+            return .stop(teamId: teamId, runId: runId)
+        default:
+            return nil
+        }
+    }
+
+    private static func needsRecovery(_ task: RoomChoiceTask, active: Set<String>) -> Bool {
+        if task.legacy || !(task.recoveryJobId ?? "").isEmpty { return false }
+        if task.status != "blocked" && task.status != "interrupted" { return false }
+        if activeRun.contains(task.state) || active.contains(task.runId) { return false }
+        return true
+    }
+
+    private static func card(from event: RoomChoiceEvent) -> RoomChoiceCardModel? {
+        guard event.type == "needs-choice" else { return nil }
+        let question = event.question.trimmingCharacters(in: .whitespacesAndNewlines)
+        let options = event.options.compactMap { option -> RoomChoiceOption? in
+            let id = option.id.trimmingCharacters(in: .whitespacesAndNewlines)
+            let label = option.label.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !id.isEmpty, !label.isEmpty else { return nil }
+            let style = ["primary", "neutral", "danger"].contains(option.style ?? "") ? option.style : nil
+            return RoomChoiceOption(id: id, label: label, style: style)
+        }
+        guard !question.isEmpty, !options.isEmpty else { return nil }
+        return RoomChoiceCardModel(question: question, options: options)
+    }
+}
+
+struct RoomChoiceCard: View {
+    var question: String
+    var options: [RoomChoiceOption]
+    var busy: String
+    var onChoose: (String) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var shown = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(question).font(.body).foregroundStyle(StrataTheme.ink).fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(options, id: \.id) { option in
+                    if option.style == "primary" {
+                        Button(busy == option.id ? "Working…" : option.label) { onChoose(option.id) }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(!busy.isEmpty)
+                            .accessibilityIdentifier("teamRoomChoice-\(option.id)")
+                    } else if option.style == "danger" {
+                        Button(busy == option.id ? "Working…" : option.label) { onChoose(option.id) }
+                            .buttonStyle(.bordered)
+                            .tint(.red)
+                            .disabled(!busy.isEmpty)
+                            .accessibilityIdentifier("teamRoomChoice-\(option.id)")
+                    } else {
+                        Button(busy == option.id ? "Working…" : option.label) { onChoose(option.id) }
+                            .buttonStyle(.bordered)
+                            .disabled(!busy.isEmpty)
+                            .accessibilityIdentifier("teamRoomChoice-\(option.id)")
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(StrataTheme.surface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(StrataTheme.line.opacity(0.7), lineWidth: 1))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("teamRoomChoice")
+        .offset(y: reduceMotion || shown ? 0 : CoucouMotion.messageRise)
+        .opacity(reduceMotion || shown ? 1 : 0)
+        .onAppear {
+            guard !reduceMotion else { shown = true; return }
+            withAnimation(.spring(response: CoucouMotion.springResponse, dampingFraction: CoucouMotion.springDamping)) { shown = true }
+        }
+    }
 }
 
 private struct CoucouVisibility: ViewModifier {

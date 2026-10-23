@@ -1,5 +1,6 @@
 /** Bot profiles are separate from model-serving connections and their credentials. */
 import type { Session } from './types';
+import type { NeedsChoiceEvent } from './room-choice';
 export const BOT_PROVIDERS = [
   { id: 'claude', name: 'Claude Code' },
   { id: 'codex', name: 'Codex' },
@@ -111,7 +112,7 @@ export interface BotTeamChannelMessage {
 }
 export interface BotTeamChannelPreview { id: string; sequence: number; kind: BotTeamChannelMessage['kind']; author: Pick<BotTeamChannelAuthor, 'type'|'name'|'botId'>; content: string; createdAt: string }
 export interface BotTeamPresence { botId: string; state: 'working' | 'queued'; runId: string; jobId: string }
-export interface BotTeamChannelSnapshot { teamId: string; supported: boolean; messages: BotTeamChannelMessage[]; activeRuns: BotTeamRun[]; nextSequence: number; hasMore?: boolean; hasMoreBefore?: boolean; firstSequence?: number; presence?: BotTeamPresence[] }
+export interface BotTeamChannelSnapshot { teamId: string; supported: boolean; messages: BotTeamChannelMessage[]; activeRuns: BotTeamRun[]; nextSequence: number; hasMore?: boolean; hasMoreBefore?: boolean; firstSequence?: number; presence?: BotTeamPresence[]; needsChoice?: NeedsChoiceEvent | null }
 /** Sidebar summary from GET /api/bots/summary and the bot-summary stream. */
 export interface BotRoomLastMessage { at: string; preview: string; authorName: string }
 export interface BotRoomWorking { botId: string; name: string; state: 'working' | 'queued' }
@@ -152,15 +153,19 @@ export interface BotConnection { id: string; name: string; transport: 'stdio'|'h
 export interface BotConnectionsSnapshot { connections: BotConnection[]; connectorFeatures?: BotConnectorFeatures }
 export interface BotProviderModel { id: string; name: string; efforts: string[]; defaultEffort?: string }
 export interface BotProviderModels { provider: string; models: BotProviderModel[]; detail?: string }
+export const TEAM_MEMBER_CAP = 12;
 export const DEFAULT_BOT_TEAM_LIMITS: BotTeamLimits = { maxParallel: 2, maxDepth: 2, maxHops: 8, maxTurns: 24, maxDurationMs: 600000 };
 export const CONTINUOUS_BOT_TEAM_LIMITS: BotTeamLimits = { maxParallel: 0, maxDepth: 0, maxHops: 0, maxTurns: 0, maxDurationMs: 0 };
 export function botTeamWorkLabel(limits: BotTeamLimits, continuous = false, unrestricted = false) { return continuous ? 'All available teammates · Until finished or stopped' : `${botTeamParallelLabel(limits, unrestricted)} · ${limits.maxTurns} ${unrestricted ? 'work turns' : 'turns'} · ${Math.round(limits.maxDurationMs / 60000)} minute limit`; }
 export function botTeamParallelLabel(limits: BotTeamLimits, unrestricted = false) { return unrestricted || limits.maxParallel === 0 ? 'All available teammates' : `${limits.maxParallel} parallel tasks`; }
 export function botTeamRunActive(state: string) { return ['queued', 'running', 'stopping', 'cleanup_pending'].includes(state); }
+export function teamRosterCount(memberIds: readonly string[] | undefined) { return Array.isArray(memberIds) ? memberIds.length : 0; }
+export function teamRosterLabel(count: number) { return count === 1 ? '1 member' : `${count} members`; }
+export function teamOverRosterCap(count: number) { return count > TEAM_MEMBER_CAP; }
 export function botActivityLabel(state: string) { return ({ queued: 'Queued', running: 'Working', completed: 'Completed', error: 'Failed', cancelled: 'Stopped', interrupted: 'Interrupted', stopping: 'Stopping…', cleanup_pending: 'Checking cleanup', delivered: 'Delivered', pending: 'Waiting', accepted: 'Accepted', refused: 'Refused' } as Record<string, string>)[state] ?? state; }
 export function botTeamDraftError(draft: Pick<BotTeam, 'name'|'memberIds'|'coordinatorId'|'limits'> & { execution?: BotTeamExecution; briefing?: BotTeamBriefing; talkativeness?: Record<string, number>; bidding?: boolean; selectorBotId?: string | null }, bots: Pick<Bot,'id'>[], computers?: BotTeamComputer[], unrestricted = false, continuous = false): string | null {
   if (!draft.name.trim() || draft.name.trim().length>80) return 'Give this team a name of up to 80 characters.';
-  if (draft.memberIds.length < 2 || draft.memberIds.length > 12) return 'Choose from 2 to 12 team members.';
+  if (draft.memberIds.length < 2 || draft.memberIds.length > TEAM_MEMBER_CAP) return 'Choose from 2 to 12 team members.';
   if (new Set(draft.memberIds).size !== draft.memberIds.length || draft.memberIds.some(id => !bots.some(bot => bot.id === id))) return 'Choose available bots for this team.';
   if (!draft.memberIds.includes(draft.coordinatorId)) return 'Choose a coordinator from this team.';
   if (draft.bidding !== undefined && typeof draft.bidding !== 'boolean') return 'Choose whether teammates bid to speak.';
@@ -171,7 +176,7 @@ export function botTeamDraftError(draft: Pick<BotTeam, 'name'|'memberIds'|'coord
   }
   if (draft.briefing) {
     const cleanText = (value: string, max: number) => typeof value === 'string' && value.length <= max && !value.includes('\0') && !Array.from(value).some(character => { const point = character.codePointAt(0)!; return point >= 0xD800 && point <= 0xDFFF; });
-    if (!cleanText(draft.briefing.instructions, 8000) || !Array.isArray(draft.briefing.members) || draft.briefing.members.length > (unrestricted ? draft.memberIds.length : 12)) return 'Use team instructions of up to 8,000 characters.';
+    if (!cleanText(draft.briefing.instructions, 8000) || !Array.isArray(draft.briefing.members) || draft.briefing.members.length > (unrestricted ? draft.memberIds.length : TEAM_MEMBER_CAP)) return 'Use team instructions of up to 8,000 characters.';
     const seen = new Set<string>();
     let total = draft.briefing.instructions.length;
     for (const member of draft.briefing.members) {

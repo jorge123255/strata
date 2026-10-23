@@ -143,6 +143,10 @@
   .cua-bots-shell[data-list] { grid-template-columns: 52px minmax(0, 1fr); }
   .cua-roster-bot .status-dot { display: none; }
 }
+@media (max-width: 760px) {
+  .cua-bots-shell[data-list] { grid-template-columns: 52px minmax(0, 1fr); }
+  .cua-bots-shell[data-list] > .cua-bots-sidebar { display: flex; }
+}
 .cua-bots-sidebar { overflow: hidden; min-width: 0; }
 
 .cua-bot-profile.spring-pane {
@@ -182,6 +186,14 @@
 
 .nav-roster__sub .typing { margin-right: 6px; }
 
+@keyframes mentionIn {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+.bot-room-mentions {
+  animation: mentionIn 0.3s var(--ease-pop) both;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .msg-enter,
   .stream-word,
@@ -201,12 +213,16 @@
   .chatsplit,
   .contextpanel,
   .ws__sessions,
-  .cua-bots-shell {
+  .cua-bots-shell,
+  .bot-room-mentions,
+  .bot-room-choice {
     animation: none !important;
     transition: none !important;
   }
   .msg-enter,
-  .stream-word { opacity: 1; transform: none; }
+  .stream-word,
+  .bot-room-mentions,
+  .bot-room-choice { opacity: 1; transform: none; }
   .shimmer,
   .live-status__verb.shimmer {
     color: var(--st-ink-muted);
@@ -234,12 +250,16 @@
 [data-motion='reduced'] .chatsplit,
 [data-motion='reduced'] .contextpanel,
 [data-motion='reduced'] .ws__sessions,
-[data-motion='reduced'] .cua-bots-shell {
+[data-motion='reduced'] .cua-bots-shell,
+[data-motion='reduced'] .bot-room-mentions,
+[data-motion='reduced'] .bot-room-choice {
   animation: none !important;
   transition: none !important;
 }
 [data-motion='reduced'] .msg-enter,
-[data-motion='reduced'] .stream-word { opacity: 1; transform: none; }
+[data-motion='reduced'] .stream-word,
+[data-motion='reduced'] .bot-room-mentions,
+[data-motion='reduced'] .bot-room-choice { opacity: 1; transform: none; }
 [data-motion='reduced'] .shimmer,
 [data-motion='reduced'] .live-status__verb.shimmer {
   color: var(--st-ink-muted);
