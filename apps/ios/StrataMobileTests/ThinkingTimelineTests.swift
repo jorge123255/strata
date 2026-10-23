@@ -172,4 +172,65 @@ final class ThinkingTimelineTests: XCTestCase {
         arrivals.begin(key: "other", rows: [CoucouRow(id: "m1", own: false)], ready: true)
         XCTAssertNil(arrivals.entrance(id: "m1"))
     }
+
+    func testRoomMentionQueryFiltersAndInsertsRoutableTokens() {
+        let phrase = "U try there a ui flaw there should be a @"
+        XCTAssertEqual(RoomMention.query(text: phrase, cursor: phrase.count)?.start, phrase.count - 1)
+        XCTAssertEqual(RoomMention.query(text: phrase, cursor: phrase.count)?.query, "")
+        XCTAssertEqual(RoomMention.query(text: "hello @bot", cursor: "hello @bot".count)?.query, "bot")
+        XCTAssertEqual(RoomMention.query(text: "hello\n@Bo", cursor: "hello\n@Bo".count)?.query, "Bo")
+        XCTAssertNil(RoomMention.query(text: "hello @bot ", cursor: "hello @bot ".count))
+        XCTAssertNil(RoomMention.query(text: "email@bot", cursor: "email@bot".count))
+        XCTAssertNil(RoomMention.query(text: "say email@everyone", cursor: "say email@everyone".count))
+        let members = [
+            RoomMentionMember(id: "bot_dev", name: "Bot Strata Dev"),
+            RoomMentionMember(id: "bot_helper", name: "Bot Strata Helper"),
+            RoomMentionMember(id: "bot_short", name: "A"),
+            RoomMentionMember(id: "bot_mark", name: "Bot (Dev)")
+        ]
+        XCTAssertEqual(RoomMention.choices(members: members, query: "").map(\.label), ["everyone", "Bot Strata Dev", "Bot Strata Helper", "A", "Bot (Dev)"])
+        XCTAssertEqual(RoomMention.choices(members: members, query: "HELPER").map(\.memberID), ["bot_helper"])
+        XCTAssertEqual(RoomMention.choices(members: members, query: "bot_dev").map(\.memberID), ["bot_dev"])
+        XCTAssertEqual(RoomMention.choices(members: members, query: "eve").map(\.label), ["everyone"])
+        XCTAssertEqual(RoomMention.choices(members: members, query: "all").map(\.label), ["everyone"])
+        XCTAssertEqual(RoomMention.choices(members: [RoomMentionMember(id: "missing", name: "")], query: "").map(\.label), ["everyone", "Unavailable bot"])
+        XCTAssertTrue(RoomMention.choices(members: members, query: "zzzz").isEmpty)
+        let dev = RoomMention.choices(members: members, query: "Dev")[0]
+        XCTAssertEqual(RoomMention.insertion(choice: dev, members: members), "@Bot Strata Dev ")
+        let short = RoomMention.choices(members: members, query: "bot_short")[0]
+        XCTAssertEqual(RoomMention.insertion(choice: short, members: members), "@bot_short ")
+        XCTAssertEqual(RoomMention.insertion(choice: RoomMention.choices(members: members, query: "")[0], members: members), "@everyone ")
+        let marked = RoomMention.choices(members: members, query: "Bot (Dev)")[0]
+        XCTAssertEqual(RoomMention.insertion(choice: marked, members: members), "@bot_mark ")
+        XCTAssertFalse(RoomMention.nameRoutes("Bot (Dev)"))
+        XCTAssertTrue(RoomMention.nameRoutes("Bot Strata Dev"))
+        let partial = "there should be a @he"
+        let active = RoomMentionQuery(start: partial.distance(from: partial.startIndex, to: partial.lastIndex(of: "@") ?? partial.startIndex), query: "he")
+        let placed = RoomMention.insert(text: partial, query: active, cursor: partial.count, token: "@Bot Strata Helper ")
+        XCTAssertEqual(placed.text, "there should be a @Bot Strata Helper ")
+        XCTAssertEqual(placed.cursor, placed.text.count)
+        XCTAssertEqual(RoomMention.keyAction("ArrowDown"), "down")
+        XCTAssertEqual(RoomMention.keyAction("ArrowUp"), "up")
+        XCTAssertEqual(RoomMention.keyAction("Enter"), "pick")
+        XCTAssertEqual(RoomMention.keyAction("Tab"), "pick")
+        XCTAssertEqual(RoomMention.keyAction("Escape"), "close")
+        XCTAssertEqual(RoomMention.keyAction(" "), "close")
+        XCTAssertFalse(RoomMention.keyStops(" "))
+        XCTAssertTrue(RoomMention.keyStops("Escape"))
+        XCTAssertEqual(RoomMention.moveIndex(0, count: 3, direction: "down"), 1)
+        XCTAssertEqual(RoomMention.moveIndex(2, count: 3, direction: "down"), 2)
+        XCTAssertEqual(RoomMention.moveIndex(0, count: 3, direction: "up"), 0)
+        XCTAssertTrue(RoomMention.listVisible(activeStart: 4, dismissedStart: nil, choiceCount: 1))
+        XCTAssertFalse(RoomMention.listVisible(activeStart: 4, dismissedStart: 4, choiceCount: 1))
+        XCTAssertFalse(RoomMention.listVisible(activeStart: nil, dismissedStart: 4, choiceCount: 1))
+        XCTAssertTrue(RoomMention.addressesEveryone("@everyone hi"))
+        XCTAssertTrue(RoomMention.addressesEveryone("please @all now"))
+        XCTAssertFalse(RoomMention.addressesEveryone("email@everyone"))
+        XCTAssertFalse(RoomMention.addressesEveryone("@everyoneish"))
+        let room = ["bot_dev", "bot_helper"]
+        XCTAssertEqual(RoomMention.audience(text: "@everyone hi", recipient: "", memberIds: room), RoomMentionAudience(recipientIds: nil, everyone: true))
+        XCTAssertEqual(RoomMention.audience(text: "@Bot Strata Dev hi", recipient: "", memberIds: room), RoomMentionAudience(recipientIds: nil, everyone: nil))
+        XCTAssertEqual(RoomMention.audience(text: "@everyone hi", recipient: "bot_dev", memberIds: room), RoomMentionAudience(recipientIds: ["bot_dev"], everyone: nil))
+        XCTAssertEqual(RoomMention.audience(text: "hello", recipient: "everyone", memberIds: room), RoomMentionAudience(recipientIds: room, everyone: true))
+    }
 }

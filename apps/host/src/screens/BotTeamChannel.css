@@ -81,7 +81,12 @@
 .bot-room-new { position:relative; align-self:flex-end; flex:none; margin:-42px 13px 8px 0; z-index:2; }
 .bot-room-new > button { display:flex; align-items:center; gap:8px; border:1px solid var(--st-line); border-radius:24px; background:var(--st-surface); box-shadow:0 3px 14px #0002; color:var(--st-ink); padding:9px 13px; font:11px var(--st-font); cursor:pointer; }
 .bot-room-new svg { transform:rotate(90deg); }
-.bot-room-composer { flex:none; width:min(100%,870px); align-self:center; min-width:0; padding:7px 0 0; }
+.bot-room-composer { position:relative; flex:none; width:min(100%,870px); align-self:center; min-width:0; padding:7px 0 0; }
+.bot-room-mentions { position:absolute; left:0; right:0; bottom:100%; z-index:4; display:flex; flex-direction:column; gap:2px; max-height:240px; margin:0 0 8px; padding:8px; overflow:auto; border:1px solid var(--st-line-soft); border-radius:16px; background:var(--st-surface); box-shadow:0 8px 28px #0004; }
+.bot-room-mentions button { display:flex; align-items:center; gap:10px; width:100%; padding:8px 10px; border:0; border-radius:12px; background:transparent; color:var(--st-ink); font:14px/1.35 var(--st-font); text-align:left; cursor:pointer; }
+.bot-room-mentions button span { min-width:0; overflow-wrap:anywhere; }
+.bot-room-mentions button[aria-selected='true'],.bot-room-mentions button:hover { background:var(--st-surface-2); }
+.bot-room-mention-group { display:flex; flex:none; align-items:center; justify-content:center; width:28px; height:28px; border-radius:50%; background:var(--st-surface-2); color:var(--st-ink-muted); }
 .bot-room-composer-top { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:0 5px 7px 55px; }
 .bot-room-to { display:inline-flex; min-width:0; max-width:100%; align-items:center; gap:6px; color:var(--st-ink-muted); background:transparent; border:0; padding:3px 0; font:10px var(--st-font); cursor:pointer; }
 .bot-room-to > span { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }

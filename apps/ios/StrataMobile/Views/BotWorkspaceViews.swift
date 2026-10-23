@@ -311,6 +311,8 @@ struct BotTeamDetailView: View {
     @State private var recipient = ""
     @State private var workMode: BotTeamMessageWorkMode = .chat
     @State private var reply: BotTeamChannelMessage?
+    @State private var mentionDismissed: Int?
+    @State private var mentionIndex = 0
     @State private var confirmingStop: BotTeamRun?
     @State private var visible = false
     @State private var showingDetails = false
@@ -794,8 +796,47 @@ struct BotTeamDetailView: View {
             if run.isActive { Button("Stop team task", role: .destructive) { confirmingStop = run }.buttonStyle(.borderless).disabled(workspace.mutation != nil).accessibilityIdentifier("stopBotTeamRunDetails-\(run.id)") }
         }.padding(.vertical, 6)
     }
+    private func mentionRoster(_ team: BotTeam) -> [RoomMentionMember] {
+        team.memberIds.map { id in RoomMentionMember(id: id, name: store.botCatalog?.bots.first { $0.id == id }?.name ?? "") }
+    }
+    private func insertMention(_ choice: RoomMentionChoice, team: BotTeam, active: RoomMentionQuery) {
+        let token = RoomMention.insertion(choice: choice, members: mentionRoster(team))
+        let next = RoomMention.insert(text: message, query: active, cursor: message.count, token: token)
+        message = next.text
+        mentionDismissed = nil
+        requestId = UUID().uuidString
+        taskFocused = true
+    }
+    private func mentionKey(_ team: BotTeam, action: String) -> KeyPress.Result {
+        let roster = mentionRoster(team)
+        guard let active = RoomMention.query(text: message, cursor: message.count) else { return .ignored }
+        let choices = RoomMention.choices(members: roster, query: active.query)
+        guard RoomMention.listVisible(activeStart: active.start, dismissedStart: mentionDismissed, choiceCount: choices.count) else { return .ignored }
+        switch action {
+        case "up", "down":
+            mentionIndex = RoomMention.moveIndex(mentionIndex, count: choices.count, direction: action)
+            return .handled
+        case "pick":
+            insertMention(choices[min(max(mentionIndex, 0), choices.count - 1)], team: team, active: active)
+            return .handled
+        case "close":
+            mentionDismissed = active.start
+            return .handled
+        default:
+            return .ignored
+        }
+    }
     private func composer(_ team: BotTeam) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let roster = mentionRoster(team)
+        let active = RoomMention.query(text: message, cursor: message.count)
+        let choices = active.map { RoomMention.choices(members: roster, query: $0.query) } ?? []
+        let showMentions = RoomMention.listVisible(activeStart: active?.start, dismissedStart: mentionDismissed, choiceCount: choices.count)
+        return VStack(alignment: .leading, spacing: 8) {
+            if showMentions, let active {
+                RoomMentionList(choices: choices, selected: min(mentionIndex, max(choices.count - 1, 0)), face: { choice in
+                    store.botCatalog?.bots.first { $0.id == choice.memberID }?.face ?? .default(for: choice.label)
+                }, onPick: { insertMention($0, team: team, active: active) })
+            }
             if let reply {
                 HStack(alignment: .top) {
                     Text("Replying to \(reply.author.name)").font(.caption).lineLimit(1).accessibilityIdentifier("teamReplyContext")
@@ -841,6 +882,11 @@ struct BotTeamDetailView: View {
                 HStack(alignment: .bottom, spacing: 4) {
                     TextField(channel?.supported == true ? "Message…" : "What should this team do?", text: $message, axis: .vertical).lineLimit(1...5)
                         .focused($taskFocused).padding(.leading, 17).padding(.vertical, 14).accessibilityIdentifier("botTeamTaskInput")
+                        .onKeyPress(.upArrow) { mentionKey(team, action: "up") }
+                        .onKeyPress(.downArrow) { mentionKey(team, action: "down") }
+                        .onKeyPress(.escape) { mentionKey(team, action: "close") }
+                        .onKeyPress(.return) { mentionKey(team, action: "pick") }
+                        .onKeyPress(.tab) { mentionKey(team, action: "pick") }
                     Button { send(team) } label: { Image(systemName: "arrow.up").font(.system(size: 19, weight: .semibold)).frame(width: 40, height: 40).foregroundStyle(StrataTheme.primaryInk).background(StrataTheme.primaryFill, in: Circle()) }
                         .padding(4).accessibilityLabel(channel?.supported == true ? "Send to team" : "Start task")
                         .disabled(channel == nil || !team.enabled || message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || message.utf16.count > 16_000 || workspace.mutation != nil)
@@ -853,6 +899,10 @@ struct BotTeamDetailView: View {
             if !team.enabled { Button("Review and enable your team") { settingsExpanded = true; showingDetails = true }.font(.caption).accessibilityIdentifier("reviewTeamForChatButton") }
         }.padding(.horizontal, 16).padding(.vertical, 10).background(StrataTheme.background)
             .background { GeometryReader { geometry in Color.clear.preference(key: BotTeamLegacyScrollPreference.self, value: .init(bottomInset: geometry.size.height)) } }
+            .onChange(of: message) { _, newValue in
+                if RoomMention.query(text: newValue, cursor: newValue.count) == nil { mentionDismissed = nil }
+                mentionIndex = 0
+            }
     }
     private func recipientPicker(_ team: BotTeam) -> some View {
         Picker("Recipients", selection: $recipient) {
@@ -865,7 +915,8 @@ struct BotTeamDetailView: View {
     private func send(_ team: BotTeam) {
         taskFocused = false
         let generation = navigation, text = message, request = requestId
-        let draft = BotTeamChannelPost(message: text, requestId: request, recipientIds: recipient.isEmpty ? nil : recipient == "everyone" ? team.memberIds : [recipient], replyToId: reply?.id, workMode: supportsCoordinatorWork ? workMode : nil, durablePlan: supportsCoordinatorWork && workspace.workPlansSupported && workMode == .work ? true : nil, everyone: recipient == "everyone" ? true : nil)
+        let audience = RoomMention.audience(text: text, recipient: recipient, memberIds: team.memberIds)
+        let draft = BotTeamChannelPost(message: text, requestId: request, recipientIds: audience.recipientIds, replyToId: reply?.id, workMode: supportsCoordinatorWork ? workMode : nil, durablePlan: supportsCoordinatorWork && workspace.workPlansSupported && workMode == .work ? true : nil, everyone: audience.everyone)
         Task {
             let sent: Bool
             if channel?.supported == true { sent = await workspace.postTeamMessage(team, draft: draft) }
