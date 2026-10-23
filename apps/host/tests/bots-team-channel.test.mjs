@@ -127,7 +127,7 @@ test('provider failure details stay out of the public room and all subsequent co
   const started = f.send('Assign failing work', { workMode: 'work' }); await f.done(started.run);
   const publicJournal = readFileSync(join(f.directory, 'bot-team-channels.json'), 'utf8');
   assert.equal(publicJournal.includes(marker), false); assert.equal(publicJournal.includes('/Users/private/provider/config'), false);
-  assert.ok(f.bots.team.channel(f.team.id).messages.some(row => row.state === 'error' && row.content.includes('could not finish')));
+  assert.ok(f.bots.team.channel(f.team.id).messages.some(row => row.state === 'error' && row.recovery?.options?.length === 3 && row.content.includes('unexpected error') && row.content.endsWith('What should I do next?')));
   assert.equal(f.seen.filter(input => input.message.startsWith('[Strata teammate result')).length, 1);
 });
 

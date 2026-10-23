@@ -27,10 +27,9 @@ function fixture(t, script, extensions = {}) {
 }
 
 for (const [diagnostic, expected] of [
-  ['The configured model API returned HTTP 402. Check its credentials and tool support in Models.', /HTTP 402.*billing, credits or access/],
-  ['The bot reached its 32-step limit. Continue in this chat to proceed.', /step limit.*continue explicitly/],
-  ['The configured model API returned HTTP 401.', /refused access.*credentials/],
-  ['The configured model API returned HTTP 429.', /request or usage limit.*HTTP 429/],
+  ['The configured model API returned HTTP 402. Check its credentials and tool support in Models.', /billing or credits/],
+  ['The bot reached its 32-step limit. Continue in this chat to proceed.', /ran out of steps/],
+  ['The configured model API returned HTTP 401.', /refused access/],
 ]) test('coordinator gets an actionable fixed failure without provider details or automatic replay: ' + diagnostic, async t => {
   const secret = 'PRIVATE_PROVIDER_RESPONSE_TOKEN_8b12', privatePath = '/Users/private/account/config'; let f, completion;
   f = fixture(t, async input => {

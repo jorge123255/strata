@@ -908,6 +908,11 @@ export function createBotRoutes({ bots, port }) {
         if (action !== 'recovery' && req.method === 'POST') return json(res, 200, await bots.team[action === 'review' ? 'reviewJob' : 'resumeJob'](teamId, jobId, await readBody(req)));
         return error(res, 405, 'This task action is unavailable.');
       }
+      const choiceRoute = /^\/api\/bots\/teams\/(team_[a-f0-9-]+)\/messages\/([A-Za-z0-9_.:-]{1,160})\/choice$/.exec(url.pathname);
+      if (choiceRoute) {
+        if (req.method !== 'POST' || [...url.searchParams].length) return error(res, 405, 'Choose try again, skip, or a different way.');
+        return json(res, 200, bots.team.chooseTaskRecovery(choiceRoute[1], choiceRoute[2], await readBody(req)));
+      }
       const streamRoute = /^\/api\/bots\/teams\/(team_[a-f0-9-]+)\/channel\/stream$/.exec(url.pathname);
       if (streamRoute && req.method === 'GET') {
         if ([...url.searchParams].length || req.headers['transfer-encoding'] || Number(req.headers['content-length'] ?? 0) > 0) throw fault(400, 'Team channel updates take no request body.');
@@ -923,6 +928,10 @@ export function createBotRoutes({ bots, port }) {
             res.write(`event: message.partial\ndata: ${JSON.stringify({ messageId, botId, seq, text, delta, done })}\n\n`);
           }
           if (event === 'room.quiet') res.write(`event: room.quiet\ndata: ${JSON.stringify({ teamId: data.teamId, runId: data.runId, ...(data.messageId ? { messageId: data.messageId } : {}) })}\n\n`);
+          if (event === 'task.recovery') {
+            const { messageId, jobId, runId, text, question, options } = data;
+            res.write(`event: task.recovery\ndata: ${JSON.stringify({ teamId: data.teamId, messageId, jobId, runId, text, question, options })}\n\n`);
+          }
         });
         const ping = setInterval(() => { if (!res.writableEnded) res.write(': ping\n\n'); }, 15000);
         req.on('close', () => { clearInterval(ping); stop(); });
