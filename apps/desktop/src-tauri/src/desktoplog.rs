@@ -174,46 +174,16 @@ fn copy_lines<R: Read>(reader: R, who: &str, echo: &mut dyn FnMut(&str), ring: &
 extern "C" {
     fn dup(fd: i32) -> i32;
     fn fcntl(fd: i32, cmd: i32, ...) -> i32;
-    fn write(fd: i32, buf: *const u8, count: usize) -> isize;
     fn close(fd: i32) -> i32;
 }
 
 #[cfg(unix)]
-fn errno() -> i32 {
-    #[cfg(target_os = "linux")]
-    {
-        extern "C" {
-            fn __errno_location() -> *mut i32;
-        }
-        unsafe { *__errno_location() }
-    }
-    #[cfg(target_os = "macos")]
-    {
-        extern "C" {
-            fn __error() -> *mut i32;
-        }
-        unsafe { *__error() }
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        0
-    }
-}
-
-#[cfg(unix)]
 fn echo_fd(to_stderr: bool) -> i32 {
-    const F_GETFL: i32 = 3;
-    const F_SETFL: i32 = 4;
-    // Do not set this on the process stdout. A duplicate can fail a write without stopping the reader.
-    let nonblock: i32 = if cfg!(any(target_os = "linux", target_os = "android")) { 0o4000 } else { 0x0004 };
-    let source = if to_stderr { 2 } else { 1 };
     unsafe {
-        let fd = dup(source);
-        if fd < 0 {
-            return -1;
-        }
-        let flags = fcntl(fd, F_GETFL);
-        if flags < 0 || fcntl(fd, F_SETFL, flags | nonblock) < 0 {
+        let fd = dup(if to_stderr { 2 } else { 1 });
+        // Descriptor flags are private to the duplicate. File status flags
+        // (including O_NONBLOCK) are shared with stdout/stderr: leave them alone.
+        if fd >= 0 && fcntl(fd, 2, 1) < 0 { // F_SETFD, FD_CLOEXEC
             close(fd);
             return -1;
         }
@@ -221,54 +191,46 @@ fn echo_fd(to_stderr: bool) -> i32 {
     }
 }
 
-#[cfg(unix)]
-fn write_line(fd: i32, text: &str) {
-    if fd < 0 {
-        return;
+// At most 64 bounded lines wait for the console. A blocked output worker must
+// never hold up the host-pipe reader; a full queue drops only console echoes.
+fn echo_writer<W: Write + Send + 'static>(mut writer: W) -> std::sync::mpsc::SyncSender<String> {
+    let (sender, receiver) = std::sync::mpsc::sync_channel::<String>(64);
+    std::thread::spawn(move || {
+        for text in receiver {
+            if writeln!(writer, "{text}").is_err() { break; }
+        }
+    });
+    sender
+}
+
+fn try_echo(sender: &std::sync::mpsc::SyncSender<String>, text: &str) {
+    let mut end = text.len().min(16 * 1024);
+    while !text.is_char_boundary(end) { end -= 1; }
+    let _ = sender.try_send(text[..end].to_string());
+}
+
+fn console_echo(to_stderr: bool) -> Option<std::sync::mpsc::SyncSender<String>> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::FromRawFd;
+        let fd = echo_fd(to_stderr);
+        if fd < 0 { return None; }
+        Some(echo_writer(unsafe { std::fs::File::from_raw_fd(fd) }))
     }
-    let mut bytes = Vec::with_capacity(text.len() + 1);
-    bytes.extend_from_slice(text.as_bytes());
-    bytes.push(b'\n');
-    let mut offset = 0;
-    while offset < bytes.len() {
-        let n = unsafe { write(fd, bytes[offset..].as_ptr(), bytes.len() - offset) };
-        if n > 0 {
-            offset += n as usize;
-            continue;
-        }
-        let err = errno();
-        // EINTR is 4 on Linux and macOS. EAGAIN is 11 / 35. EPIPE is 32. EBADF is 9.
-        if err == 4 {
-            continue;
-        }
-        if err == 11 || err == 35 || err == 32 || err == 9 || err == 0 {
-            break;
-        }
-        break;
+    #[cfg(not(unix))]
+    {
+        Some(if to_stderr { echo_writer(std::io::stderr()) } else { echo_writer(std::io::stdout()) })
     }
 }
 
-#[cfg(not(unix))]
-fn echo_fd(to_stderr: bool) -> i32 {
-    if to_stderr { -2 } else { -3 }
-}
-
-#[cfg(not(unix))]
-fn write_line(fd: i32, text: &str) {
-    let _ = if fd == -2 { writeln!(std::io::stderr(), "{text}") } else { writeln!(std::io::stdout(), "{text}") };
-}
-
-/// Copy a child's output line by line into the log and the ring, then echo it.
-/// The echo uses a non-blocking copy of stdout or stderr, so a closed Finder console
-/// or a pipe nobody reads cannot kill this thread or fill the host's pipe.
+/// Save the log and ring before offering a best-effort console echo. A closed
+/// or full console cannot stop this reader or change inherited console flags.
 pub fn tee<R: Read + Send + 'static>(reader: R, who: &'static str, to_stderr: bool, ring: Ring, log: Log) {
     std::thread::spawn(move || {
-        let fd = echo_fd(to_stderr);
-        copy_lines(reader, who, &mut |text| write_line(fd, text), &ring, &log);
-        #[cfg(unix)]
-        if fd >= 0 {
-            unsafe { close(fd); }
-        }
+        let echo = console_echo(to_stderr);
+        copy_lines(reader, who, &mut |text| {
+            if let Some(sender) = &echo { try_echo(sender, text); }
+        }, &ring, &log);
     });
 }
 
@@ -621,6 +583,30 @@ pub fn downloads_dir() -> PathBuf {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn console_echo_preserves_original_descriptor_flags() {
+        // The subprocess owns its console pipes; no parallel test can observe
+        // changes to the test runner's stdout/stderr.
+        if std::env::var_os("STRATA_TEST_CONSOLE_FLAGS").is_none() {
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "tests::console_echo_preserves_original_descriptor_flags"])
+                .env("STRATA_TEST_CONSOLE_FLAGS", "1").output().unwrap();
+            assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stdout));
+            return;
+        }
+        extern "C" { fn fcntl(fd: i32, cmd: i32, ...) -> i32; }
+        for to_stderr in [false, true] {
+            let source = if to_stderr { 2 } else { 1 };
+            let before = unsafe { fcntl(source, 3) };
+            let duplicate = echo_fd(to_stderr);
+            assert!(duplicate >= 0);
+            let after = unsafe { fcntl(source, 3) };
+            unsafe { close(duplicate); }
+            assert_eq!(before, after, "echo changed the original console status flags");
+        }
+    }
+
     #[test]
     fn the_time_stamp_is_utc_civil_time() {
         assert_eq!(stamp(UNIX_EPOCH), "19700101-000000");
@@ -702,11 +688,14 @@ mod tests {
         let ring = Ring::default();
         let (mut tx, rx) = std::os::unix::net::UnixStream::pair().unwrap();
         let logged = path.clone();
+        let (closed_reader, closed_writer) = std::os::unix::net::UnixStream::pair().unwrap();
+        drop(closed_reader);
+        let echo = echo_writer(closed_writer);
         let worker = std::thread::spawn(move || {
             copy_lines(rx, "host", &mut |line| {
                 let saved = std::fs::read_to_string(&logged).unwrap_or_default();
                 assert!(saved.contains(line), "the log is written before the console echo");
-                let _ = write_line(-1, line);
+                try_echo(&echo, line);
             }, &ring, &log);
             assert!(ring.tail(5).iter().any(|line| line.contains("room selection")));
         });
@@ -721,7 +710,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_full_console_echo_returns_without_blocking_the_reader() {
-        use std::os::unix::io::AsRawFd;
         let (read, mut write) = std::os::unix::net::UnixStream::pair().unwrap();
         read.set_nonblocking(true).unwrap();
         write.set_nonblocking(true).unwrap();
@@ -732,8 +720,10 @@ mod tests {
                 Ok(_) => {}
             }
         }
+        write.set_nonblocking(false).unwrap();
+        let echo = echo_writer(write);
         let started = std::time::Instant::now();
-        write_line(write.as_raw_fd(), "room selection · blocked");
+        for _ in 0..256 { try_echo(&echo, "room selection · blocked"); }
         assert!(started.elapsed() < Duration::from_millis(500));
         drop(read);
     }

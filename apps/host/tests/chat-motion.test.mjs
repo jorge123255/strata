@@ -10,6 +10,18 @@ const motion = await import(`data:text/javascript;base64,${Buffer.from(compiled.
 
 const frame = (seq, text, extra = {}) => ({ teamId: 'team_1', messageId: 'tm_job', botId: 'bot_1', seq, text, delta: text, done: false, ...extra });
 
+test('scroll-away unread skips pass-only arrivals, advances the cursor and counts a later spoken reply once', () => {
+  const row = (sequence, kind, type = 'bot') => ({ sequence, kind, author: { type } });
+  const passes = [row(10, 'message'), row(11, 'pass'), row(12, 'pass')];
+  const silent = motion.roomMessageArrivals(passes, 10);
+  assert.deepEqual(silent, { unread: 0, sequence: 12 });
+  const spoken = motion.roomMessageArrivals([...passes, row(13, 'message')], silent.sequence);
+  assert.deepEqual(spoken, { unread: 1, sequence: 13 });
+  assert.deepEqual(motion.roomMessageArrivals([...passes, row(13, 'message')], spoken.sequence), { unread: 0, sequence: 13 });
+  assert.deepEqual(motion.roomMessageArrivals([row(3, 'message')], spoken.sequence), { unread: 0, sequence: 13 });
+  assert.deepEqual(motion.roomMessageArrivals([row(14, 'message', 'user')], spoken.sequence), { unread: 0, sequence: 14 });
+});
+
 test('message.partial keeps the full text, starts at seq 1, and drops a cleared draft', () => {
   const first = motion.applyMessagePartial([], frame(1, 'Hi'), 'team_1');
   assert.deepEqual(first, [{ messageId: 'tm_job', botId: 'bot_1', seq: 1, text: 'Hi', done: false }]);
