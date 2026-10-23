@@ -5,6 +5,8 @@ import { botAvatarConfig } from './bots-lifecycle.mjs';
 import { teamWorkflowRoute, workflowRequest, publicWorkflowResponse, confirmWorkflowMutation } from './bots-workflows.mjs';
 import { teamPlanRoute, teamPlanRequest, publicTeamPlanResponse, publicTeamPlan, confirmTeamPlanMutation } from './bots-team-plans.mjs';
 const error = (status, message) => Object.assign(new Error(message), { status });
+// Only these host team-conflict codes may cross pairing; raw diagnostics stay on the Mac.
+export const TEAM_CONFLICT_CODES = new Set(['team_changed', 'team_busy']);
 const id = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,120}$/.test(value);
 const computerId = value => typeof value === 'string' && /^(host:(local|ssh_[a-f0-9]{32})|cua:bot_[a-f0-9-]+)$/.test(value);
 const toolId = value => typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,300}$/.test(value);
@@ -638,6 +640,8 @@ export async function handleBotWorkspace({ path, method, req, res, session, host
       if (empty) { sendJSON(res, 200, { ...empty, reason: 'Update Strata on your Mac to use this Bots feature.' }); return true; }
     }
     const status = [400, 404, 409, 413, 501].includes(failure.status) ? failure.status : 503;
-    throw error(status, status === 409 ? 'Refresh this item and review its current settings before trying again.' : status === 404 ? 'This item is no longer available. Refresh Bots.' : 'Strata could not complete this action. Check the Mac and refresh before retrying.');
+    const mapped = error(status, status === 409 ? 'Refresh this item and review its current settings before trying again.' : status === 404 ? 'This item is no longer available. Refresh Bots.' : 'Strata could not complete this action. Check the Mac and refresh before retrying.');
+    if (status === 409 && TEAM_CONFLICT_CODES.has(failure.code)) mapped.code = failure.code;
+    throw mapped;
   }
 }

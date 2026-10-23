@@ -7,7 +7,7 @@ import { homedir, hostname, networkInterfaces } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { botWorkspaceRequest, handleBotWorkspace } from './bots-workspace.mjs';
+import { botWorkspaceRequest, handleBotWorkspace, TEAM_CONFLICT_CODES } from './bots-workspace.mjs';
 import { botProfileDraft, botProfileRoute, botAvatarConfig, BOT_AVATAR_SHAPES } from './bots-lifecycle.mjs';
 import { hostFolderUpdate, hostFolderRequest } from './bots-host-folder.mjs';
 import { notificationRoute, notificationRequest, handleNotifications } from './notifications.mjs';
@@ -281,7 +281,12 @@ export class HostClient {
     const response = await this.request(path, options);
     let body;
     try { body = await response.json(); } catch { throw fail(502, 'Strata returned an unreadable response.'); }
-    if (!response.ok) throw fail(response.status, typeof body.error === 'string' ? body.error : body.error?.message ?? 'Strata could not complete this request.');
+    if (!response.ok) {
+      const failure = fail(response.status, typeof body.error === 'string' ? body.error : body.error?.message ?? 'Strata could not complete this request.');
+      // Only allowlisted team roster conflict codes cross; arbitrary codes and diagnostics stay on the Mac.
+      if (TEAM_CONFLICT_CODES.has(body?.code)) failure.code = body.code;
+      throw failure;
+    }
     return body;
   }
 }
@@ -1175,7 +1180,7 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
       }
       throw fail(404, 'Unknown companion endpoint.');
     } catch (error) {
-      if (!res.headersSent) sendJSON(res, error.status ?? 500, { error: error.status ? error.message : 'The companion could not complete this request.' });
+      if (!res.headersSent) sendJSON(res, error.status ?? 500, { error: error.status ? error.message : 'The companion could not complete this request.', ...(TEAM_CONFLICT_CODES.has(error.code) ? { code: error.code } : {}) });
       else res.end();
     }
   });

@@ -36,6 +36,8 @@ async function fixture(t) {
       if (!options.method || options.method === 'GET') return fail(200, editorPayload(state));
       if (options.method === 'PATCH') {
         const body = JSON.parse(options.body);
+        if (state.busy) return fail(409, { error: 'Stop this team’s current work before editing its members, computer or limits.', code: 'team_busy' });
+        if (state.unknownCode) return fail(409, { error: 'PRIVATE_CONFLICT_DETAIL', code: 'internal_detail', private: 'PRIVATE_FIELD' });
         if (body.expectedRevision !== undefined && body.expectedRevision !== state.revision) return fail(409, { error: 'This team changed on another device. Refresh and review your changes.', code: 'team_changed' });
         if (body.memberIds) state.memberIds = [...body.memberIds];
         if (body.coordinatorId) state.coordinatorId = body.coordinatorId;
@@ -126,6 +128,8 @@ test('paired phone reads and edits the roster through the bridge; revocation sto
   assert.deepEqual(dispatched, { memberIds: ['bot_one', 'bot_two', 'bot_three'], coordinatorId: 'bot_three', expectedRevision: 4 });
   const stale = await request(bridge, endpoint, { token, method: 'PATCH', body: { coordinatorId: 'bot_one', expectedRevision: 4 } });
   assert.equal(stale.status, 409);
+  assert.equal(stale.json.code, 'team_changed');
+  assert.equal(stale.json.error, 'Refresh this item and review its current settings before trying again.');
   const unsupported = await request(bridge, endpoint, { token, method: 'PATCH', body: { memberIds: ['bot_one', 'bot_two'], enabled: false } });
   assert.equal(unsupported.status, 400);
   const before = membersCalls().length;
@@ -134,4 +138,28 @@ test('paired phone reads and edits the roster through the bridge; revocation sto
   assert.equal((await request(bridge, endpoint, { token, method: 'PATCH', body: { coordinatorId: 'bot_one', expectedRevision: 5 } })).status, 401);
   assert.equal(membersCalls().length, before, 'A revoked device must not reach the host.');
   assert.equal(bridge.authority.sessions.some(saved2 => saved2.id === session.id), false);
+});
+
+test('team_busy crosses the bridge while unknown codes and private fields stay sanitized', async t => {
+  const { bridge, token, state } = await fixture(t);
+  const endpoint = '/v1/bots/teams/team_decaf00d/members';
+  state.busy = true;
+  const busy = await request(bridge, endpoint, { token, method: 'PATCH', body: { coordinatorId: 'bot_two', expectedRevision: 4 } });
+  assert.equal(busy.status, 409);
+  assert.equal(busy.json.code, 'team_busy');
+  assert.equal(busy.json.error, 'Refresh this item and review its current settings before trying again.');
+  state.busy = false; state.unknownCode = true;
+  const unknown = await request(bridge, endpoint, { token, method: 'PATCH', body: { coordinatorId: 'bot_two', expectedRevision: 4 } });
+  assert.equal(unknown.status, 409);
+  assert.equal(unknown.json.code, undefined);
+  assert.equal(unknown.json.error, 'Refresh this item and review its current settings before trying again.');
+  assert.ok(!unknown.text.includes('PRIVATE'));
+});
+
+test('HostClient.json preserves only allowlisted conflict codes from host errors', async () => {
+  const upstream = code => new HostClient({ upstream: 'http://127.0.0.1:47831', fetcher: async () => new Response(JSON.stringify({ error: 'PRIVATE_HOST_DETAIL', code, extra: 'PRIVATE_FIELD' }), { status: 409, headers: { 'content-type': 'application/json' } }) });
+  const members = '/api/companion/teams/team_decaf00d/members';
+  await assert.rejects(upstream('team_changed').json(members), failure => failure.status === 409 && failure.code === 'team_changed');
+  await assert.rejects(upstream('team_busy').json(members), failure => failure.status === 409 && failure.code === 'team_busy');
+  await assert.rejects(upstream('internal_detail').json(members), failure => failure.status === 409 && failure.code === undefined && !Object.hasOwn(failure, 'extra'));
 });
