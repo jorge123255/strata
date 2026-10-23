@@ -65,7 +65,10 @@ struct BotTeamEditor: View {
     @State private var computerId: String
     @State private var folder: String
     @State private var briefing: BotTeamBriefing
+    @State private var talkativeness: [String: Int]
+    @State private var bidding: Bool
     @State private var confirmingReload = false
+    @State private var memberPendingRemoval: String?
     @FocusState private var focused: Field?
     private enum Field: Hashable { case name, folder, instructions, memberRole(String), memberInstructions(String) }
 
@@ -75,11 +78,16 @@ struct BotTeamEditor: View {
         _name = State(initialValue: team?.name ?? "")
         _selected = State(initialValue: Set(team?.memberIds ?? []))
         _coordinator = State(initialValue: team?.coordinatorId ?? "")
-        _limits = State(initialValue: (team?.limits ?? BotTeamLimits()).forHost(unrestrictedTeams: workspace.unrestrictedTeams, continuousTeams: workspace.continuousTeams))
+        _limits = State(initialValue: {
+            let saved = team?.limits ?? BotTeamLimits()
+            return saved == .continuous ? .continuous : saved.forHost(unrestrictedTeams: workspace.unrestrictedTeams, continuousTeams: false)
+        }())
         _executionMode = State(initialValue: team?.execution?.mode ?? "individual")
         _computerId = State(initialValue: team?.execution?.computerId ?? "")
         _folder = State(initialValue: team?.execution?.workspace ?? "")
         _briefing = State(initialValue: team?.briefing ?? BotTeamBriefing())
+        _talkativeness = State(initialValue: team?.talkativeness ?? [:])
+        _bidding = State(initialValue: team?.bidding == true)
     }
     private var supportsSettings: Bool { workspace.teams?.teamSettingsSupported == true }
     private var supportsInstructions: Bool { workspace.teams?.teamInstructionsSupported == true }
@@ -91,12 +99,14 @@ struct BotTeamEditor: View {
     private var computers: [BotTeamComputer] { (workspace.teams?.teamComputers ?? []).filter { $0.memberId == nil || selected.contains($0.memberId!) } }
     private var chosenComputer: BotTeamComputer? { computers.first { $0.id == computerId } }
     private var draft: BotTeamDraft {
-        BotTeamDraft(name: name.trimmingCharacters(in: .whitespacesAndNewlines), memberIds: selected.sorted(), coordinatorId: coordinator, limits: limits.forHost(unrestrictedTeams: unrestrictedTeams, continuousTeams: continuousTeams),
+        BotTeamDraft(name: name.trimmingCharacters(in: .whitespacesAndNewlines), memberIds: selected.sorted(), coordinatorId: coordinator, limits: limits.forHost(unrestrictedTeams: unrestrictedTeams, continuousTeams: limits == .continuous),
                      execution: supportsSettings ? (executionMode == "shared" ? BotTeamExecution(mode: "shared", computerId: computerId, workspace: folder.trimmingCharacters(in: .whitespacesAndNewlines)) : .individual) : nil,
-                     briefing: supportsInstructions ? BotTeamBriefing(instructions: briefing.instructions.trimmingCharacters(in: .whitespacesAndNewlines), members: briefing.members.filter { selected.contains($0.botId) }.map { BotTeamMemberBriefing(botId: $0.botId, role: $0.role.trimmingCharacters(in: .whitespacesAndNewlines), instructions: $0.instructions.trimmingCharacters(in: .whitespacesAndNewlines)) }.filter { !$0.role.isEmpty || !$0.instructions.isEmpty }.sorted { $0.botId < $1.botId }) : nil)
+                     briefing: supportsInstructions ? BotTeamBriefing(instructions: briefing.instructions.trimmingCharacters(in: .whitespacesAndNewlines), members: briefing.members.filter { selected.contains($0.botId) }.map { BotTeamMemberBriefing(botId: $0.botId, role: $0.role.trimmingCharacters(in: .whitespacesAndNewlines), instructions: $0.instructions.trimmingCharacters(in: .whitespacesAndNewlines)) }.filter { !$0.role.isEmpty || !$0.instructions.isEmpty }.sorted { $0.botId < $1.botId }) : nil,
+                     talkativeness: { let voice = talkativeness.filter { selected.contains($0.key) && $0.value != 50 }; return voice.isEmpty ? nil : voice }(),
+                     bidding: bidding ? true : nil)
     }
     private var canSave: Bool {
-        BotWorkspaceStore.validTeamDraft(draft, unrestrictedTeams: unrestrictedTeams, continuousTeams: continuousTeams, availableMemberIds: Set(store.botCatalog?.bots.map(\.id) ?? [])) && workspace.mutation == nil && !hasActiveWork && !changed &&
+        BotWorkspaceStore.validTeamDraft(draft, unrestrictedTeams: unrestrictedTeams, continuousTeams: limits == .continuous, availableMemberIds: Set(store.botCatalog?.bots.map(\.id) ?? []), retainedMemberIds: baseline.map { Set($0.memberIds) }) && workspace.mutation == nil && !hasActiveWork && !changed &&
         (baseline == nil || (supportsSettings && baseline?.revision != nil)) &&
         (executionMode != "shared" || (chosenComputer?.available == true && chosenComputer?.allowsFolder(folder.trimmingCharacters(in: .whitespacesAndNewlines)) == true))
     }
@@ -119,13 +129,22 @@ struct BotTeamEditor: View {
                         memberToggle(id: bot.id, name: bot.name, face: bot.face)
                     }
                     ForEach(selected.subtracting(Set(store.botCatalog?.bots.map(\.id) ?? [])).sorted(), id: \.self) { id in
-                        memberToggle(id: id, name: "Unavailable bot", face: .default(for: "Bot"))
+                        memberToggle(id: id, name: BotWorkspaceStore.deletedBotName, face: .default(for: "Bot"))
                     }
                     Picker("Coordinator", selection: $coordinator) {
                         if coordinator.isEmpty { Text("Choose a coordinator").tag("") }
                         ForEach((store.botCatalog?.bots ?? []).filter { selected.contains($0.id) }) { bot in Text(bot.name).tag(bot.id) }
                     }.accessibilityIdentifier("teamCoordinatorPicker")
-                    Text(unrestrictedTeams ? "The coordinator assigns work and brings results together. Choose at least two teammates." : "The coordinator assigns work and brings results together. Choose 2–12 teammates.").font(.caption).foregroundStyle(.secondary)
+                    Text("The coordinator assigns work and brings results together. Choose 2–12 teammates.").font(.caption).foregroundStyle(.secondary)
+                    DisclosureGroup("How often each bot speaks") {
+                        Toggle("Let each bot bid to speak", isOn: $bidding).accessibilityIdentifier("teamBiddingToggle")
+                        ForEach(selected.sorted(), id: \.self) { id in
+                            let name = store.botCatalog?.bots.first { $0.id == id }?.name ?? "Teammate"
+                            Stepper("\(name): \(talkativeness[id] ?? 50)", value: Binding(get: { talkativeness[id] ?? 50 }, set: { talkativeness[id] = $0 }), in: 0...100)
+                                .accessibilityIdentifier("teamTalkativeness-\(id)")
+                        }
+                        Text("0 speaks only when mentioned. 50 is a normal share of the room.").font(.caption).foregroundStyle(.secondary)
+                    }
                 } header: { Text("Team members") }
                 if supportsInstructions {
                     Section {
@@ -141,7 +160,7 @@ struct BotTeamEditor: View {
                                 HStack(spacing: 10) {
                                     AvatarBadge(bot?.face ?? .default(for: "Bot"), size: 30)
                                     VStack(alignment: .leading, spacing: 3) {
-                                        Text(bot?.name ?? "Unavailable bot")
+                                        Text(bot?.name ?? BotWorkspaceStore.deletedBotName)
                                         Text(role.isEmpty ? (id == coordinator ? "Coordinator" : "Add a role & instructions") : role).font(.caption).foregroundStyle(.secondary)
                                     }
                                 }.accessibilityIdentifier("teamMemberBriefing-\(id)")
@@ -192,9 +211,11 @@ struct BotTeamEditor: View {
                 }
                 Section {
                     if continuousTeams {
-                        LabeledContent("Team work", value: "Until finished or stopped").accessibilityIdentifier("teamContinuousWorkLabel")
-                        Text("The coordinator can keep work moving until it is complete or you stop it.").font(.caption).foregroundStyle(.secondary)
-                    } else {
+                        Toggle("Until finished or stopped", isOn: Binding(get: { limits == .continuous }, set: { limits = $0 ? .continuous : BotTeamLimits().forHost(unrestrictedTeams: unrestrictedTeams, continuousTeams: false) }))
+                            .accessibilityIdentifier("teamContinuousWorkLabel")
+                        Text("Turn this on only when the team should keep working with no turn, time, depth or hop cutoff.").font(.caption).foregroundStyle(.secondary)
+                    }
+                    if limits != .continuous {
                     DisclosureGroup("Work limits") {
                         if unrestrictedTeams {
                             LabeledContent("Parallel work", value: "All available teammates").accessibilityIdentifier("teamParallelAvailableLabel")
@@ -205,7 +226,7 @@ struct BotTeamEditor: View {
                         Stepper("Message hops: \(limits.maxHops)", value: $limits.maxHops, in: 1...32)
                         Stepper("\(unrestrictedTeams ? "Work turns" : "Conversation turns"): \(limits.maxTurns)", value: $limits.maxTurns, in: 1...100)
                         if unrestrictedTeams && selected.count > 24 && limits.maxTurns >= 24 {
-                            Text("Large teams can answer the opening invitation once each; work and follow-up turns use this budget.").font(.caption).foregroundStyle(.secondary)
+                            Text("Room chat settles when nobody has more to add. Work and follow-up turns use this budget.").font(.caption).foregroundStyle(.secondary)
                         }
                         Stepper("Time limit: \(limits.maxDurationMs / 60_000) minutes", value: Binding(get: { limits.maxDurationMs / 60_000 }, set: { limits.maxDurationMs = $0 * 60_000 }), in: 1...60)
                     }
@@ -236,6 +257,13 @@ struct BotTeamEditor: View {
                 .confirmationDialog("Discard your changes and reload this team?", isPresented: $confirmingReload) {
                     Button("Reload latest team", role: .destructive) { if let current { reload(current) } }
                 }
+                .confirmationDialog("Remove this teammate?", isPresented: Binding(get: { memberPendingRemoval != nil }, set: { if !$0 { memberPendingRemoval = nil } }), titleVisibility: .visible) {
+                    Button("Remove", role: .destructive) {
+                        if let id = memberPendingRemoval { confirmRemoveMember(id) }
+                        memberPendingRemoval = nil
+                    }
+                    Button("Cancel", role: .cancel) { memberPendingRemoval = nil }
+                } message: { Text("Remove this bot from the team.") }
                 .task { await store.refreshBots(); await workspace.refreshTeams() }
         }
     }
@@ -252,12 +280,36 @@ struct BotTeamEditor: View {
                     if anchor { Text("Hosts the shared computer. Choose another before removing.").font(.caption).foregroundStyle(.secondary) }
                 }
             }
-        }.disabled(anchor || !unrestrictedTeams && selected.count >= 12 && !selected.contains(id)).accessibilityIdentifier("teamMember-\(id)")
+        }.disabled(anchor || selected.count >= 12 && !selected.contains(id)).accessibilityIdentifier("teamMember-\(id)")
+            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                if !anchor && !hasActiveWork && workspace.mutation == nil && (baseline == nil || supportsSettings && baseline?.revision != nil) {
+                    Button("Remove", role: .destructive) { memberPendingRemoval = id }
+                        .accessibilityIdentifier("removeTeamMember-\(id)")
+                }
+            }
+    }
+    private func confirmRemoveMember(_ id: String) {
+        let snapshot = selected
+        let snapshotCoordinator = coordinator
+        selected.remove(id)
+        if coordinator == id { coordinator = selected.sorted().first ?? "" }
+        guard let saved = baseline, saved.memberIds.contains(id) else { return }
+        Task {
+            let savedOk = await workspace.removeTeamMember(saved, botId: id)
+            if savedOk, let updated = workspace.teams?.teams.first(where: { $0.id == saved.id }) {
+                baseline = updated
+            } else if !savedOk {
+                selected = snapshot
+                coordinator = snapshotCoordinator
+            }
+        }
     }
     private func reload(_ team: BotTeam) {
-        baseline = team; name = team.name; selected = Set(team.memberIds); coordinator = team.coordinatorId; limits = team.limits.forHost(unrestrictedTeams: unrestrictedTeams, continuousTeams: continuousTeams)
+        baseline = team; name = team.name; selected = Set(team.memberIds); coordinator = team.coordinatorId; limits = team.limits == .continuous ? .continuous : team.limits.forHost(unrestrictedTeams: unrestrictedTeams, continuousTeams: false)
         executionMode = team.execution?.mode ?? "individual"; computerId = team.execution?.computerId ?? ""; folder = team.execution?.workspace ?? ""
         briefing = team.briefing ?? BotTeamBriefing()
+        talkativeness = team.talkativeness ?? [:]
+        bidding = team.bidding == true
     }
     private func memberBriefingBinding(_ botId: String, keyPath: WritableKeyPath<BotTeamMemberBriefing, String>) -> Binding<String> {
         Binding(get: { briefing.members.first { $0.botId == botId }?[keyPath: keyPath] ?? "" }, set: { text in
@@ -278,6 +330,51 @@ struct BotTeamEditor: View {
     }
 }
 
+private struct TeamReplyGroupRow: View {
+    var name: String
+    var preview: String
+    var face: AvatarConfig
+    var index: Int
+    var animate: Bool
+    var messageId: String
+    var onReply: () -> Void
+    var onDone: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var shown = false
+    @State private var started = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            AvatarBadge(face, size: 26)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(name).font(.caption.weight(.semibold)).foregroundStyle(StrataTheme.ink).lineLimit(1)
+                Text(preview).font(.subheadline).foregroundStyle(StrataTheme.secondaryInk).lineLimit(2)
+            }
+            Spacer(minLength: 8)
+            Button(action: onReply) { Text("Reply") }
+                .font(.caption2)
+                .buttonStyle(.plain)
+                .foregroundStyle(StrataTheme.secondaryInk)
+                .accessibilityLabel("Reply to \(name)")
+        }
+        .padding(.vertical, 2)
+        .opacity(reduceMotion || !animate || shown ? 1 : 0)
+        .offset(y: reduceMotion || !animate || shown ? 0 : CoucouMotion.messageRise)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("teamReply-\(messageId)")
+        .onAppear {
+            guard !started else { return }
+            started = true
+            let delay = RoomReplyGroup.stagger(index)
+            guard animate, !reduceMotion else { onDone(); return }
+            withAnimation(.spring(response: CoucouMotion.springResponse, dampingFraction: CoucouMotion.springDamping).delay(delay)) {
+                shown = true
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay + CoucouMotion.springResponse) { onDone() }
+        }
+    }
+}
+
 struct BotTeamDetailView: View {
     @ObservedObject var store: CompanionStore
     @ObservedObject var workspace: BotWorkspaceStore
@@ -289,6 +386,8 @@ struct BotTeamDetailView: View {
     @State private var recipient = ""
     @State private var workMode: BotTeamMessageWorkMode = .chat
     @State private var reply: BotTeamChannelMessage?
+    @State private var mentionDismissed: Int?
+    @State private var mentionIndex = 0
     @State private var confirmingStop: BotTeamRun?
     @State private var visible = false
     @State private var showingDetails = false
@@ -299,11 +398,17 @@ struct BotTeamDetailView: View {
     @State private var tasksExpanded = false
     @State private var workHistoryExpanded = false
     @State private var follow = BotTeamMessageFollowState()
+    @State private var arrivals = CoucouArrivals()
     @State private var sentScrollRequest: String?
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @FocusState private var taskFocused: Bool
     @State private var expandedMessages: Set<String> = []
+    @State private var expandedReplyGroups: Set<String> = []
+    @State private var choiceBusy = ""
+    @State private var choiceErrors: [String: String] = [:]
+    @State private var choiceRetries: [String: String] = [:]
+    @State private var memberPendingRemoval: String?
     private var team: BotTeam? { workspace.teams?.teams.first { $0.id == teamId } }
     private var channel: BotTeamChannel? { workspace.channels[teamId] }
     private var channelKey: String { BotWorkspaceStore.channelKey(teamId) }
@@ -353,7 +458,7 @@ struct BotTeamDetailView: View {
                                     .accessibilityIdentifier("loadEarlierTeamMessagesButton")
                             }
                             if entries.isEmpty { emptyChannel(team) }
-                            ForEach(entries) { entry in channelRow(entry, team: team).id(entry.id) }
+                            channelMessages(team)
                         } else if let channel {
                             Text(channel.reason ?? "Shared team channels require a newer Strata on your Mac.")
                                 .font(.callout).foregroundStyle(.secondary).padding(.vertical, 24)
@@ -574,7 +679,7 @@ struct BotTeamDetailView: View {
                                 BotTeamEarlierWorkNotice(overview: overview, stale: workspace.messages["activity"] != nil) { workHistoryExpanded = true }
                             }
                             BotWorkspaceMessage(workspace: workspace, key: "activity")
-                        } header: { Text("Current work") } footer: { Text("Review submitted evidence or prepare recovery for one unfinished task.") }
+                        } header: { Text("Current work") } footer: { Text("Review submitted evidence, or decide what to do with work that stopped.") }
                         if !overview.history.isEmpty {
                             Section {
                                 Button { workHistoryExpanded.toggle() } label: {
@@ -627,16 +732,30 @@ struct BotTeamDetailView: View {
         ForEach(team.memberIds, id: \.self) { id in
             let bot = store.botCatalog?.bots.first { $0.id == id }
             let member = team.briefing?.members.first { $0.botId == id }
+            let name = bot?.name ?? BotWorkspaceStore.deletedBotName
             HStack(alignment: .top, spacing: 10) {
                 AvatarBadge(bot?.face ?? .default(for: "Bot"), size: 30)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(bot?.name ?? "Unavailable bot")
+                    Text(name)
                     if let role = member?.role, !role.isEmpty { Text(role).font(.caption).foregroundStyle(.secondary) }
                     if let instructions = member?.instructions, !instructions.isEmpty { Text(instructions).font(.caption).foregroundStyle(.secondary).lineLimit(4) }
                 }
                 Spacer()
                 if id == team.coordinatorId { Text("Coordinator").font(.caption).foregroundStyle(.secondary) }
             }
+            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                if activeRuns.isEmpty && workspace.mutation == nil && workspace.teams?.teamSettingsSupported == true && team.revision != nil {
+                    Button("Remove", role: .destructive) { memberPendingRemoval = id }
+                        .accessibilityIdentifier("removeTeamMember-\(id)")
+                }
+            }
+            .confirmationDialog("Remove \(name) from this team?", isPresented: Binding(get: { memberPendingRemoval == id }, set: { if !$0 && memberPendingRemoval == id { memberPendingRemoval = nil } }), titleVisibility: .visible) {
+                Button("Remove", role: .destructive) {
+                    memberPendingRemoval = nil
+                    Task { await workspace.removeTeamMember(team, botId: id) }
+                }
+                Button("Cancel", role: .cancel) { memberPendingRemoval = nil }
+            } message: { Text("Remove this bot from the team.") }
         }
         if let instructions = team.briefing?.instructions, !instructions.isEmpty {
             VStack(alignment: .leading, spacing: 6) { Text("Team instructions").font(.subheadline.weight(.semibold)); Text(instructions).font(.subheadline).textSelection(.enabled) }
@@ -653,15 +772,105 @@ struct BotTeamDetailView: View {
                     .accessibilityIdentifier("openTeamComputerButton")
             }
         } else { LabeledContent("Execution", value: "Each bot’s computer") }
-        if workspace.continuousTeams {
+        if team.limits == .continuous {
             LabeledContent("Team work", value: "Until finished or stopped").accessibilityIdentifier("teamContinuousDetailLabel")
         } else {
-            LabeledContent("Limits", value: "\(team.limits.parallelLabel(unrestrictedTeams: workspace.unrestrictedTeams)) · \(team.limits.maxTurns) \(workspace.unrestrictedTeams ? "work turns" : "turns") · \(team.limits.maxDurationMs / 60_000)m")
+            LabeledContent("Limits", value: "\(team.limits.parallelLabel(unrestrictedTeams: workspace.unrestrictedTeams)) · \(team.limits.maxTurns) turns · depth \(team.limits.maxDepth) · \(team.limits.maxHops) hops · \(team.limits.maxDurationMs / 60_000)m")
         }
         Text("Everyone can join the conversation. The coordinator assigns work and brings results together. Each bot keeps its own model and permissions.").font(.caption).foregroundStyle(.secondary)
         Button(team.enabled ? "Disable team" : "Enable reviewed team") { Task { await workspace.setTeamEnabled(team, enabled: !team.enabled) } }
             .disabled(workspace.mutation != nil || !activeRuns.isEmpty)
             .accessibilityIdentifier("toggleBotTeamEnabledButton")
+    }
+
+    private func chooseRoomRecovery(_ card: RoomRecoveryPresentation, optionId: String) async {
+        guard choiceBusy.isEmpty else { return }
+        guard let choice = RoomChoice.choiceId(optionId) else {
+            choiceErrors[card.messageId] = "That choice is not available yet."
+            return
+        }
+        choiceBusy = card.messageId + ":" + choice
+        choiceErrors[card.messageId] = nil
+        choiceRetries[card.messageId] = choice
+        if let error = await workspace.chooseMessageRecovery(teamId: card.teamId, messageId: card.messageId, choice: choice) {
+            choiceErrors[card.messageId] = error
+        } else {
+            choiceErrors[card.messageId] = nil
+            choiceRetries[card.messageId] = nil
+        }
+        choiceBusy = ""
+    }
+    private struct RoomFeedItem: Identifiable {
+        var id: String
+        var triggerId: String
+        var messages: [BotTeamChannelMessage]
+        var grouped: Bool
+    }
+    private func feedItems(_ team: BotTeam) -> [RoomFeedItem] {
+        let byId = Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let sources = entries.map { entry in
+            RoomReplySource(id: entry.id, kind: entry.kind, authorType: entry.author.type, content: entry.content, replyToId: entry.replyToId, replyGroupId: entry.replyGroupId, recipientIds: entry.recipientIds, hasRecovery: entry.recovery != nil)
+        }
+        return RoomReplyGroup.group(messages: sources, memberIds: team.memberIds).compactMap { entry in
+            switch entry {
+            case .message(let id):
+                guard let message = byId[id] else { return nil }
+                return RoomFeedItem(id: id, triggerId: "", messages: [message], grouped: false)
+            case .replies(let id, let triggerId, let messageIds):
+                let grouped = messageIds.compactMap { byId[$0] }
+                guard grouped.count >= 2 else { return nil }
+                return RoomFeedItem(id: "replies-" + id, triggerId: triggerId, messages: grouped, grouped: true)
+            }
+        }
+    }
+    private func channelMessages(_ team: BotTeam) -> some View {
+        let rows = entries.map { CoucouRow(id: $0.id, own: $0.author.type == "user") }
+        let ready = channel != nil && !workspace.loading.contains(channelKey)
+        arrivals.begin(key: teamId, rows: rows, ready: ready)
+        return ForEach(feedItems(team)) { item in
+            if item.grouped {
+                replyGroup(item)
+            } else if let entry = item.messages.first {
+                CoucouMessageEnter(entrance: arrivals.entrance(id: entry.id), onDone: { arrivals.finish(id: entry.id) }) {
+                    channelRow(entry, team: team)
+                }.id(entry.id)
+            }
+        }
+    }
+    @ViewBuilder private func replyGroup(_ item: RoomFeedItem) -> some View {
+        let expanded = expandedReplyGroups.contains(item.id)
+        let visible = RoomReplyGroup.visibleCount(item.messages.count, expanded: expanded)
+        let label = RoomReplyGroup.label(item.messages.count)
+        VStack(alignment: .leading, spacing: 2) {
+            if item.messages.count > RoomReplyGroup.previewLimit {
+                Button {
+                    if expanded { expandedReplyGroups.remove(item.id) } else { expandedReplyGroups.insert(item.id) }
+                } label: {
+                    Text(label).font(.caption.weight(.semibold)).foregroundStyle(StrataTheme.secondaryInk).frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(label)
+                .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+                .accessibilityIdentifier("teamReplyGroup-\(item.triggerId)")
+            } else {
+                Text(label).font(.caption.weight(.semibold)).foregroundStyle(StrataTheme.secondaryInk).frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("teamReplyGroup-\(item.triggerId)")
+            }
+            ForEach(Array(item.messages.prefix(visible).enumerated()), id: \.element.id) { index, entry in
+                TeamReplyGroupRow(
+                    name: entry.author.name,
+                    preview: RoomReplyGroup.preview(entry.content),
+                    face: entry.author.avatarConfig ?? store.botCatalog?.bots.first { $0.id == entry.author.botId }?.face ?? .default(for: entry.author.name),
+                    index: index,
+                    animate: arrivals.entrance(id: entry.id) != nil,
+                    messageId: entry.id,
+                    onReply: { reply = entry; requestId = UUID().uuidString; taskFocused = true },
+                    onDone: { arrivals.finish(id: entry.id) }
+                )
+            }
+        }
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .contain)
     }
 
     private func channelRow(_ entry: BotTeamChannelMessage, team: BotTeam) -> some View {
@@ -686,7 +895,15 @@ struct BotTeamDetailView: View {
                         Text("To " + recipients.map { id in store.botCatalog?.bots.first { $0.id == id }?.name ?? "Teammate" }.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary)
                     }
                     if human, entry.workMode == .work { Label("Work request", systemImage: "hammer").font(.caption.weight(.medium)).foregroundStyle(.secondary).accessibilityIdentifier("teamMessageWorkRequest-" + entry.id) }
-                    messageContent(entry)
+                    let recovery = RoomChoice.fromMessage(id: entry.id, teamId: entry.teamId, content: entry.content, recovery: entry.recovery)
+                    if recovery?.text != entry.content.trimmingCharacters(in: .whitespacesAndNewlines) { messageContent(entry) }
+                    if let recovery {
+                        RoomChoiceCard(text: recovery.text, options: recovery.options, chosen: recovery.choice, busy: choiceBusy.hasPrefix(entry.id + ":") ? String(choiceBusy.dropFirst(entry.id.count + 1)) : "", error: choiceErrors[entry.id] ?? "") { optionId in
+                            Task { await chooseRoomRecovery(recovery, optionId: optionId) }
+                        } onRetry: {
+                            if let optionId = choiceRetries[entry.id] { Task { await chooseRoomRecovery(recovery, optionId: optionId) } }
+                        }
+                    }
                     if entry.kind != "message" { Text(entry.kind.replacingOccurrences(of: "_", with: " ").capitalized).font(.caption2.weight(.medium)).foregroundStyle(.secondary) }
                 }.padding(.horizontal, 15).padding(.vertical, 12)
                     .background(human ? StrataTheme.grouped : StrataTheme.surface, in: RoundedRectangle(cornerRadius: 23))
@@ -754,25 +971,70 @@ struct BotTeamDetailView: View {
     }
     private func runRow(_ run: BotTeamRun) -> some View {
         VStack(alignment: .leading, spacing: 9) {
-            HStack { Text(run.requestStateLabel(workReviewSupported: workspace.workReviewSupported)).font(.subheadline.weight(.semibold)); Spacer(); Text(run.turnLabel(unrestrictedTeams: workspace.unrestrictedTeams, continuousTeams: workspace.continuousTeams)).font(.caption).foregroundStyle(.secondary) }
+            HStack { Text(run.requestStateLabel(workReviewSupported: workspace.workReviewSupported)).font(.subheadline.weight(.semibold)); Spacer(); Text(run.limits == nil || run.limits == .continuous ? run.turnLabel(unrestrictedTeams: workspace.unrestrictedTeams, continuousTeams: workspace.continuousTeams) : "Working with the team").font(.caption).foregroundStyle(.secondary) }
             if let detail = run.detail { Text(detail).font(.caption).foregroundStyle(.secondary) }
             BotSharedConversationButton(store: store, chatId: run.rootChatId, title: "Open task conversation", openChat: { showingDetails = false; openChat() })
             if run.isActive { Button("Stop team task", role: .destructive) { confirmingStop = run }.buttonStyle(.borderless).disabled(workspace.mutation != nil).accessibilityIdentifier("stopBotTeamRunDetails-\(run.id)") }
         }.padding(.vertical, 6)
     }
+    private func mentionRoster(_ team: BotTeam) -> [RoomMentionMember] {
+        team.memberIds.map { id in RoomMentionMember(id: id, name: store.botCatalog?.bots.first { $0.id == id }?.name ?? "") }
+    }
+    private func insertMention(_ choice: RoomMentionChoice, team: BotTeam, active: RoomMentionQuery) {
+        let token = RoomMention.insertion(choice: choice, members: mentionRoster(team))
+        let next = RoomMention.insert(text: message, query: active, cursor: message.count, token: token)
+        message = next.text
+        mentionDismissed = nil
+        requestId = UUID().uuidString
+        taskFocused = true
+    }
+    private func mentionKey(_ team: BotTeam, action: String) -> KeyPress.Result {
+        let roster = mentionRoster(team)
+        guard let active = RoomMention.query(text: message, cursor: message.count) else { return .ignored }
+        let choices = RoomMention.choices(members: roster, query: active.query)
+        guard RoomMention.listVisible(activeStart: active.start, dismissedStart: mentionDismissed, choiceCount: choices.count) else { return .ignored }
+        switch action {
+        case "up", "down":
+            mentionIndex = RoomMention.moveIndex(mentionIndex, count: choices.count, direction: action)
+            return .handled
+        case "pick":
+            insertMention(choices[min(max(mentionIndex, 0), choices.count - 1)], team: team, active: active)
+            return .handled
+        case "close":
+            mentionDismissed = active.start
+            return .handled
+        default:
+            return .ignored
+        }
+    }
     private func composer(_ team: BotTeam) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let roster = mentionRoster(team)
+        let active = RoomMention.query(text: message, cursor: message.count)
+        let choices = active.map { RoomMention.choices(members: roster, query: $0.query) } ?? []
+        let showMentions = RoomMention.listVisible(activeStart: active?.start, dismissedStart: mentionDismissed, choiceCount: choices.count)
+        return VStack(alignment: .leading, spacing: 8) {
+            if showMentions, let active {
+                RoomMentionList(choices: choices, selected: min(mentionIndex, max(choices.count - 1, 0)), face: { choice in
+                    store.botCatalog?.bots.first { $0.id == choice.memberID }?.face ?? .default(for: choice.label)
+                }, onPick: { insertMention($0, team: team, active: active) })
+            }
             if let reply {
                 HStack(alignment: .top) {
                     Text("Replying to \(reply.author.name)").font(.caption).lineLimit(1).accessibilityIdentifier("teamReplyContext")
                     Spacer(); Button { self.reply = nil } label: { Image(systemName: "xmark.circle.fill").frame(width: 32, height: 28) }.accessibilityLabel("Cancel reply")
                 }.foregroundStyle(.secondary)
             }
-            if !recipient.isEmpty || !activeRuns.isEmpty {
+            if !recipient.isEmpty || !activeRuns.isEmpty || channel?.presence?.contains(where: { $0.state == "working" }) == true {
                 HStack {
                     if !recipient.isEmpty { Text("To " + (recipient == "everyone" ? "Everyone" : store.botCatalog?.bots.first { $0.id == recipient }?.name ?? "Teammate")).lineLimit(2) }
                     Spacer(minLength: 0)
-                    if !activeRuns.isEmpty { Label("Team working", systemImage: "circle.fill").labelStyle(.titleOnly).foregroundStyle(StrataTheme.accentText) }
+                    if let names = channel?.presence?.filter({ $0.state == "working" }).map({ row in store.botCatalog?.bots.first { $0.id == row.botId }?.name ?? "A teammate" }), !names.isEmpty {
+                        let label = names.joined(separator: ", ") + (names.count == 1 ? " is working…" : " are working…")
+                        HStack(spacing: 6) {
+                            TypingDots(label: label, hiddenLabel: true)
+                            ShimmerText(text: label).lineLimit(2)
+                        }
+                    } else if !activeRuns.isEmpty { Label("Team working", systemImage: "circle.fill").labelStyle(.titleOnly).foregroundStyle(StrataTheme.accentText) }
                 }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 8)
             }
             if supportsCoordinatorWork, channel?.supported == true {
@@ -801,6 +1063,11 @@ struct BotTeamDetailView: View {
                 HStack(alignment: .bottom, spacing: 4) {
                     TextField(channel?.supported == true ? "Message…" : "What should this team do?", text: $message, axis: .vertical).lineLimit(1...5)
                         .focused($taskFocused).padding(.leading, 17).padding(.vertical, 14).accessibilityIdentifier("botTeamTaskInput")
+                        .onKeyPress(.upArrow) { mentionKey(team, action: "up") }
+                        .onKeyPress(.downArrow) { mentionKey(team, action: "down") }
+                        .onKeyPress(.escape) { mentionKey(team, action: "close") }
+                        .onKeyPress(.return) { mentionKey(team, action: "pick") }
+                        .onKeyPress(.tab) { mentionKey(team, action: "pick") }
                     Button { send(team) } label: { Image(systemName: "arrow.up").font(.system(size: 19, weight: .semibold)).frame(width: 40, height: 40).foregroundStyle(StrataTheme.primaryInk).background(StrataTheme.primaryFill, in: Circle()) }
                         .padding(4).accessibilityLabel(channel?.supported == true ? "Send to team" : "Start task")
                         .disabled(channel == nil || !team.enabled || message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || message.utf16.count > 16_000 || workspace.mutation != nil)
@@ -813,6 +1080,10 @@ struct BotTeamDetailView: View {
             if !team.enabled { Button("Review and enable your team") { settingsExpanded = true; showingDetails = true }.font(.caption).accessibilityIdentifier("reviewTeamForChatButton") }
         }.padding(.horizontal, 16).padding(.vertical, 10).background(StrataTheme.background)
             .background { GeometryReader { geometry in Color.clear.preference(key: BotTeamLegacyScrollPreference.self, value: .init(bottomInset: geometry.size.height)) } }
+            .onChange(of: message) { _, newValue in
+                if RoomMention.query(text: newValue, cursor: newValue.count) == nil { mentionDismissed = nil }
+                mentionIndex = 0
+            }
     }
     private func recipientPicker(_ team: BotTeam) -> some View {
         Picker("Recipients", selection: $recipient) {
@@ -825,7 +1096,8 @@ struct BotTeamDetailView: View {
     private func send(_ team: BotTeam) {
         taskFocused = false
         let generation = navigation, text = message, request = requestId
-        let draft = BotTeamChannelPost(message: text, requestId: request, recipientIds: recipient.isEmpty ? nil : recipient == "everyone" ? team.memberIds : [recipient], replyToId: reply?.id, workMode: supportsCoordinatorWork ? workMode : nil, durablePlan: supportsCoordinatorWork && workspace.workPlansSupported && workMode == .work ? true : nil)
+        let audience = RoomMention.audience(text: text, recipient: recipient, memberIds: team.memberIds)
+        let draft = BotTeamChannelPost(message: text, requestId: request, recipientIds: audience.recipientIds, replyToId: reply?.id, workMode: supportsCoordinatorWork ? workMode : nil, durablePlan: supportsCoordinatorWork && workspace.workPlansSupported && workMode == .work ? true : nil, everyone: audience.everyone)
         Task {
             let sent: Bool
             if channel?.supported == true { sent = await workspace.postTeamMessage(team, draft: draft) }
@@ -1009,7 +1281,7 @@ private struct BotActivityView: View {
         VStack(alignment: .leading, spacing: 9) {
             if workspace.workReviewSupported, item.work != nil {
                 BotTeamTaskLabel(item: item, stale: workspace.messages["activity"] != nil, ownerName: item.botId.map(botName))
-                Button("Results & recovery", systemImage: "checklist") { reviewingWork = item }
+                Button("Results", systemImage: "checklist") { reviewingWork = item }
                     .buttonStyle(.borderless).accessibilityIdentifier("openTeamWork-" + item.id)
             } else {
                 HStack(alignment: .top, spacing: 12) {
@@ -1362,7 +1634,7 @@ private struct BotSkillDetailView: View {
                     if !skill.description.isEmpty { Text(skill.description).font(.subheadline) }
                     Text(skill.body).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                     if !skill.triggers.isEmpty { LabeledContent("Triggers", value: skill.triggers.joined(separator: ", ")) }
-                    Text("Revision \(skill.revision)").font(.caption).foregroundStyle(.secondary)
+                    Text("Revision \(skill.revision.description)").font(.caption).foregroundStyle(.secondary)
                 }
                 if !skill.isLibrary {
                     Section {
@@ -1585,12 +1857,12 @@ private struct BotTeamTaskReviewView: View {
                 }
                 if work.canPlanRecovery {
                     Section {
-                        Button("Prepare recovery", systemImage: "arrow.clockwise") { Task { await workspace.refreshRecovery(current) } }
+                        Button("Check what stopped", systemImage: "arrow.clockwise") { Task { await workspace.refreshRecovery(current) } }
                             .disabled(busy).accessibilityIdentifier("prepareTeamRecoveryButton")
                         Text("Review the saved context and exact working computer before you resume this one unfinished task.").font(.caption).foregroundStyle(.secondary)
-                    } header: { Text("Recovery") }
+                    } header: { Text("What stopped") }
                 } else if work.recoveryJobId != nil {
-                    Section("Recovery") { Text("A continuation was already created for this task. Its results appear in the team's task list.").font(.callout).accessibilityIdentifier("teamWorkAlreadyRecovered") }
+                    Section("Already continued") { Text("A continuation was already created for this task. Its results appear in the team's task list.").font(.callout).accessibilityIdentifier("teamWorkAlreadyRecovered") }
                 }
                 if let plan { recoverySection(plan, current: current) }
                 if !work.reviewHistory.isEmpty {
@@ -1671,12 +1943,12 @@ private struct BotTeamTaskReviewView: View {
             if let reason = plan.blockedReason, !reason.isEmpty { Text(reason).font(.callout).foregroundStyle(StrataTheme.warning).accessibilityIdentifier("teamRecoveryBlockedReason") }
             TimelineView(.periodic(from: .now, by: 1)) { clock in
                 let expired = plan.isExpired(at: clock.date)
-                if expired { Text("This recovery plan expired. Prepare a fresh plan before resuming.").font(.caption).foregroundStyle(StrataTheme.warning) }
+                if expired { Text("This check expired. Check again before trying again.").font(.caption).foregroundStyle(StrataTheme.warning) }
                 Button("Resume this task", systemImage: "play.fill") { resumeTarget = current; resumePlan = plan; confirmingResume = true }
                     .disabled(busy || !plan.canResume || expired || work?.canPlanRecovery != true || work?.revision != plan.expectedRevision)
                     .accessibilityIdentifier("resumeTeamWorkButton")
             }
-        } header: { Text("Recovery plan") } footer: { Text("Resume is explicit. Tool approvals and computer permissions still apply.") }
+        } header: { Text("Saved context") } footer: { Text("Resume is explicit. Tool approvals and computer permissions still apply.") }
     }
 }
 

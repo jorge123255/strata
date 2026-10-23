@@ -166,7 +166,9 @@ test('only a current bound team job grants continuous runtime and model inferenc
   assert.equal(Object.hasOwn(member, 'continuousTeam'), false, 'native profile creation cannot persist the internal flag');
   await assert.rejects(bots.saveProfile({ name: 'Inert', provider: 'codex', computerId: 'local', continuousTeam: true }), { status: 400 });
   const other = bots.create({ ...profile, name: 'Other inert member' }).bot;
-  bots.team.create({ name: 'Inert team', memberIds: [member.id, other.id], coordinatorId: member.id, enabled: true });
+  // A bound job is continuous only when every limit is 0. New teams use finite
+  // defaults, so this job opts into unlimited limits explicitly.
+  bots.team.create({ name: 'Inert team', memberIds: [member.id, other.id], coordinatorId: member.id, enabled: true, limits: { maxParallel: 0, maxDepth: 0, maxHops: 0, maxTurns: 0, maxDurationMs: 0 } });
   const team = bots.team.list().teams[0];
   const standalone = bots.createConversation(member.id).conversation.id;
   chats.send(standalone, 'Inert standalone');

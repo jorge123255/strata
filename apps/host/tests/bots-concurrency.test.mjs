@@ -51,9 +51,11 @@ test('two shared host teams and a personal browser chat overlap; stopping one te
     f.bots.team.update(team.id, { execution: { mode: 'shared', computerId: 'host:local', workspace: folder } });
     return { team, child, folder };
   });
-  const first = f.bots.team.message(teams[0].team.id, { message: 'request 0', requestId: 'first' }).run;
+  // A plain message is room chat and does not start file work. Address each
+  // worker in Work so the two host folders and the personal browser overlap.
+  const first = f.bots.team.message(teams[0].team.id, { message: 'request 0', requestId: 'first', workMode: 'work', recipientIds: [teams[0].child.id] }).run;
   await until(() => running.size === 1);
-  const second = f.bots.team.message(teams[1].team.id, { message: 'request 1', requestId: 'second' }).run;
+  const second = f.bots.team.message(teams[1].team.id, { message: 'request 1', requestId: 'second', workMode: 'work', recipientIds: [teams[1].child.id] }).run;
   const personal = f.bots.createConversation(f.make('Personal', { workspace: folders[0] }).id).conversation;
   f.chats.send(personal.id, 'personal');
   await until(() => running.size === 3);

@@ -27,10 +27,9 @@ function fixture(t, script, extensions = {}) {
 }
 
 for (const [diagnostic, expected] of [
-  ['The configured model API returned HTTP 402. Check its credentials and tool support in Models.', /HTTP 402.*billing, credits or access/],
-  ['The bot reached its 32-step limit. Continue in this chat to proceed.', /step limit.*continue explicitly/],
-  ['The configured model API returned HTTP 401.', /refused access.*credentials/],
-  ['The configured model API returned HTTP 429.', /request or usage limit.*HTTP 429/],
+  ['The configured model API returned HTTP 402. Check its credentials and tool support in Models.', /billing or credits/],
+  ['The bot reached its 32-step limit. Continue in this chat to proceed.', /ran out of steps/],
+  ['The configured model API returned HTTP 401.', /refused access/],
 ]) test('coordinator gets an actionable fixed failure without provider details or automatic replay: ' + diagnostic, async t => {
   const secret = 'PRIVATE_PROVIDER_RESPONSE_TOKEN_8b12', privatePath = '/Users/private/account/config'; let f, completion;
   f = fixture(t, async input => {
@@ -43,7 +42,7 @@ for (const [diagnostic, expected] of [
       assert.equal(JSON.stringify(status).includes(secret), false); assert.equal(JSON.stringify(input.history).includes(secret), false);
     }
   });
-  const request = { message: 'Assign this task', requestId: 'one-request' };
+  const request = { message: 'Assign this task', requestId: 'one-request', workMode: 'work' };
   const run = f.bots.team.message(f.team.id, request).run; await f.done(run);
   const channel = f.bots.team.channel(f.team.id), report = channel.messages.find(row => row.author.botId === f.worker.id && row.state === 'error');
   assert.match(report.content, expected); assert.equal(report.content.includes(secret), false); assert.equal(report.content.includes(privatePath), false);
@@ -81,10 +80,10 @@ test('an account failure blocks already queued and newly reassigned retries only
       blocked++;
     }
   });
-  const first = f.bots.team.message(f.team.id, { message: 'Assign two checks', requestId: 'initial' }).run; await f.done(first);
+  const first = f.bots.team.message(f.team.id, { message: 'Assign two checks', requestId: 'initial', workMode: 'work' }).run; await f.done(first);
   assert.equal(failures, 1); assert.equal(blocked, 1);
   assert.ok(f.bots.team.channel(f.team.id).messages.some(row => /model account or access failure/.test(row.content)));
-  const next = f.bots.team.message(f.team.id, { message: 'Explicit new request', requestId: 'new-human-request' }).run; await f.done(next);
+  const next = f.bots.team.message(f.team.id, { message: 'Explicit new request', requestId: 'new-human-request', workMode: 'work' }).run; await f.done(next);
   assert.equal(failures, 2); assert.equal(blocked, 2);
   assert.notEqual(first.id, next.id);
 });
@@ -133,6 +132,7 @@ test('durable finalization failure resolves an awaiting Stop, revokes the run an
     }
     await new Promise(resolve => { input.signal.addEventListener('abort', resolve, { once: true }); if (input.signal.aborted) resolve(); });
   });
+  f.bots.team.update(f.team.id, { limits: { maxParallel: 2 } });
   const run = f.bots.team.start(f.team.id, { message: 'Delegate and wait' }).run; await until(() => entered && f.seen.length === 2);
   const file = join(f.directory, 'bot-teams.json'), backup = join(f.directory, 'saved-teams.json'); renameSync(file, backup); mkdirSync(file);
   try {

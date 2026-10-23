@@ -8,7 +8,7 @@ import { isLocalCompanionRequest } from './companion-routes.mjs';
 import { botModelDestination } from './bots-models.mjs';
 import { createBotComputers } from './bots-computers.mjs';
 import { createBotWork } from './bots-work.mjs';
-import { createBotTeams } from './bots-team.mjs';
+import { chooseRoomSpeakers, createBotTeams } from './bots-team.mjs';
 import { botWorkAuthorityFingerprint } from './bots-work-authority.mjs';
 import { botSupervisionSnapshot } from './bots-supervision.mjs';
 import { createBotHostFolderTools, botHostFolderAuthority } from './bots-host-folder.mjs';
@@ -18,8 +18,18 @@ import { createHarnessObserver } from './bots-harness-observer.mjs';
 import { botApprovalTarget } from './bots-approval-target.mjs';
 import { botExecutionInstructions } from './bots-tools.mjs';
 import { teamPlanResourceKey } from './bots-team-plan-resources.mjs';
+import { privateExtensionStore } from './bots-extension-store.mjs';
 
 const fault = (status, message) => Object.assign(new Error(message), { status });
+const readCursorMessage = 'Saved read cursors could not be read. They were left unchanged.';
+function openReadCursors(directory) {
+  const storage = privateExtensionStore(directory, 'bot-reads.json', { version: 1, teams: {}, bots: {} });
+  const value = storage.value;
+  if (!value.teams || typeof value.teams !== 'object' || Array.isArray(value.teams) || !value.bots || typeof value.bots !== 'object' || Array.isArray(value.bots)) throw fault(503, readCursorMessage);
+  for (const [id, sequence] of Object.entries(value.teams)) if (!/^team_[a-f0-9-]+$/.test(id) || !Number.isSafeInteger(sequence) || sequence < 0) throw fault(503, readCursorMessage);
+  for (const [id, at] of Object.entries(value.bots)) if (!/^bot_[a-f0-9-]+$/.test(id) || typeof at !== 'string' || at.length > 40 || !Number.isFinite(Date.parse(at))) throw fault(503, readCursorMessage);
+  return storage;
+}
 const ids = new Set(['claude', 'codex', 'grok', 'kimi', 'ollama', 'devin', 'configured']);
 export const BOT_AVATARS = ['🤖', '🧑‍💻', '🦊', '🧠', '🚀', '🛠️', '🌿', '✨'];
 export const BOT_AVATAR_SHAPES = Object.freeze(['orb', 'pebble', 'tile', 'diamond', 'spark', 'hexagon']);
@@ -66,7 +76,31 @@ function endpoint(value) {
   return url.href.replace(/\/$/, '');
 }
 
-export function createBots({ directory, runtime, tools, conversations = () => null, defaultWorkspace = () => homedir(), notify = () => {}, now = () => new Date().toISOString(), remoteSSH, modelProviders, modelRequest, cuaTools, skills, mcp, createdTools, python = 'python3' }) {
+export function createBots({ directory, runtime, tools, conversations = () => null, defaultWorkspace = () => homedir(), notify: outerNotify = () => {}, now = () => new Date().toISOString(), remoteSSH, modelProviders, modelRequest, cuaTools, skills, mcp, createdTools, python = 'python3' }) {
+  const summaryListeners = new Set();
+  let summaryQueued = false, inboxSource = null;
+  const reads = openReadCursors(directory);
+  function emitSummaryNow() {
+    const payload = summary();
+    outerNotify('bot-summary', payload);
+    for (const listener of summaryListeners) { try { listener(payload); } catch { /* A sidebar listener cannot stop bot work. */ } }
+    return payload;
+  }
+  function scheduleSummary() {
+    if (summaryQueued) return;
+    summaryQueued = true;
+    queueMicrotask(() => { summaryQueued = false; try { emitSummaryNow(); } catch { /* A sidebar refresh cannot stop bot work. */ } });
+  }
+  const notify = (event, data) => {
+    outerNotify(event, data);
+    if (event !== 'bot-summary' && (event === 'team-channel' || event === 'bots')) scheduleSummary();
+  };
+  function bindInbox() {
+    const chats = conversations();
+    if (!chats || chats === inboxSource || typeof chats.subscribeInbox !== 'function') return;
+    inboxSource = chats;
+    chats.subscribeInbox(() => scheduleSummary());
+  }
   if (createdTools) tools = createCreatedCommandTools(tools);
   const actionJournal = createBotActionJournal({ directory: join(directory, 'bots-action-journal') });
   const harnessObserver = createHarnessObserver();
@@ -215,8 +249,62 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     if (!summary.available) throw Object.assign(fault(409, message), { code: 'team_plan_receipts_unavailable' });
     if (['pending', 'uncertain', 'interrupted'].some(state => summary.counts[state] > 0)) throw Object.assign(fault(409, message), { code: 'team_plan_receipts_unresolved' });
   }
-  const team = createBotTeams({ directory, requireBot, conversations, createConversation: (id, teamContext) => createConversation(id, {}, teamContext), discardConversation: id => { conversations().remove(id); chatProfiles.delete(id); checkpoints.delete(id); save(); }, notify, workAuthority, assertRecoveryAvailable, workflowAuthority, planAuthority: (id, shared, context) => workflowAuthority(id, shared, context, true), assertWorkflowReceipts,
-    usesComputer: (source, target) => { const bot = typeof source === 'string' ? chatProfiles.get(source) : source; return bot?.computerMode === 'cua' && cuaResource(bot) === cuaResource(target); }, teamComputers: teamComputerRows, resolveExecution: resolveTeamExecution, isChatBusy: chatBusy, isBotBusy: id => [...active.values()].some(run => run.botId === id), stopDirect: id => stop(id, { team: false }) });
+  function mapSpeakerNames(raw, members) {
+    if (!Array.isArray(raw)) return [];
+    const ids = [];
+    for (const token of raw) {
+      if (typeof token !== 'string') continue;
+      const cleaned = token.trim().replace(/^@/, '');
+      if (!cleaned) continue;
+      const byId = members.find(member => member.id === cleaned);
+      const named = members.filter(member => typeof member.name === 'string' && member.name.trim().toLowerCase() === cleaned.toLowerCase());
+      const id = byId?.id ?? (named.length === 1 ? named[0].id : undefined);
+      if (id && !ids.includes(id)) ids.push(id);
+      if (ids.length === 2) break;
+    }
+    return ids;
+  }
+  function roomSpeakers(input) {
+    const members = Array.isArray(input?.members) ? input.members : [];
+    const usable = member => member?.provider === 'configured' && member.modelSource;
+    // The coordinator's model picks, unless this team chose a selector. Do not use
+    // whichever configured model happens to be first in the roster.
+    const picker = [input?.selectorBotId, input?.coordinatorId].map(id => members.find(member => member.id === id)).find(usable) ?? null;
+    const human = input?.humanTurn === true || input?.history?.at(-1)?.authorType !== 'bot';
+    const logSelection = (raw, accepted) => {
+      const model = picker?.modelSource?.model || 'none';
+      console.log(`room selection · run ${input?.runId || 'unknown'} · picker ${picker ? `${picker.id} ${model}` : 'none'} · raw ${JSON.stringify(raw ?? '').slice(0, 500)} · accepted ${accepted.length ? accepted.join(',') : 'none'}`);
+    };
+    const offline = () => {
+      const speakers = chooseRoomSpeakers(input).speakers ?? [];
+      logSelection(null, speakers);
+      return { speakers };
+    };
+    if (!picker || typeof modelRequest !== 'function') return offline();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 18000);
+    const roomRule = human
+      ? 'The latest message is from the human. A greeting, @everyone, or @all needs 1 or 2 speakers. Do not answer with an empty list.'
+      : 'The latest message is from a bot. Use an empty list when nobody has something new to add.';
+    const prompt = `${roomRule}\nRecent room:\n${(input.history ?? []).map(row => `${row.authorName}: ${row.content}`).join('\n')}\nMembers:\n${members.map(member => `${member.id} ${member.name} role=${member.role || '-'} talkativeness=${member.talkativeness} available=${member.available}`).join('\n')}\nLast speaker: ${input.lastSpeakerId || 'none'}\nAddressed by a teammate: ${input.addressedBotId || 'none'}\nReply with JSON only: {"speakers":["bot_id"]}. Use 1 or 2 ids for a human greeting or a message to the whole room, otherwise 0 to 2, ordered. A speaker may be a member id or that member's exact name. Prefer the addressed teammate. Skip talkativeness 0 unless addressed. Do not pick the last speaker.`;
+    return modelRequest({ messages: [{ role: 'user', content: prompt.slice(0, 4000) }], tools: [], system: 'You pick who speaks next in a group chat. JSON only.' }, { id: picker.id, name: picker.name, provider: 'configured', modelSource: picker.modelSource, continuousTeam: false }, controller.signal).then(result => {
+      let speakers = [];
+      try {
+        const match = String(result?.text ?? '').match(/\{[\s\S]*\}/);
+        const parsed = match ? JSON.parse(match[0]) : {};
+        speakers = mapSpeakerNames(parsed.speakers, members);
+      } catch { speakers = []; }
+      if (!speakers.length && human) speakers = chooseRoomSpeakers(input).speakers ?? [];
+      logSelection(result?.text ?? '', speakers);
+      return { speakers: speakers.slice(0, 2) };
+    }).catch(error => {
+      const speakers = chooseRoomSpeakers(input).speakers ?? [];
+      logSelection(String(error?.message ?? error), speakers);
+      return { speakers };
+    }).finally(() => clearTimeout(timer));
+  }
+  const team = createBotTeams({ directory, requireBot, conversations, createConversation: (id, teamContext) => createConversation(id, {}, teamContext), discardConversation: id => { conversations().remove(id); chatProfiles.delete(id); checkpoints.delete(id); save(); }, notify, workAuthority, assertRecoveryAvailable, workflowAuthority, planAuthority: (id, shared, context) => workflowAuthority(id, shared, context, true), assertWorkflowReceipts, selectSpeakers: roomSpeakers,
+    usesComputer: (source, target) => { const bot = typeof source === 'string' ? chatProfiles.get(source) : source; return bot?.computerMode === 'cua' && cuaResource(bot) === cuaResource(target); }, teamComputers: teamComputerRows, resolveExecution: resolveTeamExecution, isChatBusy: chatBusy, isBotBusy: id => [...active.values()].some(run => run.botId === id), stopDirect: id => stop(id, { team: false }), roomReadSequence: teamId => { const value = reads.value.teams?.[teamId]; return Number.isSafeInteger(value) && value >= 0 ? value : 0; } });
   const hasOwnedComputer = id => [...ownedComputers, ...uncertainTargets.keys()].some(key => key.startsWith(`cua:${id}:`));
   const markOwned = bot => { ownedComputers.add(cuaResource(bot)); save(); };
   const computer = createBotComputers({ cua: cuaTools, remoteSSH, profile: (id, chatId) => { const bot = requireBot(id); if (!chatId) return copy(bot); const snapshot = chatProfiles.get(chatId); if (!snapshot || snapshot.id !== id) throw fault(404, 'This computer does not belong to that conversation.'); return copy(snapshot); },
@@ -343,7 +431,23 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     if ([...active.values()].some(run => run.botId === id)) throw fault(409, 'Stop this bot’s active conversations before removing its profile.');
     computer.checkRemove(bot);
     if (hasOwnedComputer(id)) throw fault(409, 'Stop this bot’s isolated computer from its Computer view before removing the profile. Its files and history will be retained.');
-    work.removed?.(id); profiles.delete(id); save(); notify('bots', { deleted: id }); return { deleted: id };
+    const forgotten = team.forgetBot(id);
+    work.removed?.(id); profiles.delete(id);
+    try { save(); } catch (error) { profiles.set(id, bot); throw error; }
+    for (const teamId of forgotten.deletedTeams) clearTeamRead(teamId);
+    notify('bots', { deleted: id }); return { deleted: id };
+  }
+  function clearTeamRead(teamId) {
+    if (!Object.hasOwn(reads.value.teams, teamId)) return;
+    const previous = reads.value.teams[teamId];
+    delete reads.value.teams[teamId];
+    try { reads.save(reads.value); }
+    catch (error) { reads.value.teams[teamId] = previous; throw error; }
+  }
+  function removeTeam(id) {
+    const result = team.remove(id);
+    clearTeamRead(id);
+    return result;
   }
   async function pause(id, input) {
     const old = requireBot(id);
@@ -517,6 +621,9 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
       if (frame.type === 'done' || frame.type === 'error') { terminal = frame; return; }
       if (bot.computerMode === 'cua' && frame.type === 'agent-tool' && frame.tool?.state === 'running') markOwned(bot);
       work.record(bot.id, frame);
+      // Record the new piece before the transcript grows, so a snapshot of the
+      // same reply does not publish that piece a second time.
+      if (frame.type === 'delta' && typeof frame.text === 'string' && frame.text) { try { team.noteRoomDelta(session.id, frame.text); } catch { /* A live caption cannot stop the reply. */ } }
       onFrame(frame);
     };
     const fingerprint = createHash('sha256').update(JSON.stringify([bot.id, bot.provider, bot.model, bot.effort, bot.workspace, bot.instructions, bot.policy, bot.capabilities, bot.providerSettings?.baseURL, bot.execution, bot.modelSource, bot.modelDestination, bot.computerMode, bot.extensionSnapshots, folderSnapshot(bot), ...(bot.sharedComputer ? [{ computerOwnerId: bot.computerOwnerId, sharedComputer: true }] : [])])).digest('hex');
@@ -645,7 +752,65 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
       } finally { harnessObserver.finish(session.id, {outcome: cancelledBeforeCleanup ? 'interrupted' : owner.cleanupFailure || runFailure ? 'error' : 'completed'}); if (active.get(session.id) === owner) active.delete(session.id); ended(); }
     }
   }
-  return { list, create, update, saveProfile, setHostFolder, remove, pause, createConversation, computer, work, team, hasBot: id => profiles.has(id), hasTeam: id => team.hasTeam(id), teamConnectorAccess: (teamId, botId, teamRunId) => team.connectorAccess(teamId, botId, teamRunId), providerModels: id => runtime.models?.(id) ?? Promise.resolve({ provider: id, models: [], detail: 'This provider has no verified effort catalog. Use Provider default.' }), prepareCUA, checkComputer: (input, options) => computerAction(input, false, options), prepareComputer: (input, options) => computerAction(input, true, options), validateSelection, run, pending, approve, stop,
+  function summary() {
+    bindInbox();
+    const readTeams = reads.value.teams ?? {}, readBots = reads.value.bots ?? {};
+    const inbox = conversations()?.sidebarInbox?.() ?? [];
+    const rooms = team.list().teams.map(row => team.roomCard(row.id, readTeams[row.id] ?? 0));
+    const bots = [...profiles.values()].map(bot => {
+      const personal = inbox.filter(row => row.botId === bot.id);
+      const signal = team.botSignal(bot.id);
+      const working = personal.some(row => row.active) || signal.working || [...active.values()].some(run => run.botId === bot.id);
+      let newest = null, unread = 0;
+      const stored = readBots[bot.id];
+      const cursor = typeof stored === 'string' && Number.isFinite(Date.parse(stored)) ? Date.parse(stored) : Number.NEGATIVE_INFINITY;
+      for (const chat of personal) for (const message of chat.messages) {
+        const at = Date.parse(message.at ?? '');
+        if (!Number.isFinite(at)) continue;
+        const rank = `${message.at ?? ''}\0${message.id ?? ''}`;
+        if (!newest || rank > newest.rank) newest = { rank, error: message.error === true };
+        if ((message.hasContent || message.error) && at > cursor) unread += 1;
+      }
+      const status = working ? 'working' : (newest?.error || signal.error ? 'error' : 'idle');
+      return { id: bot.id, name: bot.name, status, unreadCount: unread };
+    });
+    return { rooms, bots };
+  }
+  function rememberRead(kind, id, value) {
+    const previous = Object.hasOwn(reads.value[kind], id) ? reads.value[kind][id] : undefined;
+    reads.value[kind][id] = value;
+    try { reads.save(reads.value); }
+    catch (error) { if (previous === undefined) delete reads.value[kind][id]; else reads.value[kind][id] = previous; throw error; }
+  }
+  function markTeamRead(teamId, input) {
+    const body = input ?? {};
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => key !== 'sequence')) throw fault(400, 'Choose a valid read position.');
+    const latest = team.latestSequence(teamId);
+    let sequence = latest;
+    if (body.sequence !== undefined) {
+      if (!Number.isSafeInteger(body.sequence) || body.sequence < 0 || body.sequence > latest) throw fault(400, 'Choose a read position in this room.');
+      sequence = body.sequence;
+    }
+    rememberRead('teams', teamId, sequence);
+    try { team.refreshRoom(teamId); } catch { /* The saved cursor remains the source of truth. */ }
+    return { room: emitSummaryNow().rooms.find(row => row.id === teamId) };
+  }
+  function markBotRead(botId, input) {
+    requireBot(botId);
+    const body = input ?? {};
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => key !== 'at')) throw fault(400, 'Choose a valid read time.');
+    let at = now();
+    if (body.at !== undefined) {
+      if (typeof body.at !== 'string' || body.at.length > 40 || !Number.isFinite(Date.parse(body.at))) throw fault(400, 'Choose a valid read time.');
+      const parsed = Date.parse(body.at);
+      if (parsed > Date.parse(now()) + 60_000) throw fault(400, 'Choose a read time that is not in the future.');
+      at = new Date(parsed).toISOString();
+    }
+    rememberRead('bots', botId, at);
+    return { bot: emitSummaryNow().bots.find(row => row.id === botId) };
+  }
+  queueMicrotask(bindInbox);
+  return { list, create, update, saveProfile, setHostFolder, remove, removeTeam, pause, createConversation, computer, work, team, summary, markTeamRead, markBotRead, subscribeSummary: listener => { summaryListeners.add(listener); return () => summaryListeners.delete(listener); }, hasBot: id => profiles.has(id), hasTeam: id => team.hasTeam(id), teamConnectorAccess: (teamId, botId, teamRunId) => team.connectorAccess(teamId, botId, teamRunId), providerModels: id => runtime.models?.(id) ?? Promise.resolve({ provider: id, models: [], detail: 'This provider has no verified effort catalog. Use Provider default.' }), prepareCUA, checkComputer: (input, options) => computerAction(input, false, options), prepareComputer: (input, options) => computerAction(input, true, options), validateSelection, run, pending, approve, stop,
     harnessActions: chatId => ({ ...actionJournal.summary(chatId), coverage: { local: 'durable', sshHostTools: 'durable', sshComputerTools: 'worker-durable-read-only', identity: 'Exact conversation, authority, turn and provider call identity; anonymous calls and older settled receipts outside retention are not deduplicated.', recovery: 'No automatic retries or resumes. SSH receipt acknowledgement and computer cleanup remain separate.' } }),
     reviewHarnessAction: (id, input) => actionJournal.review(id, input),
     supervision: () => { const snapshot = botSupervisionSnapshot({ bots: [...profiles.values()], conversations: conversations()?.supervisionSources?.() ?? [], pendingCount: id => active.get(id)?.pending.size ?? 0, now: Date.parse(now()) }); snapshot.sessions = snapshot.sessions.map(row => { const harness = harnessObserver.snapshot(row.id); return harness ? {...row,harness} : row; }); return snapshot; },
@@ -701,6 +866,21 @@ export function createBotRoutes({ bots, port }) {
         if ([...url.searchParams].length || req.headers['transfer-encoding'] || Number(req.headers['content-length'] ?? 0) > 0) return error(res, 400, 'Supervision reads take no settings.');
         return json(res, 200, bots.supervision());
       }
+      if (url.pathname === '/api/bots/summary/stream') {
+        if (req.method !== 'GET') return error(res, 405, 'Bot summary updates are read-only.');
+        if ([...url.searchParams].length || req.headers['transfer-encoding'] || Number(req.headers['content-length'] ?? 0) > 0) throw fault(400, 'Bot summary updates take no request body.');
+        res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive', 'x-accel-buffering': 'no' });
+        res.write(`event: bot-summary\ndata: ${JSON.stringify(bots.summary())}\n\n`);
+        const stop = bots.subscribeSummary(payload => { if (!res.writableEnded) res.write(`event: bot-summary\ndata: ${JSON.stringify(payload)}\n\n`); });
+        const ping = setInterval(() => { if (!res.writableEnded) res.write(': ping\n\n'); }, 15000);
+        req.on('close', () => { clearInterval(ping); stop(); });
+        return;
+      }
+      if (url.pathname === '/api/bots/summary') {
+        if (req.method !== 'GET') return error(res, 405, 'The bot summary is read-only.');
+        if ([...url.searchParams].length || req.headers['transfer-encoding'] || Number(req.headers['content-length'] ?? 0) > 0) throw fault(400, 'Bot summary reads take no request body.');
+        return json(res, 200, bots.summary());
+      }
       if (url.pathname === '/api/bots/teams') {
         if (req.method === 'GET') return json(res, 200, bots.team.list());
         if (req.method === 'POST') return json(res, 201, bots.team.create(await readBody(req)));
@@ -744,6 +924,40 @@ export function createBotRoutes({ bots, port }) {
         if (action !== 'recovery' && req.method === 'POST') return json(res, 200, await bots.team[action === 'review' ? 'reviewJob' : 'resumeJob'](teamId, jobId, await readBody(req)));
         return error(res, 405, 'This task action is unavailable.');
       }
+      const choiceRoute = /^\/api\/bots\/teams\/(team_[a-f0-9-]+)\/messages\/([A-Za-z0-9_.:-]{1,160})\/choice$/.exec(url.pathname);
+      if (choiceRoute) {
+        if (req.method !== 'POST' || [...url.searchParams].length) return error(res, 405, 'Choose try again, skip, or a different way.');
+        return json(res, 200, bots.team.chooseTaskRecovery(choiceRoute[1], choiceRoute[2], await readBody(req)));
+      }
+      const streamRoute = /^\/api\/bots\/teams\/(team_[a-f0-9-]+)\/channel\/stream$/.exec(url.pathname);
+      if (streamRoute && req.method === 'GET') {
+        if ([...url.searchParams].length || req.headers['transfer-encoding'] || Number(req.headers['content-length'] ?? 0) > 0) throw fault(400, 'Team channel updates take no request body.');
+        const teamId = streamRoute[1], snap = bots.team.channel(teamId);
+        const room = typeof bots.team.roomCard === 'function' ? bots.team.roomCard(teamId) : undefined;
+        res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive', 'x-accel-buffering': 'no' });
+        res.write(`event: team-channel\ndata: ${JSON.stringify({ teamId, presence: snap.presence, activeRuns: snap.activeRuns, nextSequence: snap.nextSequence, ...(room ? { room } : {}) })}\n\n`);
+        const stop = bots.team.subscribe((event, data) => {
+          if (res.writableEnded || data?.teamId !== teamId) return;
+          if (event === 'team-channel') res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+          if (event === 'message.partial') {
+            const { messageId, botId, seq, text, delta, done, replyGroupId } = data;
+            res.write(`event: message.partial\ndata: ${JSON.stringify({ messageId, botId, seq, text, delta, done, ...(typeof replyGroupId === 'string' ? { replyGroupId } : {}) })}\n\n`);
+          }
+          if (event === 'room.quiet') res.write(`event: room.quiet\ndata: ${JSON.stringify({ teamId: data.teamId, runId: data.runId, ...(data.messageId ? { messageId: data.messageId } : {}) })}\n\n`);
+          if (event === 'task.recovery') {
+            const { messageId, jobId, runId, text, question, options } = data;
+            res.write(`event: task.recovery\ndata: ${JSON.stringify({ teamId: data.teamId, messageId, jobId, runId, text, question, options })}\n\n`);
+          }
+        });
+        const ping = setInterval(() => { if (!res.writableEnded) res.write(': ping\n\n'); }, 15000);
+        req.on('close', () => { clearInterval(ping); stop(); });
+        return;
+      }
+      const typingRoute = /^\/api\/bots\/teams\/(team_[a-f0-9-]+)\/typing$/.exec(url.pathname);
+      if (typingRoute) {
+        if (req.method !== 'POST' || [...url.searchParams].length) return error(res, 405, 'Say whether you are typing in the request body.');
+        return json(res, 200, bots.team.setTyping(typingRoute[1], await readBody(req)));
+      }
       const channelRoute = /^\/api\/bots\/teams\/(team_[a-f0-9-]+)\/(channel|messages)$/.exec(url.pathname);
       if (channelRoute) {
         const [, teamId, action] = channelRoute;
@@ -763,6 +977,11 @@ export function createBotRoutes({ bots, port }) {
         }
         return error(res, 405, 'This team channel action is unavailable.');
       }
+      const teamRead = /^\/api\/bots\/teams\/(team_[a-f0-9-]+)\/read$/.exec(url.pathname);
+      if (teamRead) {
+        if (req.method !== 'POST' || [...url.searchParams].length) return error(res, 405, 'Mark a room read with an empty body or a sequence.');
+        return json(res, 200, bots.markTeamRead(teamRead[1], await readBody(req)));
+      }
       const teamRoute = /^\/api\/bots\/teams\/(team_[a-f0-9-]+)(?:\/runs(?:\/(tr_[a-f0-9-]+)(?:\/(stop))?)?)?$/.exec(url.pathname);
       if (teamRoute) {
         const [, teamId, runId, action] = teamRoute;
@@ -770,6 +989,10 @@ export function createBotRoutes({ bots, port }) {
         if (runId && req.method === 'GET') return json(res, 200, bots.team.detail(teamId, runId));
         if (!runId && url.pathname.endsWith('/runs') && req.method === 'POST') return json(res, 201, bots.team.start(teamId, await readBody(req)));
         if (!runId && !url.pathname.endsWith('/runs') && req.method === 'PATCH') return json(res, 200, bots.team.update(teamId, await readBody(req)));
+        if (!runId && !url.pathname.endsWith('/runs') && req.method === 'DELETE') {
+          if ([...url.searchParams].length || req.headers['transfer-encoding'] || Number(req.headers['content-length'] ?? 0) > 0) throw fault(400, 'Delete takes no additional settings.');
+          return json(res, 200, bots.removeTeam(teamId));
+        }
         return error(res, 405, 'This team action is unavailable.');
       }
       if (/^\/api\/bots\/computers\/(check|prepare|prepare-cua)$/.test(url.pathname) && req.method === 'POST') {
@@ -804,6 +1027,11 @@ export function createBotRoutes({ bots, port }) {
         const options = { owner: device ? `phone:${device}` : 'mac', signal: controller.signal };
         try { const method = control[2] ?? 'state'; return json(res, 200, await (['control','release'].includes(method) ? bots.computer[method](control[1], input, options) : bots.computer[method](control[1], { ...input, ...options }))); }
         finally { res.off('close', abort); }
+      }
+      const botRead = /^\/api\/bots\/(bot_[a-f0-9-]+)\/read$/.exec(url.pathname);
+      if (botRead) {
+        if (req.method !== 'POST' || [...url.searchParams].length) return error(res, 405, 'Mark a bot read with an empty body or a time.');
+        return json(res, 200, bots.markBotRead(botRead[1], await readBody(req)));
       }
       const match = /^\/api\/bots\/(bot_[a-f0-9-]+)(?:\/(conversations|pause))?$/.exec(url.pathname);
       if (!match) return error(res, 404, 'Unknown bot action.');

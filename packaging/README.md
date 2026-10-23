@@ -21,8 +21,8 @@ A backend name alone is not a target. Each row is an OS x CPU ABI x backend tupl
 | `windows-x86_64-cuda` | NSIS `.exe` (Tauri) | `cuda13` and `cuda12` packages | **built and tested** on a Windows PC with an NVIDIA card: silent install with a PATH of System32 only, a real model, an agent chat. |
 | `windows-x86_64-hip` | NSIS `.exe` (Tauri) | `tools/hip/build_windows.bat` | **built; never run on a real AMD card.** |
 | `linux-x86_64-cuda` | AppImage (Tauri) | `setup.py`; built in a glibc 2.35 chroot | **cuda13 built and tested** (RTX 3060 and RTX A4000: app in the browser, a real model, a picture). cuda12 built. |
-| `linux-x86_64-hip` | AppImage (Tauri) | `packaging/build_hip_linux.sh` | **RX 9000 (gfx1200 / gfx1201) built and tested** on a Radeon AI PRO R9700. **RX 7000 (gfx1100 / 1101 / 1102) built; not run on an RX 7000 card.** |
-| `linux-x86_64-sycl` | | `sycl/setup_intel.py` | Documented as experimental ([INTEL.md](../docs/INTEL.md)). |
+| `linux-x86_64-hip` | AppImage (Tauri) | `packaging/build_hip_linux.sh` | **RX 9000 (gfx1200 / gfx1201) built and tested** on a Radeon AI PRO R9700. **RX 7000 (gfx1100 / 1101 / 1102) built; not run on an RX 7000 card.** **RX 6000 (gfx1030 / 1031, 0.2.2, engine package `rx6000` only) built; not tested on a real RX 6000 card.** |
+| `linux-x86_64-sycl` | | `packaging/build_sycl_linux.sh` (one JIT package for Alchemist and Battlemage) | **engine package built; tested on an Arc A750** (Intel Arc is an official platform since 0.1.40.2, docs/INTEL_ARC.md). Arc B-series (Battlemage) cards are supported and untested by us: no B-series card was available for the package (the B70 tests of 2026-10 were with the source build), and the Terminal says so once and tells the person how to report a problem. `sycl/setup_intel.py` (Docker) remains the source-build route. |
 | `windows-x86_64-sycl` | none | none | **gated.** No native Windows SYCL path exists upstream; it needs a separate feasibility gate, not a recipe. |
 | `macos-x86_64-*` | none | none | **unsupported.** The macOS engine is Apple-Silicon only (`metal/CMakeLists.txt` requires Apple Silicon for the Metal runtime). |
 
@@ -52,21 +52,34 @@ unknown target's archive rather than installing it unverified.
 
 ## Desktop app
 
-```sh
-cd apps/desktop
-./scripts/fetch-node.sh                                                      # the sidecar (once)
-npm install --prefix ../host && npm --prefix ../host run build                # the UI
-node scripts/stage-companion.mjs                                             # the optional iPhone pairing service
-cargo tauri build --bundles app                                              # -> Strata.app
+From `apps/desktop`, after `npm ci`:
 
-# macOS DMG (headless: Tauri's default step needs a Finder session)
+```sh
+npm run build:app     # Strata.app, then a check that the pieces below are inside it
+npm run dmg           # same staging, then a DMG
+npm run build         # same staging, then every bundle this operating system can build
+```
+
+`npm run build:ui` (and therefore `dev`, `build`, `build:app`, and `dmg`) stages four pieces a clean checkout does not contain. Tauri then copies them from `src-tauri/resources` into the app. `scripts/check-app-bundle.mjs` reads the finished `Strata.app` and stops the build if any piece is missing, or if a credential, private key, or VPN file got in.
+
+What is staged, and where it comes from:
+
+- **Node.** `scripts/fetch-node.sh` downloads the official Node 24.12.0 build for this computer and checks the SHA-256 recorded in that script. The binary is `src-tauri/resources/node/node` (`node.exe` on Windows). A binary that is already there and still matches is kept.
+- **Harness.** The pruned DeepSeek Harness inside the pinned release archive `Strata.app.tar.gz` (Strata 0.2.3, SHA-256 in `scripts/bundle-resources.mjs`). `STRATA_HARNESS_SRC` builds one with `stage-harness.mjs` instead. `STRATA_HARNESS_DIR` or `STRATA_DONOR_APP` (a previous `Strata.app`) copies an existing harness. On a Mac, `/Applications/Strata.app` is used when it is there.
+- **Engine.** On a Mac, the Metal package `strata-engine-0.1.48-macos-arm64-metal.tar.gz` from that same release. Linux and Windows need `STRATA_ENGINE_VARIANT` (`cuda13`, `cuda12`, `hip-rx9070`, `hip-rx7900`, `hip-rx6000`, `hip-halo`, `sycl` on Linux; `cuda13`, `cuda12`, `hip-rx9070`, `hip-rdna3`, `hip-rdna2` on Windows) because each installer carries one engine. `STRATA_ENGINE_SRC` or the donor app copies a package you already have. It lands in `src-tauri/resources/engine-bundle/<version>-<platform>-<backend>/`.
+- **Host dependencies.** `npm ci --omit=dev --omit=optional --ignore-scripts` from `apps/host/package-lock.json` into `src-tauri/resources/host/node_modules`. Development dependencies are installed only in `apps/host` so the UI can build; they are not bundled.
+
+The staging refuses to copy personal credentials, private keys, or VPN files. `fetch-node.sh` by itself is still the way to fetch Node without building the app.
+
+```sh
+# macOS DMG without a Finder session, after build:app has produced Strata.app
 ./scripts/make-dmg.sh
 
-# Windows (on Windows): produces an NSIS per-user installer
-cargo tauri build --bundles nsis
+# Windows (on Windows): NSIS per-user installer. Set STRATA_ENGINE_VARIANT first.
+npm run build
 
-# Linux (on Linux): AppImage plus a deb
-cargo tauri build --bundles appimage deb
+# Linux (on Linux): AppImage plus a deb. Set STRATA_ENGINE_VARIANT first.
+npm run build
 ```
 
 Windows installer policy is set in `tauri.conf.json`: `installMode: currentUser`, so the installer

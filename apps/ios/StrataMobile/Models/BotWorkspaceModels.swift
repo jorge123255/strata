@@ -147,6 +147,8 @@ struct BotTeam: Decodable, Identifiable, Equatable {
     var revision: Int?
     var execution: BotTeamExecution?
     var briefing: BotTeamBriefing?
+    var talkativeness: [String: Int]? = nil
+    var bidding: Bool? = nil
 }
 
 /// Public, team-scoped guidance. A bot's private profile is managed separately.
@@ -210,7 +212,11 @@ struct BotTeamRun: Decodable, Identifiable, Equatable {
         let total = max(0, consumedTurns)
         return total - min(total, max(0, rosterFanoutTurns ?? 0))
     }
+    var limits: BotTeamLimits?
     func turnLabel(unrestrictedTeams: Bool, continuousTeams: Bool = false) -> String {
+        if let limits, limits != .continuous {
+            return "\(consumedTurns) of \(limits.maxTurns) turns · depth \(limits.maxDepth) · \(limits.maxHops) hops"
+        }
         if continuousTeams { return consumedTurns > 0 ? "\(consumedTurns) turns used" : "Until finished or stopped" }
         return unrestrictedTeams ? "\(workTurns) work turns" : "\(consumedTurns) turns"
     }
@@ -617,6 +623,20 @@ struct BotTeamChannelAuthor: Decodable, Equatable {
     var avatarConfig: AvatarConfig?
 }
 
+struct BotTeamMessageRecoveryOption: Decodable, Equatable {
+    var id: String
+    var label: String
+}
+
+struct BotTeamMessageRecovery: Decodable, Equatable {
+    var jobId: String
+    var runId: String
+    var question: String
+    var options: [BotTeamMessageRecoveryOption]
+    var choice: String?
+    var text: String?
+}
+
 struct BotTeamChannelMessage: Decodable, Identifiable, Equatable {
     var id: String
     var sequence: Int
@@ -626,18 +646,44 @@ struct BotTeamChannelMessage: Decodable, Identifiable, Equatable {
     var content: String
     var createdAt: BotWorkspaceTimestamp
     var replyToId: String?
+    var replyGroupId: String?
     var recipientIds: [String]?
     var runId: String?
     var chatId: String?
     var state: String?
     var workMode: BotTeamMessageWorkMode?
     var planId: String?
+    var recovery: BotTeamMessageRecovery?
     var usesCompactCard: Bool { kind == "assignment" || kind == "report" && content.count > 1_800 }
     var compactPreview: String {
         let first = content.split(whereSeparator: \.isNewline).first.map(String.init) ?? content
         let length = kind == "assignment" ? 160 : 220
         return String(first.prefix(length)) + (first.count > length || first != content ? "…" : "")
     }
+}
+
+struct BotTeamPresence: Decodable, Equatable, Identifiable {
+    var botId: String
+    var state: String
+    var runId: String
+    var jobId: String
+    var id: String { jobId }
+}
+
+struct BotTeamNeedsChoiceOption: Decodable, Equatable {
+    var id: String
+    var label: String
+    var style: String?
+}
+
+struct BotTeamNeedsChoice: Decodable, Equatable {
+    var type: String
+    var id: String?
+    var teamId: String?
+    var jobId: String?
+    var runId: String?
+    var question: String
+    var options: [BotTeamNeedsChoiceOption]
 }
 
 struct BotTeamChannel: Decodable, Equatable {
@@ -649,6 +695,40 @@ struct BotTeamChannel: Decodable, Equatable {
     var hasMore: Bool?
     var hasMoreBefore: Bool?
     var reason: String?
+    var presence: [BotTeamPresence]?
+    var needsChoice: BotTeamNeedsChoice?
+
+    init(teamId: String, supported: Bool, messages: [BotTeamChannelMessage], activeRuns: [BotTeamRun], nextSequence: Int, hasMore: Bool? = nil, hasMoreBefore: Bool? = nil, reason: String? = nil, presence: [BotTeamPresence]? = nil, needsChoice: BotTeamNeedsChoice? = nil) {
+        self.teamId = teamId
+        self.supported = supported
+        self.messages = messages
+        self.activeRuns = activeRuns
+        self.nextSequence = nextSequence
+        self.hasMore = hasMore
+        self.hasMoreBefore = hasMoreBefore
+        self.reason = reason
+        self.presence = presence
+        self.needsChoice = needsChoice
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case teamId, supported, messages, activeRuns, nextSequence, hasMore, hasMoreBefore, reason, presence, needsChoice
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        teamId = try container.decode(String.self, forKey: .teamId)
+        supported = try container.decode(Bool.self, forKey: .supported)
+        messages = try container.decode([BotTeamChannelMessage].self, forKey: .messages)
+        activeRuns = try container.decode([BotTeamRun].self, forKey: .activeRuns)
+        nextSequence = try container.decode(Int.self, forKey: .nextSequence)
+        hasMore = try container.decodeIfPresent(Bool.self, forKey: .hasMore)
+        hasMoreBefore = try container.decodeIfPresent(Bool.self, forKey: .hasMoreBefore)
+        reason = try container.decodeIfPresent(String.self, forKey: .reason)
+        presence = try container.decodeIfPresent([BotTeamPresence].self, forKey: .presence)
+        needsChoice = try? container.decode(BotTeamNeedsChoice.self, forKey: .needsChoice)
+        if needsChoice?.type != "needs-choice" { needsChoice = nil }
+    }
 }
 
 enum BotTeamMessageWorkMode: String, Codable, CaseIterable { case chat, work }
@@ -660,6 +740,7 @@ struct BotTeamChannelPost: Encodable, Equatable {
     var replyToId: String?
     var workMode: BotTeamMessageWorkMode?
     var durablePlan: Bool?
+    var everyone: Bool?
 }
 
 struct BotTeamDraft: Encodable {
@@ -670,6 +751,8 @@ struct BotTeamDraft: Encodable {
     var limits = BotTeamLimits()
     var execution: BotTeamExecution?
     var briefing: BotTeamBriefing?
+    var talkativeness: [String: Int]?
+    var bidding: Bool?
 }
 
 struct BotTeamUpdate: Encodable {
@@ -680,6 +763,8 @@ struct BotTeamUpdate: Encodable {
     var limits: BotTeamLimits
     var execution: BotTeamExecution
     var briefing: BotTeamBriefing?
+    var talkativeness: [String: Int]?
+    var bidding: Bool?
 }
 
 struct BotWorkspaceActivity: Decodable, Identifiable, Equatable {

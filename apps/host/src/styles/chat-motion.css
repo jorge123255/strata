@@ -1,0 +1,269 @@
+/* Coucou chat motion. Open springs, close eases. Loops stay paused until the
+   element is on screen, and reduced motion keeps the state change without travel. */
+
+:root {
+  --ease-out: cubic-bezier(.2, .8, .2, 1);
+  --ease-pop: cubic-bezier(.3, 1.2, .4, 1);
+  --ease-close: cubic-bezier(.45, 0, .2, 1);
+}
+
+@keyframes msgIn {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+.msg-enter {
+  animation: msgIn 220ms var(--ease-out) both;
+}
+
+@keyframes stream-word {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.stream-word {
+  animation: stream-word 120ms var(--ease-out) both;
+  white-space: pre-wrap;
+}
+
+.typing {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  height: 14px;
+  vertical-align: middle;
+}
+.typing i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--st-ink-muted);
+  transform: scale(0.6);
+  opacity: 0.72;
+  animation: typing-wave 0.9s ease-in-out infinite;
+  animation-play-state: paused;
+}
+.typing i:nth-child(2) { animation-delay: 0.14s; }
+.typing i:nth-child(3) { animation-delay: 0.28s; }
+.typing[data-visible] i { animation-play-state: running; }
+@keyframes typing-wave {
+  0%, 100% { opacity: 0.72; transform: scale(0.6); }
+  50% { opacity: 1; transform: scale(1.2); }
+}
+
+.shimmer {
+  background-image: linear-gradient(90deg, var(--st-ink-muted) 0%, var(--st-ink) 40%, var(--st-ink-muted) 70%);
+  background-size: 260% 100%;
+  background-position: 130% 0;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation: thinking-shimmer 2.2s linear infinite;
+  animation-play-state: paused;
+}
+.shimmer[data-visible] { animation-play-state: running; }
+.live-status__verb.shimmer {
+  animation: thinking-shimmer 2.2s linear infinite, live-verb 0.35s ease;
+  animation-play-state: paused;
+}
+.live-status__verb.shimmer[data-visible] { animation-play-state: running; }
+@keyframes thinking-shimmer {
+  from { background-position: 130% 0; }
+  to { background-position: -130% 0; }
+}
+
+.status-dot,
+.cua-sidebar-dot[data-breathe] {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--st-success);
+  box-shadow: 0 0 0 2px var(--st-surface);
+  animation: status-breathe 1.8s ease-in-out infinite;
+  animation-play-state: paused;
+  flex: none;
+}
+.status-dot[data-status='attention'],
+.cua-sidebar-dot:not([data-breathe]) {
+  background: var(--st-warn);
+  animation: none;
+}
+.status-dot[data-status='paused'] { background: var(--st-ink-muted); animation: none; }
+.status-dot[data-visible],
+.cua-sidebar-dot[data-breathe][data-visible] { animation-play-state: running; }
+.nav-roster__avatar { position: relative; }
+.nav-roster__avatar .status-dot { position: absolute; right: -1px; bottom: -1px; }
+@keyframes status-breathe {
+  0%, 100% { opacity: 0.45; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.2); }
+}
+.live-status__pulse i { animation-play-state: paused; }
+.live-status[data-visible] .live-status__pulse i { animation-play-state: running; }
+
+@keyframes badge-pop {
+  from { opacity: 0; transform: scale(0.8); }
+  to { opacity: 1; transform: none; }
+}
+.nav-roster__badge { animation: badge-pop 0.2s var(--ease-out) both; }
+
+.composer-send .st-icon,
+.bot-room-send .send-morph .st-icon {
+  transition: opacity 0.15s var(--ease-out), transform 0.15s var(--ease-pop);
+}
+.composer-send:disabled .st-icon { transform: scale(0.7); opacity: 0.45; }
+.bot-room-send { transition: transform 0.15s var(--ease-pop), opacity 0.15s var(--ease-out); }
+.bot-room-send:disabled { transform: scale(0.92); }
+.bot-room-send .send-morph { display: grid; }
+.bot-room-send .send-morph .st-icon { grid-area: 1 / 1; }
+.bot-room-send .send-morph .st-icon:first-child { opacity: 1; transform: none; }
+.bot-room-send .send-morph .st-icon:last-child { opacity: 0; transform: scale(0.6); }
+.bot-room-send[data-ready='true'] .send-morph .st-icon:first-child { opacity: 0; transform: scale(0.6); }
+.bot-room-send[data-ready='true'] .send-morph .st-icon:last-child { opacity: 1; transform: none; }
+
+.app { transition: grid-template-columns 0.3s var(--ease-pop); }
+.app[data-rail='true'] { transition: grid-template-columns 0.34s var(--ease-close); }
+.chatsplit { transition: grid-template-columns 0.34s var(--ease-close); }
+.chatsplit[data-context='true'] { transition: grid-template-columns 0.3s var(--ease-pop); }
+.contextpanel { transition: opacity 0.34s var(--ease-close), visibility 0.34s allow-discrete; }
+.chatsplit[data-context='true'] .contextpanel { transition: opacity 0.24s var(--ease-out), visibility 0.24s allow-discrete; }
+.ws__sessions { transition: grid-template-rows 0.34s var(--ease-close), opacity 0.34s var(--ease-close); }
+.ws__sessions[data-open] { transition: grid-template-rows 0.3s var(--ease-pop), opacity 0.24s var(--ease-out); }
+
+.cua-bots-shell:not([data-list]) {
+  grid-template-columns: 0px minmax(0, 1fr);
+  transition: grid-template-columns 0.34s var(--ease-close);
+}
+.cua-bots-shell[data-list] {
+  grid-template-columns: 248px minmax(0, 1fr);
+  transition: grid-template-columns 0.3s var(--ease-pop);
+}
+@media (max-width: 767px) {
+  .cua-bots-shell[data-list] { grid-template-columns: 168px minmax(0, 1fr); }
+}
+@media (max-width: 500px) {
+  .cua-bots-shell[data-list] { grid-template-columns: 52px minmax(0, 1fr); }
+  .cua-roster-bot .status-dot { display: none; }
+}
+@media (max-width: 760px) {
+  .cua-bots-shell[data-list] { grid-template-columns: 52px minmax(0, 1fr); }
+  .cua-bots-shell[data-list] > .cua-bots-sidebar { display: flex; }
+}
+.cua-bots-sidebar { overflow: hidden; min-width: 0; }
+
+.cua-bot-profile.spring-pane {
+  flex-basis: 0;
+  width: 0;
+  min-width: 0;
+  padding: 0;
+  border-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  transform: translateX(12px);
+  pointer-events: none;
+  transition: flex-basis 0.34s var(--ease-close), width 0.34s var(--ease-close), padding 0.34s var(--ease-close), opacity 0.34s var(--ease-close), transform 0.34s var(--ease-close);
+}
+.cua-bot-profile.spring-pane[data-open] {
+  flex-basis: 300px;
+  width: 300px;
+  padding: 14px 18px 28px;
+  border-width: 1px;
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  overflow: auto;
+  transition: flex-basis 0.3s var(--ease-pop), width 0.3s var(--ease-pop), padding 0.3s var(--ease-pop), opacity 0.24s var(--ease-out), transform 0.3s var(--ease-pop);
+}
+
+.pane-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.34s var(--ease-close);
+}
+.pane-collapse[data-open] {
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 0.3s var(--ease-pop);
+}
+.pane-collapse__clip { overflow: hidden; min-height: 0; }
+
+.nav-roster__sub .typing { margin-right: 6px; }
+
+@keyframes mentionIn {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+.bot-room-mentions {
+  animation: mentionIn 0.3s var(--ease-pop) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .msg-enter,
+  .stream-word,
+  .typing i,
+  .shimmer,
+  .live-status__verb.shimmer,
+  .status-dot,
+  .cua-sidebar-dot,
+  .nav-roster__badge,
+  .composer-send .st-icon,
+  .bot-room-send,
+  .bot-room-send .send-morph .st-icon,
+  .live-status__pulse i,
+  .pane-collapse,
+  .cua-bot-profile.spring-pane,
+  .app,
+  .chatsplit,
+  .contextpanel,
+  .ws__sessions,
+  .cua-bots-shell,
+  .bot-room-mentions,
+  .bot-room-choice {
+    animation: none !important;
+    transition: none !important;
+  }
+  .msg-enter,
+  .stream-word,
+  .bot-room-mentions,
+  .bot-room-choice { opacity: 1; transform: none; }
+  .shimmer,
+  .live-status__verb.shimmer {
+    color: var(--st-ink-muted);
+    background: none;
+    -webkit-text-fill-color: currentColor;
+  }
+  .typing i { opacity: 0.7; transform: none; }
+}
+
+[data-motion='reduced'] .msg-enter,
+[data-motion='reduced'] .stream-word,
+[data-motion='reduced'] .typing i,
+[data-motion='reduced'] .shimmer,
+[data-motion='reduced'] .live-status__verb.shimmer,
+[data-motion='reduced'] .status-dot,
+[data-motion='reduced'] .cua-sidebar-dot,
+[data-motion='reduced'] .nav-roster__badge,
+[data-motion='reduced'] .composer-send .st-icon,
+[data-motion='reduced'] .bot-room-send,
+[data-motion='reduced'] .bot-room-send .send-morph .st-icon,
+[data-motion='reduced'] .live-status__pulse i,
+[data-motion='reduced'] .pane-collapse,
+[data-motion='reduced'] .cua-bot-profile.spring-pane,
+[data-motion='reduced'] .app,
+[data-motion='reduced'] .chatsplit,
+[data-motion='reduced'] .contextpanel,
+[data-motion='reduced'] .ws__sessions,
+[data-motion='reduced'] .cua-bots-shell,
+[data-motion='reduced'] .bot-room-mentions,
+[data-motion='reduced'] .bot-room-choice {
+  animation: none !important;
+  transition: none !important;
+}
+[data-motion='reduced'] .msg-enter,
+[data-motion='reduced'] .stream-word,
+[data-motion='reduced'] .bot-room-mentions,
+[data-motion='reduced'] .bot-room-choice { opacity: 1; transform: none; }
+[data-motion='reduced'] .shimmer,
+[data-motion='reduced'] .live-status__verb.shimmer {
+  color: var(--st-ink-muted);
+  background: none;
+  -webkit-text-fill-color: currentColor;
+}
+[data-motion='reduced'] .typing i { opacity: 0.7; transform: none; }

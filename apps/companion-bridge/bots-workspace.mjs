@@ -211,13 +211,14 @@ export function botWorkspaceRequest(path, method, body, status = 403, validateBo
       if (!continuousLimits(body.limits)) for (const [key, value] of Object.entries(body.limits)) if (!Number.isSafeInteger(value) || value < limits[key][0] || value > limits[key][1]) throw error(status, 'Choose supported team limits.');
     }
   } else if (route.kind === 'channelMessage') {
-    object(body, ['message', 'requestId', 'recipientIds', 'replyToId', 'workMode', 'durablePlan'], status);
+    object(body, ['message', 'requestId', 'recipientIds', 'replyToId', 'workMode', 'durablePlan', 'everyone'], status);
     string(body.message, 16_000, status);
     if (!id(body.requestId)) throw error(status, 'Choose a valid team message request.');
     if (body.recipientIds !== undefined) { ids(body.recipientIds, status, id, Infinity); if (!body.recipientIds.length) throw error(status, 'Choose a teammate or send to the team.'); }
     if (body.replyToId !== undefined && !id(body.replyToId)) throw error(status, 'Choose a message from this team.');
     if (body.workMode !== undefined && !['chat', 'work'].includes(body.workMode)) throw error(status, 'Choose Chat or Work for this team message.');
     if (body.durablePlan !== undefined && (body.durablePlan !== true || body.workMode !== 'work')) throw error(status, 'Durable work plans require an explicit Work request.');
+    if (body.everyone !== undefined && typeof body.everyone !== 'boolean') throw error(status, 'Choose whether this message is for everyone.');
   } else if (route.kind === 'run') {
     object(body, route.action ? [] : ['message', 'requestId'], status);
     if (!route.action) { string(body.message, 16_000, status); if (body.requestId !== undefined && !id(body.requestId)) throw error(status, 'Choose a valid task request.'); }
@@ -337,7 +338,8 @@ function channelSnapshot(value, route) {
     return { id: v.id, sequence: v.sequence, teamId: v.teamId, kind: v.kind, author: { type: v.author.type, name: v.author.name, ...(v.author.type === 'bot' ? { botId: v.author.botId } : {}), ...(avatarConfig ? { avatarConfig } : {}) }, content: v.content, createdAt: date(v.createdAt), ...(v.workMode !== undefined ? { workMode: v.workMode } : {}), ...(v.planId !== undefined ? { planId: v.planId } : {}), ...Object.fromEntries(['replyToId', 'runId', 'chatId'].filter(key => v[key] !== undefined).map(key => [key, v[key]])), ...(v.recipientIds ? { recipientIds: v.recipientIds } : {}), ...(['queued', 'working', 'done', 'error', 'interrupted', 'cancelled'].includes(v.state) ? { state: v.state } : {}) };
   });
   if (messages.length && value.nextSequence !== messages.at(-1).sequence || value.activeRuns.some(v => !isObject(v) || !id(v.id) || v.teamId !== route.teamId)) invalid();
-  return { teamId: value.teamId, supported: true, messages, activeRuns: value.activeRuns.map(run), nextSequence: value.nextSequence, hasMore: value.hasMore, hasMoreBefore: value.hasMoreBefore, ...(messages.length ? { firstSequence: messages[0].sequence } : {}) };
+  const presence = Array.isArray(value.presence) ? value.presence.flatMap(row => isObject(row) && id(row.botId) && id(row.runId) && id(row.jobId) && ['working', 'queued'].includes(row.state) ? [{ botId: row.botId, state: row.state, runId: row.runId, jobId: row.jobId }] : []) : undefined;
+  return { teamId: value.teamId, supported: true, messages, activeRuns: value.activeRuns.map(run), nextSequence: value.nextSequence, hasMore: value.hasMore, hasMoreBefore: value.hasMoreBefore, ...(messages.length ? { firstSequence: messages[0].sequence } : {}), ...(presence ? { presence } : {}) };
 }
 function skill(value) {
   return { id: value.id, name: text(value.name, 200), description: text(value.description, 2_000), body: text(value.body, 64_000), triggers: (Array.isArray(value.triggers) ? value.triggers : []).filter(t => typeof t === 'string').slice(0, 50).map(t => text(t, 200)), source: value.source === 'library' ? 'library' : 'draft', status: value.status === 'enabled' ? 'enabled' : 'draft', revision: Number.isInteger(value.revision) ? value.revision : text(value.revision, 128), digest: text(value.digest, 128), botIds: safeIds(value.botIds) };

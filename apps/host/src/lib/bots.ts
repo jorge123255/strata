@@ -1,5 +1,6 @@
 /** Bot profiles are separate from model-serving connections and their credentials. */
 import type { Session } from './types';
+import type { MessageRecovery } from './room-choice';
 export const BOT_PROVIDERS = [
   { id: 'claude', name: 'Claude Code' },
   { id: 'codex', name: 'Codex' },
@@ -58,7 +59,7 @@ export interface BotTeamComputer { id: string; name: string; label: string; comp
 export interface BotTeamMemberBriefing { botId: string; role: string; instructions: string }
 /** Public instructions for this team. Private bot profiles are separate. */
 export interface BotTeamBriefing { instructions: string; members: BotTeamMemberBriefing[] }
-export interface BotTeam { id: string; name: string; memberIds: string[]; coordinatorId: string; enabled: boolean; limits: BotTeamLimits; createdAt: string; updatedAt: string; revision?: number; execution?: BotTeamExecution; briefing?: BotTeamBriefing; channelPreview?: BotTeamChannelPreview }
+export interface BotTeam { id: string; name: string; memberIds: string[]; coordinatorId: string; enabled: boolean; limits: BotTeamLimits; createdAt: string; updatedAt: string; revision?: number; execution?: BotTeamExecution; briefing?: BotTeamBriefing; channelPreview?: BotTeamChannelPreview; talkativeness?: Record<string, number>; bidding?: boolean; selectorBotId?: string }
 export type BotTeamRunState = 'queued'|'running'|'completed'|'error'|'cancelled'|'interrupted'|'stopping'|'cleanup_pending';
 export interface BotTeamRun { id: string; teamId: string; rootChatId: string; rootBotId: string; state: BotTeamRunState; limits: BotTeamLimits; consumedTurns: number; createdAt: string; updatedAt: string; detail?: string; planId?: string }
 export interface BotTaskEvidence { kind: 'file'|'test'|'link'|'note'; label: string; detail: string }
@@ -106,11 +107,19 @@ export function botTaskWorkLabel(status: string) { return ({working:'Working',re
 export interface BotTeamChannelAuthor { type: 'user'|'bot'|'system'; botId?: string; name: string; avatarConfig?: Bot['avatarConfig'] }
 export interface BotTeamChannelMessage {
   id: string; sequence: number; teamId: string; kind: 'message'|'assignment'|'report'|'status';
-  author: BotTeamChannelAuthor; content: string; createdAt: string; replyToId?: string;
+  author: BotTeamChannelAuthor; content: string; createdAt: string; replyToId?: string; replyGroupId?: string;
   recipientIds?: string[]; runId?: string; chatId?: string; state?: string; workMode?: 'chat'|'work'; planId?: string;
+  recovery?: MessageRecovery;
 }
 export interface BotTeamChannelPreview { id: string; sequence: number; kind: BotTeamChannelMessage['kind']; author: Pick<BotTeamChannelAuthor, 'type'|'name'|'botId'>; content: string; createdAt: string }
-export interface BotTeamChannelSnapshot { teamId: string; supported: boolean; messages: BotTeamChannelMessage[]; activeRuns: BotTeamRun[]; nextSequence: number; hasMore?: boolean; hasMoreBefore?: boolean; firstSequence?: number }
+export interface BotTeamPresence { botId: string; state: 'working' | 'queued'; runId: string; jobId: string }
+export interface BotTeamChannelSnapshot { teamId: string; supported: boolean; messages: BotTeamChannelMessage[]; activeRuns: BotTeamRun[]; nextSequence: number; hasMore?: boolean; hasMoreBefore?: boolean; firstSequence?: number; presence?: BotTeamPresence[] }
+/** Sidebar summary from GET /api/bots/summary and the bot-summary stream. */
+export interface BotRoomLastMessage { at: string; preview: string; authorName: string }
+export interface BotRoomWorking { botId: string; name: string; state: 'working' | 'queued' }
+export interface BotRoomSummary { id: string; name: string; memberCount: number; unreadCount: number; lastMessage: BotRoomLastMessage | null; working: BotRoomWorking[] }
+export interface BotSummaryRow { id: string; name: string; status: 'idle' | 'working' | 'error'; unreadCount: number }
+export interface BotSidebarSummary { rooms: BotRoomSummary[]; bots: BotSummaryRow[] }
 /** Cursor pages may overlap; keep stable identities, order and only this room's rows. */
 export function mergeBotTeamChannelMessages(previous: BotTeamChannelMessage[], incoming: BotTeamChannelMessage[], teamId: string): BotTeamChannelMessage[] {
   const rows = new Map(previous.filter(row => row.teamId === teamId).map(row => [row.id, row]));
@@ -145,20 +154,36 @@ export interface BotConnection { id: string; name: string; transport: 'stdio'|'h
 export interface BotConnectionsSnapshot { connections: BotConnection[]; connectorFeatures?: BotConnectorFeatures }
 export interface BotProviderModel { id: string; name: string; efforts: string[]; defaultEffort?: string }
 export interface BotProviderModels { provider: string; models: BotProviderModel[]; detail?: string }
+export const TEAM_MEMBER_CAP = 12;
 export const DEFAULT_BOT_TEAM_LIMITS: BotTeamLimits = { maxParallel: 2, maxDepth: 2, maxHops: 8, maxTurns: 24, maxDurationMs: 600000 };
 export const CONTINUOUS_BOT_TEAM_LIMITS: BotTeamLimits = { maxParallel: 0, maxDepth: 0, maxHops: 0, maxTurns: 0, maxDurationMs: 0 };
 export function botTeamWorkLabel(limits: BotTeamLimits, continuous = false, unrestricted = false) { return continuous ? 'All available teammates · Until finished or stopped' : `${botTeamParallelLabel(limits, unrestricted)} · ${limits.maxTurns} ${unrestricted ? 'work turns' : 'turns'} · ${Math.round(limits.maxDurationMs / 60000)} minute limit`; }
 export function botTeamParallelLabel(limits: BotTeamLimits, unrestricted = false) { return unrestricted || limits.maxParallel === 0 ? 'All available teammates' : `${limits.maxParallel} parallel tasks`; }
 export function botTeamRunActive(state: string) { return ['queued', 'running', 'stopping', 'cleanup_pending'].includes(state); }
+export function teamRosterCount(memberIds: readonly string[] | undefined) { return Array.isArray(memberIds) ? memberIds.length : 0; }
+export function teamRosterLabel(count: number) { return count === 1 ? '1 member' : `${count} members`; }
+export function teamOverRosterCap(count: number) { return count > TEAM_MEMBER_CAP; }
 export function botActivityLabel(state: string) { return ({ queued: 'Queued', running: 'Working', completed: 'Completed', error: 'Failed', cancelled: 'Stopped', interrupted: 'Interrupted', stopping: 'Stopping…', cleanup_pending: 'Checking cleanup', delivered: 'Delivered', pending: 'Waiting', accepted: 'Accepted', refused: 'Refused' } as Record<string, string>)[state] ?? state; }
-export function botTeamDraftError(draft: Pick<BotTeam, 'name'|'memberIds'|'coordinatorId'|'limits'> & { execution?: BotTeamExecution; briefing?: BotTeamBriefing }, bots: Pick<Bot,'id'>[], computers?: BotTeamComputer[], unrestricted = false, continuous = false): string | null {
+export function botTeamDraftError(draft: Pick<BotTeam, 'name'|'memberIds'|'coordinatorId'|'limits'> & { execution?: BotTeamExecution; briefing?: BotTeamBriefing; talkativeness?: Record<string, number>; bidding?: boolean; selectorBotId?: string | null }, bots: Pick<Bot,'id'>[], computers?: BotTeamComputer[], unrestricted = false, continuous = false, retainedMemberIds?: readonly string[]): string | null {
+  const prior = Array.isArray(retainedMemberIds) ? retainedMemberIds : undefined;
+  const uniqueMembers = new Set(draft.memberIds);
+  const subset = !!prior && uniqueMembers.size === draft.memberIds.length && draft.memberIds.length <= prior.length && draft.memberIds.every(id => prior.includes(id));
+  const added = prior ? draft.memberIds.filter(id => !prior.includes(id)) : [...draft.memberIds];
   if (!draft.name.trim() || draft.name.trim().length>80) return 'Give this team a name of up to 80 characters.';
-  if (draft.memberIds.length < 2 || !unrestricted && draft.memberIds.length > 12) return unrestricted ? 'Choose at least two team members.' : 'Choose from 2 to 12 team members.';
-  if (new Set(draft.memberIds).size !== draft.memberIds.length || draft.memberIds.some(id => !bots.some(bot => bot.id === id))) return 'Choose available bots for this team.';
+  if (!Array.isArray(draft.memberIds) || uniqueMembers.size !== draft.memberIds.length) return 'Choose available bots for this team.';
+  if (draft.memberIds.length < 2) return 'Choose from 2 to 12 team members.';
+  if (draft.memberIds.length > TEAM_MEMBER_CAP && !(subset && added.length === 0)) return added.length > 0 && prior ? 'Remove members until this team has 12 or fewer before adding anyone.' : 'Choose from 2 to 12 team members.';
+  if (draft.memberIds.some(id => !bots.some(bot => bot.id === id) && !(subset && prior?.includes(id)))) return 'Choose available bots for this team.';
   if (!draft.memberIds.includes(draft.coordinatorId)) return 'Choose a coordinator from this team.';
+  if (draft.bidding !== undefined && typeof draft.bidding !== 'boolean') return 'Choose whether teammates bid to speak.';
+  if (draft.selectorBotId !== undefined && draft.selectorBotId !== null && draft.selectorBotId !== '' && !draft.memberIds.includes(draft.selectorBotId)) return 'Choose a teammate to pick the next speaker.';
+  if (draft.talkativeness) {
+    if (typeof draft.talkativeness !== 'object' || Array.isArray(draft.talkativeness)) return 'Choose a talkativeness from 0 to 100 for each teammate.';
+    for (const [id, value] of Object.entries(draft.talkativeness)) if (!draft.memberIds.includes(id) || !Number.isInteger(value) || value < 0 || value > 100) return 'Choose a talkativeness from 0 to 100 for each teammate.';
+  }
   if (draft.briefing) {
     const cleanText = (value: string, max: number) => typeof value === 'string' && value.length <= max && !value.includes('\0') && !Array.from(value).some(character => { const point = character.codePointAt(0)!; return point >= 0xD800 && point <= 0xDFFF; });
-    if (!cleanText(draft.briefing.instructions, 8000) || !Array.isArray(draft.briefing.members) || draft.briefing.members.length > (unrestricted ? draft.memberIds.length : 12)) return 'Use team instructions of up to 8,000 characters.';
+    if (!cleanText(draft.briefing.instructions, 8000) || !Array.isArray(draft.briefing.members) || draft.briefing.members.length > (unrestricted || subset ? draft.memberIds.length : TEAM_MEMBER_CAP)) return 'Use team instructions of up to 8,000 characters.';
     const seen = new Set<string>();
     let total = draft.briefing.instructions.length;
     for (const member of draft.briefing.members) {

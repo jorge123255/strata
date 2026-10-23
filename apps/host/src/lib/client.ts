@@ -38,6 +38,11 @@ export const api = {
   del: <T>(path: string, body?: unknown) => request<T>('DELETE', path, body),
 };
 
+/** Delete one team. No query and no body. The host refuses while the team is working. */
+export function deleteBotTeam(id: string) {
+  return api.del<{ deleted: string }>(`/api/bots/teams/${encodeURIComponent(id)}`);
+}
+
 export interface StreamEvent {
   event: string;
   data: Record<string, unknown>;
@@ -47,7 +52,7 @@ export interface StreamEvent {
 export function onEvent(handler: (e: StreamEvent) => void, onStatus?: (s: 'live' | 'offline') => void) {
   let source: EventSource;
   let seenAt = Date.now();
-  const names = ['engine', 'monitor', 'models', 'native', 'image-models', 'runtime', 'providers', 'serving', 'download', 'log', 'setup', 'skills', 'task', 'goal', 'timeskip', 'plan', 'queue', 'conversation', 'companion', 'agent', 'bots'];
+  const names = ['engine', 'monitor', 'models', 'native', 'image-models', 'runtime', 'providers', 'serving', 'download', 'log', 'setup', 'skills', 'task', 'goal', 'timeskip', 'plan', 'queue', 'conversation', 'companion', 'agent', 'bots', 'team-channel', 'bot-summary', 'message.partial', 'room.quiet', 'task.recovery'];
   const connect = () => {
     source?.close();
     seenAt = Date.now();

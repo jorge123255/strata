@@ -9,14 +9,18 @@ import { createPortal } from 'react-dom';
 import { FloatingMenu } from '../components/FloatingMenu';
 import { QuitStrataDialog } from '../components/QuitStrata';
 import { useAppMode } from '../lib/app-mode';
-import { href, useLocation, type Route } from '../lib/router';
+import { href, useLocation } from '../lib/router';
 import { cx, relTime } from '../lib/format';
 import { useMedia } from '../lib/responsive';
 import { recentChats, recentChatDescription } from '../lib/recent-chats';
 import type { Session } from '../lib/types';
 import { MOD, runCommand } from '../lib/commands';
 import { bindingFor, bindingKeys, useBindings } from '../lib/shortcut-bindings';
-import { Btn, Dialog, Icon, IconBtn, type IconName } from '../components/ui';
+import { Btn, Dialog, Icon, IconBtn } from '../components/ui';
+import { PaneCollapse } from '../components/ChatMotion';
+import { SidebarRoster } from './SidebarRoster';
+import { useSidebarLayout } from '../lib/use-sidebar-layout';
+import { useSidebarRoster } from '../lib/use-sidebar-roster';
 import { Brand } from '../components/Brand';
 import { addWorkspace, deleteSession, go, isUnread, pickWorkspace, renameSession, removeWorkspace, renameWorkspace, selectSession, setActiveWorkspace, setNavOpen, togglePin, toggleRail, setTheme, setSettingsSection, useStore } from '../lib/store';
 export function Sidebar({ containerRef }: {
@@ -67,6 +71,12 @@ export function Sidebar({ containerRef }: {
     const phase = nativeCurrent ? (nativeCurrent.status === 'ready' ? nativeCurrent.phase : nativeCurrent.status) : monitor?.phase ?? 'idle';
     const status = phase === 'unavailable' ? 'Status unavailable' : phase === 'error' ? 'Error' : phase === 'loading' ? 'Loading' : !current && !nativeCurrent ? 'No model loaded' : phase === 'reading' ? 'Reading prompt' : phase === 'thinking' ? 'Thinking' : phase === 'generating' ? 'Generating' : 'Ready';
     const menuSession = sessions.find(s => s.id === menuId);
+    const roster = useSidebarRoster();
+    const sections = useSidebarLayout(roster.items);
+    const chatsOpen = !sections.layout.chatsCollapsed || !!query.trim() || searchOpen;
+    const activeBotId = location.route === 'bots' && location.param && !['new', 'teams', 'activity', 'skills', 'tools', 'connections', 'scheduled', 'approvals', 'outputs'].includes(location.param) ? location.param : null;
+    const activeRoomId = location.route === 'bots' && location.param === 'teams' ? location.query.get('team') : null;
+    const roomReady = roster.loading || roster.bots.length >= 2;
     const q = query.trim().toLowerCase();
     const matching = sessions.filter(s => (!s.archived || q || includeArchived) && (!q || `${sessionTitle(s)} ${s.messages.map(m => m.content).join(' ')}`.toLowerCase().includes(q))).sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.updatedAt.localeCompare(a.updatedAt));
     function openMenu(id: string, trigger: HTMLElement) { menuTrigger.current = trigger; setMenuId(id); }
@@ -76,16 +86,13 @@ export function Sidebar({ containerRef }: {
       <div className="nav__top">{tr(!collapsed ? <a className="nav__brand" href={href('chat')} aria-label={tr("Strata — open chat")}><Brand variant="lockup" height={28} decorative className="nav__brand-lockup"/></a> : null)}<button type="button" className="nav__collapse" aria-label={tr(collapsed ? 'Show sidebar' : 'Hide sidebar')} title={tr(collapsed ? 'Show sidebar' : 'Hide sidebar')} onClick={() => compact ? setNavOpen(!navOpen) : toggleRail()}><Icon name="panel" size={20}/></button></div>
       <div className="nav__scroll">
         <div className="nav__quick-actions">
-          <button className="st-btn st-btn--primary nav-new" aria-label={tr("New chat")} title={tr("New chat")} onClick={() => runCommand('new')}><Icon name="new-chat" size={18}/><span className="nav__rail-hide">{tr("New chat")}</span></button>
-          <button type="button" className="navitem nav-command" aria-label={tr("Command palette")} title={tr("Command palette")} onClick={() => { setNavOpen(false); runCommand('palette'); }}><Icon name="search"/><span className="navitem__text">{tr("Search anything")}</span><kbd className="nav__rail-hide" aria-hidden="true">{MOD}K</kbd></button>
+          <button type="button" className="navitem nav-command" aria-label={tr("Command palette")} title={tr("Command palette")} onClick={() => { setNavOpen(false); runCommand('palette'); }}><Icon name="search"/><span className="navitem__text">{tr("Search")}</span><kbd className="nav__rail-hide" aria-hidden="true">{MOD}K</kbd></button>
+          <div className="nav__create">
+            <a className="st-btn nav-create" href={href('bots', 'new')} aria-label={tr("New bot")} title={tr("New bot")} onClick={() => setNavOpen(false)}><Icon name="plus" size={16}/><span className="nav__rail-hide">{tr("New bot")}</span></a>
+            {roomReady ? <a className="st-btn nav-create" href="#/bots/teams?new=room" aria-label={tr("New room")} title={tr("New room")} onClick={() => setNavOpen(false)}><Icon name="experts" size={16}/><span className="nav__rail-hide">{tr("New room")}</span></a> : <button type="button" className="st-btn nav-create" disabled aria-label={tr("New room")} title={tr("Add a second bot to create a room")}><Icon name="experts" size={16}/><span className="nav__rail-hide">{tr("New room")}</span></button>}
+          </div>
         </div>
-        <nav className="nav__destinations" aria-label={tr("Workspace navigation")}>
-          <NavLink route="bots" label={tr("Bots")} icon="experts" current={location.route}/>
-          <NavLink route="connectors" label={tr("Connectors")} icon="link" current={location.route}/>
-          <NavLink route="models" label={tr("Models")} icon="models" current={location.route === 'tuning' ? 'models' : location.route}/>
-          <NavLink route="skills" label={tr("Skills")} icon="skills" current={location.route}/>
-          <NavLink route="monitor" label={tr("Monitor")} icon="activity" current={location.route}/>
-        </nav>
+        <SidebarRoster bots={roster.bots} rooms={roster.rooms} layout={sections.layout} grouped={sections.grouped} loading={roster.loading} error={roster.error} activeBotId={activeBotId} activeRoomId={activeRoomId} onRename={sections.rename} onToggle={sections.toggle} onMove={sections.move} onReorder={sections.reorder} onAdd={sections.add} onRemove={sections.remove} onPlace={sections.place}/>
         <TaskTree collapsed={collapsed}/>
         {tr(collapsed ? <div className="nav-recent" aria-label={tr("Recent chats")}>{tr(recentChats(sessions, activeSession).map((session, index) => <RecentChatLink key={session.id} session={session} slot={index + 1} active={activeSession === session.id && location.route === 'chat'}/>))}</div> : null)}
         {!collapsed ? <div className="ws">
@@ -94,8 +101,8 @@ export function Sidebar({ containerRef }: {
                         e.preventDefault();
                         closeSearch();
                     }
-                }}/><IconBtn name="x" title={tr("Close chat search")} onClick={closeSearch}/></div> : <><span className="navgroup__label">{tr("Workspaces")}</span><div className="ws__tools"><button ref={searchTrigger} type="button" className="st-btn st-btn--icon" aria-label={tr("Search chats")} title={tr("Search chats")} onClick={() => setSearchOpen(true)}><Icon name="search" size={18}/></button><IconBtn name="folder-plus" title={tr("Add a workspace folder")} onClick={() => { void pickWorkspace().then(path => path ? addWorkspace(path) : undefined); }}/></div></>)}</div>
-          {workspaces.map(w => {
+                }}/><IconBtn name="x" title={tr("Close chat search")} onClick={closeSearch}/></div> : <><button type="button" className="ws__name nav-chats__toggle" aria-expanded={chatsOpen} onClick={() => sections.setChatsCollapsed(!sections.layout.chatsCollapsed)}><Icon name="chevron" size={14} className={cx('ws__chev', chatsOpen && 'is-open')}/><span>{tr("Chats")}</span></button><div className="ws__tools"><IconBtn name="new-chat" title={tr("New chat")} onClick={() => runCommand('new')}/><button ref={searchTrigger} type="button" className="st-btn st-btn--icon" aria-label={tr("Search chats")} title={tr("Search chats")} onClick={() => setSearchOpen(true)}><Icon name="search" size={18}/></button><IconBtn name="folder-plus" title={tr("Add a workspace folder")} onClick={() => { void pickWorkspace().then(path => path ? addWorkspace(path) : undefined); }}/></div></>)}</div>
+          <PaneCollapse open={chatsOpen}>{workspaces.map(w => {
                 const expanded = folders[w.id] !== false || !!q;
                 const rows = matching.filter(s => s.workspace === w.path || !!w.aliases?.includes(s.workspace));
                 const shown = q ? rows : rows.slice(0, 20);
@@ -109,10 +116,16 @@ export function Sidebar({ containerRef }: {
                 {tr(!q && rows.length > shown.length ? <button className="ws-view small" onClick={() => { setNavOpen(false); setRecentOpen(true); }}>{tr("View all chats")}</button> : null)}
               </div> : null)}
             </div>;
-            })}
+            })}</PaneCollapse>
         </div> : null}
       </div>
       <div className="nav__foot">
+        <nav className="nav__tools" aria-label={tr("Tools")}>{([
+            ['connectors', 'Connectors', 'link'],
+            ['models', 'Models', 'models'],
+            ['skills', 'Skills', 'skills'],
+            ['monitor', 'Monitor', 'activity'],
+        ] as const).map(([route, label, icon]) => <a key={route} className="nav-tool" href={href(route)} aria-current={(route === 'models' ? location.route === 'models' || location.route === 'tuning' : location.route === route) ? 'page' : undefined} title={tr(label)} aria-label={tr(label)}><Icon name={icon} size={18}/></a>)}</nav>
         <button className="enginechip" data-state={status === 'Ready' ? 'ready' : ['Reading prompt', 'Thinking', 'Generating', 'Loading'].includes(status) ? 'busy' : 'off'} onClick={() => go('models')} title={tr("{0} \u00B7 {1} \u00B7 {2}", [modelName, modelQuant, tr(status)])} aria-label={tr("{0} \u00B7 {1}", [modelName, modelQuant])}><span className="enginechip__family"><Icon name={modelFamilyIcon(current?.family)} size={20}/><span className="enginechip__dot"/></span><span className="enginechip__text nav__rail-hide"><span className="enginechip__title">{modelName}</span><span className="enginechip__sub">{modelQuant}</span></span></button>
         <button type="button" className="navitem" title={tr("Pair iPhone")} aria-label={tr("Pair iPhone")} aria-current={location.query.has('settings') && settingsSection === 'iPhone' ? 'page' : undefined} onClick={() => { setSettingsSection('iPhone'); go('settings'); }}><Icon name="link"/><span className="navitem__text">{tr("Pair iPhone")}</span></button>
         <div className="nav__bottom"><MoreMenu current={location.route}/><button className="st-btn st-btn--icon theme-switch" aria-label={tr(dark ? 'Switch to light mode' : 'Switch to dark mode')} title={tr(dark ? 'Switch to light mode' : 'Switch to dark mode')} onClick={() => setTheme(dark ? 'light' : 'dark')}><span key={String(dark)} className="theme-switch__icon"><Icon name={dark ? 'sun' : 'moon'} size={19}/></span></button></div>
@@ -183,15 +196,6 @@ function RecentChatLink({ session, active, slot }: {
     {open ? createPortal(<div ref={tooltip} id={id} role="tooltip" className="nav-chat-tooltip" style={position}><strong>{sessionTitle(session)}</strong><span>{session.messages.length ? recentChatDescription(session) : tr(recentChatDescription(session))}</span>{tr(binding ? <kbd className="nav-chat-shortcut">{tr(keys.join(" "))}</kbd> : null)}</div>, document.body) : null}
   </>;
 }
-function NavLink({ route, label, icon, current, meta }: {
-    route: Route;
-    label: string;
-    icon: IconName;
-    current: string;
-    meta?: string;
-}) {
-    return <a className="navitem" href={href(route)} aria-current={current === route ? 'page' : undefined} title={tr(label)} aria-label={tr(label)}><Icon name={icon}/><span className="navitem__text">{tr(label)}</span>{tr(meta ? <span className="navitem__meta">{tr(meta)}</span> : null)}</a>;
-}
 function MoreMenu({ current }: {
     current: string;
 }) {
@@ -199,5 +203,6 @@ function MoreMenu({ current }: {
     const [quitOpen, setQuitOpen] = useState(false);
     const appMode = useAppMode();
     const ref = useRef<HTMLButtonElement>(null);
-    return <><button ref={ref} className="navitem nav__more" aria-label={tr("More — Serving and Settings")} aria-haspopup="menu" aria-expanded={open} data-active={['serving', 'settings'].includes(current) || undefined} onClick={() => setOpen(v => !v)}><Icon name="ellipsis"/><span className="navitem__text">{tr("More")}</span></button>{tr(open ? <FloatingMenu anchor={ref.current} title={tr("More")} onClose={() => { setOpen(false); ref.current?.focus(); }}>{tr(([{ route: 'serving', label: 'Serving', icon: 'link' }, { route: 'settings', label: 'Settings', icon: 'settings' }] as const).map(d => <a key={d.route} role="menuitem" className="menu__item" href={href(d.route)} onClick={() => setOpen(false)}><Icon name={d.icon}/>{tr(d.label)}</a>))}{appMode.canQuit ? <button type="button" role="menuitem" className="menu__item" onClick={() => { setOpen(false); setNavOpen(false); setQuitOpen(true); }}><Icon name="x"/>{tr("Quit Strata")}</button> : null}</FloatingMenu> : null)}<QuitStrataDialog open={quitOpen} onClose={() => setQuitOpen(false)}/></>;
+    const more = [{ route: 'connectors', label: 'Connectors', icon: 'link' }, { route: 'models', label: 'Models', icon: 'models' }, { route: 'skills', label: 'Skills', icon: 'skills' }, { route: 'monitor', label: 'Monitor', icon: 'activity' }, { route: 'serving', label: 'Serving', icon: 'link' }, { route: 'settings', label: 'Settings', icon: 'settings' }] as const;
+    return <><button ref={ref} className="navitem nav__more" aria-label={tr("More")} aria-haspopup="menu" aria-expanded={open} data-active={more.some(item => item.route === current) || undefined} onClick={() => setOpen(v => !v)}><Icon name="ellipsis"/><span className="navitem__text">{tr("More")}</span></button>{tr(open ? <FloatingMenu anchor={ref.current} title={tr("More")} onClose={() => { setOpen(false); ref.current?.focus(); }}>{tr(more.map(d => <a key={d.route} role="menuitem" className="menu__item" href={href(d.route)} aria-current={current === d.route ? 'page' : undefined} onClick={() => setOpen(false)}><Icon name={d.icon}/>{tr(d.label)}</a>))}{appMode.canQuit ? <button type="button" role="menuitem" className="menu__item" onClick={() => { setOpen(false); setNavOpen(false); setQuitOpen(true); }}><Icon name="x"/>{tr("Quit Strata")}</button> : null}</FloatingMenu> : null)}<QuitStrataDialog open={quitOpen} onClose={() => setQuitOpen(false)}/></>;
 }

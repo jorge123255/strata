@@ -1,0 +1,47 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+
+test('the sidebar still opens chat dialogs from a closed menu and lists bots and rooms first', async () => {
+  const side = await readFile(new URL('../src/app/Sidebar.tsx', import.meta.url), 'utf8');
+  assert.match(side, /SidebarRoster/);
+  assert.match(side, /useSidebarRoster/);
+  assert.match(side, /nav__tools/);
+  assert.match(side, /Chats/);
+  for (const opener of ['setRenameId(menuId)', 'setDeleteId(menuId)', 'setRecentOpen(true)', 'setRemoveWorkspaceId(w.id)', 'setRenameWsId(w.id)', 'setQuitOpen(true)']) {
+    assert.ok(side.includes(`setNavOpen(false); ${opener}`), opener);
+  }
+  const bots = await readFile(new URL('../src/screens/Bots.tsx', import.meta.url), 'utf8');
+  assert.match(bots, /location\.query\.get\('new'\) === 'room'/);
+  assert.match(bots, /markSidebarRead/);
+  const hook = await readFile(new URL('../src/lib/use-sidebar-roster.ts', import.meta.url), 'utf8');
+  assert.match(hook, /\/api\/bots\/summary\/stream/);
+  assert.match(hook, /parseSidebarSummary/);
+  assert.match(hook, /sidebarStreamSummary/);
+  assert.match(hook, /message\.partial/);
+  assert.match(hook, /status === 404/);
+  const roster = await readFile(new URL('../src/app/SidebarRoster.tsx', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles/workspace.css', import.meta.url), 'utf8');
+  assert.match(roster, /teamRosterLabel\(room\.memberCount\)/);
+  assert.match(roster, /title=\{bot\.name\}/);
+  assert.match(roster, /title=\{room\.name\}/);
+  assert.doesNotMatch(roster, /title=\{bot\.statusLine\}/);
+  assert.doesNotMatch(roster, /nav-roster__meta/);
+  assert.match(css, /\.nav-roster__row:hover > \.session-overflow/);
+  assert.match(css, /\.nav-roster__row:focus-within > \.session-overflow/);
+  assert.match(css, /\.nav-roster__name > span \{[^}]*-webkit-line-clamp:\s*2/);
+  assert.match(css, /\.nav-roster__name > span \{[^}]*overflow-wrap:\s*anywhere/);
+  const botsCss = await readFile(new URL('../src/screens/Bots.css', import.meta.url), 'utf8');
+  const channelCss = await readFile(new URL('../src/screens/BotTeamChannel.css', import.meta.url), 'utf8');
+  const appCss = await readFile(new URL('../src/styles/app.css', import.meta.url), 'utf8');
+  const desktop = await readFile(new URL('../../desktop/src-tauri/src/main.rs', import.meta.url), 'utf8');
+  assert.match(bots, /<strong title=\{bot\.name\}>/);
+  assert.match(bots, /<strong title=\{team\.name\}>/);
+  assert.match(botsCss, /\.cua-roster-title strong \{[^}]*-webkit-line-clamp:\s*2/);
+  assert.match(botsCss, /@media \(max-width: 760px\) \{[^}]*grid-template-columns:\s*52px minmax\(0,\s*1fr\)/);
+  assert.match(channelCss, /\.error-notice \{[^}]*max-width:\s*100%/);
+  assert.match(channelCss, /\.bot-room-composer-top \{[^}]*flex-wrap:\s*wrap/);
+  assert.match(appCss, /\.error-notice strong,\s*\.error-notice p \{[^}]*overflow-wrap:\s*anywhere/);
+  assert.match(desktop, /min_inner_size\(700\.0, 600\.0\)/);
+  assert.doesNotMatch(desktop, /min_inner_size\(900\.0, 600\.0\)/);
+});

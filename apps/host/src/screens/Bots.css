@@ -15,7 +15,7 @@
 .bot-chat-empty p { max-width: 440px; line-height: 1.6; margin: 0; }
 
 .main__body:has(> .cua-bots-shell), .main__body:has(> .bots-workspace) { padding: 0; overflow: hidden; display: flex; }
-.bots-workspace { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
+.bots-workspace { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; container-type: inline-size; container-name: bots; }
 .bots-destinations { display: flex; gap: 3px; align-items: center; padding: 8px 18px; border-bottom: 1px solid var(--st-line-soft); flex: none; overflow-x: auto; background: var(--st-bg); }
 .bots-destinations > button { display: flex; align-items: center; justify-content: center; gap: 7px; min-height: 32px; padding: 7px 13px; border: 1px solid transparent; border-radius: var(--st-r-pill); background: transparent; color: var(--st-ink-muted); font: 500 12px var(--st-font); white-space: nowrap; cursor: pointer; }
 .bots-destinations > button:hover { background: var(--st-surface-2); color: var(--st-ink); }
@@ -37,8 +37,8 @@
 .cua-sidebar-item[data-selected] > svg { color: currentColor; }
 .cua-roster-bot { min-height: 72px; margin-bottom: 4px; gap: 12px; }
 .cua-roster-bot > .cua-bot-avatar { flex: none; }
-.cua-roster-bot strong { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 14px; line-height: 20px; font-weight: 550; }
-.cua-roster-title { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
+.cua-roster-title strong { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; flex: 1; min-width: 0; overflow: hidden; white-space: normal; overflow-wrap: anywhere; font-size: 14px; line-height: 20px; font-weight: 550; }
+.cua-roster-title { display: flex; align-items: flex-start; gap: 7px; min-width: 0; }
 .cua-roster-title strong { flex: 1; }
 .cua-roster-title time { flex: none; color: var(--st-ink-muted); font-size: 9px; font-weight: 400; }
 .cua-roster-bot small { display: block; overflow: hidden; text-overflow: ellipsis; font-size: 12px; line-height: 18px; margin-top: 3px; color: var(--st-ink-muted); }
@@ -200,8 +200,12 @@ button.cua-profile-row:disabled { opacity: .5; cursor: default; }
 /* Teams, activity, skills and connections retain their explicit workflows. */
 .bots-activity-tabs { display: flex; align-items: center; gap: 3px; margin: 16px 28px 0; padding: 3px; width: fit-content; max-width: calc(100% - 56px); flex: none; border: 1px solid var(--st-line-soft); border-radius: var(--st-r-sm); background: var(--st-surface-2); overflow-x: auto; }
 .bots-activity-tabs button { appearance: none; background: transparent; color: var(--st-ink-muted); font: 500 12px var(--st-font); border: 1px solid transparent; border-radius: 6px; padding: 6px 11px; cursor: pointer; white-space: nowrap; }
+.bots-activity-tabs button:hover { color: var(--st-ink); background: var(--st-hover); }
 .bots-activity-tabs button[aria-current] { color: var(--st-ink); background: var(--st-surface); border-color: var(--st-line-soft); }
-.bots-workspace-page { padding: 28px 32px 40px; overflow: auto; flex: 1; min-height: 0; width: 100%; }
+.bots-workspace-page { padding: 28px 32px 40px; overflow: auto; flex: 1; min-height: 0; min-width: 0; width: 100%; }
+.bot-team-cap-note { margin: 0 6px 8px; color: var(--st-ink-muted); font-size: 12px; line-height: 1.5; }
+.bot-team-cap-note button { margin-left: 6px; padding: 0; border: 0; background: none; color: var(--st-accent-text); font: inherit; text-decoration: underline; cursor: pointer; }
+.bot-team-cap-note button:hover { color: var(--st-accent-hover); }
 .bots-page-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 28px; }
 .bots-page-heading h2 { margin: 0; font-size: 24px; font-weight: 600; letter-spacing: -.04em; }
 .bots-page-heading p { margin: 7px 0 0; font-size: 12px; color: var(--st-ink-muted); line-height: 1.65; max-width: 620px; }
@@ -219,6 +223,18 @@ button.cua-profile-row:disabled { opacity: .5; cursor: default; }
 .bots-team-members > div { display: flex; align-items: center; gap: 9px; padding: 9px 13px; border: 1px solid var(--st-line-soft); border-radius: var(--st-r-md); background: var(--st-surface-2); }
 .bots-team-members strong { display: block; font-size: 12px; font-weight: 500; }
 .bots-team-members small { display: block; font-size: 11px; color: var(--st-ink-muted); margin-top: 2px; }
+.team-member-row { position: relative; min-width: 0; }
+.team-member-row > span { flex: 1; min-width: 0; }
+.team-member-x, .team-member-remove { flex: none; border: 0; background: transparent; color: var(--st-ink-muted); cursor: pointer; }
+.team-member-x { opacity: 0; width: 28px; height: 28px; display: grid; place-items: center; border-radius: 8px; }
+.team-member-row:hover .team-member-x, .team-member-row:focus-within .team-member-x { opacity: 1; }
+.team-member-x:hover, .team-member-remove:hover { color: var(--st-danger); background: var(--st-danger-tint); }
+.team-member-x:focus-visible, .team-member-remove:focus-visible, .team-member-menu button:focus-visible { opacity: 1; outline: 2px solid var(--st-focus); outline-offset: 2px; }
+.team-member-remove { padding: 4px 8px; border-radius: 8px; font: 500 12px var(--st-font); color: var(--st-danger); }
+.team-member-menu { position: fixed; z-index: var(--layer-popover, 40); min-width: 160px; padding: 6px; border: 1px solid var(--st-line); border-radius: 12px; background: var(--st-surface); box-shadow: 0 8px 24px color-mix(in srgb, var(--st-ink) 16%, transparent); }
+.team-member-menu button { width: 100%; text-align: left; border: 0; background: transparent; color: var(--st-danger); font: 500 13px var(--st-font); padding: 8px 10px; border-radius: 8px; cursor: pointer; }
+.team-member-menu button:hover { background: var(--st-danger-tint); }
+.bot-team-member-grid .team-member-remove { margin-left: auto; }
 .bots-request-card { padding: 20px; border: 1px solid var(--st-line); border-radius: var(--st-r-md); background: var(--st-surface); margin-bottom: 30px; }
 .bots-request-card textarea { resize: vertical; min-height: 112px; font: 14px/1.65 var(--st-font); }
 .bots-request-footer { display: flex; align-items: center; gap: 20px; justify-content: space-between; margin-top: 14px; }
@@ -401,6 +417,17 @@ button.cua-profile-row:disabled { opacity: .5; cursor: default; }
   .cua-work-identity > .st-btn { font-size: 10px; }
   .bot-chat-identity { max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
 }
+@container bots (max-width: 920px) {
+  .cua-bots-shell[data-list] { grid-template-columns: 52px minmax(0, 1fr); }
+  .cua-sidebar-item { justify-content: center; padding-inline: 4px; }
+  .cua-sidebar-item > span, .cua-bots-sidebar h2, .cua-sidebar-count { display: none; }
+  .cua-roster-search, .cua-roster-filter, .cua-roster-empty { display: none; }
+  .cua-roster-compact { display: flex; margin-top: 8px; }
+}
+@container bots (max-width: 640px) {
+  .cua-bots-shell[data-list] { grid-template-columns: minmax(0, 1fr); }
+  .cua-bots-shell[data-list] > .cua-bots-sidebar { display: none; }
+}
 
 /* Direct and team conversations share one chronological roster. */
 .cua-roster-team-actions { border-top: 1px solid var(--st-line-soft); margin: 14px 3px 0; padding-top: 8px; }
@@ -424,5 +451,11 @@ button.cua-profile-row:disabled { opacity: .5; cursor: default; }
 .bots-connector-auth { padding: 16px; background: var(--st-surface-2); border-radius: var(--st-r-md); margin: 18px 0; }
 .bots-connector-auth > strong { font-size: 13px; }
 .bots-connector-auth .row { gap: 8px; flex-wrap: wrap; }
+@media (max-width: 760px) {
+  .cua-bots-shell[data-list] { grid-template-columns: 52px minmax(0, 1fr); }
+  .cua-bots-shell[data-list] > .cua-bots-sidebar { display: flex; }
+  .cua-work > .error-notice { margin-inline: 0; max-width: 100%; }
+  .bots-page-heading, .bots-workspace-page, .cua-bots-main { min-width: 0; max-width: 100%; }
+}
 .bots-connector-auth > .input-field { margin: 14px 0; }
 .bots-connection-detail > .input-field { margin: 20px 0 12px; }

@@ -106,19 +106,15 @@ test('mode validation is strict and receipt identity cannot promote Chat to Work
 
 test('explicit Work preserves addressed owners and trailing scope after a busy room; volunteer bids still route first', async t => {
   let f; f = fixture(t, async input => {
-    if (input.message.startsWith('Hi, do this bounded')) {
-      assert.equal(input.bot.teamContext.channelMode, 'task'); for (let i = 0; i < 25; i++) await input.executeTool('post_team_message', { message: `Peer context ${i}` }, `filler_${i}`);
-      // The full human request and explicit recipient intent survive outside the recent24previews.
-      await input.executeTool('assign_team_task', { botId: f.b.id, message: 'Read the safe marker and retain all owner holds.' }, 'addressed-worker'); await input.executeTool('submit_team_result', result(), 'coordinator-result'); say(input, 'Delegated the addressed bounded task.');
-    } else if (input.bot.id === f.b.id && input.bot.teamContext.channelMode === 'task') {
+    if (input.bot.id === f.b.id && input.message.startsWith('Hi, do this bounded')) {
+      assert.equal(input.bot.teamContext.channelMode, 'task'); assert.equal(f.seen.filter(row => row.message.startsWith('Hi, do this bounded')).length, 1);
       assert.match(input.bot.instructions, /TRAILING_HUMAN_RELEASE_HOLD/); await input.executeTool('submit_team_result', result(), 'addressed-result'); say(input, 'Bounded task ready.');
-    } else if (input.message.startsWith('[Strata teammate result batch')) { assert.ok(input.bot.instructions.includes(f.b.id)); await input.executeTool('submit_team_result', result(), 'final'); }
-    else if (input.message === 'Who wants this task?') { assert.equal(input.bot.teamContext.channelMode, 'routing'); assert.equal(input.bot.teamConversationOnly, true); assert.equal(input.tools.some(tool => tool.name === 'run_command'), false); }
+    } else if (input.message === 'Who wants this task?') { assert.equal(input.bot.teamContext.channelMode, 'routing'); assert.equal(input.bot.teamConversationOnly, true); assert.equal(input.tools.some(tool => tool.name === 'run_command'), false); }
     else if (input.bot.teamContext.channelMode === 'bid') { assert.equal(input.bot.teamConversationOnly, true); assert.equal(input.tools.some(tool => tool.name === 'write_file'), false); say(input, 'An offer only; no work started.'); }
   });
   const text = `Hi, do this bounded check ${'scope '.repeat(210)}TRAILING_HUMAN_RELEASE_HOLD`;
   const started = f.send(text, { workMode: 'work', recipientIds: [f.b.id] }); await f.done(started.run);
-  const rootInput = f.seen.find(row => row.sessionId === started.run.rootChatId); assert.ok(rootInput.bot.instructions.includes(`explicitly addressed bot IDs ["${f.b.id}"]`));
+  const rootInput = f.seen.find(row => row.sessionId === started.run.rootChatId); assert.equal(rootInput.bot.id, f.b.id); assert.match(rootInput.bot.instructions, /TRAILING_HUMAN_RELEASE_HOLD/);
   const bid = f.send('Who wants this task?', { workMode: 'work' }); await f.done(bid.run); assert.equal(f.bots.team.activity().activity.some(row => row.runId === bid.run.id && row.work), false); assert.equal(f.bots.team.channel(f.team.id).messages.find(row => row.runId === bid.run.id && row.author.type === 'user').workMode, 'work');
 });
 
@@ -167,7 +163,7 @@ test('shared CUA Work roots serialize while Chat can greet; human takeover stops
   f.bots.team.update(f.team.id, { execution: { mode: 'shared', computerId: `cua:${f.a.id}`, workspace: '/workspace' } });
   const other = f.bots.team.create({ name: 'Other shared team', memberIds: [f.a.id, f.b.id], coordinatorId: f.b.id, enabled: true, execution: { mode: 'shared', computerId: `cua:${f.a.id}`, workspace: '/workspace' } }).team;
   const first = f.send('first Work', { workMode: 'work' }); await started; const second = f.send('second Work', { workMode: 'work' }, other);
-  const chat = f.send('hi', {}, other); await f.done(chat.run, other); assert.deepEqual(workMessages, ['first Work']); assert.equal(f.bots.team.detail(other.id, second.run.id).run.state, 'queued');
+  const chat = f.send('hi', { recipientIds: [f.b.id] }, other); await f.done(chat.run, other); assert.deepEqual(workMessages, ['first Work']); assert.equal(f.bots.team.detail(other.id, second.run.id).run.state, 'queued');
   const lease = await f.bots.computer.takeover(f.a.id, { owner: 'fixture-human' }); await f.done(first.run); await f.done(second.run, other); assert.equal(f.bots.team.detail(other.id, second.run.id).run.state, 'cancelled'); assert.deepEqual(workMessages, ['first Work']);
   const pending = f.send('explicit after lease', { workMode: 'work' }, other); await new Promise(resolve => setTimeout(resolve, 30)); assert.deepEqual(workMessages, ['first Work']);
   f.bots.computer.release(f.a.id, { leaseToken: lease.leaseToken }, { owner: 'fixture-human' }); f.bots.team.tick(); await f.done(pending.run, other); assert.deepEqual(workMessages, ['first Work', 'explicit after lease']); assert.equal(f.guestCalls.length, 0);
@@ -196,7 +192,7 @@ test('public Work identity rejects spoofed human intent/root job/run/chat/author
     const directory = join(f.directory, randomUUID()); mkdirSync(directory); const teams = structuredClone(originalTeams), channels = structuredClone(originalChannels), human = channels.channels.find(row => row.teamId === f.team.id).messages.find(row => row.runId === started.run.id && row.author.type === 'user'); edit(teams, human);
     writeFileSync(join(directory, 'bot-teams.json'), JSON.stringify(teams)); writeFileSync(join(directory, 'bot-team-channels.json'), JSON.stringify(channels));
     const service = createBotTeams({ directory, requireBot: id => ({ id, name: id, policy: 'bypass' }), createConversation: () => ({ conversation: { id: `s_${randomUUID()}` } }), conversations: () => ({ send() {}, detail: id => ({ conversation: { id } }) }), stopDirect: async () => {}, schedule: () => {} });
-    const current = service.message(f.team.id, { message: 'Read existing public state', requestId: 'inspect' }).run; service.tick(); const ctx = { chatId: current.rootChatId, turnId: `turn_${randomUUID()}`, bot: { id: f.a.id, policy: 'bypass' }, assertLive() {} }; service.begin(ctx);
+    const current = service.message(f.team.id, { message: 'Read existing public state', requestId: 'inspect' }).run; service.tick(); const rootChatId = service.detail(f.team.id, current.id).run.rootChatId; const ctx = { chatId: rootChatId, turnId: `turn_${randomUUID()}`, bot: { id: f.a.id, policy: 'bypass' }, assertLive() {} }; service.begin(ctx);
     const before = readFileSync(join(directory, 'bot-teams.json')), ledger = await service.execute('read_team_work', {}, ctx); assert.equal(ledger.tasks.some(row => row.id === sourceTask.id), name === 'valid', name); assert.deepEqual(readFileSync(join(directory, 'bot-teams.json')), before); await service.close();
   }
 });

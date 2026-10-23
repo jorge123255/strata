@@ -89,8 +89,8 @@ for (const provider of ['codex', 'claude']) test(`${provider} receives only the 
     markers.set(bot.id, marker); bots.work.update(bot.id, { memory: 'PRIVATE_WORK_MEMORY' }); return bot;
   });
   const team = bots.team.create({ name: 'Disposable identity team', memberIds: members.map(bot => bot.id), coordinatorId: members[0].id, enabled: true }).team;
-  for (const [requestId, message] of [['greeting', 'Hi everyone'], ['bid', 'Who wants this task?']]) {
-    const started = bots.team.message(team.id, { requestId, message });
+  for (const [requestId, message, extra] of [['plain', 'Review the request', {}], ['greeting', 'Hi everyone', { everyone: true }], ['bid', 'Who wants this task?', {}]]) {
+    const started = bots.team.message(team.id, { requestId, message, ...extra });
     await until(() => !['queued', 'running'].includes(bots.team.detail(team.id, started.run.id).run.state));
     const result = bots.team.detail(team.id, started.run.id);
     assert.equal(result.run.state, 'completed', JSON.stringify(result));

@@ -51,11 +51,21 @@ test('conversation and bot-work events require exact desktop origin, loopback Ho
   });
   hub.send('conversation', { conversation: { ...conversation, messages: [{ content: 'LIVE-PRIVATE-HISTORY' }] } });
   hub.send('bots', { routineCompleted: { id: 'private-routine', prompt: 'PRIVATE-BOT-WORK' } });
+  hub.send('team-channel', { teamId: 'team_private', room: { lastMessage: { preview: 'PUBLIC-ROOM-PREVIEW' } } });
+  hub.send('bot-summary', { rooms: [], bots: [{ id: 'bot_private', unreadCount: 1 }] });
+  hub.send('message.partial', { teamId: 'team_private', messageId: 'tm_secret', text: 'SECRET-PARTIAL' });
+  hub.send('room.quiet', { teamId: 'team_private', runId: 'tr_quiet', messageId: 'tm_quiet' });
+  hub.send('task.recovery', { teamId: 'team_private', messageId: 'tm_choice', text: 'SECRET-RECOVERY-CHOICE', options: [] });
   hub.send('monitor', { publicOperationalState: 'healthy' });
   for (const { label, res, allowed } of subscribers) {
     assert.equal(res.output.includes('LIVE-PRIVATE-HISTORY'), allowed, `${label}: live snapshot`);
     assert.equal(res.output.includes('PRIVATE-BOT-WORK'), allowed, `${label}: bot work`);
+    assert.equal(res.output.includes('PUBLIC-ROOM-PREVIEW'), allowed, `${label}: room summary`);
+    assert.equal(res.output.includes('event: bot-summary'), allowed, `${label}: bot summary`);
+    assert.equal(res.output.includes('SECRET-PARTIAL'), allowed, `${label}: partial reply`);
+    assert.equal(res.output.includes('event: room.quiet'), allowed, `${label}: room quiet`);
+    assert.equal(res.output.includes('SECRET-RECOVERY-CHOICE'), allowed, `${label}: task recovery`);
     assert.ok(res.output.includes('healthy'), `${label}: existing operational events still arrive`);
-    if (!allowed) assert.doesNotMatch(res.output, /private-chat|event: conversation/, `${label}: no transcript identifiers or deletion events`);
+    if (!allowed) assert.doesNotMatch(res.output, /private-chat|event: conversation|team_private|bot_private|SECRET-PARTIAL|event: message\.partial/, `${label}: no transcript identifiers or deletion events`);
   }
 });

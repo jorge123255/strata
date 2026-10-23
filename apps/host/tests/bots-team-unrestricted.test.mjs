@@ -27,49 +27,54 @@ function journal(t,count=60) {
   return {directory,bots,chats,sent,teams,options,scheduled,cleanup};
 }
 
-test('large canonical roster, recipient and briefing inputs have no count cap; identity and text bounds remain',async t=>{
-  const f=journal(t,601),ids=[...f.bots.keys()];const briefing={members:ids.map(botId=>({botId,role:'',instructions:''}))};
-  const team=f.teams.create({name:'Large public roster',memberIds:ids,coordinatorId:ids[0],enabled:true,briefing}).team;
-  assert.equal(team.memberIds.length,601);assert.equal(team.limits.maxParallel,0);assert.equal(f.teams.list().teamUnrestrictedSupported,true);
-  assert.equal(f.teams.message(team.id,{message:'Hello',requestId:'large-address',recipientIds:ids}).run.requestedRecipientIds.length,601);
-  const tools=f.teams.tools({...f.bots.get(ids[0]),teamContext:{teamId:team.id}},{roomMode:'routing'});
+test('a canonical roster accepts 12 members and rejects 13; identity and text bounds remain',async t=>{
+  const f=journal(t,13),ids=[...f.bots.keys()];
+  assert.throws(()=>f.teams.create({name:'Too many',memberIds:ids,coordinatorId:ids[0],enabled:true}),error=>error.status===400&&/2 to 12/.test(error.message));
+  const twelve=ids.slice(0,12),briefing={members:twelve.map(botId=>({botId,role:'',instructions:''}))};
+  const team=f.teams.create({name:'Large public roster',memberIds:twelve,coordinatorId:twelve[0],enabled:true,briefing}).team;
+  assert.equal(team.memberIds.length,12);assert.deepEqual(team.limits,DEFAULT_TEAM_LIMITS);assert.equal(f.teams.list().teamUnrestrictedSupported,true);
+  assert.equal(f.teams.message(team.id,{message:'Hello',requestId:'large-address',recipientIds:twelve}).run.requestedRecipientIds.length,12);
+  const tools=f.teams.tools({...f.bots.get(twelve[0]),teamContext:{teamId:team.id}},{roomMode:'routing'});
   assert.equal(tools.find(t=>t.name==='invite_teammates').inputSchema.properties.botIds.maxItems,undefined);
   assert.equal(tools.find(t=>t.name==='update_team_instructions').inputSchema.properties.briefing.properties.members.maxItems,undefined);
-  assert.deepEqual(normalizeTeamBriefing(briefing,ids),{instructions:'',members:[]});
-  assert.throws(()=>f.teams.create({name:'Invalid',memberIds:[ids[0],ids[0]],coordinatorId:ids[0]}),{status:400});
-  assert.throws(()=>f.teams.create({name:'Invalid',memberIds:[ids[0],'missing'],coordinatorId:ids[0]}),/current bot/);
-  assert.throws(()=>normalizeTeamBriefing({members:ids.map(botId=>({botId,instructions:'x'.repeat(1000)}))},ids),/24,000/);
+  assert.deepEqual(normalizeTeamBriefing(briefing,twelve),{instructions:'',members:[]});
+  assert.throws(()=>f.teams.create({name:'Invalid',memberIds:[twelve[0],twelve[0]],coordinatorId:twelve[0]}),{status:400});
+  assert.throws(()=>f.teams.create({name:'Invalid',memberIds:[twelve[0],'missing'],coordinatorId:twelve[0]}),/current bot/);
+  assert.throws(()=>normalizeTeamBriefing({members:twelve.map(botId=>({botId,instructions:'x'.repeat(4000)}))},twelve),/24,000/);
 });
 
-test('legacy positive parallel settings are accepted but only team limits canonicalize on disk; historical run limits stay exact',async t=>{
+test('saved parallel settings persist on the team and historical run limits stay exact',async t=>{
   const f=journal(t);const team=f.teams.create({name:'Legacy',memberIds:['bot_0','bot_1'],coordinatorId:'bot_0',enabled:true,limits:{maxParallel:8}}).team;
-  assert.equal(team.limits.maxParallel,0);assert.equal(f.teams.update(team.id,{limits:{maxParallel:1000}}).team.limits.maxParallel,0);
+  assert.deepEqual(team.limits,{...DEFAULT_TEAM_LIMITS,maxParallel:8});assert.equal(f.teams.update(team.id,{limits:{maxParallel:1000}}).team.limits.maxParallel,1000);
   for(const value of [-1,1.5,Infinity,Number.MAX_SAFE_INTEGER+1])assert.throws(()=>f.teams.update(team.id,{limits:{maxParallel:value}}),{status:400});
   const run=f.teams.start(team.id,{message:'Historical request'}).run;await f.teams.stop(team.id,run.id);await f.teams.close();
   const file=join(f.directory,'bot-teams.json'),legacy=JSON.parse(readFileSync(file));legacy.teams[0].limits.maxParallel=2;legacy.runs[0].limits.maxParallel=1;writeFileSync(file,JSON.stringify(legacy));
-  const restored=createBotTeams(f.options);t.after(()=>restored.close());const actual=JSON.parse(readFileSync(file));const expected=structuredClone(legacy);expected.teams[0].limits.maxParallel=0;
-  assert.deepEqual(actual,expected);assert.equal(restored.list().teams[0].limits.maxParallel,0);assert.equal(restored.detail(team.id,run.id).run.limits.maxParallel,1);
+  const restored=createBotTeams(f.options);t.after(()=>restored.close());
+  assert.equal(JSON.parse(readFileSync(file)).teams[0].limits.maxParallel,2);assert.equal(restored.list().teams[0].limits.maxParallel,2);assert.equal(restored.detail(team.id,run.id).run.limits.maxParallel,1);
 });
 
-test('fifty members each greet exactly once with continuous team settings and no execution tools',async t=>{
-  let f;f=fixture(t,50,async input=>{
+test('an everyone flag greets all twelve members once, in order, without task tools',async t=>{
+  const f=fixture(t,12,async input=>{
     assert.equal(input.bot.teamConversationOnly,true);assert.equal(input.tools.some(t=>t.name==='shell'),false);
-    if(input.message==='Hi everyone')await input.executeTool('invite_teammates',{botIds:f.members.slice(1).map(b=>b.id),message:'Please greet everyone once.'},'all-members');
-    if(!input.message.startsWith('[The public conversation invitations'))input.onFrame({type:'delta',text:`Hello from ${input.bot.id}`});
-  });const team=f.team(),run=f.bots.team.message(team.id,{message:'Hi everyone',requestId:'fifty',recipientIds:team.memberIds}).run;
+    assert.match(input.bot.instructions,/one or two sentences/);
+    input.onFrame({type:'delta',text:`Hello from ${input.bot.id}`});
+  });const team=f.team(),run=f.bots.team.message(team.id,{message:'Hi everyone',requestId:'twelve',everyone:true}).run;
   await until(()=>f.bots.team.detail(team.id,run.id).run.state==='completed');const finished=f.bots.team.detail(team.id,run.id).run;
   const replies=f.bots.team.channel(team.id).messages.filter(m=>m.content.startsWith('Hello from'));
-  assert.equal(new Set(replies.map(m=>m.author.botId)).size,50);assert.equal(f.seen.length,51);assert.equal(finished.consumedTurns,51);assert.equal(finished.rosterFanoutTurns,undefined);assert.equal(finished.limits.maxTurns,0);
+  assert.deepEqual(replies.map(m=>m.content),f.members.map(bot=>`Hello from ${bot.id}`));
+  assert.deepEqual(f.seen.map(input=>input.bot.id),f.members.map(bot=>bot.id));
+  assert.equal(finished.consumedTurns,12);assert.equal(finished.limits.maxTurns,24);
+  assert.equal(f.bots.team.channel(team.id).messages.some(m=>m.content.includes('public conversation invitations')),false);
 });
 
-test('more than eight independent tasks run together even for a legacy maxParallel1 request; Stop awaits all and preserves unrelated work',async t=>{
+test('a saved maxParallel of 1 admits one child after the coordinator finishes; Stop waits for that child and preserves unrelated work',async t=>{
   let f,releaseCleanup,cleanupEntered=false,stopped=false;const cleanup=new Promise(resolve=>{releaseCleanup=resolve;});
-  f=fixture(t,15,async input=>{
-    if(input.message==='Coordinate')for(const bot of f.members.slice(1,13))await input.executeTool('spawn_subagent',{botId:bot.id,message:'Independent bounded task'},`task-${bot.id}`);
+  f=fixture(t,12,async input=>{
+    if(input.message==='Coordinate'){for(const bot of f.members.slice(1))await input.executeTool('spawn_subagent',{botId:bot.id,message:'Independent bounded task'},`task-${bot.id}`);return;}
     await aborted(input.signal);if(input.bot.id===f.members[1].id){cleanupEntered=true;await cleanup;}
-  });const independent=f.bots.createConversation(f.members[14].id).conversation.id;f.chats.send(independent,'Unrelated');
-  const team=f.team(f.members.slice(0,13).map(b=>b.id),{limits:{maxParallel:1}}),run=f.bots.team.start(team.id,{message:'Coordinate'}).run;
-  await until(()=>f.seen.length===14);assert.equal(f.bots.team.activity().activity.filter(row=>row.runId===run.id&&row.type==='subagent'&&row.state==='running').length,12);
+  });const independent=f.bots.createConversation(f.members[11].id).conversation.id;f.chats.send(independent,'Unrelated');
+  const team=f.team(f.members.map(b=>b.id),{limits:{maxParallel:1}}),run=f.bots.team.start(team.id,{message:'Coordinate'}).run;
+  await until(()=>f.bots.team.activity().activity.filter(row=>row.runId===run.id&&row.type==='subagent'&&row.state==='running').length===1&&f.bots.team.activity().activity.filter(row=>row.runId===run.id&&row.type==='subagent'&&row.state==='queued').length===10);
   const stopping=f.bots.team.stop(team.id,run.id).then(result=>{stopped=true;return result;});await until(()=>cleanupEntered);await immediate();assert.equal(stopped,false);
   assert.equal(f.chats.detail(independent).conversation.active,true);releaseCleanup();assert.equal((await stopping).run.state,'cancelled');assert.equal(f.chats.detail(independent).conversation.active,true);
   assert.equal(f.bots.team.activity().activity.some(row=>row.runId===run.id&&['running','queued','stopping'].includes(row.state)),false);
@@ -95,15 +100,16 @@ test('a busy bot stays single-owner across uncapped runs and rotating admission 
   f.teams.begin({chatId:first.rootChatId,turnId:'first'});f.teams.end({turnId:'first'});f.teams.tick();assert.deepEqual(f.sent,[first.rootChatId,second.rootChatId]);
 });
 
-test('continuous conversation invitations deduplicate identical deliveries without a hidden turn budget',async t=>{
-  const f=journal(t,50),ids=[...f.bots.keys()];const team=f.teams.create({name:'Continuous opening',memberIds:ids,coordinatorId:ids[0],enabled:true,limits:{maxTurns:3}}).team;
-  const run=f.teams.message(team.id,{message:'Hello everyone',requestId:'continuous-opening'}).run;f.teams.tick();
-  const context={bot:f.bots.get(ids[0]),chatId:run.rootChatId,turnId:'opening-root',toolCallId:'hello',assertLive(){}};f.teams.begin(context);
+test('conversation invitations deduplicate identical deliveries and keep a saved turn budget',async t=>{
+  const f=journal(t,4),ids=[...f.bots.keys()];const team=f.teams.create({name:'Opening',memberIds:ids,coordinatorId:ids[0],enabled:true,limits:{maxTurns:3}}).team;
+  const run=f.teams.message(team.id,{message:'Hello everyone',requestId:'opening'}).run;f.teams.tick();
+  const rootChatId=f.teams.detail(team.id,run.id).run.rootChatId;
+  const context={bot:f.bots.get(ids[0]),chatId:rootChatId,turnId:'opening-root',toolCallId:'hello',assertLive(){}};f.teams.begin(context);
   const invited=await f.teams.execute('invite_teammates',{botIds:ids.slice(1),message:'Please greet once.'},context);
   const duplicate=await f.teams.execute('invite_teammates',{botIds:ids.slice(1),message:'Another wording of the same addressed greeting'},{...context,toolCallId:'duplicate'});
   assert.deepEqual(duplicate.deliveryIds,invited.deliveryIds);assert.match(duplicate.notice,/not woken twice/);
-  const saved=JSON.parse(readFileSync(join(f.directory,'bot-teams.json')));assert.equal(saved.jobs.length,50);assert.equal(saved.jobs.some(job=>job.rosterFanout),false);
-  assert.equal(f.teams.detail(team.id,run.id).run.limits.maxTurns,0);
+  const saved=JSON.parse(readFileSync(join(f.directory,'bot-teams.json')));assert.equal(saved.jobs.length,4);assert.equal(saved.jobs.some(job=>job.rosterFanout),false);
+  assert.equal(f.teams.detail(team.id,run.id).run.limits.maxTurns,3);
 });
 
 test('catalog exposes every live run including cleanup states while bounding only terminal history and preserving newest-first order',async t=>{

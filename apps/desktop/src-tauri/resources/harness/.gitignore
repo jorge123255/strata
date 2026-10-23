@@ -1,0 +1,3 @@
+# Staged by apps/desktop/scripts/stage-bundle.mjs. Never commit the files.
+*
+!.gitignore

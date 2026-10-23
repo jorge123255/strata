@@ -29,7 +29,8 @@ test('team creation is opt-in, validates members and limits, and starts no model
   assert.throws(() => f.bots.team.start(row.id, { message: 'Run' }), /Enable collaboration/);
   assert.throws(() => f.team({ memberIds: [f.a.id, f.a.id] }), /different bots/);
   assert.throws(() => f.team({ coordinatorId: 'bot_missing' }), /coordinator/);
-  assert.equal(f.team({ limits: { maxDepth: 100 } }).limits.maxDepth, 0);
+  assert.equal(f.team({ limits: { maxDepth: 100 } }).limits.maxDepth, 100);
+  assert.throws(() => f.team({ memberIds: Array.from({ length: 13 }, (_, index) => `bot_${index}`) }), /2 to 12/);
   assert.throws(() => f.team({ limits: { maxDepth: -1 } }), /maxDepth/);
   assert.equal(statSync(join(f.directory, 'bot-teams.json')).mode & 0o777, 0o600);
 });
@@ -96,7 +97,7 @@ test('root conversation Stop cancels delegated work after the coordinator has yi
   assert.equal(f.chats.detail(child.chatId).conversation.active, false); assert.equal(f.bots.team.detail(team.id, started.run.id).run.state, 'cancelled');
 });
 
-test('one team-owned turn per bot remains exclusive while finite useful work outlives legacy hop and turn settings', async t => {
+test('one team-owned turn per bot remains exclusive and saved hop and turn limits stop further delegation', async t => {
   let f, running = new Map(), maximum = 0;
   f = fixture(t, async input => {
     const n = (running.get(input.bot.id) ?? 0) + 1; running.set(input.bot.id, n); maximum = Math.max(maximum, n);
@@ -105,17 +106,17 @@ test('one team-owned turn per bot remains exclusive while finite useful work out
         await input.executeTool('send_to_teammate', { botId: f.b.id, message: 'First' }, 'a');
         await input.executeTool('send_to_teammate', { botId: f.b.id, message: 'Second' }, 'b');
       } else if (input.bot.id === f.b.id && input.message.startsWith('[Assignment')) {
-        const result = await input.executeTool('send_to_teammate', { botId: f.a.id, message: 'Ping-pong should stop' }, 'reply');
-        assert.equal(result.isError, undefined); // Runtime fixture exposes the rejecting host call below.
+        await assert.rejects(input.executeTool('send_to_teammate', { botId: f.a.id, message: 'Ping-pong should stop' }, 'reply'), /hop limit/);
       }
     } finally { running.set(input.bot.id, n - 1); }
     input.onFrame({ type: 'done' });
   });
   const team = f.team({ limits: { maxHops: 1, maxTurns: 3 } }), start = f.bots.team.start(team.id, { message: 'Coordinate' });
   await until(() => ['error', 'completed'].includes(f.bots.team.detail(team.id, start.run.id).run.state));
-  assert.equal(maximum, 1); assert.ok(f.bots.team.detail(team.id, start.run.id).run.consumedTurns > 3);
-  assert.equal(f.bots.team.detail(team.id, start.run.id).run.state, 'completed');
-  assert.equal(f.bots.team.activity().activity.some(row => row.detail?.includes('budget')), false);
+  const finished = f.bots.team.detail(team.id, start.run.id).run;
+  assert.equal(maximum, 1); assert.equal(finished.consumedTurns, 3); assert.equal(finished.limits.maxHops, 1); assert.equal(finished.limits.maxTurns, 3);
+  assert.equal(finished.state, 'error');
+  assert.match(f.bots.team.activity().activity.map(row => row.detail ?? '').join('\n'), /turn limit/);
 });
 
 test('restart retains durable team receipts but interrupts in-flight work without replay', async t => {
