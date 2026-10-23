@@ -522,24 +522,26 @@ final class BotWorkspaceStore: ObservableObject {
     }
 
     func createTeam(_ draft: BotTeamDraft) async -> Bool {
-        var body = draft; if continuousTeams { body.limits = .continuous }
-        guard Self.validTeamDraft(body, unrestrictedTeams: unrestrictedTeams, continuousTeams: continuousTeams, availableMemberIds: currentBotIds()), validTeamExecution(body), body.briefing == nil || teams?.teamInstructionsSupported == true else { return false }
+        var body = draft
+        let chosenContinuous = body.limits == .continuous
+        guard Self.validTeamDraft(body, unrestrictedTeams: unrestrictedTeams, continuousTeams: chosenContinuous, availableMemberIds: currentBotIds()), validTeamExecution(body), body.briefing == nil || teams?.teamInstructionsSupported == true else { return false }
         struct Result: Decodable { var team: BotTeam }
-        body.limits = body.limits.forHost(unrestrictedTeams: unrestrictedTeams, continuousTeams: continuousTeams)
+        body.limits = body.limits.forHost(unrestrictedTeams: unrestrictedTeams, continuousTeams: chosenContinuous)
         let value: Result? = await change("teams", path: "/v1/bots/teams", body: body)
         if value != nil { await refreshTeams() }
         return value != nil && isCurrent()
     }
     func updateTeam(_ team: BotTeam, draft: BotTeamDraft) async -> Bool {
-        var draft = draft; if continuousTeams { draft.limits = .continuous }
+        var draft = draft
+        let chosenContinuous = draft.limits == .continuous
         guard teams?.teamSettingsSupported == true, CompanionClient.isSafeIdentifier(team.id),
               let revision = team.revision, revision > 0,
               teams?.teams.first(where: { $0.id == team.id })?.revision == revision,
               teams?.runs.contains(where: { $0.teamId == team.id && $0.isActive }) != true,
-              Self.validTeamDraft(draft, unrestrictedTeams: unrestrictedTeams, continuousTeams: continuousTeams, availableMemberIds: currentBotIds()), validTeamExecution(draft), draft.briefing == nil || teams?.teamInstructionsSupported == true else { return false }
+              Self.validTeamDraft(draft, unrestrictedTeams: unrestrictedTeams, continuousTeams: chosenContinuous, availableMemberIds: currentBotIds()), validTeamExecution(draft), draft.briefing == nil || teams?.teamInstructionsSupported == true else { return false }
         struct Result: Decodable { var team: BotTeam }
         let body = BotTeamUpdate(expectedRevision: revision, name: draft.name, memberIds: draft.memberIds,
-                                 coordinatorId: draft.coordinatorId, limits: draft.limits.forHost(unrestrictedTeams: unrestrictedTeams, continuousTeams: continuousTeams), execution: draft.execution ?? .individual, briefing: draft.briefing)
+                                 coordinatorId: draft.coordinatorId, limits: draft.limits.forHost(unrestrictedTeams: unrestrictedTeams, continuousTeams: chosenContinuous), execution: draft.execution ?? .individual, briefing: draft.briefing)
         let value: Result? = await change("teams", path: "/v1/bots/teams/\(team.id)", method: "PATCH", body: body)
         if value != nil { await refreshTeams() }
         return value != nil && isCurrent()
@@ -556,7 +558,7 @@ final class BotWorkspaceStore: ObservableObject {
             (1...4).contains(draft.limits.maxDepth) && (1...32).contains(draft.limits.maxHops) &&
             (1...100).contains(draft.limits.maxTurns) && (60_000...3_600_000).contains(draft.limits.maxDurationMs)
         guard !draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, draft.name.count <= 80,
-              draft.memberIds.count >= 2, unrestrictedTeams || draft.memberIds.count <= 12,
+              draft.memberIds.count >= 2, draft.memberIds.count <= 12,
               Set(draft.memberIds).count == draft.memberIds.count,
               draft.memberIds.allSatisfy(CompanionClient.isSafeIdentifier), draft.memberIds.contains(draft.coordinatorId),
               availableMemberIds.map({ Set(draft.memberIds).isSubset(of: $0) }) != false, validLimits else { return false }

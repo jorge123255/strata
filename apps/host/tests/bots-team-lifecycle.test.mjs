@@ -133,6 +133,7 @@ test('durable finalization failure resolves an awaiting Stop, revokes the run an
     }
     await new Promise(resolve => { input.signal.addEventListener('abort', resolve, { once: true }); if (input.signal.aborted) resolve(); });
   });
+  f.bots.team.update(f.team.id, { limits: { maxParallel: 2 } });
   const run = f.bots.team.start(f.team.id, { message: 'Delegate and wait' }).run; await until(() => entered && f.seen.length === 2);
   const file = join(f.directory, 'bot-teams.json'), backup = join(f.directory, 'saved-teams.json'); renameSync(file, backup); mkdirSync(file);
   try {

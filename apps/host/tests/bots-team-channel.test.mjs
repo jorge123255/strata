@@ -44,7 +44,7 @@ test('a bot in multiple teams reads only the active team briefing in a shared ch
 test('channel catalog and cursor reads start no models and create no channel journal', async t => {
   const f = fixture(t, async () => { throw new Error('Read must not run'); });
   assert.equal(f.bots.team.list().channelsSupported, true);
-  assert.deepEqual(f.bots.team.channel(f.team.id), { teamId: f.team.id, supported: true, messages: [], activeRuns: [], nextSequence: 0, hasMore: false, hasMoreBefore: false, teamWorkReviewSupported: true, teamWorkflowsSupported: true, teamWorkPlansSupported: true });
+  assert.deepEqual(f.bots.team.channel(f.team.id), { teamId: f.team.id, supported: true, messages: [], activeRuns: [], presence: [], nextSequence: 0, hasMore: false, hasMoreBefore: false, teamWorkReviewSupported: true, teamWorkflowsSupported: true, teamWorkPlansSupported: true });
   assert.equal(existsSync(join(f.directory, 'bot-team-channels.json')), false);
   assert.equal(f.seen.length, 0);
 });
@@ -93,14 +93,15 @@ test('Everyone addressing includes paused members as context but invites only av
   await f.bots.pause(f.c.id, { paused: true });
   const draft = { requestId: 'everyone-paused', recipientIds: f.team.memberIds };
   const started = f.send('Hi everyone', draft); await f.done(started.run);
-  assert.deepEqual(f.seen.map(input => input.bot.id).sort(), [f.a.id, f.a.id, f.b.id].sort());
+  assert.deepEqual(f.seen.map(input => input.bot.id).sort(), [f.a.id, f.b.id].sort());
   const channel = f.bots.team.channel(f.team.id), user = channel.messages.find(row => row.author.type === 'user');
   assert.deepEqual(user.recipientIds, [...f.team.memberIds].sort());
   assert.equal(channel.messages.some(row => row.author.botId === f.c.id), false);
   await f.bots.pause(f.a.id, { paused: true });
   assert.equal(f.send('Hi everyone', draft).run.id, started.run.id);
-  assert.throws(() => f.send('Another addressed message', { requestId: 'coordinator-paused', recipientIds: [f.b.id] }), /Resume the coordinator/);
-  assert.equal(f.seen.length, 3); assert.equal(f.bots.team.channel(f.team.id).messages.length, channel.messages.length);
+  const direct = f.send('Another addressed message', { requestId: 'coordinator-paused', recipientIds: [f.b.id] }); await f.done(direct.run);
+  assert.equal(f.seen.at(-1).bot.id, f.b.id); assert.equal(f.seen.at(-1).bot.teamContext.channelMode, 'conversation');
+  assert.equal(f.bots.team.detail(f.team.id, direct.run.id).run.rootBotId, f.b.id);
 });
 
 test('provider failure details stay out of the public room and all subsequent coordinator context', async t => {
@@ -127,27 +128,20 @@ test('provider failure details stay out of the public room and all subsequent co
   assert.equal(f.seen.filter(input => input.message.startsWith('[Strata teammate result')).length, 1);
 });
 
-test('explicit recipients still reach semantic coordinator so addressed tasks can execute only as assigned work', async t => {
+test('explicit work recipients run directly and chat recipients do not take a coordinator detour', async t => {
   let f, task = false;
   f = fixture(t, async input => {
-    if (input.bot.teamConversationOnly) {
-      if (input.message === '@everyone build and review') {
-        assert.match(input.bot.instructions, /explicitly addressed/);
-        await input.executeTool('assign_team_task', { botId: f.b.id, message: 'Build feature' }, 'build');
-        await input.executeTool('assign_team_task', { botId: f.a.id, message: 'Review feature yourself' }, 'self');
-      }
-      say(input, 'Coordinated the public request.');
-    } else {
-      task = true; assert.equal(input.tools.some(tool => tool.name === 'write_file'), true);
-      await input.executeTool('write_file', { path: 'owned' }, 'write'); say(input, `${input.bot.name} finished assigned work`);
-    }
+    assert.equal(input.bot.teamConversationOnly, undefined);
+    task = true; assert.equal(input.tools.some(tool => tool.name === 'write_file'), true);
+    await input.executeTool('write_file', { path: 'owned' }, 'write'); say(input, `${input.bot.name} finished assigned work`);
   });
-  const started = f.send('@everyone build and review', { recipientIds: [f.b.id, f.a.id] }); await f.done(started.run);
+  const started = f.send('Build and review the feature', { workMode: 'work', recipientIds: [f.b.id, f.a.id] }); await f.done(started.run);
   const rows = f.bots.team.channel(f.team.id).messages;
-  assert.equal(task, true); assert.equal(f.effects.length, 2);
-  assert.equal(rows.filter(row => row.kind === 'assignment').length, 2); assert.equal(rows.filter(row => row.kind === 'report').length, 2);
+  assert.equal(task, true); assert.equal(f.effects.length, 2); assert.equal(f.seen.length, 2);
+  assert.equal(f.seen.every(input => input.bot.teamContext.channelMode === 'task'), true);
+  assert.equal(rows.filter(row => row.kind === 'report').length, 2);
   assert.ok(rows.some(row => row.kind === 'report' && row.author.botId === f.a.id));
-  assert.equal(f.seen.filter(input => !input.bot.teamConversationOnly && input.bot.id === f.a.id).length, 1);
+  assert.equal(f.seen.some(input => input.bot.id === f.c.id), false);
 });
 
 test('bids are public conversation only, coordinator chooses after all offers and receives task report once', async t => {
@@ -252,8 +246,10 @@ test('legacy turn and hop settings cannot cut off the single useful conversation
     });
     f.bots.team.update(f.team.id, { limits });
     const started = f.send('Collect strengths'); await f.done(started.run);
-    assert.equal(summaries, 1); assert.equal(f.seen.length, 4);
+    assert.equal(summaries, 0); assert.equal(f.seen.length, 3);
     assert.equal(f.bots.team.channel(f.team.id).activeRuns.length, 0);
+    assert.equal(f.bots.team.detail(f.team.id, started.run.id).run.limits.maxTurns, limits.maxTurns ?? 24);
+    assert.equal(f.bots.team.detail(f.team.id, started.run.id).run.limits.maxHops, limits.maxHops ?? 8);
   }
 });
 

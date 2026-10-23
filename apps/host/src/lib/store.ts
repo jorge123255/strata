@@ -640,6 +640,12 @@ function applyEvent(e: StreamEvent) {
       if (notice) pushToast(notice.tone, notice.title, notice.body);
       break;
     }
+    case 'team-channel':
+      if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('strata:team-channel', { detail: data }));
+      break;
+    case 'bot-summary':
+      if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('strata:bot-summary', { detail: data }));
+      break;
     case 'monitor':
       set({ monitor: data as unknown as MonitorState });
       break;

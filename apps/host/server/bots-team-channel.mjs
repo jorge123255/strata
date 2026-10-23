@@ -72,13 +72,29 @@ export function createTeamChannels({ directory, now = Date.now, notify = () => {
     // bot's private chat, model checkpoint, memory or operational error detail.
     return { id: message.id, sequence: message.sequence, kind: message.kind, author: publicAuthor, content: Array.from(message.content.toWellFormed().replaceAll('\0', '')).slice(0, 280).join(''), createdAt: message.createdAt, ...(message.planEvent !== undefined ? { planId: message.planId, planEvent: message.planEvent } : {}) };
   }
+  function latestSequence(teamId) {
+    const row = channels.get(teamId);
+    return row ? Math.max(0, row.nextSequence - 1) : 0;
+  }
+  function unreadCount(teamId, readSequence = 0) {
+    const cursor = Number.isSafeInteger(readSequence) && readSequence >= 0 ? readSequence : 0;
+    let count = 0;
+    for (const message of channels.get(teamId)?.messages ?? []) if (message.sequence > cursor && message.author?.type !== 'user') count += 1;
+    return count;
+  }
+  function summaryLine(teamId) {
+    const message = channels.get(teamId)?.messages.at(-1);
+    if (!message || typeof message.content !== 'string' || typeof message.createdAt !== 'string') return null;
+    const authorName = typeof message.author?.name === 'string' ? message.author.name.replaceAll('\0', '').trim().slice(0, 80) : '';
+    return { at: message.createdAt, preview: message.content.toWellFormed().replaceAll('\0', '').replace(/\s+/g, ' ').trim().slice(0, 140), authorName };
+  }
   function notificationSources(teamId, after) {
     const row = channels.get(teamId), all = row?.messages ?? [];
     const selected = after === undefined ? all.slice(-100) : all.filter(message => message.sequence > after).slice(0, 100);
     return { id: teamId, latestSequence: row ? row.nextSequence - 1 : 0, messages: selected.map(message => ({ id: message.id, sequence: message.sequence, kind: message.kind, author: { type: message.author.type, ...(message.author.botId ? { botId: message.author.botId } : {}) }, state: message.state, createdAt: message.createdAt, ...(message.planEvent !== undefined ? { planId: message.planId, planEvent: message.planEvent } : {}) })) };
   }
   return {
-    append, appendAndRemember: append, snapshot, preview, notificationSources,
+    append, appendAndRemember: append, snapshot, preview, notificationSources, latestSequence, unreadCount, summaryLine,
     find: (teamId, messageId) => copy(channels.get(teamId)?.messages.find(row => row.id === messageId)),
     recent: (teamId, limit = 30) => copy((channels.get(teamId)?.messages ?? []).slice(-limit)),
     receipt: (teamId, requestId) => copy(receipts.get(`${teamId}:${requestId}`)),

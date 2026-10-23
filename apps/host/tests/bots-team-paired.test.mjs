@@ -26,7 +26,7 @@ test('paired team room shares real attributed history, semantic invitations, bid
     if (mode !== 'task') {
       assert.equal(input.bot.teamConversationOnly, true);
       assert.equal(input.bot.instructions.includes('PRIVATE_PROFILE_MARKER'), input.bot.id === coordinator.id, 'Each bot retains its own instructions; peers never receive them.');
-      assert.ok(input.tools.every(tool => ['post_team_message', 'read_team_message', 'read_team_results', 'read_team_work', 'read_team_workflow', 'invite_teammates', 'assign_team_task', 'update_team_instructions', 'send_to_teammate', 'spawn_subagent', 'list_teammates', 'list_subagents', 'stop_subagent'].includes(tool.name)));
+      assert.ok(input.tools.every(tool => ['post_team_message', 'read_team_message', 'read_team_results', 'read_team_work', 'read_team_workflow', 'invite_teammates', 'assign_team_task', 'update_team_instructions', 'send_to_teammate', 'spawn_subagent', 'list_teammates', 'list_subagents', 'stop_subagent', 'pass_team_turn'].includes(tool.name)));
       await assert.rejects(async () => input.executeTool('write_file', {}, 'forbidden'), /conversation|not assigned|unavailable/i);
     }
     if (mode === 'routing' && input.message.startsWith('[The public conversation invitations')) {
@@ -35,7 +35,7 @@ test('paired team room shares real attributed history, semantic invitations, bid
       await input.executeTool('invite_teammates', { botIds: [builder.id, reviewer.id], message: 'Greet the team once as yourself.', purpose: 'conversation' }, 'greeting');
       input.onFrame({ type: 'delta', text: 'Hello from Coordinator' });
     } else if (mode === 'conversation') input.onFrame({ type: 'delta', text: `Hello from ${input.bot.name}` });
-    else if (mode === 'routing' && input.message === 'Who wants this draft task?') {
+    else if (mode === 'routing' && input.message === 'Who wants this task?') {
       await input.executeTool('invite_teammates', { botIds: [builder.id, reviewer.id], message: 'Offer which part of this draft you can own.', purpose: 'bid' }, 'bid');
       input.onFrame({ type: 'delta', text: 'Who can own the draft?' });
     } else if (mode === 'bid') input.onFrame({ type: 'delta', text: `${input.bot.name} volunteers to help.` });
@@ -84,7 +84,7 @@ test('paired team room shares real attributed history, semantic invitations, bid
   assert.equal(phone.json.messages.find(v => v.author.botId === builder.id).author.avatarConfig.shape, 'orb');
   const retry = await request(path + '/messages', { token, method: 'POST', body: { message: 'Hi everyone', requestId: 'greeting_request' } }); assert.equal(retry.json.run.id, greet.json.run.id); assert.equal(calls.length, 4);
   assert.equal((await request(path + '/messages', { token, method: 'POST', body: { message: 'Different', requestId: 'greeting_request' } })).status, 409);
-  const bid = await request(path + '/messages', { token, method: 'POST', body: { message: 'Who wants this draft task?', requestId: 'bid_request', recipientIds: [builder.id, reviewer.id], replyToId: phone.json.messages[0].id } }); assert.equal(bid.status, 200);
+  const bid = await request(path + '/messages', { token, method: 'POST', body: { message: 'Who wants this task?', requestId: 'bid_request', recipientIds: [builder.id, reviewer.id], replyToId: phone.json.messages[0].id } }); assert.equal(bid.status, 200);
   await until(() => !bots.team.detail(team.id, bid.json.run.id).run.state.match(/queued|running/));
   assert.equal(bots.team.detail(team.id, bid.json.run.id).run.state, 'completed');
   const result = await request(path + '/channel', { token });

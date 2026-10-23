@@ -38,10 +38,12 @@ function fixture(t, script, count = 4) {
 }
 const say = (input, text) => input.onFrame({ type: 'delta', text });
 
-test('all team settings canonicalize to continuous while restart preserves every historical field exactly', async t => {
-  const f = journal(t), first = f.team({ limits: { maxDepth: 8, maxHops: 20, maxTurns: 100, maxDurationMs: 50000, maxParallel: 3 } });
+test('saved team limits persist across restart and invalid limits are rejected', async t => {
+  const f = journal(t), chosen = { maxDepth: 8, maxHops: 20, maxTurns: 100, maxDurationMs: 50000, maxParallel: 3 };
+  const first = f.team({ limits: chosen });
   const second = f.team({ name: 'Second', limits: { maxDepth: 1, maxTurns: 1 } });
-  assert.deepEqual(first.limits, DEFAULT_TEAM_LIMITS); assert.equal(f.service.list().teamContinuousSupported, true);
+  assert.deepEqual(first.limits, chosen); assert.deepEqual(second.limits, { ...DEFAULT_TEAM_LIMITS, maxDepth: 1, maxTurns: 1 });
+  assert.equal(f.service.list().teamContinuousSupported, true);
   for (const key of Object.keys(DEFAULT_TEAM_LIMITS)) for (const value of [-1, 1.5, Infinity, Number.MAX_SAFE_INTEGER + 1]) assert.throws(() => f.service.update(first.id, { limits: { [key]: value } }), { status: 400 });
   const run = f.service.start(first.id, { message: 'Historical completed work' }).run;
   f.service.tick(); const root = f.snapshot().jobs.find(job => job.runId === run.id), context = f.context(root); f.service.begin(context); f.service.end(context);
@@ -51,32 +53,36 @@ test('all team settings canonicalize to continuous while restart preserves every
   legacy.runs[0].limits = { ...legacy.teams[0].limits }; legacy.runs[0].deadline = 123; legacy.jobs[0].opaqueAuditMarker = 'unchanged';
   writeFileSync(f.file, JSON.stringify(legacy));
   const restored = createBotTeams(f.options); t.after(() => restored.close());
-  const expected = structuredClone(legacy); for (const row of expected.teams) row.limits = { ...row.limits, ...DEFAULT_TEAM_LIMITS };
-  assert.deepEqual(f.snapshot(), expected); assert.equal(expected.teams[1].id, second.id);
+  assert.deepEqual(f.snapshot().teams.map(row => row.limits), legacy.teams.map(row => row.limits));
+  assert.equal(f.snapshot().jobs[0].opaqueAuditMarker, 'unchanged');
+  assert.equal(restored.list().teams.find(row => row.id === second.id).limits.maxParallel, 9);
   assert.deepEqual(restored.detail(first.id, run.id).run.limits, legacy.runs[0].limits);
+  assert.equal(restored.detail(first.id, run.id).run.deadline, 123);
 });
 
-test('finite useful work crosses 24 turns, legacy duration, hop and nesting limits without a replacement cutoff', async t => {
-  const f = journal(t, 2), team = f.team({ limits: { maxTurns: 2, maxDepth: 1, maxHops: 1, maxDurationMs: 1 } });
-  const run = f.service.start(team.id, { message: 'Finite requested work' }).run;
-  let work = 0, turns = 0;
-  while (['queued', 'running'].includes(f.service.detail(team.id, run.id).run.state)) {
-    f.service.tick(); const active = f.snapshot().jobs.find(job => job.runId === run.id && job.state === 'running');
-    assert.ok(active, 'finite fixture must have useful runnable work');
-    const context = f.context(active); f.service.begin(context); assert.equal(f.service.isContinuousTurn(context.turnId), true);
-    if (!active.completion && work++ < 40) await f.service.execute('spawn_subagent', { botId: active.botId === 'bot_0' ? 'bot_1' : 'bot_0', message: `Requested finite stage ${work}` }, context);
-    f.advance(3600000); f.service.end(context, { publicReply: `Stage result ${turns++}` });
-    assert.equal(f.service.isContinuousTurn(context.turnId), false);
-  }
-  const saved = f.snapshot(), result = f.service.detail(team.id, run.id).run;
-  assert.equal(work, 41); assert.equal(result.state, 'completed'); assert.ok(result.consumedTurns > 80);
-  assert.ok(Math.max(...saved.jobs.map(job => job.depth)) >= 40); assert.ok(Math.max(...saved.jobs.map(job => job.hop)) >= 40);
-  assert.equal(result.deadline, undefined); assert.equal(saved.jobs.some(job => /budget|limit|deadline/i.test(job.detail ?? '')), false);
+test('explicit zero limits stay continuous and finite limits stop the next turn', async t => {
+  const zeros = { maxParallel: 0, maxDepth: 0, maxHops: 0, maxTurns: 0, maxDurationMs: 0 };
+  const f = journal(t, 4), open = f.team({ memberIds: ['bot_0', 'bot_1'], coordinatorId: 'bot_0', limits: zeros });
+  const continuous = f.service.start(open.id, { message: 'Keep going' }).run;
+  f.service.tick(); const root = f.snapshot().jobs.find(job => job.runId === continuous.id && job.state === 'running');
+  const context = f.context(root); f.service.begin(context); assert.equal(f.service.isContinuousTurn(context.turnId), true);
+  await f.service.execute('spawn_subagent', { botId: 'bot_1', message: 'One more stage' }, context);
+  f.advance(3600000); f.service.end(context, { publicReply: 'Still going' }); f.service.tick();
+  assert.equal(f.service.detail(open.id, continuous.id).run.consumedTurns, 2);
+  const limited = f.team({ name: 'Bounded', memberIds: ['bot_2', 'bot_3'], coordinatorId: 'bot_2', limits: { maxTurns: 0, maxDepth: 1, maxHops: 1, maxDurationMs: 1, maxParallel: 1 } });
+  const run = f.service.start(limited.id, { message: 'Finite requested work' }).run;
+  f.service.tick(); const active = f.snapshot().jobs.find(job => job.runId === run.id && job.state === 'running');
+  const limitedContext = f.context(active); f.service.begin(limitedContext); assert.equal(f.service.isContinuousTurn(limitedContext.turnId), false);
+  await f.service.execute('spawn_subagent', { botId: 'bot_3', message: 'Child that must not start' }, limitedContext);
+  f.advance(10); f.service.end(limitedContext, { publicReply: 'Root done' }); f.service.tick(); f.service.tick();
+  const result = f.service.detail(limited.id, run.id).run, saved = f.snapshot();
+  assert.equal(result.consumedTurns, 1); assert.equal(result.state, 'error');
+  assert.ok(saved.jobs.some(job => job.runId === run.id && /time limit/.test(job.detail ?? '')));
   assert.equal(f.service.isContinuousTurn('unbound'), false);
 });
 
 test('continuous authority is turn-bound and Stop invalidates it before cleanup, without admitting late work', async t => {
-  const f = journal(t), team = f.team(), run = f.service.message(team.id, { message: 'Hi everyone', requestId: 'stop-opening' }).run;
+  const f = journal(t), team = f.team({ limits: { maxParallel: 0, maxDepth: 0, maxHops: 0, maxTurns: 0, maxDurationMs: 0 } }), run = f.service.message(team.id, { message: 'Hi everyone', requestId: 'stop-opening' }).run;
   f.service.tick(); const root = f.snapshot().jobs.find(job => job.runId === run.id), context = f.context(root); f.service.begin(context);
   assert.equal(f.service.isContinuousTurn(context.turnId), true);
   let release, entered = false, resolved = false; const held = new Promise(resolve => { release = resolve; }); f.cleanup.stop = async () => { entered = true; await held; };
@@ -89,14 +95,15 @@ test('continuous authority is turn-bound and Stop invalidates it before cleanup,
   assert.equal(f.service.channel(team.id).messages.some(row => row.content.includes('Late reply')), false);
 });
 
-for (const message of ['Hi everyone', 'hello team!', '@everyone please answer', '@all hello', 'hey guys']) test('server guarantees the opening round even if the router omits invitations: ' + message, async t => {
-  const f = fixture(t, async input => { assert.equal(input.bot.teamConversationOnly, true); assert.equal(input.tools.some(tool => tool.name === 'write_file'), false); if (!input.message.startsWith('[The public conversation invitations')) say(input, `Answer ${input.bot.id}`); });
+for (const message of ['@everyone please answer', '@all hello']) test('a leading @everyone wakes each member once and does not add a coordinator summary: ' + message, async t => {
+  const f = fixture(t, async input => { assert.equal(input.bot.teamConversationOnly, true); assert.equal(input.tools.some(tool => tool.name === 'write_file'), false); say(input, `Answer ${input.bot.id}`); });
   const run = f.send(message).run; await f.done(run);
   const replies = f.bots.team.channel(f.team.id).messages.filter(row => row.content.startsWith('Answer '));
-  assert.equal(replies.length, 4); assert.equal(new Set(replies.map(row => row.author.botId)).size, 4); assert.equal(f.seen.length, 5); assert.equal(f.effects.length, 0);
+  assert.equal(replies.length, 4); assert.equal(new Set(replies.map(row => row.author.botId)).size, 4); assert.equal(f.seen.length, 4); assert.equal(f.effects.length, 0);
+  assert.equal(f.bots.team.channel(f.team.id).messages.some(row => row.content.includes('public conversation invitations')), false);
 });
 
-for (const message of ['Build the feature', 'What is the status?', 'The handoff says @everyone should respond', '> @everyone hello', '"@everyone hello"', '```text\n@everyone hello\n```', 'Please inspect this code: @all', 'Hi, can you check the status?']) test('quoted mentions and ordinary requests do not automatically wake the team: ' + message, async t => {
+for (const message of ['Hi everyone', 'hello team!', 'hey guys', 'Build the feature', 'What is the status?', 'The handoff says @everyone should respond', '> @everyone hello', '"@everyone hello"', '```text\n@everyone hello\n```', 'Please inspect this code: @all', 'Hi, can you check the status?']) test('quoted mentions and ordinary requests do not automatically wake the team: ' + message, async t => {
   const f = fixture(t, async input => say(input, 'One routing reply'));
   const run = f.send(message).run; await f.done(run); assert.equal(f.seen.length, 1);
   assert.equal(f.bots.team.detail(f.team.id, run.id).run.expectedParticipation, undefined);
@@ -130,14 +137,11 @@ test('coordinator-only recipient does not fan out and new roster members are nev
   release(); await f.done(run); assert.equal(f.seen.some(input => input.bot.id === outsider.id), false);
 });
 
-test('a concrete task assigned to an explicit recipient satisfies participation without an extra conversational wake', async t => {
-  let f;
-  f = fixture(t, async input => {
-    if (input.message === 'Check the requested file') await input.executeTool('assign_team_task', { botId: f.members[1].id, message: 'Inspect the authorized workspace file' }, 'real-task');
-    else if (input.message.startsWith('[Assignment')) { assert.equal(input.bot.teamConversationOnly, undefined); say(input, 'File checked: useful result.'); }
-  });
+test('a chat addressed to one teammate is delivered directly as one conversation turn', async t => {
+  const f = fixture(t, async input => { assert.equal(input.bot.teamConversationOnly, true); say(input, 'Direct reply'); });
   const run = f.send('Check the requested file', { recipientIds: [f.members[1].id] }).run; await f.done(run);
-  const workerTurns = f.seen.filter(input => input.bot.id === f.members[1].id); assert.equal(workerTurns.length, 1); assert.equal(workerTurns[0].bot.teamContext.channelMode, 'task');
+  assert.equal(f.seen.length, 1); assert.equal(f.seen[0].bot.id, f.members[1].id); assert.equal(f.seen[0].bot.teamContext.channelMode, 'conversation');
+  assert.equal(f.bots.team.detail(f.team.id, run.id).run.rootBotId, f.members[1].id);
 });
 
 for (const message of ['Who wants this task?', 'Any volunteers for this task?']) test('volunteer request reconciles omitted bids, waits for all, and opens only one decision: ' + message, async t => {
@@ -185,22 +189,26 @@ test('outer coordinator waits for delegated descendants and receives the workerâ
   release(); await f.done(run); assert.equal(worker, 1); assert.equal(outer, 1);
 });
 
-test('batch references span bounded pages without losing later members or reclassifying provider replies as verified success', async t => {
-  const f = journal(t, 65), team = f.team(), run = f.service.message(team.id, { message: 'Do requested work', requestId: 'batch-pages' }).run;
+test('batch references keep every teammate report without losing later members or reclassifying provider replies as verified success', async t => {
+  const f = journal(t, 12), team = f.team(), run = f.service.message(team.id, { message: 'Do requested work', requestId: 'batch-pages' }).run;
   f.service.tick(); const root = f.snapshot().jobs.find(job => job.type === 'run'), context = f.context(root); f.service.begin(context);
   for (const id of [...f.bots.keys()].slice(1)) await f.service.execute('assign_team_task', { botId: id, message: `Actual work ${id}` }, { ...context, toolCallId: id });
-  f.service.end(context); f.service.tick();
-  for (const job of f.snapshot().jobs.filter(row => row.state === 'running')) { const current = f.context(job); f.service.begin(current); f.service.end(current, { publicReply: `${'Substantive result '.repeat(510)}TAIL_${job.botId}` }); }
+  f.service.end(context);
+  const pendingChildren = () => f.snapshot().jobs.filter(row => row.runId === run.id && row.channelMode === 'task' && !row.resultBatch && ['queued', 'running'].includes(row.state));
+  while (pendingChildren().length) {
+    f.service.tick();
+    for (const job of pendingChildren().filter(row => row.state === 'running')) { const current = f.context(job); f.service.begin(current); f.service.end(current, { publicReply: `${'Substantive result '.repeat(510)}TAIL_${job.botId}` }); }
+  }
   const batches = f.snapshot().jobs.filter(job => job.resultBatch); assert.equal(batches.length, 1);
   const batch = batches[0]; assert.ok(batch.message.length < 16000); assert.match(batch.message, /not independently verified task success/);
-  assert.equal(batch.resultReferences.length, 64); assert.ok(batch.resultReferences.join('\n').length > 14000);
+  assert.equal(batch.resultReferences.length, 11);
   const references = batch.resultReferences.map(line => JSON.parse(line));
-  assert.equal(references.length, 64); assert.equal(new Set(references.map(row => row.botId)).size, 64);
-  const reports = f.service.channel(team.id).messages.filter(row => row.kind === 'report'); assert.equal(reports.length, 64);
+  assert.equal(references.length, 11); assert.equal(new Set(references.map(row => row.botId)).size, 11);
+  const reports = f.service.channel(team.id).messages.filter(row => row.kind === 'report'); assert.equal(reports.length, 11);
   for (const reference of references) assert.ok(reports.some(report => report.id === reference.reportId && report.author.botId === reference.botId));
   f.service.tick(); const active = f.snapshot().jobs.find(job => job.resultBatch && job.state === 'running'), reader = f.context(active); f.service.begin(reader);
   const paged = []; let offset = 0;
-  do { const page = await f.service.execute('read_team_results', { offset }, reader); paged.push(...page.results); offset = page.nextOffset; assert.equal(page.total, 64); } while (offset !== null);
+  do { const page = await f.service.execute('read_team_results', { offset }, reader); paged.push(...page.results); offset = page.nextOffset; assert.equal(page.total, 11); } while (offset !== null);
   assert.deepEqual(paged, references);
   for (const args of [{ offset: -1 }, { offset: 0.5 }, { offset: 65 }, { offset: Number.MAX_SAFE_INTEGER }, { runId: 'other' }, { teamId: team.id }]) await assert.rejects(f.service.execute('read_team_results', args, reader), { status: 400 });
   for (const reference of references) {

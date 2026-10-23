@@ -210,7 +210,11 @@ struct BotTeamRun: Decodable, Identifiable, Equatable {
         let total = max(0, consumedTurns)
         return total - min(total, max(0, rosterFanoutTurns ?? 0))
     }
+    var limits: BotTeamLimits?
     func turnLabel(unrestrictedTeams: Bool, continuousTeams: Bool = false) -> String {
+        if let limits, limits != .continuous {
+            return "\(consumedTurns) of \(limits.maxTurns) turns · depth \(limits.maxDepth) · \(limits.maxHops) hops"
+        }
         if continuousTeams { return consumedTurns > 0 ? "\(consumedTurns) turns used" : "Until finished or stopped" }
         return unrestrictedTeams ? "\(workTurns) work turns" : "\(consumedTurns) turns"
     }
@@ -640,6 +644,14 @@ struct BotTeamChannelMessage: Decodable, Identifiable, Equatable {
     }
 }
 
+struct BotTeamPresence: Decodable, Equatable, Identifiable {
+    var botId: String
+    var state: String
+    var runId: String
+    var jobId: String
+    var id: String { jobId }
+}
+
 struct BotTeamChannel: Decodable, Equatable {
     var teamId: String
     var supported: Bool
@@ -649,6 +661,7 @@ struct BotTeamChannel: Decodable, Equatable {
     var hasMore: Bool?
     var hasMoreBefore: Bool?
     var reason: String?
+    var presence: [BotTeamPresence]?
 }
 
 enum BotTeamMessageWorkMode: String, Codable, CaseIterable { case chat, work }
@@ -660,6 +673,7 @@ struct BotTeamChannelPost: Encodable, Equatable {
     var replyToId: String?
     var workMode: BotTeamMessageWorkMode?
     var durablePlan: Bool?
+    var everyone: Bool?
 }
 
 struct BotTeamDraft: Encodable {

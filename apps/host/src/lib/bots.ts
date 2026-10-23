@@ -110,7 +110,13 @@ export interface BotTeamChannelMessage {
   recipientIds?: string[]; runId?: string; chatId?: string; state?: string; workMode?: 'chat'|'work'; planId?: string;
 }
 export interface BotTeamChannelPreview { id: string; sequence: number; kind: BotTeamChannelMessage['kind']; author: Pick<BotTeamChannelAuthor, 'type'|'name'|'botId'>; content: string; createdAt: string }
-export interface BotTeamChannelSnapshot { teamId: string; supported: boolean; messages: BotTeamChannelMessage[]; activeRuns: BotTeamRun[]; nextSequence: number; hasMore?: boolean; hasMoreBefore?: boolean; firstSequence?: number }
+export interface BotTeamPresence { botId: string; state: 'working' | 'queued'; runId: string; jobId: string }
+export interface BotTeamChannelSnapshot { teamId: string; supported: boolean; messages: BotTeamChannelMessage[]; activeRuns: BotTeamRun[]; nextSequence: number; hasMore?: boolean; hasMoreBefore?: boolean; firstSequence?: number; presence?: BotTeamPresence[] }
+export interface BotRoomLastMessage { at: string; preview: string; authorName: string }
+export interface BotRoomWorking { botId: string; name: string; state: 'working' | 'queued' }
+export interface BotRoomSummary { id: string; name: string; memberCount: number; unreadCount: number; lastMessage: BotRoomLastMessage | null; working: BotRoomWorking[] }
+export interface BotSummaryRow { id: string; name: string; status: 'idle' | 'working' | 'error'; unreadCount: number }
+export interface BotSidebarSummary { rooms: BotRoomSummary[]; bots: BotSummaryRow[] }
 /** Cursor pages may overlap; keep stable identities, order and only this room's rows. */
 export function mergeBotTeamChannelMessages(previous: BotTeamChannelMessage[], incoming: BotTeamChannelMessage[], teamId: string): BotTeamChannelMessage[] {
   const rows = new Map(previous.filter(row => row.teamId === teamId).map(row => [row.id, row]));
@@ -153,7 +159,7 @@ export function botTeamRunActive(state: string) { return ['queued', 'running', '
 export function botActivityLabel(state: string) { return ({ queued: 'Queued', running: 'Working', completed: 'Completed', error: 'Failed', cancelled: 'Stopped', interrupted: 'Interrupted', stopping: 'Stopping…', cleanup_pending: 'Checking cleanup', delivered: 'Delivered', pending: 'Waiting', accepted: 'Accepted', refused: 'Refused' } as Record<string, string>)[state] ?? state; }
 export function botTeamDraftError(draft: Pick<BotTeam, 'name'|'memberIds'|'coordinatorId'|'limits'> & { execution?: BotTeamExecution; briefing?: BotTeamBriefing }, bots: Pick<Bot,'id'>[], computers?: BotTeamComputer[], unrestricted = false, continuous = false): string | null {
   if (!draft.name.trim() || draft.name.trim().length>80) return 'Give this team a name of up to 80 characters.';
-  if (draft.memberIds.length < 2 || !unrestricted && draft.memberIds.length > 12) return unrestricted ? 'Choose at least two team members.' : 'Choose from 2 to 12 team members.';
+  if (draft.memberIds.length < 2 || draft.memberIds.length > 12) return 'Choose from 2 to 12 team members.';
   if (new Set(draft.memberIds).size !== draft.memberIds.length || draft.memberIds.some(id => !bots.some(bot => bot.id === id))) return 'Choose available bots for this team.';
   if (!draft.memberIds.includes(draft.coordinatorId)) return 'Choose a coordinator from this team.';
   if (draft.briefing) {

@@ -76,10 +76,14 @@ export function createConversations({ directory, enabled = () => true, notify = 
     result.preview = last?.content.slice(0, 300) ?? '';
     return result;
   }
+  const inboxListeners = new Set();
   function publish() {
     clearTimeout(eventTimer); eventTimer = null;
+    const touched = changed.size > 0;
     for (const id of changed) notify('conversation', entries.has(id) ? { conversation: view(entries.get(id)) } : { deleted: id });
     changed.clear();
+    if (!touched) return;
+    for (const listener of inboxListeners) { try { listener(); } catch { /* A sidebar listener cannot stop a chat. */ } }
   }
   function touch(id, immediate = false) {
     const record = entries.get(id);
@@ -118,6 +122,21 @@ export function createConversations({ directory, enabled = () => true, notify = 
   // Reconciliation needs identities and terminal state, never message content or Thinking.
   function notificationSources() {
     return [...entries.values()].map(({ session }) => ({ id: session.id, createdAt: session.createdAt, preferences: Object.fromEntries(['botId', 'teamId'].filter(key => session.preferences?.[key] !== undefined).map(key => [key, session.preferences[key]])), messages: session.messages.filter(message => message.role === 'assistant' && !message.local && !message.timeSkipId).map(message => ({ id: message.id, role: message.role, streaming: message.streaming === true, hasContent: !!message.content?.trim(), ...(message.cancelled ? { cancelled: true } : {}), ...(message.error ? { error: true } : {}), at: message.at })) }));
+  }
+  function sidebarInbox() {
+    if (!available()) return [];
+    const rows = [];
+    for (const { session } of entries.values()) {
+      const botId = session.preferences?.botId;
+      if (!botId || session.preferences?.teamId) continue;
+      const messages = [];
+      for (const message of session.messages) {
+        if (message.role !== 'assistant' || message.local || message.timeSkipId) continue;
+        messages.push({ id: message.id, at: message.at, hasContent: !!message.content?.trim(), error: !!message.error, streaming: message.streaming === true });
+      }
+      rows.push({ id: session.id, botId, active: turns.has(session.id), messages });
+    }
+    return rows;
   }
   // Supervision polls need only a compact last-turn status. Do not deep-copy
   // transcripts, reasoning, command arguments or output on every activity poll.
@@ -308,6 +327,6 @@ export function createConversations({ directory, enabled = () => true, notify = 
     requireRecord(id); if (turns.has(id)) throw fault(409, 'Stop this conversation before deleting it.');
     entries.delete(id); deleted.add(id); touch(id, true); return { deleted: id };
   }
-  return { list, identitiesForBot, detail, notificationSources, supervisionSources, sync, create, createForBot: bot => create({}, bot), begin, record, finish, send, stop: stopTurn, approval, preferences, remove,
+  return { list, identitiesForBot, detail, notificationSources, supervisionSources, sidebarInbox, subscribeInbox: listener => { inboxListeners.add(listener); return () => inboxListeners.delete(listener); }, sync, create, createForBot: bot => create({}, bot), begin, record, finish, send, stop: stopTurn, approval, preferences, remove,
     available, capture, has: id => entries.has(id), botId: id => entries.get(id)?.session.preferences?.botId ?? null, isRunning: id => turns.has(id), close() { for (const turn of turns.values()) turn.controller.abort(); flush(); publish(); } };
 }

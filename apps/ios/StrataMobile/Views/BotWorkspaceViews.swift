@@ -75,7 +75,10 @@ struct BotTeamEditor: View {
         _name = State(initialValue: team?.name ?? "")
         _selected = State(initialValue: Set(team?.memberIds ?? []))
         _coordinator = State(initialValue: team?.coordinatorId ?? "")
-        _limits = State(initialValue: (team?.limits ?? BotTeamLimits()).forHost(unrestrictedTeams: workspace.unrestrictedTeams, continuousTeams: workspace.continuousTeams))
+        _limits = State(initialValue: {
+            let saved = team?.limits ?? BotTeamLimits()
+            return saved == .continuous ? .continuous : saved.forHost(unrestrictedTeams: workspace.unrestrictedTeams, continuousTeams: false)
+        }())
         _executionMode = State(initialValue: team?.execution?.mode ?? "individual")
         _computerId = State(initialValue: team?.execution?.computerId ?? "")
         _folder = State(initialValue: team?.execution?.workspace ?? "")
@@ -91,12 +94,12 @@ struct BotTeamEditor: View {
     private var computers: [BotTeamComputer] { (workspace.teams?.teamComputers ?? []).filter { $0.memberId == nil || selected.contains($0.memberId!) } }
     private var chosenComputer: BotTeamComputer? { computers.first { $0.id == computerId } }
     private var draft: BotTeamDraft {
-        BotTeamDraft(name: name.trimmingCharacters(in: .whitespacesAndNewlines), memberIds: selected.sorted(), coordinatorId: coordinator, limits: limits.forHost(unrestrictedTeams: unrestrictedTeams, continuousTeams: continuousTeams),
+        BotTeamDraft(name: name.trimmingCharacters(in: .whitespacesAndNewlines), memberIds: selected.sorted(), coordinatorId: coordinator, limits: limits.forHost(unrestrictedTeams: unrestrictedTeams, continuousTeams: limits == .continuous),
                      execution: supportsSettings ? (executionMode == "shared" ? BotTeamExecution(mode: "shared", computerId: computerId, workspace: folder.trimmingCharacters(in: .whitespacesAndNewlines)) : .individual) : nil,
                      briefing: supportsInstructions ? BotTeamBriefing(instructions: briefing.instructions.trimmingCharacters(in: .whitespacesAndNewlines), members: briefing.members.filter { selected.contains($0.botId) }.map { BotTeamMemberBriefing(botId: $0.botId, role: $0.role.trimmingCharacters(in: .whitespacesAndNewlines), instructions: $0.instructions.trimmingCharacters(in: .whitespacesAndNewlines)) }.filter { !$0.role.isEmpty || !$0.instructions.isEmpty }.sorted { $0.botId < $1.botId }) : nil)
     }
     private var canSave: Bool {
-        BotWorkspaceStore.validTeamDraft(draft, unrestrictedTeams: unrestrictedTeams, continuousTeams: continuousTeams, availableMemberIds: Set(store.botCatalog?.bots.map(\.id) ?? [])) && workspace.mutation == nil && !hasActiveWork && !changed &&
+        BotWorkspaceStore.validTeamDraft(draft, unrestrictedTeams: unrestrictedTeams, continuousTeams: limits == .continuous, availableMemberIds: Set(store.botCatalog?.bots.map(\.id) ?? [])) && workspace.mutation == nil && !hasActiveWork && !changed &&
         (baseline == nil || (supportsSettings && baseline?.revision != nil)) &&
         (executionMode != "shared" || (chosenComputer?.available == true && chosenComputer?.allowsFolder(folder.trimmingCharacters(in: .whitespacesAndNewlines)) == true))
     }
@@ -125,7 +128,7 @@ struct BotTeamEditor: View {
                         if coordinator.isEmpty { Text("Choose a coordinator").tag("") }
                         ForEach((store.botCatalog?.bots ?? []).filter { selected.contains($0.id) }) { bot in Text(bot.name).tag(bot.id) }
                     }.accessibilityIdentifier("teamCoordinatorPicker")
-                    Text(unrestrictedTeams ? "The coordinator assigns work and brings results together. Choose at least two teammates." : "The coordinator assigns work and brings results together. Choose 2–12 teammates.").font(.caption).foregroundStyle(.secondary)
+                    Text("The coordinator assigns work and brings results together. Choose 2–12 teammates.").font(.caption).foregroundStyle(.secondary)
                 } header: { Text("Team members") }
                 if supportsInstructions {
                     Section {
@@ -192,9 +195,11 @@ struct BotTeamEditor: View {
                 }
                 Section {
                     if continuousTeams {
-                        LabeledContent("Team work", value: "Until finished or stopped").accessibilityIdentifier("teamContinuousWorkLabel")
-                        Text("The coordinator can keep work moving until it is complete or you stop it.").font(.caption).foregroundStyle(.secondary)
-                    } else {
+                        Toggle("Until finished or stopped", isOn: Binding(get: { limits == .continuous }, set: { limits = $0 ? .continuous : BotTeamLimits().forHost(unrestrictedTeams: unrestrictedTeams, continuousTeams: false) }))
+                            .accessibilityIdentifier("teamContinuousWorkLabel")
+                        Text("Turn this on only when the team should keep working with no turn, time, depth or hop cutoff.").font(.caption).foregroundStyle(.secondary)
+                    }
+                    if limits != .continuous {
                     DisclosureGroup("Work limits") {
                         if unrestrictedTeams {
                             LabeledContent("Parallel work", value: "All available teammates").accessibilityIdentifier("teamParallelAvailableLabel")
@@ -252,10 +257,10 @@ struct BotTeamEditor: View {
                     if anchor { Text("Hosts the shared computer. Choose another before removing.").font(.caption).foregroundStyle(.secondary) }
                 }
             }
-        }.disabled(anchor || !unrestrictedTeams && selected.count >= 12 && !selected.contains(id)).accessibilityIdentifier("teamMember-\(id)")
+        }.disabled(anchor || selected.count >= 12 && !selected.contains(id)).accessibilityIdentifier("teamMember-\(id)")
     }
     private func reload(_ team: BotTeam) {
-        baseline = team; name = team.name; selected = Set(team.memberIds); coordinator = team.coordinatorId; limits = team.limits.forHost(unrestrictedTeams: unrestrictedTeams, continuousTeams: continuousTeams)
+        baseline = team; name = team.name; selected = Set(team.memberIds); coordinator = team.coordinatorId; limits = team.limits == .continuous ? .continuous : team.limits.forHost(unrestrictedTeams: unrestrictedTeams, continuousTeams: false)
         executionMode = team.execution?.mode ?? "individual"; computerId = team.execution?.computerId ?? ""; folder = team.execution?.workspace ?? ""
         briefing = team.briefing ?? BotTeamBriefing()
     }
@@ -653,10 +658,10 @@ struct BotTeamDetailView: View {
                     .accessibilityIdentifier("openTeamComputerButton")
             }
         } else { LabeledContent("Execution", value: "Each bot’s computer") }
-        if workspace.continuousTeams {
+        if team.limits == .continuous {
             LabeledContent("Team work", value: "Until finished or stopped").accessibilityIdentifier("teamContinuousDetailLabel")
         } else {
-            LabeledContent("Limits", value: "\(team.limits.parallelLabel(unrestrictedTeams: workspace.unrestrictedTeams)) · \(team.limits.maxTurns) \(workspace.unrestrictedTeams ? "work turns" : "turns") · \(team.limits.maxDurationMs / 60_000)m")
+            LabeledContent("Limits", value: "\(team.limits.parallelLabel(unrestrictedTeams: workspace.unrestrictedTeams)) · \(team.limits.maxTurns) turns · depth \(team.limits.maxDepth) · \(team.limits.maxHops) hops · \(team.limits.maxDurationMs / 60_000)m")
         }
         Text("Everyone can join the conversation. The coordinator assigns work and brings results together. Each bot keeps its own model and permissions.").font(.caption).foregroundStyle(.secondary)
         Button(team.enabled ? "Disable team" : "Enable reviewed team") { Task { await workspace.setTeamEnabled(team, enabled: !team.enabled) } }
@@ -768,11 +773,13 @@ struct BotTeamDetailView: View {
                     Spacer(); Button { self.reply = nil } label: { Image(systemName: "xmark.circle.fill").frame(width: 32, height: 28) }.accessibilityLabel("Cancel reply")
                 }.foregroundStyle(.secondary)
             }
-            if !recipient.isEmpty || !activeRuns.isEmpty {
+            if !recipient.isEmpty || !activeRuns.isEmpty || channel?.presence?.contains(where: { $0.state == "working" }) == true {
                 HStack {
                     if !recipient.isEmpty { Text("To " + (recipient == "everyone" ? "Everyone" : store.botCatalog?.bots.first { $0.id == recipient }?.name ?? "Teammate")).lineLimit(2) }
                     Spacer(minLength: 0)
-                    if !activeRuns.isEmpty { Label("Team working", systemImage: "circle.fill").labelStyle(.titleOnly).foregroundStyle(StrataTheme.accentText) }
+                    if let names = channel?.presence?.filter({ $0.state == "working" }).map({ row in store.botCatalog?.bots.first { $0.id == row.botId }?.name ?? "A teammate" }), !names.isEmpty {
+                        Text(names.joined(separator: ", ") + (names.count == 1 ? " is working…" : " are working…")).lineLimit(2)
+                    } else if !activeRuns.isEmpty { Label("Team working", systemImage: "circle.fill").labelStyle(.titleOnly).foregroundStyle(StrataTheme.accentText) }
                 }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 8)
             }
             if supportsCoordinatorWork, channel?.supported == true {
@@ -825,7 +832,7 @@ struct BotTeamDetailView: View {
     private func send(_ team: BotTeam) {
         taskFocused = false
         let generation = navigation, text = message, request = requestId
-        let draft = BotTeamChannelPost(message: text, requestId: request, recipientIds: recipient.isEmpty ? nil : recipient == "everyone" ? team.memberIds : [recipient], replyToId: reply?.id, workMode: supportsCoordinatorWork ? workMode : nil, durablePlan: supportsCoordinatorWork && workspace.workPlansSupported && workMode == .work ? true : nil)
+        let draft = BotTeamChannelPost(message: text, requestId: request, recipientIds: recipient.isEmpty ? nil : recipient == "everyone" ? team.memberIds : [recipient], replyToId: reply?.id, workMode: supportsCoordinatorWork ? workMode : nil, durablePlan: supportsCoordinatorWork && workspace.workPlansSupported && workMode == .work ? true : nil, everyone: recipient == "everyone" ? true : nil)
         Task {
             let sent: Bool
             if channel?.supported == true { sent = await workspace.postTeamMessage(team, draft: draft) }

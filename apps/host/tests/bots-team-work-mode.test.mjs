@@ -106,19 +106,15 @@ test('mode validation is strict and receipt identity cannot promote Chat to Work
 
 test('explicit Work preserves addressed owners and trailing scope after a busy room; volunteer bids still route first', async t => {
   let f; f = fixture(t, async input => {
-    if (input.message.startsWith('Hi, do this bounded')) {
-      assert.equal(input.bot.teamContext.channelMode, 'task'); for (let i = 0; i < 25; i++) await input.executeTool('post_team_message', { message: `Peer context ${i}` }, `filler_${i}`);
-      // The full human request and explicit recipient intent survive outside the recent24previews.
-      await input.executeTool('assign_team_task', { botId: f.b.id, message: 'Read the safe marker and retain all owner holds.' }, 'addressed-worker'); await input.executeTool('submit_team_result', result(), 'coordinator-result'); say(input, 'Delegated the addressed bounded task.');
-    } else if (input.bot.id === f.b.id && input.bot.teamContext.channelMode === 'task') {
+    if (input.bot.id === f.b.id && input.message.startsWith('Hi, do this bounded')) {
+      assert.equal(input.bot.teamContext.channelMode, 'task'); assert.equal(f.seen.filter(row => row.message.startsWith('Hi, do this bounded')).length, 1);
       assert.match(input.bot.instructions, /TRAILING_HUMAN_RELEASE_HOLD/); await input.executeTool('submit_team_result', result(), 'addressed-result'); say(input, 'Bounded task ready.');
-    } else if (input.message.startsWith('[Strata teammate result batch')) { assert.ok(input.bot.instructions.includes(f.b.id)); await input.executeTool('submit_team_result', result(), 'final'); }
-    else if (input.message === 'Who wants this task?') { assert.equal(input.bot.teamContext.channelMode, 'routing'); assert.equal(input.bot.teamConversationOnly, true); assert.equal(input.tools.some(tool => tool.name === 'run_command'), false); }
+    } else if (input.message === 'Who wants this task?') { assert.equal(input.bot.teamContext.channelMode, 'routing'); assert.equal(input.bot.teamConversationOnly, true); assert.equal(input.tools.some(tool => tool.name === 'run_command'), false); }
     else if (input.bot.teamContext.channelMode === 'bid') { assert.equal(input.bot.teamConversationOnly, true); assert.equal(input.tools.some(tool => tool.name === 'write_file'), false); say(input, 'An offer only; no work started.'); }
   });
   const text = `Hi, do this bounded check ${'scope '.repeat(210)}TRAILING_HUMAN_RELEASE_HOLD`;
   const started = f.send(text, { workMode: 'work', recipientIds: [f.b.id] }); await f.done(started.run);
-  const rootInput = f.seen.find(row => row.sessionId === started.run.rootChatId); assert.ok(rootInput.bot.instructions.includes(`explicitly addressed bot IDs ["${f.b.id}"]`));
+  const rootInput = f.seen.find(row => row.sessionId === started.run.rootChatId); assert.equal(rootInput.bot.id, f.b.id); assert.match(rootInput.bot.instructions, /TRAILING_HUMAN_RELEASE_HOLD/);
   const bid = f.send('Who wants this task?', { workMode: 'work' }); await f.done(bid.run); assert.equal(f.bots.team.activity().activity.some(row => row.runId === bid.run.id && row.work), false); assert.equal(f.bots.team.channel(f.team.id).messages.find(row => row.runId === bid.run.id && row.author.type === 'user').workMode, 'work');
 });
 

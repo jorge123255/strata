@@ -18,8 +18,18 @@ import { createHarnessObserver } from './bots-harness-observer.mjs';
 import { botApprovalTarget } from './bots-approval-target.mjs';
 import { botExecutionInstructions } from './bots-tools.mjs';
 import { teamPlanResourceKey } from './bots-team-plan-resources.mjs';
+import { privateExtensionStore } from './bots-extension-store.mjs';
 
 const fault = (status, message) => Object.assign(new Error(message), { status });
+const readCursorMessage = 'Saved read cursors could not be read. They were left unchanged.';
+function openReadCursors(directory) {
+  const storage = privateExtensionStore(directory, 'bot-reads.json', { version: 1, teams: {}, bots: {} });
+  const value = storage.value;
+  if (!value.teams || typeof value.teams !== 'object' || Array.isArray(value.teams) || !value.bots || typeof value.bots !== 'object' || Array.isArray(value.bots)) throw fault(503, readCursorMessage);
+  for (const [id, sequence] of Object.entries(value.teams)) if (!/^team_[a-f0-9-]+$/.test(id) || !Number.isSafeInteger(sequence) || sequence < 0) throw fault(503, readCursorMessage);
+  for (const [id, at] of Object.entries(value.bots)) if (!/^bot_[a-f0-9-]+$/.test(id) || typeof at !== 'string' || at.length > 40 || !Number.isFinite(Date.parse(at))) throw fault(503, readCursorMessage);
+  return storage;
+}
 const ids = new Set(['claude', 'codex', 'grok', 'kimi', 'ollama', 'devin', 'configured']);
 export const BOT_AVATARS = ['🤖', '🧑‍💻', '🦊', '🧠', '🚀', '🛠️', '🌿', '✨'];
 export const BOT_AVATAR_SHAPES = Object.freeze(['orb', 'pebble', 'tile', 'diamond', 'spark', 'hexagon']);
@@ -66,7 +76,31 @@ function endpoint(value) {
   return url.href.replace(/\/$/, '');
 }
 
-export function createBots({ directory, runtime, tools, conversations = () => null, defaultWorkspace = () => homedir(), notify = () => {}, now = () => new Date().toISOString(), remoteSSH, modelProviders, modelRequest, cuaTools, skills, mcp, createdTools, python = 'python3' }) {
+export function createBots({ directory, runtime, tools, conversations = () => null, defaultWorkspace = () => homedir(), notify: outerNotify = () => {}, now = () => new Date().toISOString(), remoteSSH, modelProviders, modelRequest, cuaTools, skills, mcp, createdTools, python = 'python3' }) {
+  const summaryListeners = new Set();
+  let summaryQueued = false, inboxSource = null;
+  const reads = openReadCursors(directory);
+  function emitSummaryNow() {
+    const payload = summary();
+    outerNotify('bot-summary', payload);
+    for (const listener of summaryListeners) { try { listener(payload); } catch { /* A sidebar listener cannot stop bot work. */ } }
+    return payload;
+  }
+  function scheduleSummary() {
+    if (summaryQueued) return;
+    summaryQueued = true;
+    queueMicrotask(() => { summaryQueued = false; try { emitSummaryNow(); } catch { /* A sidebar refresh cannot stop bot work. */ } });
+  }
+  const notify = (event, data) => {
+    outerNotify(event, data);
+    if (event !== 'bot-summary' && (event === 'team-channel' || event === 'bots')) scheduleSummary();
+  };
+  function bindInbox() {
+    const chats = conversations();
+    if (!chats || chats === inboxSource || typeof chats.subscribeInbox !== 'function') return;
+    inboxSource = chats;
+    chats.subscribeInbox(() => scheduleSummary());
+  }
   if (createdTools) tools = createCreatedCommandTools(tools);
   const actionJournal = createBotActionJournal({ directory: join(directory, 'bots-action-journal') });
   const harnessObserver = createHarnessObserver();
@@ -216,7 +250,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     if (['pending', 'uncertain', 'interrupted'].some(state => summary.counts[state] > 0)) throw Object.assign(fault(409, message), { code: 'team_plan_receipts_unresolved' });
   }
   const team = createBotTeams({ directory, requireBot, conversations, createConversation: (id, teamContext) => createConversation(id, {}, teamContext), discardConversation: id => { conversations().remove(id); chatProfiles.delete(id); checkpoints.delete(id); save(); }, notify, workAuthority, assertRecoveryAvailable, workflowAuthority, planAuthority: (id, shared, context) => workflowAuthority(id, shared, context, true), assertWorkflowReceipts,
-    usesComputer: (source, target) => { const bot = typeof source === 'string' ? chatProfiles.get(source) : source; return bot?.computerMode === 'cua' && cuaResource(bot) === cuaResource(target); }, teamComputers: teamComputerRows, resolveExecution: resolveTeamExecution, isChatBusy: chatBusy, isBotBusy: id => [...active.values()].some(run => run.botId === id), stopDirect: id => stop(id, { team: false }) });
+    usesComputer: (source, target) => { const bot = typeof source === 'string' ? chatProfiles.get(source) : source; return bot?.computerMode === 'cua' && cuaResource(bot) === cuaResource(target); }, teamComputers: teamComputerRows, resolveExecution: resolveTeamExecution, isChatBusy: chatBusy, isBotBusy: id => [...active.values()].some(run => run.botId === id), stopDirect: id => stop(id, { team: false }), roomReadSequence: teamId => { const value = reads.value.teams?.[teamId]; return Number.isSafeInteger(value) && value >= 0 ? value : 0; } });
   const hasOwnedComputer = id => [...ownedComputers, ...uncertainTargets.keys()].some(key => key.startsWith(`cua:${id}:`));
   const markOwned = bot => { ownedComputers.add(cuaResource(bot)); save(); };
   const computer = createBotComputers({ cua: cuaTools, remoteSSH, profile: (id, chatId) => { const bot = requireBot(id); if (!chatId) return copy(bot); const snapshot = chatProfiles.get(chatId); if (!snapshot || snapshot.id !== id) throw fault(404, 'This computer does not belong to that conversation.'); return copy(snapshot); },
@@ -645,7 +679,65 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
       } finally { harnessObserver.finish(session.id, {outcome: cancelledBeforeCleanup ? 'interrupted' : owner.cleanupFailure || runFailure ? 'error' : 'completed'}); if (active.get(session.id) === owner) active.delete(session.id); ended(); }
     }
   }
-  return { list, create, update, saveProfile, setHostFolder, remove, pause, createConversation, computer, work, team, hasBot: id => profiles.has(id), hasTeam: id => team.hasTeam(id), teamConnectorAccess: (teamId, botId, teamRunId) => team.connectorAccess(teamId, botId, teamRunId), providerModels: id => runtime.models?.(id) ?? Promise.resolve({ provider: id, models: [], detail: 'This provider has no verified effort catalog. Use Provider default.' }), prepareCUA, checkComputer: (input, options) => computerAction(input, false, options), prepareComputer: (input, options) => computerAction(input, true, options), validateSelection, run, pending, approve, stop,
+  function summary() {
+    bindInbox();
+    const readTeams = reads.value.teams ?? {}, readBots = reads.value.bots ?? {};
+    const inbox = conversations()?.sidebarInbox?.() ?? [];
+    const rooms = team.list().teams.map(row => team.roomCard(row.id, readTeams[row.id] ?? 0));
+    const bots = [...profiles.values()].map(bot => {
+      const personal = inbox.filter(row => row.botId === bot.id);
+      const signal = team.botSignal(bot.id);
+      const working = personal.some(row => row.active) || signal.working || [...active.values()].some(run => run.botId === bot.id);
+      let newest = null, unread = 0;
+      const stored = readBots[bot.id];
+      const cursor = typeof stored === 'string' && Number.isFinite(Date.parse(stored)) ? Date.parse(stored) : Number.NEGATIVE_INFINITY;
+      for (const chat of personal) for (const message of chat.messages) {
+        const at = Date.parse(message.at ?? '');
+        if (!Number.isFinite(at)) continue;
+        const rank = `${message.at ?? ''}\0${message.id ?? ''}`;
+        if (!newest || rank > newest.rank) newest = { rank, error: message.error === true };
+        if ((message.hasContent || message.error) && at > cursor) unread += 1;
+      }
+      const status = working ? 'working' : (newest?.error || signal.error ? 'error' : 'idle');
+      return { id: bot.id, name: bot.name, status, unreadCount: unread };
+    });
+    return { rooms, bots };
+  }
+  function rememberRead(kind, id, value) {
+    const previous = Object.hasOwn(reads.value[kind], id) ? reads.value[kind][id] : undefined;
+    reads.value[kind][id] = value;
+    try { reads.save(reads.value); }
+    catch (error) { if (previous === undefined) delete reads.value[kind][id]; else reads.value[kind][id] = previous; throw error; }
+  }
+  function markTeamRead(teamId, input) {
+    const body = input ?? {};
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => key !== 'sequence')) throw fault(400, 'Choose a valid read position.');
+    const latest = team.latestSequence(teamId);
+    let sequence = latest;
+    if (body.sequence !== undefined) {
+      if (!Number.isSafeInteger(body.sequence) || body.sequence < 0 || body.sequence > latest) throw fault(400, 'Choose a read position in this room.');
+      sequence = body.sequence;
+    }
+    rememberRead('teams', teamId, sequence);
+    try { team.refreshRoom(teamId); } catch { /* The saved cursor remains the source of truth. */ }
+    return { room: emitSummaryNow().rooms.find(row => row.id === teamId) };
+  }
+  function markBotRead(botId, input) {
+    requireBot(botId);
+    const body = input ?? {};
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => key !== 'at')) throw fault(400, 'Choose a valid read time.');
+    let at = now();
+    if (body.at !== undefined) {
+      if (typeof body.at !== 'string' || body.at.length > 40 || !Number.isFinite(Date.parse(body.at))) throw fault(400, 'Choose a valid read time.');
+      const parsed = Date.parse(body.at);
+      if (parsed > Date.parse(now()) + 60_000) throw fault(400, 'Choose a read time that is not in the future.');
+      at = new Date(parsed).toISOString();
+    }
+    rememberRead('bots', botId, at);
+    return { bot: emitSummaryNow().bots.find(row => row.id === botId) };
+  }
+  queueMicrotask(bindInbox);
+  return { list, create, update, saveProfile, setHostFolder, remove, pause, createConversation, computer, work, team, summary, markTeamRead, markBotRead, subscribeSummary: listener => { summaryListeners.add(listener); return () => summaryListeners.delete(listener); }, hasBot: id => profiles.has(id), hasTeam: id => team.hasTeam(id), teamConnectorAccess: (teamId, botId, teamRunId) => team.connectorAccess(teamId, botId, teamRunId), providerModels: id => runtime.models?.(id) ?? Promise.resolve({ provider: id, models: [], detail: 'This provider has no verified effort catalog. Use Provider default.' }), prepareCUA, checkComputer: (input, options) => computerAction(input, false, options), prepareComputer: (input, options) => computerAction(input, true, options), validateSelection, run, pending, approve, stop,
     harnessActions: chatId => ({ ...actionJournal.summary(chatId), coverage: { local: 'durable', sshHostTools: 'durable', sshComputerTools: 'worker-durable-read-only', identity: 'Exact conversation, authority, turn and provider call identity; anonymous calls and older settled receipts outside retention are not deduplicated.', recovery: 'No automatic retries or resumes. SSH receipt acknowledgement and computer cleanup remain separate.' } }),
     reviewHarnessAction: (id, input) => actionJournal.review(id, input),
     supervision: () => { const snapshot = botSupervisionSnapshot({ bots: [...profiles.values()], conversations: conversations()?.supervisionSources?.() ?? [], pendingCount: id => active.get(id)?.pending.size ?? 0, now: Date.parse(now()) }); snapshot.sessions = snapshot.sessions.map(row => { const harness = harnessObserver.snapshot(row.id); return harness ? {...row,harness} : row; }); return snapshot; },
@@ -701,6 +793,21 @@ export function createBotRoutes({ bots, port }) {
         if ([...url.searchParams].length || req.headers['transfer-encoding'] || Number(req.headers['content-length'] ?? 0) > 0) return error(res, 400, 'Supervision reads take no settings.');
         return json(res, 200, bots.supervision());
       }
+      if (url.pathname === '/api/bots/summary/stream') {
+        if (req.method !== 'GET') return error(res, 405, 'Bot summary updates are read-only.');
+        if ([...url.searchParams].length || req.headers['transfer-encoding'] || Number(req.headers['content-length'] ?? 0) > 0) throw fault(400, 'Bot summary updates take no request body.');
+        res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive', 'x-accel-buffering': 'no' });
+        res.write(`event: bot-summary\ndata: ${JSON.stringify(bots.summary())}\n\n`);
+        const stop = bots.subscribeSummary(payload => { if (!res.writableEnded) res.write(`event: bot-summary\ndata: ${JSON.stringify(payload)}\n\n`); });
+        const ping = setInterval(() => { if (!res.writableEnded) res.write(': ping\n\n'); }, 15000);
+        req.on('close', () => { clearInterval(ping); stop(); });
+        return;
+      }
+      if (url.pathname === '/api/bots/summary') {
+        if (req.method !== 'GET') return error(res, 405, 'The bot summary is read-only.');
+        if ([...url.searchParams].length || req.headers['transfer-encoding'] || Number(req.headers['content-length'] ?? 0) > 0) throw fault(400, 'Bot summary reads take no request body.');
+        return json(res, 200, bots.summary());
+      }
       if (url.pathname === '/api/bots/teams') {
         if (req.method === 'GET') return json(res, 200, bots.team.list());
         if (req.method === 'POST') return json(res, 201, bots.team.create(await readBody(req)));
@@ -744,6 +851,18 @@ export function createBotRoutes({ bots, port }) {
         if (action !== 'recovery' && req.method === 'POST') return json(res, 200, await bots.team[action === 'review' ? 'reviewJob' : 'resumeJob'](teamId, jobId, await readBody(req)));
         return error(res, 405, 'This task action is unavailable.');
       }
+      const streamRoute = /^\/api\/bots\/teams\/(team_[a-f0-9-]+)\/channel\/stream$/.exec(url.pathname);
+      if (streamRoute && req.method === 'GET') {
+        if ([...url.searchParams].length || req.headers['transfer-encoding'] || Number(req.headers['content-length'] ?? 0) > 0) throw fault(400, 'Team channel updates take no request body.');
+        const teamId = streamRoute[1], snap = bots.team.channel(teamId);
+        const room = typeof bots.team.roomCard === 'function' ? bots.team.roomCard(teamId) : undefined;
+        res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive', 'x-accel-buffering': 'no' });
+        res.write(`event: team-channel\ndata: ${JSON.stringify({ teamId, presence: snap.presence, activeRuns: snap.activeRuns, nextSequence: snap.nextSequence, ...(room ? { room } : {}) })}\n\n`);
+        const stop = bots.team.subscribe((event, data) => { if (event === 'team-channel' && data?.teamId === teamId && !res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); });
+        const ping = setInterval(() => { if (!res.writableEnded) res.write(': ping\n\n'); }, 15000);
+        req.on('close', () => { clearInterval(ping); stop(); });
+        return;
+      }
       const channelRoute = /^\/api\/bots\/teams\/(team_[a-f0-9-]+)\/(channel|messages)$/.exec(url.pathname);
       if (channelRoute) {
         const [, teamId, action] = channelRoute;
@@ -762,6 +881,11 @@ export function createBotRoutes({ bots, port }) {
           return json(res, 200, bots.team.channel(teamId, options));
         }
         return error(res, 405, 'This team channel action is unavailable.');
+      }
+      const teamRead = /^\/api\/bots\/teams\/(team_[a-f0-9-]+)\/read$/.exec(url.pathname);
+      if (teamRead) {
+        if (req.method !== 'POST' || [...url.searchParams].length) return error(res, 405, 'Mark a room read with an empty body or a sequence.');
+        return json(res, 200, bots.markTeamRead(teamRead[1], await readBody(req)));
       }
       const teamRoute = /^\/api\/bots\/teams\/(team_[a-f0-9-]+)(?:\/runs(?:\/(tr_[a-f0-9-]+)(?:\/(stop))?)?)?$/.exec(url.pathname);
       if (teamRoute) {
@@ -804,6 +928,11 @@ export function createBotRoutes({ bots, port }) {
         const options = { owner: device ? `phone:${device}` : 'mac', signal: controller.signal };
         try { const method = control[2] ?? 'state'; return json(res, 200, await (['control','release'].includes(method) ? bots.computer[method](control[1], input, options) : bots.computer[method](control[1], { ...input, ...options }))); }
         finally { res.off('close', abort); }
+      }
+      const botRead = /^\/api\/bots\/(bot_[a-f0-9-]+)\/read$/.exec(url.pathname);
+      if (botRead) {
+        if (req.method !== 'POST' || [...url.searchParams].length) return error(res, 405, 'Mark a bot read with an empty body or a time.');
+        return json(res, 200, bots.markBotRead(botRead[1], await readBody(req)));
       }
       const match = /^\/api\/bots\/(bot_[a-f0-9-]+)(?:\/(conversations|pause))?$/.exec(url.pathname);
       if (!match) return error(res, 404, 'Unknown bot action.');
