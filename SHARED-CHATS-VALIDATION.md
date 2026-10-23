@@ -1,5 +1,9 @@
 # Shared Mac conversations on iPhone
 
+## Proactive team reliability correction (October 23, 2026)
+
+The next production hold was detected during read-only observation: source triage finished, but a timed-out directory search held implementation before dispatch. Its uncertain receipt remains unchanged. The source correction distinguishes pure pre-effect tool validation from uncertain execution, refreshes resumed task summaries and routes trusted blocked/review-ready plan events through existing opt-in notifications. **787/787 frozen-source host checks passed**, zero failures or skips. This host-only increment leaves iPhone build 37, UI, bridge, team instructions and Maya unchanged. Activation and remaining reliability work are recorded in [team plans validation](docs/BOTS-TEAM-PLANS-VALIDATION-20261022.md#proactive-reliability-audit-october-23-2026).
+
 ## Rejected team-message correction activated (October 23, 2026)
 
 Mac source **f12de23369aa56142054d70ebc03ea3a36027255** corrects a public-message validation error that could strand a team after completed research. A rejected `text` argument is now a known no-effect error; failed or uncertain publication still requires inspection. Plan diagnostics expose safe, specific receipt/access/cleanup/storage blockers. The host-only correction is active on Mac and available to the existing iPhone app; native/UI/bridge/model settings are unchanged. Maya remains separate.

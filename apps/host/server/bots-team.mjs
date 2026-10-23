@@ -1069,7 +1069,7 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
     },
     publish(row, event) {
       const bot = event.botId && requireBot(event.botId), run = runs.get(row.parentRunId);
-      channels.append(row.teamId, { id: event.id, kind: 'status', author: bot ? author(bot) : { type: 'system', name: 'Strata plan' }, content: event.content, runId: row.parentRunId, planId: row.id, ...(run?.channelMessageId ? { replyToId: run.channelMessageId } : {}), ...(event.chatId ? { chatId: event.chatId } : {}), state: ['blocked', 'interrupted', 'stopped'].includes(row.phase) ? 'interrupted' : ['awaiting_review', 'completed'].includes(row.phase) ? 'done' : 'working' });
+      channels.append(row.teamId, { id: event.id, kind: 'status', author: bot ? author(bot) : { type: 'system', name: 'Strata plan' }, content: event.content, runId: row.parentRunId, planId: row.id, ...(['blocked', 'awaiting_review'].includes(row.phase) ? { planEvent: row.phase } : {}), ...(run?.channelMessageId ? { replyToId: run.channelMessageId } : {}), ...(event.chatId ? { chatId: event.chatId } : {}), state: ['blocked', 'interrupted', 'stopped'].includes(row.phase) ? 'interrupted' : ['awaiting_review', 'completed'].includes(row.phase) ? 'done' : 'working' });
     },
     stopRun: async row => { const result = await stop(row.teamId, row.parentRunId, 'Stopped by you.', true); if (result.run.state === 'cleanup_pending') throw fault(503, result.run.detail); },
   });

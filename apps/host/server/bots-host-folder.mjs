@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { isAbsolute, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { markNoEffect } from './bots-runtime/tool-outcome.mjs';
 
 const helper = fileURLToPath(new URL('./bots-host-folder.py', import.meta.url));
 const limit = 2 * 1024 * 1024;
@@ -132,7 +133,7 @@ export function createBotHostFolderTools({ python = 'python3', currentGrant = ()
       if (name === 'host_write_file' && context.bot.policy !== 'bypass') {
         const allowed = await abortable(Promise.resolve(context.requestPermission?.({ id, name, args, reason: `Write ${args.path} inside the granted host folder ${snapshot.grant.path}?` })), context.signal);
         await assertAuthority();
-        if (allowed !== true) { emit('denied', 'The host file write was not allowed.'); return { ...result('The host file write was not allowed. Do not retry it.'), isError: true }; }
+        if (allowed !== true) { emit('denied', 'The host file write was not allowed.'); return markNoEffect({ ...result('The host file write was not allowed. Do not retry it.'), isError: true }); }
       }
       await assertAuthority(); emit('running');
       const input = { operation: name, grant: snapshot.grant, binding: snapshot.binding, args };

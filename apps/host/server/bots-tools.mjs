@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { findBrowser } from './agent/browser-probe.mjs';
 import { agentEnvironment } from './agent/harness-runtime.mjs';
-import { markProcessExitObserved, markCompletedProcessError } from './bots-runtime/tool-outcome.mjs';
+import { markNoEffect, markProcessExitObserved, markCompletedProcessError } from './bots-runtime/tool-outcome.mjs';
 
 const fail = message => { throw new Error(message); };
 const text = value => ({ content: [{ type: 'text', text: String(value) }] });
@@ -167,6 +167,10 @@ export function createBotTools({ directory, browserProbe = findBrowser, processR
     const requireRunning = () => { if (signal?.aborted) fail('The bot was stopped.'); };
     const card = { id, name, args, preview: name.replaceAll('_', ' '), effect: 'Bot tool', scope: 'connected' };
     const emit = (state, result) => onFrame({ type: 'agent-tool', tool: { ...card, state, ...(result ? { result } : {}), durationMs: Date.now() - started } });
+    const invalidWithoutEffect = error => {
+      emit('error', error.message);
+      return markNoEffect({ ...text(error.message), isError: true });
+    };
     const readOnly = ['get_execution_context', 'read_file', 'list_files', 'browser_snapshot'].includes(name);
     if (!readOnly && bot.policy !== 'bypass') {
       if (bot.policy === 'plan' || !await requestPermission({ id, name, args, reason: `Allow ${name.replaceAll('_', ' ')} on ${bot.name}’s computer?` })) { emit('denied', 'The action was not allowed.'); return { ...text('The action was not allowed. Do not retry it.'), isError: true }; }
@@ -225,8 +229,13 @@ export function createBotTools({ directory, browserProbe = findBrowser, processR
         const entries = await readdir(folder, { withFileTypes: true });
         result = text(entries.slice(0, 1000).map(e => `${e.isDirectory() ? 'directory' : e.isSymbolicLink() ? 'link' : 'file'}\t${e.name}`).join('\n'));
       } else if (name === 'write_file') {
-        if (typeof args.content !== 'string' || Buffer.byteLength(args.content) > 2 * 1024 * 1024) fail('Write a UTF-8 file of at most 2 MB.');
-        const file = await botWorkspacePath(bot.workspace, args.path, { writing: true });
+        let file;
+        try {
+          // These checks only inspect the argument and existing path chain.
+          // Once mkdir/write/rename starts, no error proves absence of effects.
+          if (typeof args.content !== 'string' || Buffer.byteLength(args.content) > 2 * 1024 * 1024) fail('Write a UTF-8 file of at most 2 MB.');
+          file = await botWorkspacePath(bot.workspace, args.path, { writing: true });
+        } catch (error) { return invalidWithoutEffect(error); }
         if (signal?.aborted) fail('The bot was stopped.');
         await mkdir(dirname(file), { recursive: true });
         const tmp = `${file}.strata-${randomUUID()}.tmp`;
@@ -234,8 +243,11 @@ export function createBotTools({ directory, browserProbe = findBrowser, processR
         try { await writeFile(tmp, args.content, { mode }); if (signal?.aborted) fail('The bot was stopped.'); await rename(tmp, file); } finally { await rm(tmp, { force: true }).catch(() => {}); }
         result = text(`Saved ${relative(bot.workspace, file)}`);
       } else if (name === 'run_command') {
-        if (typeof args.command !== 'string' || !args.command.trim() || args.command.length > 32000) fail('Enter a command of at most 32,000 characters.');
-        const timeout = Math.min(120, Math.max(1, Number(args.timeoutSeconds) || 30)) * 1000;
+        let timeout;
+        try {
+          if (typeof args.command !== 'string' || !args.command.trim() || args.command.length > 32000) fail('Enter a command of at most 32,000 characters.');
+          timeout = Math.min(120, Math.max(1, Number(args.timeoutSeconds) || 30)) * 1000;
+        } catch (error) { return invalidWithoutEffect(error); }
         const run = await processRunner(process.platform === 'win32' ? 'powershell.exe' : '/bin/sh', process.platform === 'win32' ? ['-NoProfile', '-NonInteractive', '-Command', args.command] : ['-c', args.command], { cwd: bot.workspace, signal, timeout, env: agentEnvironment(process.env) });
         result = markCompletedProcessError({ ...text(`Exit ${run.code}\n${run.stdout}${run.stderr ? `\n${run.stderr}` : ''}`), isError: run.code !== 0 }, run);
       } else if (name.startsWith('browser_')) {

@@ -4,7 +4,8 @@ import { EventEmitter } from 'node:events';
 import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { botExecutionInstructions, createBotTools } from '../server/bots-tools.mjs';
+import { botExecutionInstructions, createBotTools, runBotProcess } from '../server/bots-tools.mjs';
+import { BOT_TOOL_NO_EFFECT } from '../server/bots-runtime/tool-outcome.mjs';
 import { startWorker } from '../server/bots-runtime/ssh-worker.mjs';
 
 async function fixture(t, options = {}) {
@@ -37,17 +38,25 @@ test('context is read-only, factual about selected tools and policy, and never p
 });
 
 test('boundary error names current root and authorized next action, then actual file write and command still work', async t => {
-  const { directory, workspace, execute } = await fixture(t);
+  let processCalls = 0;
+  const { directory, workspace, execute } = await fixture(t, { processRunner: (...args) => { processCalls++; return runBotProcess(...args); } });
   await writeFile(join(directory, 'outside.txt'), 'preserve outside');
   const root = await realpath(workspace);
   for (const name of ['read_file', 'write_file']) {
-    await assert.rejects(execute(name, { path: '../outside.txt', content: 'never' }), error => {
+    const validate = error => {
       assert.match(error.message, /outside the bot’s workspace/);
       assert.ok(error.message.includes(JSON.stringify(root)));
       assert.match(error.message, /workspace-relative path/); assert.match(error.message, /owner/);
       assert.match(error.message, /do not bypass/); return true;
-    });
+    };
+    if (name === 'read_file') await assert.rejects(execute(name, { path: '../outside.txt', content: 'never' }), validate);
+    else {
+      const rejected = await execute(name, { path: '../outside.txt', content: 'never' });
+      assert.equal(rejected.isError, true); assert.equal(rejected[BOT_TOOL_NO_EFFECT], true);
+      validate({ message: rejected.content[0].text });
+    }
   }
+  assert.equal(processCalls, 0);
   const context = body(await execute('get_execution_context'));
   assert.equal(context.operations.writeFile.assigned, true); assert.equal(context.operations.runCommand.assigned, true);
   await execute('write_file', { path: 'nested/actual.txt', content: 'file tool works' });
@@ -59,7 +68,8 @@ test('boundary error names current root and authorized next action, then actual 
 });
 
 test('context does not weaken Plan, capabilities, subset validation, denial or symlink boundaries', async t => {
-  const { directory, workspace, tools, bot, execute } = await fixture(t);
+  let processCalls = 0;
+  const { directory, workspace, tools, bot, execute } = await fixture(t, { processRunner: (...args) => { processCalls++; return runBotProcess(...args); } });
   const plan = { ...bot, policy: 'plan' }, planDefinitions = tools.definitions(plan);
   assert.deepEqual(planDefinitions.map(t => t.name), ['get_execution_context', 'read_file', 'list_files']);
   const value = body(await execute('get_execution_context', {}, { bot: plan, requestPermission: () => { throw Error('Plan context must not ask'); } }));
@@ -81,8 +91,12 @@ test('context does not weaken Plan, capabilities, subset validation, denial or s
   await symlink(join(directory, 'outside.txt'), join(workspace, 'escape'));
   await symlink(directory, join(workspace, 'linked-directory'));
   await symlink(join(directory, 'missing.txt'), join(workspace, 'dangling'));
-  for (const path of ['escape', 'linked-directory/new.txt']) await assert.rejects(execute('write_file', { path, content: 'never' }), /points outside.*Current file-tool root/);
-  await assert.rejects(execute('write_file', { path: 'dangling', content: 'never' }), /regular file.*Current file-tool root/);
+  for (const path of ['escape', 'linked-directory/new.txt', 'dangling']) {
+    const rejected = await execute('write_file', { path, content: 'never' });
+    assert.equal(rejected.isError, true); assert.equal(rejected[BOT_TOOL_NO_EFFECT], true);
+    assert.match(rejected.content[0].text, path === 'dangling' ? /regular file.*Current file-tool root/ : /points outside.*Current file-tool root/);
+  }
+  assert.equal(processCalls, 0);
   assert.equal(await readFile(join(directory, 'outside.txt'), 'utf8'), 'outside');
 });
 

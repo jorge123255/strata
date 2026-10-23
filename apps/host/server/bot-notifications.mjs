@@ -13,6 +13,13 @@ const deviceId = value => typeof value === 'string' && /^[a-f0-9]{32}$/.test(val
 const seq = value => Number.isSafeInteger(value) && value >= 0;
 export const DEFAULT_NOTIFICATION_SETTINGS = Object.freeze({ enabled: false, replies: true, teams: true, work: true, approvals: true, previews: false, sound: true, muted: [] });
 const kinds = new Set(['reply', 'team_message', 'completed', 'failed', 'approval']);
+// Host-owned lifecycle metadata only. Public prose, model output and arbitrary
+// status rows cannot manufacture a plan alert; the wire kinds remain unchanged.
+const teamPlanKind = message => message.kind === 'status' && ['bot', 'system'].includes(message.author?.type)
+  && /^tp_[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(message.planId ?? '')
+  ? message.planEvent === 'blocked' && message.state === 'interrupted' ? 'failed'
+    : message.planEvent === 'awaiting_review' && message.state === 'done' ? 'team_message' : null
+  : null;
 const generic = { reply: ['New reply', 'A new reply is ready in Strata.'], team_message: ['Team update', 'A teammate posted a message in Strata.'], completed: ['Work completed', 'Bot work finished. Open Strata to see the result.'], failed: ['Work needs attention', 'Bot work needs attention. Open Strata to review it.'], approval: ['Approval needed', 'Strata is waiting for your approval. Open the conversation to review the action.'] };
 export function notificationSettings(input, previous = DEFAULT_NOTIFICATION_SETTINGS) {
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !Object.hasOwn(DEFAULT_NOTIFICATION_SETTINGS, key))) throw fault(400, 'Choose valid notification settings.');
@@ -82,8 +89,9 @@ export function createBotNotifications({ directory, sources = () => ({ conversat
         const head = state.teamHeads[team.id] ?? 0;
         for (const message of team.messages) {
           if (!seq(message.sequence) || message.sequence <= head || !validId(message.id)) continue;
-          if (!baseline && (message.author?.type === 'bot' || message.author?.type === 'system' && message.state === 'error')) {
-            const kind = message.state === 'error' ? 'failed' : message.kind === 'report' ? 'completed' : message.kind === 'message' ? 'team_message' : null;
+          const planKind = teamPlanKind(message);
+          if (!baseline && (planKind || message.author?.type === 'bot' || message.author?.type === 'system' && message.state === 'error')) {
+            const kind = planKind ?? (message.state === 'error' ? 'failed' : message.kind === 'report' ? 'completed' : message.kind === 'message' ? 'team_message' : null);
             if (kind) append(kind, { type: 'team', id: team.id }, `team:${team.id}:${message.id}`, message.author.botId, message.createdAt);
           }
           state.teamHeads[team.id] = Math.max(state.teamHeads[team.id] ?? 0, message.sequence);
