@@ -352,9 +352,9 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
     }
     return { working, error: !working && newest?.state === 'error' && (!newestSettled || newest.rank > newestSettled) };
   }
-  function emitRoom(teamId, messageId) {
+  function emitRoom(teamId, messageId, replyGroupId) {
     if (!teams.has(teamId)) return;
-    const payload = { teamId, presence: presence(teamId), activeRuns: [...runs.values()].filter(run => run.teamId === teamId && liveStates.has(run.state)).map(publicRun), room: roomCard(teamId), ...(messageId ? { messageId } : {}) };
+    const payload = { teamId, presence: presence(teamId), activeRuns: [...runs.values()].filter(run => run.teamId === teamId && liveStates.has(run.state)).map(publicRun), room: roomCard(teamId), ...(messageId ? { messageId } : {}), ...(replyGroupId ? { replyGroupId } : {}) };
     roomEpoch.set(teamId, (roomEpoch.get(teamId) ?? 0) + 1);
     emit('team-channel', payload);
   }
@@ -935,7 +935,8 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
     state.seq += 1;
     state.text = next;
     if (done) partials.delete(job.id); else partials.set(job.id, state);
-    emit('message.partial', { teamId: job.teamId, messageId, botId: job.botId, seq: state.seq, text: next, delta, done: done === true });
+    const replyGroupId = job.everyoneReply ? job.channelMessageId : undefined;
+    emit('message.partial', { teamId: job.teamId, messageId, botId: job.botId, seq: state.seq, text: next, delta, done: done === true, ...(replyGroupId ? { replyGroupId } : {}) });
   }
   function noteRoomDelta(chatId, piece) {
     if (typeof piece !== 'string' || !piece) return;
@@ -966,9 +967,10 @@ export function createBotTeams({ directory, requireBot, conversations, createCon
     const bot = (() => { try { return requireBot(job.botId); } catch { return { id: job.botId, name: 'Unavailable teammate' }; } })();
     const cancelled = outcome?.cancelled === true, failed = !!outcome?.error;
     const messageId = partialMessageId(job);
+    const replyGroupId = job.everyoneReply ? job.channelMessageId : undefined;
     emitPartial(job, content, true);
-    job.publicReportId = channels.append(run.teamId, { id: messageId, kind: job.channelMode === 'task' ? 'report' : failed || cancelled ? 'status' : 'message', author: author(bot), content, replyToId: job.channelMessageId, runId: run.id, chatId: job.chatId, state: cancelled ? 'interrupted' : failed ? 'error' : 'done' }).id;
-    emitRoom(run.teamId, job.publicReportId);
+    job.publicReportId = channels.append(run.teamId, { id: messageId, kind: job.channelMode === 'task' ? 'report' : failed || cancelled ? 'status' : 'message', author: author(bot), content, replyToId: job.channelMessageId, runId: run.id, chatId: job.chatId, state: cancelled ? 'interrupted' : failed ? 'error' : 'done', ...(replyGroupId ? { replyGroupId } : {}) }).id;
+    emitRoom(run.teamId, job.publicReportId, replyGroupId);
   }
   function releaseHeld(run) {
     const held = runJobs(run.id).filter(job => job.heldReply).sort((a, b) => a.roomOrder - b.roomOrder);

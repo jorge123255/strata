@@ -935,8 +935,8 @@ export function createBotRoutes({ bots, port }) {
           if (res.writableEnded || data?.teamId !== teamId) return;
           if (event === 'team-channel') res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
           if (event === 'message.partial') {
-            const { messageId, botId, seq, text, delta, done } = data;
-            res.write(`event: message.partial\ndata: ${JSON.stringify({ messageId, botId, seq, text, delta, done })}\n\n`);
+            const { messageId, botId, seq, text, delta, done, replyGroupId } = data;
+            res.write(`event: message.partial\ndata: ${JSON.stringify({ messageId, botId, seq, text, delta, done, ...(typeof replyGroupId === 'string' ? { replyGroupId } : {}) })}\n\n`);
           }
           if (event === 'room.quiet') res.write(`event: room.quiet\ndata: ${JSON.stringify({ teamId: data.teamId, runId: data.runId, ...(data.messageId ? { messageId: data.messageId } : {}) })}\n\n`);
         });

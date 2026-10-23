@@ -3,7 +3,7 @@
  * without a browser. The screen only paints what these functions decide.
  */
 
-export type RoomDraft = { messageId: string; botId: string; seq: number; text: string; done: boolean };
+export type RoomDraft = { messageId: string; botId: string; seq: number; text: string; done: boolean; replyGroupId?: string };
 
 export type Entrance = { id: string; ms: number; delay: number };
 
@@ -123,13 +123,15 @@ export function applyMessagePartial(drafts: readonly RoomDraft[], frame: unknown
   if (!frame || typeof frame !== 'object') return [...drafts];
   const detail = frame as Record<string, unknown>;
   if (detail.teamId !== teamId) return [...drafts];
-  const { messageId, botId, seq, text, done } = detail;
+  const { messageId, botId, seq, text, done, replyGroupId: rawGroup } = detail;
   if (typeof messageId !== 'string' || messageId.length === 0 || typeof botId !== 'string' || botId.length === 0) return [...drafts];
   if (typeof seq !== 'number' || !Number.isInteger(seq) || seq < 1 || typeof text !== 'string') return [...drafts];
   if (done === true && text === '') return drafts.filter(row => row.messageId !== messageId);
   const previous = drafts.find(row => row.messageId === messageId);
   if (previous && previous.seq >= seq) return [...drafts];
-  return [...drafts.filter(row => row.messageId !== messageId), { messageId, botId, seq, text, done: done === true }];
+  const incomingGroup = typeof rawGroup === 'string' && /^[A-Za-z0-9_.:-]{1,160}$/.test(rawGroup) ? rawGroup : undefined;
+  const replyGroupId = incomingGroup ?? previous?.replyGroupId;
+  return [...drafts.filter(row => row.messageId !== messageId), { messageId, botId, seq, text, done: done === true, ...(replyGroupId ? { replyGroupId } : {}) }];
 }
 
 export function easeOutCubic(t: number): number {

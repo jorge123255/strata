@@ -567,6 +567,27 @@ test('foreign replies, recipients, unknown settings and invalid cursors fail bef
   assert.equal(f.seen.length, 0); assert.equal(f.bots.team.channel(f.team.id).messages.length, 0);
 });
 
+test('a reply group id is saved with the message and a bad one is refused', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'strata-team-group-')); t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const journal = createTeamChannels({ directory });
+  const opening = journal.append('team_fixture', { author: { type: 'user', name: 'You' }, content: '@everyone hi' });
+  const reply = journal.append('team_fixture', { author: { type: 'bot', name: 'Member', botId: 'bot_1' }, content: 'Short reply.', replyGroupId: opening.id });
+  assert.equal(reply.replyGroupId, opening.id);
+  assert.equal(Object.hasOwn(opening, 'replyGroupId'), false);
+  const reopened = createTeamChannels({ directory });
+  assert.equal(reopened.find('team_fixture', reply.id).replyGroupId, opening.id);
+  assert.equal(Object.hasOwn(reopened.find('team_fixture', opening.id), 'replyGroupId'), false);
+  const file = join(directory, 'bot-team-channels.json'), before = readFileSync(file, 'utf8');
+  assert.throws(() => journal.append('team_fixture', { author: { type: 'bot', name: 'Member', botId: 'bot_1' }, content: 'No group.', replyGroupId: 'bad group' }), { status: 400 });
+  assert.equal(readFileSync(file, 'utf8'), before);
+  const saved = JSON.parse(before);
+  saved.channels[0].messages[1].replyGroupId = 'bad group';
+  writeFileSync(file, JSON.stringify(saved));
+  const corrupt = readFileSync(file, 'utf8');
+  assert.throws(() => createTeamChannels({ directory }), /saved team message is invalid/);
+  assert.equal(readFileSync(file, 'utf8'), corrupt);
+});
+
 test('channel journal rejects symlinks and corrupt order without rewriting the original', t => {
   const directory = mkdtempSync(join(tmpdir(), 'strata-team-invalid-')); t.after(() => rmSync(directory, { recursive: true, force: true }));
   const file = join(directory, 'bot-team-channels.json'), target = join(directory, 'target.json'); writeFileSync(target, '{"version":1,"channels":[],"receipts":[]}'); symlinkSync(target, file);
