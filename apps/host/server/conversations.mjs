@@ -327,6 +327,8 @@ export function createConversations({ directory, enabled = () => true, notify = 
     if (!recovery || recovery.kind !== 'paused' || !Array.isArray(recovery.options) || !recovery.options.some(option => option?.id === 'continue')) throw fault(404, 'This choice is unavailable.');
     if (turns.has(id)) throw fault(409, 'This conversation is already working. You can follow its activity or stop it first.');
     if (recovery.choice === 'continue') return detail(id);
+    const index = entry.session.messages.findIndex(row => row.id === messageId);
+    if (index >= 0 && entry.session.messages.some((row, i) => i > index && row.role === 'user')) throw fault(404, 'This choice is unavailable.');
     message.recovery = { ...recovery, choice: 'continue' };
     touch(id, true);
     try { return send(id, 'Continue'); }

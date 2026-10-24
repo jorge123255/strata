@@ -81,3 +81,39 @@ test('a paused one-to-one chat offers continue and that choice sends Continue', 
   assert.equal(after.conversation.messages.find(row => row.id === reply.id).recovery.choice, 'continue');
   assert.equal(after.conversation.messages.at(-1).content, 'Resumed');
 });
+
+test('a paused one-to-one chat cannot be continued after a later user message', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'strata-conversation-pause-stale-'));
+  const seen = [];
+  const sentence = 'I finished the scan. The rest of this request is still left.';
+  const conversations = createConversations({ directory, execute: async ({ message, onFrame }) => {
+    seen.push(message);
+    if (message === 'Continue') { onFrame({ type: 'delta', text: 'Resumed' }); return; }
+    if (message === 'Look at this') { onFrame({ type: 'pause', recovery: { kind: 'paused', text: sentence, question: 'Keep going?', options: [{ id: 'continue', label: 'Keep going' }] }, text: sentence }); return; }
+    onFrame({ type: 'delta', text: 'Other' });
+  } });
+  let server;
+  const route = createConversationRoutes({ conversations, port: () => server.address().port });
+  server = http.createServer((req, res) => { void route(req, res, new URL(req.url, 'http://localhost')); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); conversations.close(); rmSync(directory, { recursive: true, force: true }); });
+  const root = `http://127.0.0.1:${server.address().port}`;
+  const request = (suffix = '', method = 'GET', body) => fetch(root + '/api/companion/conversations' + suffix, { method, headers: body ? { 'content-type': 'application/json' } : undefined, ...(body ? { body: JSON.stringify(body) } : {}) });
+  const created = await (await request('', 'POST', {})).json();
+  assert.equal((await request(`/${created.conversation.id}/messages`, 'POST', { message: 'Look at this' })).status, 202);
+  const ready = async () => {
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      const detail = await (await request(`/${created.conversation.id}`)).json();
+      const reply = detail.conversation.messages.find(row => row.role === 'assistant' && row.recovery?.kind === 'paused');
+      if (reply && !reply.streaming) return reply;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    throw new Error('The pause was not saved');
+  };
+  const reply = await ready();
+  assert.equal((await request(`/${created.conversation.id}/messages`, 'POST', { message: 'replacement' })).status, 202);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  const chosen = await request(`/${created.conversation.id}/messages/${reply.id}/choice`, 'POST', { choice: 'continue' });
+  assert.equal(chosen.status, 404);
+});
