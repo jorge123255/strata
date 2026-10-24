@@ -228,6 +228,14 @@ struct BotTeamMembersPatch: Encodable, Equatable {
     var expectedRevision: Int
 }
 
+/// A confirmed write is separate from its confirmation read: a saved roster
+/// that cannot be re-read stays visible as stale instead of silently adopting
+/// the older cache, and the write is never retried implicitly.
+enum BotTeamMembersSaveOutcome: Equatable {
+    case confirmed(team: BotTeamMembersSnapshot.Team, refreshed: Bool)
+    case refused
+}
+
 struct BotTeamChannelPreview: Decodable, Equatable {
     var id: String
     var sequence: Int

@@ -591,10 +591,13 @@ final class BotWorkspaceStore: ObservableObject {
     static func teamMembersKey(_ teamId: String) -> String { "teamMembers-" + teamId }
     /// Reads one team's roster through the paired members route. The saved
     /// snapshot keeps its own revision so the editor can save against it.
-    func refreshTeamMembers(_ teamId: String) async {
-        guard CompanionClient.isSafeIdentifier(teamId) else { return }
+    /// Returns whether a fresh snapshot was actually applied; a failed read
+    /// keeps the previous cache and surfaces its message instead.
+    @discardableResult func refreshTeamMembers(_ teamId: String) async -> Bool {
+        guard CompanionClient.isSafeIdentifier(teamId) else { return false }
         let key = Self.teamMembersKey(teamId)
-        guard mutation != key, mutation?.hasPrefix("teamMembers-") != true else { return }
+        guard mutation != key, mutation?.hasPrefix("teamMembers-") != true else { return false }
+        var applied = false
         await load(key, path: "/v1/bots/teams/\(teamId)/members") { (value: BotTeamMembersSnapshot) in
             guard value.team.id == teamId, Set(value.team.memberIds).count == value.team.memberIds.count,
                   value.team.memberIds.contains(value.team.coordinatorId),
@@ -605,28 +608,37 @@ final class BotWorkspaceStore: ObservableObject {
             }
             if self.teamMembers[teamId] != value { self.teamMembers[teamId] = value }
             self.setMessage(key, nil)
+            applied = true
         }
+        return applied
     }
-    /// Saves the exact member and coordinator choice against the loaded
-    /// revision. A conflict or lost reply never retries the save implicitly.
-    @discardableResult func saveTeamMembers(_ teamId: String, memberIds: [String], coordinatorId: String, expectedRevision: Int) async -> Bool {
+    /// Saves the exact member and coordinator choice against the revision the
+    /// draft was adopted from. A conflict or lost reply never retries the save
+    /// implicitly, and a confirmed write is reported separately from its
+    /// follow-up read so the editor never adopts a stale cache as "saved".
+    func saveTeamMembers(_ teamId: String, memberIds: [String], coordinatorId: String, expectedRevision: Int) async -> BotTeamMembersSaveOutcome {
         let key = Self.teamMembersKey(teamId)
         guard let client, isCurrent(), !Task.isCancelled, mutation == nil, CompanionClient.isSafeIdentifier(teamId),
               (2...12).contains(memberIds.count), Set(memberIds).count == memberIds.count,
               memberIds.allSatisfy(CompanionClient.isSafeIdentifier), memberIds.contains(coordinatorId),
-              expectedRevision > 0 else { return false }
+              expectedRevision > 0 else { return .refused }
         let path = try? CompanionClient.teamMembersPath(teamId)
-        guard let path else { return false }
+        guard let path else { return .refused }
         struct Saved: Decodable { var team: BotTeamMembersSnapshot.Team }
         let value: Saved? = await change(key, path: path, method: "PATCH",
                                          body: BotTeamMembersPatch(memberIds: memberIds, coordinatorId: coordinatorId, expectedRevision: expectedRevision))
-        guard isCurrent(), !Task.isCancelled else { return false }
+        guard isCurrent(), !Task.isCancelled else { return .refused }
         guard let saved = value, saved.team.id == teamId, saved.team.memberIds.contains(coordinatorId) else {
             if value != nil { messages[key] = "The Mac did not confirm this exact roster. Refresh its members before saving again." }
-            return false
+            return .refused
         }
-        if value != nil { await refreshTeamMembers(teamId); await refreshTeams() }
-        return value != nil && isCurrent()
+        // The write took effect. The editor may adopt a fresh roster only when
+        // this confirmation read succeeds; a failed read leaves the confirmed
+        // roster visible with the read's error and keeps Save blocked.
+        let refreshed = await refreshTeamMembers(teamId)
+        await refreshTeams()
+        guard isCurrent(), !Task.isCancelled else { return .refused }
+        return .confirmed(team: saved.team, refreshed: refreshed)
     }
     private func validTeamExecution(_ draft: BotTeamDraft) -> Bool {
         guard let execution = draft.execution, execution.isShared else { return true }
