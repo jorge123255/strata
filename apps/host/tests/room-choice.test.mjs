@@ -49,10 +49,11 @@ test('the live event and the web event use the same shape, and text is the body'
   assert.equal(choice.recoveryFromEvent(null), null);
 });
 
-test('a button posts only retry, skip, or different', () => {
+test('a button posts retry, skip, different, or continue', () => {
   assert.deepEqual(choice.choicePayload('retry'), { choice: 'retry' });
   assert.deepEqual(choice.choicePayload('skip'), { choice: 'skip' });
   assert.deepEqual(choice.choicePayload('different'), { choice: 'different' });
+  assert.deepEqual(choice.choicePayload('continue'), { choice: 'continue' });
   assert.equal(choice.choicePayload('other'), null);
   assert.equal(choice.choicePayload('different-approach'), null);
   assert.equal(choice.choicePayload('Try again'), null);
@@ -76,6 +77,13 @@ test('the room card renders host labels, marks a saved choice, and retries a fai
   assert.match(channel, /strata:task-recovery/);
   assert.match(channel, /\/messages\/\$\{encodeURIComponent\(card\.messageId\)\}\/choice/);
   assert.match(channel, /choicePayload/);
+  const [chat, storeSource] = await Promise.all([
+    readFile(new URL('../src/screens/Chat.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/lib/store.ts', import.meta.url), 'utf8'),
+  ]);
+  assert.match(chat, /continuePausedChat/);
+  assert.match(storeSource, /\/api\/companion\/conversations\/\$\{encodeURIComponent\(sessionId\)\}\/messages\/\$\{encodeURIComponent\(messageId\)\}\/choice/);
+  assert.match(storeSource, /choice: 'continue'/);
   assert.doesNotMatch(channel, /\/jobs\/\$\{encodeURIComponent|\/resume/);
   assert.match(css, /\.bot-room-choice-actions button\[aria-pressed='true'\]/);
   assert.match(css, /\.bot-room-choice-error/);

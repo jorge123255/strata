@@ -28,7 +28,6 @@ function fixture(t, script, extensions = {}) {
 
 for (const [diagnostic, expected] of [
   ['The configured model API returned HTTP 402. Check its credentials and tool support in Models.', /billing or credits/],
-  ['The bot reached its 32-step limit. Continue in this chat to proceed.', /ran out of steps/],
   ['The configured model API returned HTTP 401.', /refused access/],
 ]) test('coordinator gets an actionable fixed failure without provider details or automatic replay: ' + diagnostic, async t => {
   const secret = 'PRIVATE_PROVIDER_RESPONSE_TOKEN_8b12', privatePath = '/Users/private/account/config'; let f, completion;
@@ -52,6 +51,43 @@ for (const [diagnostic, expected] of [
   assert.equal(f.bots.team.message(f.team.id, request).run.id, run.id); f.bots.team.tick(); await new Promise(resolve => setTimeout(resolve, 20));
   assert.equal(f.seen.filter(input => input.bot.id === f.worker.id).length, 1);
   assert.equal(f.bots.team.detail(f.team.id, run.id).run.state, 'error');
+});
+
+test('a step-limit stop pauses with continue and resumes that same run', async t => {
+  const events = [];
+  let f;
+  f = fixture(t, async input => {
+    if (input.message === 'Assign this task') await input.executeTool('assign_team_task', { botId: f.worker.id, message: 'Do the requested task' }, 'assign');
+    else if (input.bot.id === f.worker.id && !input.message.startsWith('Continue from the checkpoint.')) throw new Error('The bot reached its 32-step limit. Continue in this chat to proceed.');
+  });
+  const stop = f.bots.team.subscribe((event, data) => { if (event === 'task.recovery') events.push(data); });
+  const run = f.bots.team.message(f.team.id, { message: 'Assign this task', requestId: 'pause-request', workMode: 'work' }).run;
+  await until(() => f.bots.team.channel(f.team.id).messages.some(row => row.recovery?.kind === 'paused'));
+  const report = f.bots.team.channel(f.team.id).messages.find(row => row.recovery?.kind === 'paused');
+  assert.equal(/step limit|32-step/i.test(report.content), false);
+  assert.match(report.content, /finished the work so far/);
+  assert.match(report.content, /still left/);
+  assert.equal(report.recovery.question, 'Keep going?');
+  assert.deepEqual(report.recovery.options, [{ id: 'continue', label: 'Keep going' }]);
+  assert.match(report.recovery.jobId, /^tj_/);
+  assert.match(report.recovery.runId, /^tr_/);
+  assert.equal(f.bots.team.detail(f.team.id, run.id).run.state, 'running');
+  const pausedJob = f.bots.team.activity().activity.find(row => row.id === report.recovery.jobId);
+  assert.equal(pausedJob?.state, 'paused');
+  const recovery = events.find(event => event.messageId === report.id);
+  assert.equal(recovery.recovery.kind, 'paused');
+  assert.equal(recovery.recovery.text, report.content);
+  assert.deepEqual(recovery.recovery.options, [{ id: 'continue', label: 'Keep going' }]);
+  assert.equal(recovery.jobId, report.recovery.jobId);
+  assert.equal(recovery.runId, report.recovery.runId);
+  const before = f.seen.filter(input => input.bot.id === f.worker.id).length;
+  const chosen = f.bots.team.chooseTaskRecovery(f.team.id, report.id, { choice: 'continue' });
+  assert.equal(chosen.choice, 'continue');
+  assert.equal(chosen.message.recovery.choice, 'continue');
+  f.bots.team.tick();
+  await until(() => f.seen.filter(input => input.bot.id === f.worker.id).length > before);
+  assert.match(f.seen.filter(input => input.bot.id === f.worker.id).at(-1).message, /^Continue from the checkpoint\./);
+  stop();
 });
 
 test('private team completion also does not forward raw provider errors to the assigning bot', async t => {

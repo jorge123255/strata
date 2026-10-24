@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { applyChannelReplyGroup, applyMessagePartial, clearStreams, createFollowScroller, hasLiveStream, prefersReducedMotion, shouldFollowOwnMessage, type RoomDraft } from '../lib/chat-motion';
+import { applyChannelReplyGroup, applyMessagePartial, clearStreams, createFollowScroller, hasLiveStream, prefersReducedMotion, roomMessageArrivals, shouldFollowOwnMessage, type RoomDraft } from '../lib/chat-motion';
 import { insertMention, mentionInsertion, mentionKeyAction, mentionKeyStops, mentionListVisible, mentionQuery, moveMentionIndex, roomMentionChoices, roomMessageAudience, type MentionChoice } from '../lib/mention-picker';
 import { ShimmerText, StreamedBody, TypingDots, useMessageEntrances } from '../components/ChatMotion';
 import { cx } from '../lib/format';
@@ -217,15 +217,15 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
   useLayoutEffect(() => {
     const element = feed.current; if (!element || !visible) return;
     const rows = channel.messages.map(message => ({ id: message.id, own: message.author.type === 'user' }));
+    const arrived = roomMessageArrivals(channel.messages, previousLast.current);
     if (shouldFollowOwnMessage(seenMessageIds.current, rows)) { olderAnchor.current = null; follow.current = true; setAway(false); setUnread(0); }
     seenMessageIds.current = rows.map(row => row.id);
     if (olderAnchor.current) { const anchor = olderAnchor.current; element.scrollTop = anchor.top + element.scrollHeight - anchor.height; olderAnchor.current = null; }
     else if (follow.current) { follower.current.follow(element); setUnread(0); }
     else {
-      const arrived = channel.messages.filter(row => row.sequence > previousLast.current).length;
-      if (arrived && previousLast.current) setUnread(value => value + arrived);
+      if (arrived.unread && previousLast.current) setUnread(value => value + arrived.unread);
     }
-    previousLast.current = channel.messages.at(-1)?.sequence ?? previousLast.current;
+    previousLast.current = arrived.sequence;
   }, [channel.messages, channel.presence, liveDrafts.map(row => `${row.messageId}:${row.text.length}`).join('|'), visible]);
   function jumpToLatest() { follow.current = true; setAway(false); setUnread(0); if (feed.current) follower.current.follow(feed.current); }
   function rememberCaret(element: HTMLTextAreaElement) { setCaret(element.selectionStart ?? element.value.length); }
@@ -338,7 +338,7 @@ function TeamChannelMessage({ message, team, bots, messages, entrance, disabled,
   const author = message.author, bot = bots.find(item => item.id === author.botId), replying = messages.find(item => item.id === message.replyToId);
   const implicitRootReply = !!message.runId && replying?.author.type === 'user' && replying.runId === message.runId;
   const addressedEveryone = !!team.memberIds.length && message.recipientIds?.length === team.memberIds.length && team.memberIds.every(id => message.recipientIds?.includes(id));
-  const kind = author.type === 'user' && message.workMode === 'work' ? 'Work request' : message.kind === 'assignment' ? 'Assignment' : message.kind === 'report' ? 'Report' : message.kind === 'status' ? 'Team update' : '';
+  const kind = message.kind === 'pass' ? 'passed' : author.type === 'user' && message.workMode === 'work' ? 'Work request' : message.kind === 'assignment' ? 'Assignment' : message.kind === 'report' ? 'Report' : message.kind === 'status' ? 'Team update' : '';
   const folded = message.kind === 'assignment' || message.kind === 'report' && message.content.length > 1800;
   const preview = message.content.split('\n').find(line => line.trim())?.slice(0, 140) ?? '';
   const date = new Date(message.createdAt), validDate = Number.isFinite(date.getTime());
@@ -347,7 +347,7 @@ function TeamChannelMessage({ message, team, bots, messages, entrance, disabled,
     <div className="bot-room-message-main"><header><strong>{author.name}</strong>{author.botId === team.coordinatorId ? <span className="bot-room-role">Coordinator</span> : null}{kind ? <span className="bot-room-kind">{kind}</span> : null}{validDate ? <time dateTime={message.createdAt} title={date.toLocaleString()}>{date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time> : null}</header>
       <div className="bot-room-message-bubble">{message.recipientIds?.length && !addressedEveryone ? <p className="bot-room-addressed">To {message.recipientIds.map(id => bots.find(item => item.id === id)?.name ?? 'Former teammate').join(', ')}</p> : null}
       {message.replyToId && !implicitRootReply ? <blockquote className="bot-room-reply-context"><strong>{replying?.author.name ?? 'Earlier message'}</strong><span>Related message</span></blockquote> : null}
-      {hideBody ? null : <div className="bot-room-message-body">{hasLiveStream(message.id) ? <StreamedBody id={message.id} text={message.content} done render={text => <ChannelMarkdown text={text}/>}/> : folded ? <details className="bot-room-message-disclosure"><summary><strong>{message.kind === 'assignment' ? 'Task assignment' : 'Read full report'}</strong><span>{preview}</span></summary><ChannelMarkdown key={currentLanguage()} text={message.content}/></details> : <ChannelMarkdown key={currentLanguage()} text={message.content}/>}</div>}
+      {hideBody || message.kind === 'pass' ? null : <div className="bot-room-message-body">{hasLiveStream(message.id) ? <StreamedBody id={message.id} text={message.content} done render={text => <ChannelMarkdown text={text}/>}/> : folded ? <details className="bot-room-message-disclosure"><summary><strong>{message.kind === 'assignment' ? 'Task assignment' : 'Read full report'}</strong><span>{preview}</span></summary><ChannelMarkdown key={currentLanguage()} text={message.content}/></details> : <ChannelMarkdown key={currentLanguage()} text={message.content}/>}</div>}
       {choice}
       <footer><button type="button" disabled={disabled} onClick={onReply}>Reply<span className="sr-only"> to {author.name}</span></button>{message.chatId ? <button type="button" onClick={() => onOpenConversation(message.chatId!)}><Icon name="activity" size={12}/>Thinking & tools</button> : null}{message.state && ['error', 'interrupted', 'cancelled'].includes(message.state) ? <span>{botActivityLabel(message.state)}</span> : null}</footer></div>
     </div>

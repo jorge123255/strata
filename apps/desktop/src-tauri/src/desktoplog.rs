@@ -19,7 +19,7 @@
 #![allow(dead_code)]
 
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -136,6 +136,7 @@ impl Log {
         if let Ok(mut guard) = self.file.lock() {
             if let Some(f) = guard.as_mut() {
                 let _ = writeln!(f, "[{who}] {text}");
+                let _ = f.flush();
             }
         }
     }
@@ -147,28 +148,89 @@ pub fn say(log: &Log, text: &str) {
     log.line("shell", text);
 }
 
-/// Copy a child's output line by line: to our own stdout/stderr (as before), to the log file, and into the ring.
-pub fn tee<R: Read + Send + 'static>(reader: R, who: &'static str, to_stderr: bool, ring: Ring, log: Log) {
-    std::thread::spawn(move || {
-        let mut r = BufReader::new(reader);
-        let mut buf = Vec::new();
-        loop {
-            buf.clear();
-            match r.read_until(b'\n', &mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {
-                    let text = String::from_utf8_lossy(&buf);
-                    let text = text.trim_end_matches(['\r', '\n']);
-                    if to_stderr {
-                        eprintln!("{text}");
-                    } else {
-                        println!("{text}");
-                    }
-                    ring.push(text.to_string());
-                    log.line(who, text);
-                }
+/// Read until the pipe really ends. The log and the ring are written before any console echo,
+/// so a closed or full console cannot drop the line or stall the host pipe.
+fn copy_lines<R: Read>(reader: R, who: &str, echo: &mut dyn FnMut(&str), ring: &Ring, log: &Log) {
+    let mut r = BufReader::new(reader);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        match r.read_until(b'\n', &mut buf) {
+            Ok(0) => break,
+            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+            Err(_) => break,
+            Ok(_) => {
+                let text = String::from_utf8_lossy(&buf);
+                let text = text.trim_end_matches(['\r', '\n']);
+                ring.push(text.to_string());
+                log.line(who, text);
+                echo(text);
             }
         }
+    }
+}
+
+#[cfg(unix)]
+extern "C" {
+    fn dup(fd: i32) -> i32;
+    fn fcntl(fd: i32, cmd: i32, ...) -> i32;
+    fn close(fd: i32) -> i32;
+}
+
+#[cfg(unix)]
+fn echo_fd(to_stderr: bool) -> i32 {
+    unsafe {
+        let fd = dup(if to_stderr { 2 } else { 1 });
+        // Descriptor flags are private to the duplicate. File status flags
+        // (including O_NONBLOCK) are shared with stdout/stderr: leave them alone.
+        if fd >= 0 && fcntl(fd, 2, 1) < 0 { // F_SETFD, FD_CLOEXEC
+            close(fd);
+            return -1;
+        }
+        fd
+    }
+}
+
+// At most 64 bounded lines wait for the console. A blocked output worker must
+// never hold up the host-pipe reader; a full queue drops only console echoes.
+fn echo_writer<W: Write + Send + 'static>(mut writer: W) -> std::sync::mpsc::SyncSender<String> {
+    let (sender, receiver) = std::sync::mpsc::sync_channel::<String>(64);
+    std::thread::spawn(move || {
+        for text in receiver {
+            if writeln!(writer, "{text}").is_err() { break; }
+        }
+    });
+    sender
+}
+
+fn try_echo(sender: &std::sync::mpsc::SyncSender<String>, text: &str) {
+    let mut end = text.len().min(16 * 1024);
+    while !text.is_char_boundary(end) { end -= 1; }
+    let _ = sender.try_send(text[..end].to_string());
+}
+
+fn console_echo(to_stderr: bool) -> Option<std::sync::mpsc::SyncSender<String>> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::FromRawFd;
+        let fd = echo_fd(to_stderr);
+        if fd < 0 { return None; }
+        Some(echo_writer(unsafe { std::fs::File::from_raw_fd(fd) }))
+    }
+    #[cfg(not(unix))]
+    {
+        Some(if to_stderr { echo_writer(std::io::stderr()) } else { echo_writer(std::io::stdout()) })
+    }
+}
+
+/// Save the log and ring before offering a best-effort console echo. A closed
+/// or full console cannot stop this reader or change inherited console flags.
+pub fn tee<R: Read + Send + 'static>(reader: R, who: &'static str, to_stderr: bool, ring: Ring, log: Log) {
+    std::thread::spawn(move || {
+        let echo = console_echo(to_stderr);
+        copy_lines(reader, who, &mut |text| {
+            if let Some(sender) = &echo { try_echo(sender, text); }
+        }, &ring, &log);
     });
 }
 
@@ -521,6 +583,30 @@ pub fn downloads_dir() -> PathBuf {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn console_echo_preserves_original_descriptor_flags() {
+        // The subprocess owns its console pipes; no parallel test can observe
+        // changes to the test runner's stdout/stderr.
+        if std::env::var_os("STRATA_TEST_CONSOLE_FLAGS").is_none() {
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "tests::console_echo_preserves_original_descriptor_flags"])
+                .env("STRATA_TEST_CONSOLE_FLAGS", "1").output().unwrap();
+            assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stdout));
+            return;
+        }
+        extern "C" { fn fcntl(fd: i32, cmd: i32, ...) -> i32; }
+        for to_stderr in [false, true] {
+            let source = if to_stderr { 2 } else { 1 };
+            let before = unsafe { fcntl(source, 3) };
+            let duplicate = echo_fd(to_stderr);
+            assert!(duplicate >= 0);
+            let after = unsafe { fcntl(source, 3) };
+            unsafe { close(duplicate); }
+            assert_eq!(before, after, "echo changed the original console status flags");
+        }
+    }
+
     #[test]
     fn the_time_stamp_is_utc_civil_time() {
         assert_eq!(stamp(UNIX_EPOCH), "19700101-000000");
@@ -588,6 +674,58 @@ mod tests {
             assert!(text.contains(needle), "{needle}");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn host_lines_are_kept_when_the_console_cannot_take_them() {
+        let dir = std::env::temp_dir().join(format!("strata-tee-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("host.log");
+        let file = std::fs::OpenOptions::new().create(true).append(true).open(&path).unwrap();
+        let log = Log { file: Arc::new(Mutex::new(Some(file))), path: Some(path.clone()) };
+        let ring = Ring::default();
+        let (mut tx, rx) = std::os::unix::net::UnixStream::pair().unwrap();
+        let logged = path.clone();
+        let (closed_reader, closed_writer) = std::os::unix::net::UnixStream::pair().unwrap();
+        drop(closed_reader);
+        let echo = echo_writer(closed_writer);
+        let worker = std::thread::spawn(move || {
+            copy_lines(rx, "host", &mut |line| {
+                let saved = std::fs::read_to_string(&logged).unwrap_or_default();
+                assert!(saved.contains(line), "the log is written before the console echo");
+                try_echo(&echo, line);
+            }, &ring, &log);
+            assert!(ring.tail(5).iter().any(|line| line.contains("room selection")));
+        });
+        writeln!(tx, "room selection · run fixture").unwrap();
+        drop(tx);
+        worker.join().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[host] room selection · run fixture"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_full_console_echo_returns_without_blocking_the_reader() {
+        let (read, mut write) = std::os::unix::net::UnixStream::pair().unwrap();
+        read.set_nonblocking(true).unwrap();
+        write.set_nonblocking(true).unwrap();
+        let filler = vec![b'x'; 64 * 1024];
+        loop {
+            match write.write(&filler) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+        write.set_nonblocking(false).unwrap();
+        let echo = echo_writer(write);
+        let started = std::time::Instant::now();
+        for _ in 0..256 { try_echo(&echo, "room selection · blocked"); }
+        assert!(started.elapsed() < Duration::from_millis(500));
+        drop(read);
     }
 
     #[cfg(windows)]

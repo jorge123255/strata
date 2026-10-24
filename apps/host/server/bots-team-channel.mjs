@@ -6,7 +6,7 @@ const fault = (status, message) => Object.assign(new Error(message), { status })
 const copy = value => structuredClone(value);
 const id = value => typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,160}$/.test(value);
 const states = new Set(['queued', 'working', 'done', 'error', 'interrupted']);
-const kinds = new Set(['message', 'assignment', 'report', 'status']);
+const kinds = new Set(['message', 'assignment', 'report', 'status', 'pass']);
 const cursor = value => Number.isSafeInteger(value) && value >= 0;
 const planId = value => typeof value === 'string' && /^tp_[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value);
 const planEvents = new Map([['blocked', 'interrupted'], ['awaiting_review', 'done']]);
@@ -14,16 +14,26 @@ const planEvents = new Map([['blocked', 'interrupted'], ['awaiting_review', 'don
 // state values stay compatible with clients that do not know plan events.
 const validPlanEvent = message => message.planEvent === undefined || planEvents.has(message.planEvent) && message.kind === 'status' && planId(message.planId) && ['system', 'bot'].includes(message.author?.type) && (message.author.type !== 'bot' || id(message.author.botId)) && message.state === planEvents.get(message.planEvent);
 const recoveryIds = ['retry', 'skip', 'different'];
+const optionShape = option => option && typeof option.id === 'string' && typeof option.label === 'string' && option.label.trim() && option.label.length <= 80 && Object.keys(option).every(key => key === 'id' || key === 'label');
+function validPausedRecovery(recovery) {
+  if (Object.keys(recovery).some(key => !['kind', 'text', 'question', 'options', 'jobId', 'runId', 'choice'].includes(key))) return false;
+  if (recovery.kind !== 'paused' || typeof recovery.text !== 'string' || !recovery.text.trim() || recovery.text.length > 2000) return false;
+  if (typeof recovery.question !== 'string' || !recovery.question.trim() || recovery.question.length > 240) return false;
+  if (!/^tj_[a-f0-9-]+$/.test(recovery.jobId) || !/^tr_[a-f0-9-]+$/.test(recovery.runId)) return false;
+  if (recovery.choice !== undefined && recovery.choice !== 'continue') return false;
+  return Array.isArray(recovery.options) && recovery.options.length === 1 && recovery.options[0].id === 'continue' && optionShape(recovery.options[0]);
+}
 function validRecovery(message) {
   const recovery = message?.recovery;
   if (recovery === undefined) return true;
   if (!recovery || typeof recovery !== 'object' || Array.isArray(recovery)) return false;
+  if (recovery.kind === 'paused') return validPausedRecovery(recovery);
   if (Object.keys(recovery).some(key => !['jobId', 'runId', 'question', 'options', 'choice'].includes(key))) return false;
   if (!/^tj_[a-f0-9-]+$/.test(recovery.jobId) || !/^tr_[a-f0-9-]+$/.test(recovery.runId)) return false;
   if (typeof recovery.question !== 'string' || !recovery.question.trim() || recovery.question.length > 240) return false;
   if (recovery.choice !== undefined && !recoveryIds.includes(recovery.choice)) return false;
   if (!Array.isArray(recovery.options) || recovery.options.length !== recoveryIds.length) return false;
-  return recovery.options.every((option, index) => option && option.id === recoveryIds[index] && typeof option.label === 'string' && option.label.trim() && option.label.length <= 80 && Object.keys(option).every(key => key === 'id' || key === 'label'));
+  return recovery.options.every((option, index) => option && option.id === recoveryIds[index] && optionShape(option));
 }
 
 export function createTeamChannels({ directory, now = Date.now, notify = () => {} }) {
@@ -70,9 +80,10 @@ export function createTeamChannels({ directory, now = Date.now, notify = () => {
     notify('bots', { teamsChanged: true, teamChannelChanged: teamId }); return copy(message);
   }
   function setRecoveryChoice(teamId, messageId, choice) {
-    if (!recoveryIds.includes(choice)) throw fault(400, 'A saved recovery choice is invalid.');
     const row = channels.get(teamId), index = row?.messages.findIndex(item => item.id === messageId) ?? -1;
     if (!row || index < 0 || !row.messages[index].recovery) throw fault(404, 'This choice is unavailable.');
+    const allowed = row.messages[index].recovery.kind === 'paused' ? ['continue'] : recoveryIds;
+    if (!allowed.includes(choice)) throw fault(400, 'A saved recovery choice is invalid.');
     const message = copy(row.messages[index]);
     message.recovery = { ...message.recovery, choice };
     if (!validRecovery(message)) throw fault(400, 'A saved recovery choice is invalid.');
@@ -92,8 +103,13 @@ export function createTeamChannels({ directory, now = Date.now, notify = () => {
     const hasMoreBefore = rows.length ? all.some(row => row.sequence < rows[0].sequence) : options.after !== undefined && all.some(row => row.sequence <= options.after);
     return { teamId, supported: true, messages: copy(rows), nextSequence: rows.at(-1)?.sequence ?? options.after ?? 0, hasMore: options.after !== undefined && filtered.length > rows.length, hasMoreBefore, ...(rows.length ? { firstSequence: rows[0].sequence } : {}) };
   }
+  function latestSpoken(teamId) {
+    const messages = channels.get(teamId)?.messages ?? [];
+    for (let index = messages.length - 1; index >= 0; index -= 1) if (messages[index].kind !== 'pass') return messages[index];
+    return undefined;
+  }
   function preview(teamId) {
-    const message = channels.get(teamId)?.messages.at(-1);
+    const message = latestSpoken(teamId);
     if (!message) return undefined;
     if (!id(message.id) || !cursor(message.sequence) || message.sequence < 1 || !kinds.has(message.kind) || !['user', 'bot', 'system'].includes(message.author?.type)
       || typeof message.author.name !== 'string' || !message.author.name.trim() || message.author.name.length > 200 || message.author.name.includes('\0') || !message.author.name.isWellFormed()
@@ -110,11 +126,11 @@ export function createTeamChannels({ directory, now = Date.now, notify = () => {
   function unreadCount(teamId, readSequence = 0) {
     const cursor = Number.isSafeInteger(readSequence) && readSequence >= 0 ? readSequence : 0;
     let count = 0;
-    for (const message of channels.get(teamId)?.messages ?? []) if (message.sequence > cursor && message.author?.type !== 'user') count += 1;
+    for (const message of channels.get(teamId)?.messages ?? []) if (message.sequence > cursor && message.author?.type !== 'user' && message.kind !== 'pass') count += 1;
     return count;
   }
   function summaryLine(teamId) {
-    const message = channels.get(teamId)?.messages.at(-1);
+    const message = latestSpoken(teamId);
     if (!message || typeof message.content !== 'string' || typeof message.createdAt !== 'string') return null;
     const authorName = typeof message.author?.name === 'string' ? message.author.name.replaceAll('\0', '').trim().slice(0, 80) : '';
     return { at: message.createdAt, preview: message.content.toWellFormed().replaceAll('\0', '').replace(/\s+/g, ' ').trim().slice(0, 140), authorName };

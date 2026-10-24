@@ -123,6 +123,20 @@ test('Devin real stdio framing preserves thinking, exact native checkpoint and l
   try { const result = await resumed.runtime.run({ ...resumed.input, checkpoint: { provider: 'devin', nativeSessionId: 'devin-fixture', model: 'fixture-model', workspace: root } }); assert.equal(result.text, 'Devin answer'); assert.equal(resumed.frames.some(f => f.text?.includes('OLD')), false); }
   finally { await resumed.runtime.close(); }
 });
+test('Devin lists pass_team_turn once and the prompt names the prefixed call', async () => {
+  const pass = { name: 'pass_team_turn', description: 'Decline this team message. This uses your one reply and publishes nothing.', inputSchema: { type: 'object', properties: {} } };
+  const f = fixture();
+  try {
+    await f.runtime.run({ ...f.input, tools: [pass] });
+    const rows = await f.messages();
+    const mode = rows.findIndex(row => row.method === 'session/set_config_option' && row.params.configId === 'mode');
+    const listed = rows.findIndex(row => row.method === '_cognition.ai/mcp/listTools');
+    assert.ok(mode >= 0 && listed > mode, 'Code mode is set before the tool inventory');
+    const prompt = rows.find(row => row.method === 'session/prompt').params.prompt[0].text;
+    assert.match(prompt, /pass_team_turn/);
+    assert.match(prompt, /mcp__strata__pass_team_turn/);
+  } finally { await f.runtime.close(); }
+});
 test('continuous Devin prompt survives 31 virtual minutes and Stop still waits for owned CLI cleanup', { timeout: 10000 }, async t => {
   const f = fixture('hang'), controller = new AbortController();
   t.mock.timers.enable({ apis: ['setTimeout'] });

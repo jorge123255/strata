@@ -31,9 +31,76 @@ function journal(t, count = 4, hooks = {}) {
   };
   const jobs = runId => snapshot().jobs.filter(job => job.runId === runId);
   const context = job => ({ bot: bots.get(job.botId), chatId: job.chatId, turnId: `turn_${job.id}`, toolCallId: `call_${job.id}`, assertLive() {}, requestPermission: async () => true, requestTeamPermission: async () => true });
-  return { bots, sent, service, snapshot, writeDraft, make, jobs, context, advance: delta => { clock += delta; } };
+  return { directory, bots, sent, service, snapshot, writeDraft, make, jobs, context, advance: delta => { clock += delta; } };
 }
-const replies = channel => channel.messages.filter(row => row.author.type === 'bot').map(row => row.content);
+const replies = channel => channel.messages.filter(row => row.author.type === 'bot' && row.kind !== 'pass').map(row => row.content);
+
+const pausedReply = text => ({ kind: 'paused', text, question: 'Keep going?', options: [{ id: 'continue', label: 'Keep going' }] });
+
+for (const sameText of [false, true]) test(`continued team replies retain final reports and independent choices (same pause text: ${sameText})`, async t => {
+  const f = journal(t, 2), team = f.make(2, { name: 'QA-TEST-continuations' });
+  const run = f.service.message(team.id, { message: 'QA-TEST inspect', requestId: 'QA-TEST-resume', recipientIds: ['bot_1'] }).run;
+  const finish = outcome => {
+    const job = f.jobs(run.id).find(row => row.state === 'running');
+    assert.ok(job, 'the continuation is running');
+    const context = f.context(job); f.service.begin(context); f.service.end(context, outcome);
+  };
+  f.service.tick(); finish({ pause: pausedReply('QA-TEST inspection checkpoint.') });
+  const first = f.service.channel(team.id).messages.find(row => row.recovery);
+  f.service.chooseTaskRecovery(team.id, first.id, { choice: 'continue' }); f.service.tick();
+  finish({ pause: pausedReply(sameText ? 'QA-TEST inspection checkpoint.' : 'QA-TEST implementation checkpoint.') });
+  const second = f.service.channel(team.id).messages.find(row => row.recovery && row.id !== first.id);
+  assert.ok(second, 'a second pause has a fresh durable message');
+  assert.equal(second.recovery.choice, undefined);
+  // A retry of the old HTTP request must not act on the new pause.
+  f.service.chooseTaskRecovery(team.id, first.id, { choice: 'continue' }); f.service.tick();
+  assert.equal(f.jobs(run.id)[0].state, 'paused');
+  f.service.chooseTaskRecovery(team.id, second.id, { choice: 'continue' });
+  f.service.chooseTaskRecovery(team.id, second.id, { choice: 'continue' }); f.service.tick();
+  finish({ publicReply: 'QA-TEST final results are ready.' }); f.service.tick();
+  assert.equal(f.sent.length, 3);
+  const messages = f.service.channel(team.id).messages;
+  assert.equal(messages.at(-1).content, 'QA-TEST final results are ready.');
+  assert.equal(messages.at(-1).recovery, undefined);
+  assert.equal(new Set(messages.map(row => row.id)).size, messages.length);
+  const saved = JSON.parse(readFileSync(join(f.directory, 'bot-team-channels.json'), 'utf8'));
+  assert.deepEqual(saved.channels.find(row => row.teamId === team.id).messages, messages);
+});
+
+for (const workMode of ['chat', 'work']) test(`Continue at the exact turn cap resumes ${workMode} without spending a turn`, async t => {
+  const f = journal(t, 2), team = f.make(2, { name: 'QA-TEST-cap', limits: { maxTurns: 1 } });
+  const run = f.service.message(team.id, { message: 'QA-TEST bounded check', requestId: 'QA-TEST-cap', recipientIds: ['bot_1'], workMode }).run;
+  f.service.tick();
+  let context = f.context(f.jobs(run.id)[0]); f.service.begin(context);
+  f.service.end(context, { pause: pausedReply('QA-TEST checkpoint at the cap.') });
+  const report = f.service.channel(team.id).messages.find(row => row.recovery);
+  f.service.chooseTaskRecovery(team.id, report.id, { choice: 'continue' }); f.service.tick();
+  const resumed = f.jobs(run.id)[0];
+  assert.equal(resumed.state, 'running');
+  assert.equal(f.service.detail(team.id, run.id).run.consumedTurns, 1);
+  context = f.context(resumed); f.service.begin(context);
+  f.service.end(context, { publicReply: 'QA-TEST complete.' });
+  assert.equal(f.sent.length, 2);
+});
+
+test('Continue does not bypass elapsed time or revive a stopped paused job', async t => {
+  for (const stopped of [false, true]) {
+    const f = journal(t, 2), team = f.make(2, { name: 'QA-TEST-limits', limits: { maxTurns: 1, maxDurationMs: 10 } });
+    const run = f.service.message(team.id, { message: 'QA-TEST limited check', requestId: 'QA-TEST-limits', recipientIds: ['bot_1'] }).run;
+    f.service.tick();
+    const context = f.context(f.jobs(run.id)[0]); f.service.begin(context);
+    f.service.end(context, { pause: pausedReply('QA-TEST waiting.') });
+    const report = f.service.channel(team.id).messages.find(row => row.recovery);
+    if (stopped) {
+      await f.service.stop(team.id, run.id);
+      assert.throws(() => f.service.chooseTaskRecovery(team.id, report.id, { choice: 'continue' }), { status: 409 });
+    } else {
+      f.advance(11); f.service.chooseTaskRecovery(team.id, report.id, { choice: 'continue' });
+    }
+    f.service.tick(); assert.equal(f.sent.length, 1);
+    assert.equal(f.jobs(run.id)[0].state, 'cancelled');
+  }
+});
 
 test('team defaults are finite, saved limits persist, and explicit zeros stay continuous', async t => {
   const f = journal(t, 2);
@@ -270,8 +337,18 @@ test('a room speaker can pass without publishing, and a later speaker still answ
   assert.match(f.service.instructions(passing), /Address teammates by name/);
   assert.match(f.service.instructions(passing), /Recent room, with authors/);
   assert.match(f.service.instructions(passing), /pass_team_turn/);
+  const passedEvents = [];
+  const stopPassed = f.service.subscribe((event, data) => { if (event === 'team-channel' && data?.passed) passedEvents.push(data); });
   assert.deepEqual(await f.service.execute('pass_team_turn', {}, passing), { passed: true, notice: 'You passed. Nothing will be published for this turn.' });
   f.service.end(passing, { publicReply: 'This pass must stay private' });
+  stopPassed();
+  const marker = f.service.channel(team.id).messages.find(row => row.id === `tm_${first.id}`);
+  assert.equal(marker.kind, 'pass');
+  assert.equal(marker.content, '');
+  assert.equal(marker.author.botId, 'bot_0');
+  assert.equal(marker.replyGroupId, undefined);
+  assert.equal(marker.state, undefined);
+  assert.deepEqual(passedEvents, [{ teamId: team.id, botId: 'bot_0', passed: true, at: marker.createdAt }]);
   assert.deepEqual(replies(f.service.channel(team.id)), []);
   f.service.tick();
   const second = f.jobs(run.id).find(job => job.state === 'running');
@@ -671,8 +748,37 @@ test('a passed turn clears a live draft and does not publish it', async t => {
   const messageId = `tm_${job.id}`;
   assert.equal(cleared.name, 'message.partial');
   assert.equal(cleared.json, JSON.stringify({ messageId, botId: 'bot_1', seq: 2, text: '', delta: '', done: true }));
-  assert.equal(f.service.channel(team.id).messages.some(row => row.id === messageId), false);
+  const marker = stream.parse(await stream.readEvent());
+  const saved = f.service.channel(team.id).messages.find(row => row.id === messageId);
+  assert.equal(saved.kind, 'pass');
+  assert.equal(saved.content, '');
+  assert.equal(marker.name, 'team-channel');
+  assert.equal(marker.data.passed, true);
+  assert.equal(marker.data.botId, 'bot_1');
+  assert.equal(marker.data.at, saved.createdAt);
   await stream.cancel();
+});
+
+test('an empty answer in an everyone reply saves a pass and does not count as a message', async t => {
+  const f = journal(t, 2);
+  const team = f.make(2);
+  const sent = f.service.message(team.id, { message: 'Hello everyone', requestId: 'empty-everyone', everyone: true });
+  const opening = sent.channel.messages.find(row => row.content === 'Hello everyone');
+  f.service.tick();
+  const job = f.jobs(sent.run.id).find(row => row.state === 'running');
+  const ctx = f.context(job);
+  f.service.begin(ctx);
+  const events = [];
+  const stop = f.service.subscribe((event, data) => { if (event === 'team-channel' && data?.passed) events.push(data); });
+  f.service.end(ctx, { publicReply: '   ' });
+  stop();
+  const marker = f.service.channel(team.id).messages.find(row => row.id === `tm_${job.id}`);
+  assert.equal(marker.kind, 'pass');
+  assert.equal(marker.content, '');
+  assert.equal(marker.replyGroupId, opening.id);
+  assert.deepEqual(events, [{ teamId: team.id, botId: job.botId, replyGroupId: opening.id, passed: true, at: marker.createdAt }]);
+  assert.deepEqual(replies(f.service.channel(team.id)), []);
+  assert.equal(f.service.channel(team.id).messages.some(row => row.kind === 'pass'), true);
 });
 
 test('an empty selector for a plain greeting still answers once, and a later empty selection settles', async t => {

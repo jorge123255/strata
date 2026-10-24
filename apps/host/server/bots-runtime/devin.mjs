@@ -234,6 +234,8 @@ export async function runDevin(c) {
       sessionId = session.sessionId;
     }
     if (typeof sessionId !== 'string' || !sessionId || sessionId.length > 300) throw new Error('Devin returned no valid native session id.');
+    // Ask mode hides mutating MCP tools from the inventory. Set Code mode before Devin lists them.
+    let configOptions = await setOption(rpc, sessionId, session.configOptions, 'mode', 'accept-edits');
     verifyDevinConfig(await rpc.request('_cognition.ai/config/read', { sessionId }), settings);
     const [rules, hooks] = await Promise.all([rpc.request('_cognition.ai/rules/list', { sessionId }), rpc.request('_cognition.ai/hooks/list', { sessionId })]);
     requireIsolation(Array.isArray(rules?.rules) && rules.rules.length === 0, 'rules.list');
@@ -245,13 +247,12 @@ export async function runDevin(c) {
     const actualModel = session.configOptions?.find(option => option.category === 'model')?.currentValue;
     if (typeof actualModel !== 'string' || actualModel === 'adaptive' || actualModel.startsWith('fusion-')) throw new Error('Devin could not confirm a single native model. Choose a verified model and start a new bot chat.');
     if (c.bot.model && actualModel !== c.bot.model) throw new Error('Devin selected a different model. Refresh the native model catalog and reselect the desired model before retrying.');
-    // Native Ask excludes mutating MCP tools regardless of the host's policy. Code mode permits
-    // the bridge; native tools remain disabled/denied and Strata owns every action approval.
-    let configOptions = await setOption(rpc, sessionId, session.configOptions, 'mode', 'accept-edits');
+    // Native tools remain disabled and denied. Strata owns every action approval.
     if (c.bot.effort) configOptions = await setOption(rpc, sessionId, configOptions, 'thought_level', c.bot.effort);
     await c.save(sessionId);
     projecting = true;
-    const result = await rpc.request('session/prompt', { sessionId, prompt: [{ type: 'text', text: `${c.bot.instructions ? `Bot instructions:\n${c.bot.instructions}\n\n` : ''}${c.prompt}\n\nUse only the supplied Strata tools for all coding, files, shell, browser and computer actions. Strata owns approvals and team coordination.` }] }, c.bot.continuousTeam === true ? null : c.options.runTimeoutMs ?? 30 * 60_000);
+    const passNote = c.tools.some(tool => tool.name === 'pass_team_turn') ? '\n\nIf you have nothing to add in a team conversation, call pass_team_turn. Devin lists that tool as mcp__strata__pass_team_turn.' : '';
+    const result = await rpc.request('session/prompt', { sessionId, prompt: [{ type: 'text', text: `${c.bot.instructions ? `Bot instructions:\n${c.bot.instructions}\n\n` : ''}${c.prompt}\n\nUse only the supplied Strata tools for all coding, files, shell, browser and computer actions. Strata owns approvals and team coordination.${passNote}` }] }, c.bot.continuousTeam === true ? null : c.options.runTimeoutMs ?? 30 * 60_000);
     if (result.stopReason !== 'end_turn') throw new Error(`Devin stopped: ${result.stopReason || 'missing completion marker'}.`);
     if (result.usage) c.frame({ type: 'stats', tokensIn: result.usage.inputTokens ?? 0, tokensOut: result.usage.outputTokens ?? 0 });
   } finally {

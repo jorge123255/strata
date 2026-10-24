@@ -106,7 +106,7 @@ export function botTaskWorkLabel(status: string) { return ({working:'Working',re
 /** Public, durable room messages are separate from each bot's private work chat. */
 export interface BotTeamChannelAuthor { type: 'user'|'bot'|'system'; botId?: string; name: string; avatarConfig?: Bot['avatarConfig'] }
 export interface BotTeamChannelMessage {
-  id: string; sequence: number; teamId: string; kind: 'message'|'assignment'|'report'|'status';
+  id: string; sequence: number; teamId: string; kind: 'message'|'assignment'|'report'|'status'|'pass';
   author: BotTeamChannelAuthor; content: string; createdAt: string; replyToId?: string; replyGroupId?: string;
   recipientIds?: string[]; runId?: string; chatId?: string; state?: string; workMode?: 'chat'|'work'; planId?: string;
   recovery?: MessageRecovery;

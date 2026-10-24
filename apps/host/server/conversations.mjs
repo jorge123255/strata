@@ -262,6 +262,16 @@ export function createConversations({ directory, enabled = () => true, notify = 
       case 'stats': if (typeof frame.tokensOut === 'number') reply.tokens = frame.tokensOut; if (typeof frame.tps === 'number') reply.tps = frame.tps; break;
       case 'notice': entry.status = String(frame.message ?? ''); break;
       case 'error': finishReasoning(); reply.error = String(frame.message ?? 'The reply failed.'); reply.streaming = false; entry.status = null; turns.delete(id); break;
+      case 'pause': {
+        const recovery = frame.recovery;
+        if (!recovery || recovery.kind !== 'paused' || typeof recovery.text !== 'string' || !recovery.text.trim()) break;
+        const text = recovery.text.trim();
+        const options = Array.isArray(recovery.options) ? recovery.options.filter(option => option && option.id === 'continue' && typeof option.label === 'string' && option.label.trim()).map(option => ({ id: 'continue', label: option.label.trim() })) : [];
+        if (!options.length) break;
+        reply.recovery = { kind: 'paused', text, question: typeof recovery.question === 'string' && recovery.question.trim() ? recovery.question.trim() : 'Keep going?', options: options.slice(0, 1) };
+        if (!reply.content.includes(text)) reply.content = reply.content ? `${reply.content}\n${text}` : text;
+        break;
+      }
       case 'done':
         finishReasoning();
         if (frame.cancelled === true) reply.cancelled = true;
@@ -272,7 +282,7 @@ export function createConversations({ directory, enabled = () => true, notify = 
         entry.status = null; turns.delete(id); break;
       default: return;
     }
-    session.updatedAt = now(); touch(id, frame.type === 'done' || frame.type === 'error');
+    session.updatedAt = now(); touch(id, frame.type === 'done' || frame.type === 'error' || frame.type === 'pause');
   }
   function finish(id, error) {
     const turn = turns.get(id); if (!turn) return;
@@ -309,6 +319,19 @@ export function createConversations({ directory, enabled = () => true, notify = 
     if (!result?.stopped && !result?.pending && queued && turns.get(id) === queued) { queued.controller.abort(); finish(id); }
     return detail(id);
   }
+  function choose(id, messageId, input) {
+    if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => key !== 'choice') || input.choice !== 'continue') throw fault(400, 'Choose continue.');
+    const entry = requireRecord(id);
+    const message = entry.session.messages.find(row => row.id === messageId);
+    const recovery = message?.recovery;
+    if (!recovery || recovery.kind !== 'paused' || !Array.isArray(recovery.options) || !recovery.options.some(option => option?.id === 'continue')) throw fault(404, 'This choice is unavailable.');
+    if (turns.has(id)) throw fault(409, 'This conversation is already working. You can follow its activity or stop it first.');
+    if (recovery.choice === 'continue') return detail(id);
+    message.recovery = { ...recovery, choice: 'continue' };
+    touch(id, true);
+    try { return send(id, 'Continue'); }
+    catch (error) { delete message.recovery.choice; touch(id, true); throw error; }
+  }
   async function approval(id, toolId, decision) {
     requireRecord(id);
     if (!validId(toolId) || !['approve', 'deny'].includes(decision)) throw fault(400, 'Choose approve or deny for this tool.');
@@ -327,6 +350,6 @@ export function createConversations({ directory, enabled = () => true, notify = 
     requireRecord(id); if (turns.has(id)) throw fault(409, 'Stop this conversation before deleting it.');
     entries.delete(id); deleted.add(id); touch(id, true); return { deleted: id };
   }
-  return { list, identitiesForBot, detail, notificationSources, supervisionSources, sidebarInbox, subscribeInbox: listener => { inboxListeners.add(listener); return () => inboxListeners.delete(listener); }, sync, create, createForBot: bot => create({}, bot), begin, record, finish, send, stop: stopTurn, approval, preferences, remove,
+  return { list, identitiesForBot, detail, notificationSources, supervisionSources, sidebarInbox, subscribeInbox: listener => { inboxListeners.add(listener); return () => inboxListeners.delete(listener); }, sync, create, createForBot: bot => create({}, bot), begin, record, finish, send, choose, stop: stopTurn, approval, preferences, remove,
     available, capture, has: id => entries.has(id), botId: id => entries.get(id)?.session.preferences?.botId ?? null, isRunning: id => turns.has(id), close() { for (const turn of turns.values()) turn.controller.abort(); flush(); publish(); } };
 }

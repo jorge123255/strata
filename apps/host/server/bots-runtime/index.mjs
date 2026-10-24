@@ -8,6 +8,7 @@ import { startToolBridge, toolResult } from './tool-bridge.mjs';
 import { devinStatus, devinModels, runDevin } from './devin.mjs';
 import { grokModels } from './grok.mjs';
 import { botContextLimits, compactBotContext, buildNativeHistoryPrompt, emitContextCompaction } from './context.mjs';
+import { STEP_CHUNK, createStepTracker, pauseFields, isStepLimitMessage, stepLimitPause } from './step-budget.mjs';
 
 const PROVIDERS = [
   { id: 'claude', name: 'Claude Code', transport: 'Claude Agent SDK / installed CLI', loginCommand: 'claude auth login', models: ['sonnet', 'opus', 'haiku'] },
@@ -188,9 +189,26 @@ export function createBotRuntime(options = {}) {
       else await runOllama(context);
       signal.throwIfAborted();
       frame({ type: 'stats', tokensIn, tokensOut, tps: Number((tokensOut / Math.max(1, (Date.now() - started) / 1000)).toFixed(1)) });
+      if (context.pause?.kind === 'paused') {
+        const recovery = { kind: 'paused', text: context.pause.text, question: context.pause.question, options: context.pause.options };
+        checkpoint = { provider: bot.provider, nativeSessionId: checkpoint?.nativeSessionId ?? null, workspace: bot.workspace, model: bot.model ?? '', stepResume: context.pause.stepResume };
+        try { await onCheckpoint(checkpoint); } catch { /* The pause is still reported. The next Continue uses the saved checkpoint when the write succeeded. */ }
+        frame({ type: 'pause', recovery, text: recovery.text });
+        frame({ type: 'done', tokensIn, tokensOut, sessionId: input.sessionId, checkpoint, publicReply: recovery.text, pause: recovery });
+        return { text, checkpoint, tokensIn, tokensOut, publicReply: recovery.text, pause: recovery };
+      }
       frame({ type: 'done', tokensIn, tokensOut, sessionId: input.sessionId, checkpoint, ...(typeof context.publicReply === 'string' ? { publicReply: context.publicReply } : {}) });
       return { text, checkpoint, tokensIn, tokensOut, ...(typeof context.publicReply === 'string' ? { publicReply: context.publicReply } : {}) };
-    } catch (error) { const safe = signal.aborted ? abortError() : new Error(redact(error, secrets)); emit({ type: 'error', message: safe.message }); throw safe; }
+    } catch (error) {
+      if (!signal.aborted && isStepLimitMessage(error)) {
+        const recovery = stepLimitPause();
+        context.publicReply = recovery.text;
+        frame({ type: 'pause', recovery, text: recovery.text });
+        frame({ type: 'done', tokensIn, tokensOut, sessionId: input.sessionId, checkpoint, publicReply: recovery.text, pause: recovery });
+        return { text, checkpoint, tokensIn, tokensOut, publicReply: recovery.text, pause: recovery };
+      }
+      const safe = signal.aborted ? abortError() : new Error(redact(error, secrets)); emit({ type: 'error', message: safe.message }); throw safe;
+    }
     finally { clearTimeout(timer); active.delete(controller); input.signal?.removeEventListener('abort', abort); }
   }
   return { providers, models, run, async close() { closed = true; for (const controller of active) controller.abort(); active.clear(); await options.remoteSSH?.close(); } };
@@ -419,11 +437,19 @@ async function runOllama(c) {
   const endpoint = new URL('chat/completions', `${base.href.replace(/\/$/, '')}/`);
   const system = c.bot.instructions || 'You are a Strata bot. Use the provided tools for coding and computer tasks.';
   const current = { role: 'user', content: c.message };
-  let messages = [...c.history.filter(h => ['user', 'assistant'].includes(h.role)).map(h => ({ role: h.role, content: historyContent(h) })), current], contextState;
+  const tracker = createStepTracker(c.bot, c.checkpoint?.stepResume);
+  let messages = tracker.resumeMessages
+    ? [...tracker.resumeMessages, ...(c.message ? [{ role: 'user', content: c.message }] : [])]
+    : [...c.history.filter(h => ['user', 'assistant'].includes(h.role)).map(h => ({ role: h.role, content: historyContent(h) })), current], contextState;
   const limits = botContextLimits();
   // Ollama is stateless; Strata owns history, tool results, and retry decisions. Never automatically replay a mutation.
   let totalIn = 0, totalOut = 0;
-  for (let round = 0; c.bot.continuousTeam === true || round < 32; round++) {
+  const pause = looping => {
+    const text = tracker.sentence(looping);
+    c.publicReply = text;
+    c.pause = { ...pauseFields(text), stepResume: tracker.checkpoint(messages) };
+  };
+  for (let round = 0; round < STEP_CHUNK * (1 + tracker.budget); round++) {
     c.signal.throwIfAborted();
     const compacted = compactBotContext({ messages, system, tools: c.tools, limits, state: contextState, anchor: current });
     messages = compacted.messages; contextState = compacted.state; emitContextCompaction(c.frame, compacted);
@@ -441,15 +467,33 @@ async function runOllama(c) {
       if (event.usage) { totalIn += event.usage.prompt_tokens ?? 0; totalOut += event.usage.completion_tokens ?? 0; c.frame({ type: 'stats', tokensIn: totalIn, tokensOut: totalOut }); }
     }
     if (!finish) throw new Error('Ollama stream ended before a completion marker.');
+    tracker.noteText(content);
     if (!calls.size) { if (!['stop', 'end_turn'].includes(finish)) throw new Error(`Ollama stopped: ${finish}.`); c.publicReply = content; await c.save(null); return; }
-    messages.push({ role: 'assistant', content, tool_calls: [...calls.values()] });
-    for (const call of calls.values()) {
-      let args; try { args = JSON.parse(call.function.arguments || '{}'); } catch { throw new Error('Ollama returned malformed tool arguments.'); }
-      const result = await c.execute(call.function.name, args, safeId(call.id));
+    const pending = [...calls.values()];
+    let loopAt = -1;
+    const parsed = [];
+    for (let index = 0; index < pending.length; index++) {
+      let args; try { args = JSON.parse(pending[index].function.arguments || '{}'); } catch { throw new Error('Ollama returned malformed tool arguments.'); }
+      parsed.push(args);
+      if (tracker.noteTool(pending[index].function.name, args) === 'loop') { loopAt = index; break; }
+    }
+    const kept = loopAt < 0 ? pending : pending.slice(0, loopAt);
+    if (!kept.length) { pause(true); return; }
+    messages.push({ role: 'assistant', content, tool_calls: kept });
+    for (let index = 0; index < kept.length; index++) {
+      const call = kept[index];
+      const result = await c.execute(call.function.name, parsed[index], safeId(call.id));
       messages.push({ role: 'tool', tool_call_id: call.id, content: textResult(result) });
       const images = result.content.filter(item => item.type === 'image');
       if (images.length) messages.push({ role: 'user', content: [{ type: 'text', text: `Images returned by ${call.function.name}:` }, ...images.map(item => ({ type: 'image_url', image_url: { url: `data:${item.mimeType};base64,${item.data}` } }))] });
     }
+    if (loopAt >= 0) { pause(true); return; }
+    const boundary = tracker.boundary();
+    if (boundary === 'continue') {
+      const summary = tracker.summary();
+      messages.push({ role: 'user', content: summary });
+      c.frame({ type: 'status', text: summary });
+    } else if (boundary === 'pause') { pause(false); return; }
   }
-  throw new Error('The bot reached its 32-step limit. Continue in this chat to proceed.');
+  pause(false);
 }
