@@ -71,6 +71,7 @@ import { createCompanionManager } from './companion.mjs';
 import { createCompanionRoutes, isLocalCompanionRequest } from './companion-routes.mjs';
 import { createConversations } from './conversations.mjs';
 import { createConversationRoutes, addConversationEvents } from './conversation-routes.mjs';
+import { createCompanionTeamRoutes } from './companion-team-routes.mjs';
 import { createBots, createBotRoutes } from './bots.mjs';
 import { createBotSkills } from './bots-skills.mjs';
 import { createBotCreatedTools } from './bots-created-tools.mjs';
@@ -539,6 +540,7 @@ const botMcp = createBotMcp({ directory: store.DATA_DIR, hasBot: id => bots?.has
 bots = createBots({ directory: store.DATA_DIR, python: resolvePython({ control: CONTROL }).command, skills: botSkills, mcp: botMcp, createdTools: botCreatedTools, remoteSSH: botSSH, cuaTools: cuaBotTools, modelProviders: botModelSources, modelRequest: createBotModelClient({ providers: botModelSources }), runtime: createBotRuntime({ stateDir: join(store.DATA_DIR, 'bots-runtime'), remoteSSH: botSSH }), tools: botTools,
   conversations: () => conversations, defaultWorkspace: () => workspaces[0]?.path ?? WORKSPACE, notify: (event, data) => hub.send(event, data) });
 const botRoutes = createBotRoutes({ bots, port: PORT });
+const companionTeamRoutes = createCompanionTeamRoutes({ bots, port: PORT });
 const botExtensionRoutes = createBotExtensionRoutes({ skills: botSkills, mcp: botMcp, createdTools: botCreatedTools, port: PORT });
 conversations = createConversations({
   directory: store.DATA_DIR,
@@ -1072,6 +1074,7 @@ const server = http.createServer(async (req, res) => {
   if (path === '/api/bots/companion' || path.startsWith('/api/bots/companion/')) return botCompanionRoutes(req, res, url);
   if (path === '/api/bots' || path.startsWith('/api/bots/')) return botRoutes(req, res, url);
   if (path === '/api/companion/conversations' || path.startsWith('/api/companion/conversations/')) return conversationRoutes(req, res, url);
+  if (path === '/api/companion/teams' || path.startsWith('/api/companion/teams/')) return companionTeamRoutes(req, res, url);
   if (path === '/api/companion' || path.startsWith('/api/companion/')) return companionRoutes(req, res, url);
   if (method === 'OPTIONS') {
     res.writeHead(204);
