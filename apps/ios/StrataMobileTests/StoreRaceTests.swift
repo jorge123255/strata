@@ -3040,13 +3040,13 @@ extension BotWorkspaceTests {
         let retained = Set((0..<17).map { "bot_\($0)" })
         var draft = BotTeamDraft(name: "Large team", memberIds: Array(retained).sorted(), coordinatorId: "bot_0")
         XCTAssertFalse(BotWorkspaceStore.validTeamDraft(draft, availableMemberIds: Set(draft.memberIds)))
-        XCTAssertTrue(BotWorkspaceStore.validTeamDraft(draft, retainedMemberIds: retained, availableMemberIds: Set<String>()))
+        XCTAssertTrue(BotWorkspaceStore.validTeamDraft(draft, availableMemberIds: Set<String>(), retainedMemberIds: retained))
         draft.memberIds = ["bot_0", "bot_1", "missing"]
         draft.coordinatorId = "bot_0"
-        XCTAssertFalse(BotWorkspaceStore.validTeamDraft(draft, retainedMemberIds: retained, availableMemberIds: Set(["bot_0", "bot_1"])))
-        XCTAssertTrue(BotWorkspaceStore.validTeamDraft(draft, retainedMemberIds: retained.union(["missing"]), availableMemberIds: Set(["bot_0", "bot_1"])))
+        XCTAssertFalse(BotWorkspaceStore.validTeamDraft(draft, availableMemberIds: Set(["bot_0", "bot_1"]), retainedMemberIds: retained))
+        XCTAssertTrue(BotWorkspaceStore.validTeamDraft(draft, availableMemberIds: Set(["bot_0", "bot_1"]), retainedMemberIds: retained.union(["missing"])))
         draft.memberIds = (0..<13).map { "bot_\($0)" } + ["new_bot"]
-        XCTAssertFalse(BotWorkspaceStore.validTeamDraft(draft, unrestrictedTeams: true, retainedMemberIds: retained, availableMemberIds: Set(draft.memberIds)))
+        XCTAssertFalse(BotWorkspaceStore.validTeamDraft(draft, unrestrictedTeams: true, availableMemberIds: Set(draft.memberIds), retainedMemberIds: retained))
         XCTAssertEqual(BotWorkspaceStore.deletedBotName, "Deleted bot")
     }
     func testLargeTeamCreationRequiresCapabilityAndSendsEveryMemberWithCanonicalZero() async throws {
@@ -3189,7 +3189,8 @@ extension BotWorkspaceTests {
         }
         XCTAssertEqual(mutations.last?.jsonBody?["expectedRevision"] as? Int, existing.revision)
         var continuous = draft; continuous.limits = .continuous
-        XCTAssertTrue(await workspace.createTeam(continuous))
+        let continuousCreated = await workspace.createTeam(continuous)
+        XCTAssertTrue(continuousCreated)
         let zeros = ["maxParallel": 0, "maxDepth": 0, "maxHops": 0, "maxTurns": 0, "maxDurationMs": 0]
         XCTAssertEqual(fixture.requests.last { $0.method == "POST" }?.jsonBody?["limits"] as? [String: Int], zeros)
         XCTAssertFalse(fixture.requests.contains { $0.path.contains("/runs") || $0.path.contains("/computer") || $0.path.contains("/models") })
