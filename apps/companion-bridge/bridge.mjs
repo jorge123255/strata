@@ -289,6 +289,18 @@ export class HostClient {
     }
     return body;
   }
+  // Event streams stay open; the caller owns the AbortSignal and consumes the raw response.
+  async stream(path, { signal } = {}) {
+    if (path !== '/api/events' || !(signal instanceof AbortSignal)) throw fail(403, 'Unsupported host stream.');
+    const origin = await this.origin();
+    try {
+      return await this.fetcher(`${origin}${path}`, { redirect: 'error', headers: { ...(this.authorization ? { authorization: this.authorization } : {}) }, signal });
+    } catch (error) {
+      if (!this.fixed) this.cached = null;
+      if (error.name === 'AbortError') throw error;
+      throw fail(503, 'Strata is unavailable. Open the Mac app and try again.');
+    }
+  }
 }
 
 function nativeInstanceForModel(native, model) {
@@ -609,6 +621,18 @@ function lanAddress() {
   return '127.0.0.1';
 }
 
+// Only projected progress metadata crosses the LAN; raw hub frames never reach the phone.
+function projectProgress(frame) {
+  let payload;
+  try { payload = JSON.parse(frame); } catch { return null; }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const projected = {};
+  for (const key of ['teamId', 'runId', 'jobId', 'botId', 'conversationId']) if (safeId(payload[key])) projected[key] = payload[key];
+  if (Number.isSafeInteger(payload.step) && payload.step >= 0 && payload.step <= 1_000_000) projected.step = payload.step;
+  if (typeof payload.toolName === 'string') projected.toolName = payload.toolName.slice(0, 120);
+  return projected;
+}
+
 export async function createBridge({ directory = join(homedir(), 'Library', 'Application Support', 'Strata Companion'), host = new HostClient(), listen = '0.0.0.0', port = 8787, adminPort = 8788, advertiseHost = lanAddress(), now = Date.now, pairingTTL = 300_000, qr = true, discoverEndpoints = discoverNetworkEndpoints, endpointRefreshMs = 30_000 } = {}) {
   if (!/^[a-zA-Z0-9.:-]+$/.test(advertiseHost)) throw new Error('Invalid advertised host.');
   const identity = await ensureIdentity(directory);
@@ -751,6 +775,82 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
         if (!authority.sessions.some(saved => saved.id === session.id)) throw fail(401, 'This device was removed. Pair it again.');
       };
       if (path === '/v1/connection' && method === 'GET') return sendJSON(res, 200, { macName, endpoints: endpointCache?.snapshot() ?? [] });
+      if (path === '/v1/events' && method === 'GET') {
+        requireCurrentSession();
+        const key = `events:${session.id}`;
+        // A reconnecting phone replaces its previous stream; revocation, pairing
+        // shutdown and disconnect all abort through the active-request ledger.
+        active.get(key)?.abort.abort();
+        const abort = new AbortController();
+        let finish;
+        const request = { owner: session.id, abort, requestId: null, events: true, finished: new Promise(resolve => { finish = resolve; }) };
+        active.set(key, request);
+        const disconnected = () => { if (!res.writableEnded) abort.abort(); };
+        req.once('aborted', disconnected); res.once('close', disconnected);
+        // Progress frames are tiny; unrelated hub events (full conversation snapshots)
+        // are discarded line by line and are never accumulated.
+        let eventName = null, skipping = true, oversize = false, partialDiscarded = false, dataBytes = 0;
+        const dataLines = [];
+        const endFrame = () => {
+          const name = eventName, parts = dataLines.slice(), dropped = oversize;
+          eventName = null; skipping = true; oversize = false; dataBytes = 0; dataLines.length = 0;
+          if (name !== 'task.progress' || dropped || !parts.length || res.writableEnded) return;
+          const projected = projectProgress(parts.join('\n'));
+          if (projected) res.write(`event: task.progress\ndata: ${JSON.stringify(projected)}\n\n`);
+        };
+        const consume = line => {
+          if (!line) return endFrame();
+          if (line.startsWith(':')) { if (!res.writableEnded) res.write(': ping\n\n'); return; }
+          if (line.startsWith('event:')) { eventName = line.slice(6).trim(); skipping = eventName !== 'task.progress'; return; }
+          if (!line.startsWith('data:') || skipping || oversize) return;
+          const text = line.slice(5).trimStart();
+          dataBytes += text.length + 1; dataLines.push(text);
+          // A task.progress payload is a handful of bounded fields; an over-limit one is dropped, not buffered.
+          if (dataBytes > 64_000 || dataLines.length > 8) { oversize = true; dataBytes = 0; dataLines.length = 0; }
+        };
+        try {
+          const upstream = await host.stream('/api/events', { signal: abort.signal });
+          if (!upstream.ok) throw fail(upstream.status, 'Strata could not open the event stream. Check the Mac app.');
+          res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive', 'x-accel-buffering': 'no' });
+          res.write(': connected\n\n');
+          let buffer = '';
+          const decoder = new TextDecoder();
+          for await (const chunk of upstream.body) {
+            buffer += decoder.decode(chunk, { stream: true });
+            for (;;) {
+              if (partialDiscarded) {
+                // The discarded part of this line was not empty, so its '\n' never ends a frame.
+                const end = buffer.indexOf('\n');
+                if (end < 0) { buffer = ''; break; }
+                buffer = buffer.slice(end + 1); partialDiscarded = false; continue;
+              }
+              const boundary = buffer.indexOf('\n');
+              if (boundary >= 0) { const line = buffer.slice(0, boundary).trimEnd(); buffer = buffer.slice(boundary + 1); consume(line); continue; }
+              // Inside a skipped or dropped frame every remaining line is a data line: shed it without buffering.
+              if (eventName !== null && (skipping || oversize)) { if (buffer) { buffer = ''; partialDiscarded = true; } break; }
+              if (buffer.length > 64_000) {
+                // Between frames the host sends only short event/comment lines; an over-limit line there is corrupt framing.
+                if (eventName === null) throw new Error('Strata returned a corrupt event stream.');
+                oversize = true; dataBytes = 0; dataLines.length = 0; buffer = ''; partialDiscarded = true;
+              }
+              break;
+            }
+          }
+          buffer += decoder.decode();
+          if (buffer && !partialDiscarded) consume(buffer);
+        } catch (error) {
+          // Aborts end the stream quietly; the phone reconnects for live progress.
+          if (!res.headersSent && !abort.signal.aborted) sendJSON(res, error.status ?? 502, { error: error.status ? error.message : 'Strata could not open the event stream. Check the Mac app.' });
+        }
+        finally {
+          req.removeListener('aborted', disconnected); res.removeListener('close', disconnected);
+          abort.abort();
+          if (active.get(key) === request) active.delete(key);
+          if (!res.writableEnded) res.end();
+          finish();
+        }
+        return;
+      }
       if (notification) {
         await handleNotifications({ path: path + url.search, method, req, res, session, host, readBody, sendJSON, requireCurrentSession });
         return;
@@ -1067,7 +1167,7 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
         // Reserve synchronously after the await: parallel requests cannot claim the same conversation.
         requireCurrentSession();
         if (chat && active.has(chat.id)) throw fail(409, 'Wait for this conversation to finish first.');
-        if ([...active.values()].filter(request => request.owner === session.id).length >= 3) throw fail(429, 'Finish an active conversation first.');
+        if ([...active.values()].filter(request => request.owner === session.id && !request.events).length >= 3) throw fail(429, 'Finish an active conversation first.');
         if (!selection.loadedModelId) throw fail(409, 'Choose a model in the iPhone Models tab first.');
         if (!chat) {
           if (chats.filter(chat => chat.owner === session.id).length >= 200) throw fail(409, 'This device has reached its conversation limit.');

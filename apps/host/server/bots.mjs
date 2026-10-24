@@ -622,6 +622,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
       if (frame.type === 'done' || frame.type === 'error') { terminal = frame; return; }
       if (bot.computerMode === 'cua' && frame.type === 'agent-tool' && frame.tool?.state === 'running') markOwned(bot);
       work.record(bot.id, frame);
+      if (frame.type === 'agent-tool' && frame.tool?.state === 'running') team.progress(context, frame.tool.name, frame.tool.id);
       // Record the new piece before the transcript grows, so a snapshot of the
       // same reply does not publish that piece a second time.
       if (frame.type === 'delta' && typeof frame.text === 'string' && frame.text) { try { team.noteRoomDelta(session.id, frame.text); } catch { /* A live caption cannot stop the reply. */ } }
@@ -954,6 +955,10 @@ export function createBotRoutes({ bots, port }) {
           if (event === 'task.recovery') {
             const { messageId, jobId, runId, text, question, options, recovery } = data;
             res.write(`event: task.recovery\ndata: ${JSON.stringify({ teamId: data.teamId, messageId, jobId, runId, text, question, options, ...(recovery ? { recovery } : {}) })}\n\n`);
+          }
+          if (event === 'task.progress') {
+            const { runId, jobId, botId, conversationId, step, toolName } = data;
+            res.write(`event: task.progress\ndata: ${JSON.stringify({ teamId: data.teamId, runId, jobId, botId, conversationId, step, toolName })}\n\n`);
           }
         });
         const ping = setInterval(() => { if (!res.writableEnded) res.write(': ping\n\n'); }, 15000);
