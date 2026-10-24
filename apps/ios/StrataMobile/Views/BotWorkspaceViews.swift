@@ -99,14 +99,14 @@ struct BotTeamEditor: View {
     private var computers: [BotTeamComputer] { (workspace.teams?.teamComputers ?? []).filter { $0.memberId == nil || selected.contains($0.memberId!) } }
     private var chosenComputer: BotTeamComputer? { computers.first { $0.id == computerId } }
     private var draft: BotTeamDraft {
-        BotTeamDraft(name: name.trimmingCharacters(in: .whitespacesAndNewlines), memberIds: selected.sorted(), coordinatorId: coordinator, limits: limits.forHost(unrestrictedTeams: unrestrictedTeams, continuousTeams: limits == .continuous),
+        BotTeamDraft(name: name.trimmingCharacters(in: .whitespacesAndNewlines), memberIds: selected.sorted(), coordinatorId: coordinator, limits: limits.forHost(unrestrictedTeams: unrestrictedTeams, continuousTeams: continuousTeams && limits == .continuous),
                      execution: supportsSettings ? (executionMode == "shared" ? BotTeamExecution(mode: "shared", computerId: computerId, workspace: folder.trimmingCharacters(in: .whitespacesAndNewlines)) : .individual) : nil,
                      briefing: supportsInstructions ? BotTeamBriefing(instructions: briefing.instructions.trimmingCharacters(in: .whitespacesAndNewlines), members: briefing.members.filter { selected.contains($0.botId) }.map { BotTeamMemberBriefing(botId: $0.botId, role: $0.role.trimmingCharacters(in: .whitespacesAndNewlines), instructions: $0.instructions.trimmingCharacters(in: .whitespacesAndNewlines)) }.filter { !$0.role.isEmpty || !$0.instructions.isEmpty }.sorted { $0.botId < $1.botId }) : nil,
                      talkativeness: { let voice = talkativeness.filter { selected.contains($0.key) && $0.value != 50 }; return voice.isEmpty ? nil : voice }(),
                      bidding: bidding ? true : nil)
     }
     private var canSave: Bool {
-        BotWorkspaceStore.validTeamDraft(draft, unrestrictedTeams: unrestrictedTeams, continuousTeams: limits == .continuous, availableMemberIds: Set(store.botCatalog?.bots.map(\.id) ?? []), retainedMemberIds: baseline.map { Set($0.memberIds) }) && workspace.mutation == nil && !hasActiveWork && !changed &&
+        BotWorkspaceStore.validTeamDraft(draft, unrestrictedTeams: unrestrictedTeams, continuousTeams: continuousTeams && limits == .continuous, availableMemberIds: Set(store.botCatalog?.bots.map(\.id) ?? []), retainedMemberIds: baseline.map { Set($0.memberIds) }) && workspace.mutation == nil && !hasActiveWork && !changed &&
         (baseline == nil || (supportsSettings && baseline?.revision != nil)) &&
         (executionMode != "shared" || (chosenComputer?.available == true && chosenComputer?.allowsFolder(folder.trimmingCharacters(in: .whitespacesAndNewlines)) == true))
     }

@@ -304,7 +304,7 @@ enum RoomMention {
 
     static func choices(members: [RoomMentionMember], query: String) -> [RoomMentionChoice] {
         let needle = query.lowercased()
-        func matches(_ value: String) -> Bool { value.lowercased().contains(needle) }
+        func matches(_ value: String) -> Bool { needle.isEmpty || value.lowercased().contains(needle) }
         var rows: [RoomMentionChoice] = []
         if matches("everyone") || (!needle.isEmpty && "all".hasPrefix(needle)) {
             rows.append(RoomMentionChoice(kind: "everyone", memberID: "everyone", label: "everyone"))

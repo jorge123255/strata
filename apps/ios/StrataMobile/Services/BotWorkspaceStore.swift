@@ -524,9 +524,9 @@ final class BotWorkspaceStore: ObservableObject {
     func createTeam(_ draft: BotTeamDraft) async -> Bool {
         var body = draft
         let chosenContinuous = body.limits == .continuous
-        guard Self.validTeamDraft(body, unrestrictedTeams: unrestrictedTeams, continuousTeams: chosenContinuous, availableMemberIds: currentBotIds()), validTeamExecution(body), body.briefing == nil || teams?.teamInstructionsSupported == true else { return false }
+        guard Self.validTeamDraft(body, unrestrictedTeams: unrestrictedTeams, continuousTeams: continuousTeams && chosenContinuous, availableMemberIds: currentBotIds()), validTeamExecution(body), body.briefing == nil || teams?.teamInstructionsSupported == true else { return false }
         struct Result: Decodable { var team: BotTeam }
-        body.limits = body.limits.forHost(unrestrictedTeams: unrestrictedTeams, continuousTeams: chosenContinuous)
+        body.limits = body.limits.forHost(unrestrictedTeams: unrestrictedTeams, continuousTeams: continuousTeams && chosenContinuous)
         let value: Result? = await change("teams", path: "/v1/bots/teams", body: body)
         if value != nil { await refreshTeams() }
         return value != nil && isCurrent()
@@ -538,10 +538,10 @@ final class BotWorkspaceStore: ObservableObject {
               let revision = team.revision, revision > 0,
               teams?.teams.first(where: { $0.id == team.id })?.revision == revision,
               teams?.runs.contains(where: { $0.teamId == team.id && $0.isActive }) != true,
-              Self.validTeamDraft(draft, unrestrictedTeams: unrestrictedTeams, continuousTeams: chosenContinuous, availableMemberIds: currentBotIds(), retainedMemberIds: retainedMemberIds ?? Set(team.memberIds)), validTeamExecution(draft), draft.briefing == nil || teams?.teamInstructionsSupported == true else { return false }
+              Self.validTeamDraft(draft, unrestrictedTeams: unrestrictedTeams, continuousTeams: continuousTeams && chosenContinuous, availableMemberIds: currentBotIds(), retainedMemberIds: retainedMemberIds ?? Set(team.memberIds)), validTeamExecution(draft), draft.briefing == nil || teams?.teamInstructionsSupported == true else { return false }
         struct Result: Decodable { var team: BotTeam }
         let body = BotTeamUpdate(expectedRevision: revision, name: draft.name, memberIds: draft.memberIds,
-                                 coordinatorId: draft.coordinatorId, limits: draft.limits.forHost(unrestrictedTeams: unrestrictedTeams, continuousTeams: chosenContinuous), execution: draft.execution ?? .individual, briefing: draft.briefing, talkativeness: draft.talkativeness, bidding: draft.bidding)
+                                 coordinatorId: draft.coordinatorId, limits: draft.limits.forHost(unrestrictedTeams: unrestrictedTeams, continuousTeams: continuousTeams && chosenContinuous), execution: draft.execution ?? .individual, briefing: draft.briefing, talkativeness: draft.talkativeness, bidding: draft.bidding)
         let value: Result? = await change("teams", path: "/v1/bots/teams/\(team.id)", method: "PATCH", body: body)
         if value != nil { await refreshTeams() }
         return value != nil && isCurrent()
