@@ -17,8 +17,10 @@ struct ModelsView: View {
                 } else if libraryModels.isEmpty {
                     VStack(spacing: 16) {
                         Image(systemName: "square.stack.3d.up")
-                            .font(.system(size: 34, weight: .light))
-                            .foregroundStyle(StrataTheme.accentText)
+                            .font(.system(size: 28, weight: .regular))
+                            .foregroundStyle(StrataTheme.ink)
+                            .frame(width: 64, height: 64)
+                            .background(StrataTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                         Text(store.isLoading ? "Checking your library…" : "Your library is waiting")
                             .font(.title3.weight(.semibold))
                             .foregroundStyle(StrataTheme.ink)
@@ -34,8 +36,8 @@ struct ModelsView: View {
                 } else {
                     HStack {
                         Text("YOUR LIBRARY")
-                            .font(.system(.caption2, weight: .bold))
-                            .tracking(1.7)
+                            .font(.system(.caption2, weight: .semibold))
+                            .tracking(0.6)
                             .foregroundStyle(StrataTheme.secondaryInk)
                         Spacer()
                         if store.isLoading {

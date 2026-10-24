@@ -68,7 +68,7 @@ struct BotProfileEditor: View {
                         TextField("Name your bot", text: $draft.name)
                             .font(.title2.weight(.semibold)).multilineTextAlignment(.center).focused($focused, equals: .name)
                             .padding(.horizontal, 18).padding(.vertical, 18)
-                            .background(StrataTheme.grouped, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                            .background(StrataTheme.grouped, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                             .accessibilityIdentifier("profileBotNameInput")
                         AvatarPicker(avatar: $draft.avatarConfig, name: draft.name, supportedShapes: catalog?.avatarShapes ?? [], compact: true)
                     }
@@ -90,7 +90,7 @@ struct BotProfileEditor: View {
                             if loadingModels { ProgressView("Checking models…").font(.caption).padding(.vertical, 8) }
                         }
                     }.padding(.horizontal, 18).padding(.vertical, 8)
-                        .background(StrataTheme.surface, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                        .background(StrataTheme.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                     if !providerReady {
                         Label("Check provider availability on the selected computer before starting work.", systemImage: "exclamationmark.circle")
                             .font(.caption).foregroundStyle(StrataTheme.warning).accessibilityIdentifier("profileBotSetupRequired")
@@ -333,7 +333,7 @@ struct BotProfileEditor: View {
 private extension View {
     func strataBotEditorCard() -> some View {
         self.padding(18).frame(maxWidth: .infinity, alignment: .leading)
-            .background(StrataTheme.surface, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .background(StrataTheme.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 }
 

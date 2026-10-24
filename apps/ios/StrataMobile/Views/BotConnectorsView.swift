@@ -27,12 +27,15 @@ struct ConnectorsHomeView: View {
                     .id(store.pairingGeneration)
             } else if store.isPaired { ProgressView("Loading connectors…") }
             else {
-                ContentUnavailableView {
-                    Label("Connect your services", systemImage: "puzzlepiece.extension")
-                } description: {
-                    Text("Pair your Mac to add accounts and share their tools with your bots and teams.")
-                } actions: { Button("Pair your Mac", action: pair).buttonStyle(.borderedProminent) }
+                ScrollView {
+                    ConnectionNeededView(icon: "puzzlepiece.extension", title: "Connect your services", message: "Pair your Mac to add accounts and share their tools with your bots and teams.", pair: pair)
+                        .padding(.horizontal, 20)
+                        .padding(.top, 8)
+                        .padding(.bottom, 28)
+                }
+                .background(StrataTheme.background)
                 .navigationTitle("Connectors")
+                .navigationBarTitleDisplayMode(.inline)
             }
         }
         .toolbar { ToolbarItem(placement: .topBarTrailing) {
