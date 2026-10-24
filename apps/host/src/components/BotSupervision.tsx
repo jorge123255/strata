@@ -28,6 +28,17 @@ export interface BotSupervisionSnapshot {
   supported: boolean; sessions: BotSupervisionSession[]; counts: { waiting: number; working: number; completed: number; errors: number }; hasMore: boolean;
 }
 const avatarMood = (row: BotSupervisionSession | undefined, stale: boolean): CuaBotMood => stale || !row ? 'idle' : row.state === 'approval' ? 'needsApproval' : row.state === 'completed' ? 'done' : row.state;
+/** Chip numbers follow the cards that can render, not a separate profile total. */
+export function supervisionRowCounts(sessions: BotSupervisionSession[]) {
+  const counts = { waiting: 0, working: 0, completed: 0, errors: 0 };
+  for (const row of sessions) {
+    if (row.state === 'approval') counts.waiting += 1;
+    else if (row.state === 'error') counts.errors += 1;
+    else if (row.state === 'working' || row.state === 'thinking') counts.working += 1;
+    else counts.completed += 1;
+  }
+  return counts;
+}
 type Filter = 'all'|'attention'|'working'|'completed';
 export function supervisionLabel(row: BotSupervisionSession) {
   return row.state === 'approval' ? `${row.approvalCount} approval${row.approvalCount === 1 ? '' : 's'} waiting` : row.state === 'error' ? 'Needs attention' : row.state === 'working' ? 'Using a tool' : row.state === 'thinking' ? 'Thinking' : 'Finished';
@@ -36,7 +47,7 @@ export function BotSupervision({ snapshot, bots, stale, onOpen }: { snapshot: Bo
   const [filter, setFilter] = useState<Filter>('all'), [limit, setLimit] = useState(12);
   if (!snapshot.supported) return <p className="small muted">Update the Strata host to see live bot supervision.</p>;
   const rows = snapshot.sessions.filter(row => filter === 'all' || filter === 'attention' && ['approval', 'error'].includes(row.state) || filter === 'working' && ['working', 'thinking'].includes(row.state) || filter === 'completed' && row.state === 'completed');
-  const { waiting, working, completed, errors } = snapshot.counts;
+  const { waiting, working, completed, errors } = supervisionRowCounts(snapshot.sessions);
   const lead = (['approval', 'error', 'working', 'thinking', 'completed'] as const).map(state => snapshot.sessions.find(row => row.state === state)).find(Boolean);
   const companion = lead ? bots.find(bot => bot.id === lead.botId) : bots[0];
   return <section className="bot-supervision" aria-label="Live bot supervision" data-stale={stale || undefined}>
