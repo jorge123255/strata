@@ -6,7 +6,7 @@ import { cx } from '../lib/format';
 import { ApiError, api } from '../lib/client';
 import { botActivityLabel, botTeamRunActive, mergeBotTeamChannelMessages, type Bot, type BotTeam, type BotTeamChannelMessage, type BotTeamChannelSnapshot, type BotTeamPresence, type BotTeamRun } from '../lib/bots';
 import { choicePayload, presentRecovery, recoveryFromEvent, type RecoveryPresentation, type TaskRecoveryEvent } from '../lib/room-choice';
-import { groupRoomReplies, withLiveReplyDrafts } from '../lib/reply-group';
+import { groupRoomReplies, mergeChannelPasses, partitionChannelFeed, passFromChannelEvent, replyGroupGaps, replyGroupRoster, replyRoundIsLive, withLiveReplyDrafts, type ChannelPass } from '../lib/reply-group';
 import { RoomChoiceCard } from '../components/RoomChoiceCard';
 import { ReplyGroupStack } from '../components/ReplyGroupStack';
 import { useStore } from '../lib/store';
@@ -28,18 +28,26 @@ const ChannelMarkdown = memo(Markdown);
 
 /** A room's polling never creates a chat, resumes a bot or executes a tool. */
 function useTeamChannel(teamId: string, visible: boolean, onUnsupported: () => void, live = false) {
-  const [messages, setMessages] = useState<BotTeamChannelMessage[]>([]), [activeRuns, setActiveRuns] = useState<BotTeamRun[]>([]), [presence, setPresence] = useState<BotTeamPresence[]>([]);
+  const [messages, setMessages] = useState<BotTeamChannelMessage[]>([]), [passes, setPasses] = useState<ChannelPass[]>([]), [activeRuns, setActiveRuns] = useState<BotTeamRun[]>([]), [presence, setPresence] = useState<BotTeamPresence[]>([]);
   const [loading, setLoading] = useState(true), [loadingEarlier, setLoadingEarlier] = useState(false), [error, setError] = useState(''), [hasEarlier, setHasEarlier] = useState(false);
   const cached = useRef<BotTeamChannelMessage[]>([]);
   const alive = useRef(false), generation = useRef(0), pending = useRef(false), earlierPending = useRef(false), cursor = useRef<number | null>(null), first = useRef(0), unsupported = useRef(onUnsupported);
   unsupported.current = onUnsupported;
+  const notePass = useCallback((detail: unknown) => {
+    const pass = passFromChannelEvent(detail, teamId);
+    if (pass) setPasses(current => mergeChannelPasses(current, [pass]));
+  }, [teamId]);
   const accept = useCallback((snapshot: BotTeamChannelSnapshot, older = false) => {
-    if (snapshot.teamId !== teamId || snapshot.supported !== true || !Array.isArray(snapshot.messages) || !Array.isArray(snapshot.activeRuns) || !Number.isSafeInteger(snapshot.nextSequence) || snapshot.nextSequence < 0 || snapshot.messages.some(row => row.teamId !== teamId || !Number.isSafeInteger(row.sequence) || row.sequence < 1)) throw new Error('The team channel response did not match this team.');
-    if (snapshot.messages.some((row, index) => index > 0 && row.sequence <= snapshot.messages[index - 1].sequence) || snapshot.messages.length && snapshot.nextSequence !== snapshot.messages.at(-1)!.sequence) throw new Error('The team channel returned an invalid message order. Refresh before sending.');
-    const merged = snapshot.messages.length ? mergeBotTeamChannelMessages(cached.current, snapshot.messages, teamId) : cached.current;
-    const highest = Math.max(0, ...snapshot.messages.map(row => row.teamId === teamId ? row.sequence : 0));
+    const rows = Array.isArray(snapshot.messages) ? snapshot.messages : [];
+    const split = partitionChannelFeed(rows, teamId);
+    const sequenced = rows.filter(row => !!row && row.teamId === teamId && Number.isSafeInteger(row.sequence) && row.sequence >= 1);
+    if (snapshot.teamId !== teamId || snapshot.supported !== true || !Array.isArray(snapshot.messages) || !Array.isArray(snapshot.activeRuns) || !Number.isSafeInteger(snapshot.nextSequence) || snapshot.nextSequence < 0 || split.messages.some(row => row.teamId !== teamId || !Number.isSafeInteger(row.sequence) || row.sequence < 1)) throw new Error('The team channel response did not match this team.');
+    if (sequenced.some((row, index) => index > 0 && row.sequence <= sequenced[index - 1]!.sequence) || sequenced.length && snapshot.nextSequence !== sequenced.at(-1)!.sequence) throw new Error('The team channel returned an invalid message order. Refresh before sending.');
+    const merged = split.messages.length ? mergeBotTeamChannelMessages(cached.current, split.messages, teamId) : cached.current;
+    if (split.passes.length) setPasses(current => mergeChannelPasses(current, split.passes));
+    const highest = Math.max(0, ...sequenced.map(row => row.sequence));
     cursor.current = Math.max(cursor.current ?? 0, highest, older ? 0 : snapshot.nextSequence);
-    const lowest = Math.min(...snapshot.messages.filter(row => row.teamId === teamId).map(row => row.sequence));
+    const lowest = Math.min(...sequenced.filter(row => row.teamId === teamId).map(row => row.sequence));
     if (Number.isFinite(lowest)) first.current = first.current ? Math.min(first.current, lowest) : lowest;
     cached.current = merged; setMessages(merged);
     if (!older) setActiveRuns(previous => JSON.stringify(previous) === JSON.stringify(snapshot.activeRuns) ? previous : snapshot.activeRuns);
@@ -100,7 +108,7 @@ function useTeamChannel(teamId: string, visible: boolean, onUnsupported: () => v
       setMessages(cached.current);
     } catch { /* The next channel refresh keeps the saved choice. */ }
   }, [teamId]);
-  return { messages, activeRuns, presence, loading, error, hasEarlier, loadingEarlier, accept: acceptPosted, refresh, loadEarlier, replaceMessage };
+  return { messages, passes, activeRuns, presence, loading, error, hasEarlier, loadingEarlier, accept: acceptPosted, refresh, loadEarlier, replaceMessage, notePass };
 }
 
 /** Live reply text for this room. A saved message with the same id replaces the draft. */
@@ -150,7 +158,7 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
   useEffect(() => {
     const onRoom = (event: Event) => {
       const detail = (event as CustomEvent<{ teamId?: string; presence?: unknown[] }>).detail;
-      if (detail?.teamId === team.id) { if (detail.presence?.length) setQuiet(false); void channel.refresh(); }
+      if (detail?.teamId === team.id) { channel.notePass(detail); if (detail.presence?.length) setQuiet(false); void channel.refresh(); }
     };
     const onQuiet = (event: Event) => {
       const quietDetail = (event as CustomEvent<{ teamId?: string }>).detail;
@@ -159,7 +167,7 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
     window.addEventListener('strata:team-channel', onRoom);
     window.addEventListener('strata:room-quiet', onQuiet);
     return () => { window.removeEventListener('strata:team-channel', onRoom); window.removeEventListener('strata:room-quiet', onQuiet); };
-  }, [team.id, channel.refresh]);
+  }, [team.id, channel.refresh, channel.notePass]);
   useNotificationDestination({ type: 'team', id: team.id }, visible);
   const [workMode, setWorkMode] = useState<'chat' | 'work'>('chat');
   const [prompt, setPrompt] = useState(''), [recipients, setRecipients] = useState<string[]>([]), [picker, setPicker] = useState(false), [replyTo, setReplyTo] = useState<BotTeamChannelMessage | null>(null);
@@ -174,6 +182,21 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
   const mentionCursor = mentionChoices.length ? Math.min(mentionIndex, mentionChoices.length - 1) : 0;
   const activeMentionDomId = showMentions ? `team-mention-${team.id}-${mentionChoices[mentionCursor]!.kind}-${mentionChoices[mentionCursor]!.id}` : undefined;
   const active = channel.activeRuns.filter(run => botTeamRunActive(run.state));
+  const replyStack = (group: { triggerId: string; messages: BotTeamChannelMessage[] }) => {
+    const trigger = channel.messages.find(row => row.id === group.triggerId);
+    const roster = replyGroupRoster(trigger, team.memberIds);
+    const missing = replyGroupGaps(group.messages, roster);
+    return {
+      roster,
+      live: replyRoundIsLive({
+        triggerRunId: trigger?.runId || group.messages.find(row => row.runId)?.runId,
+        activeRunIds: active.map(run => run.id),
+        missingBotIds: missing,
+        presence: channel.presence,
+        drafting: group.messages.some(row => liveDrafts.some(draft => draft.messageId === row.id)),
+      }),
+    };
+  };
   const ready = current && !channel.error && !channel.loading;
   const recoveryFor = (message: BotTeamChannelMessage) => presentRecovery(message, liveRecovery.find(event => event.messageId === message.id && event.teamId === team.id) ?? null);
   const pendingRecovery = liveRecovery.filter(event => event.teamId === team.id && !channel.messages.some(message => message.id === event.messageId));
@@ -298,7 +321,7 @@ export function BotTeamChannel({ team, bots, visible, current, coordinatorWorkTo
       {channel.hasEarlier ? <div className="bot-room-earlier"><Btn size="sm" disabled={channel.loadingEarlier} onClick={() => { if (feed.current) olderAnchor.current = { height: feed.current.scrollHeight, top: feed.current.scrollTop }; void channel.loadEarlier().then(ok => { if (!ok) olderAnchor.current = null; }); }}>{channel.loadingEarlier ? 'Loading earlier…' : 'Load earlier messages'}</Btn></div> : null}
       {!channel.loading && !channel.messages.length && !channel.error ? <div className="bot-room-welcome"><div className="bot-room-welcome-faces">{members.slice(0, 4).map(bot => <CuaBotAvatar key={bot.id} name={bot.name} config={bot.avatarConfig} size={56}/>)}</div><h3>Your team, together</h3><p>Say hello, share an idea, or give the team something to work on. Everyone can join the conversation; {bots.find(bot => bot.id === team.coordinatorId)?.name ?? 'your coordinator'} organizes the work.</p><div><button type="button" disabled={!ready || !team.enabled} onClick={() => { setWorkMode('chat'); setPrompt('Hi everyone!'); changeRecipients([...team.memberIds]); composer.current?.focus(); }}>Say hi to everyone</button><button type="button" disabled={!ready || !team.enabled} onClick={() => { setPrompt('Who wants to help with '); changeRecipients([]); composer.current?.focus(); }}>Find the right teammate</button></div></div> : null}
       {roomFeed.map(item => {
-        if (item.kind === 'replies') return <ReplyGroupStack key={item.group.id} messages={item.group.messages} triggerId={item.group.triggerId} bots={bots} entranceFor={id => entrances.get(id)} disabled={sending} onReply={reply}/>;
+        if (item.kind === 'replies') { const stack = replyStack(item.group); return <ReplyGroupStack key={item.group.id} messages={item.group.messages} triggerId={item.group.triggerId} roster={stack.roster} live={stack.live} records={channel.passes} bots={bots} entranceFor={id => entrances.get(id)} disabled={sending} onReply={reply}/>; }
         const message = item.message;
         if (looseDrafts.some(draft => draft.messageId === message.id)) return null;
         const recovery = recoveryFor(message);

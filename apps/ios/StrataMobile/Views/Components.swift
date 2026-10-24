@@ -382,6 +382,41 @@ enum RoomMention {
     }
 }
 
+enum MemberReplyState: String, Equatable {
+    case replied, passed, working, absent
+
+    var line: String {
+        switch self {
+        case .passed: return "passed"
+        case .working: return "Still working"
+        case .replied, .absent: return "didn't reply"
+        }
+    }
+
+    func spoken(name: String) -> String {
+        switch self {
+        case .passed: return "\(name) passed"
+        case .working: return "\(name). Still working"
+        case .replied, .absent: return "\(name) didn't reply"
+        }
+    }
+}
+
+struct MemberPassRecord: Equatable {
+    var botId: String
+    var replyGroupId: String = ""
+    var kind: String = ""
+    var passed = false
+    var at: String = ""
+    var teamId: String = ""
+}
+
+struct ReplyRoundPresence: Equatable {
+    var botId: String
+    var state: String
+    var runId: String
+}
+
 struct RoomReplySource: Equatable {
     var id: String
     var kind: String
@@ -405,8 +440,76 @@ enum RoomReplyGroup {
     static let previewCharacters = 160
 
     static func label(_ count: Int) -> String {
-        if count == 1 { return "1 bot replied" }
-        return "\(count) bots replied"
+        label(replied: count, expected: 0)
+    }
+
+    static func label(replied: Int, expected: Int) -> String {
+        if expected > 0 { return "\(replied) of \(expected) bots replied" }
+        if replied == 1 { return "1 bot replied" }
+        return "\(replied) bots replied"
+    }
+
+    static func roster(recipientIds: [String]?, memberIds: [String]) -> [String] {
+        let saved = uniqueIds(recipientIds)
+        return saved.isEmpty ? uniqueIds(memberIds) : saved
+    }
+
+    static func repliedCount(repliedBotIds: [String], roster: [String]) -> Int {
+        let wanted = Set(uniqueIds(roster))
+        if wanted.isEmpty { return repliedBotIds.count }
+        return Set(repliedBotIds.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { wanted.contains($0) }).count
+    }
+
+    /// Roster members with no reply yet, in send-time order.
+    static func gaps(repliedBotIds: [String], roster: [String]) -> [String] {
+        let replied = Set(repliedBotIds.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
+        return uniqueIds(roster).filter { !replied.contains($0) }
+    }
+
+    /// Replied, passed, still working, or didn't reply. A pass wins over a live round.
+    static func memberReplyState(hasReply: Bool, roundLive: Bool, passed: Bool) -> MemberReplyState {
+        if hasReply { return .replied }
+        if passed { return .passed }
+        if roundLive { return .working }
+        return .absent
+    }
+
+    /// A pass is kind `pass` for this member and this reply group.
+    static func memberChoseToPass(botId: String, records: [MemberPassRecord], replyGroupId: String = "") -> Bool {
+        let id = botId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let group = replyGroupId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty, !group.isEmpty else { return false }
+        return records.contains { row in
+            row.kind == "pass" && row.passed && row.botId == id && row.replyGroupId == group && !row.at.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    /// A round is live while its run is active, a reply is still streaming, or a missing teammate is queued or working.
+    static func roundIsLive(triggerRunId: String?, activeRunIds: [String], missingBotIds: [String], presence: [ReplyRoundPresence], drafting: Bool = false) -> Bool {
+        if drafting { return true }
+        let runId = triggerRunId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !runId.isEmpty && activeRunIds.contains(runId) { return true }
+        guard !missingBotIds.isEmpty else { return false }
+        let missing = Set(missingBotIds)
+        return presence.contains { row in
+            let botId = row.botId.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard missing.contains(botId), (row.state == "working" || row.state == "queued") else { return false }
+            let presenceRun = row.runId.trimmingCharacters(in: .whitespacesAndNewlines)
+            return runId.isEmpty || presenceRun.isEmpty || presenceRun == runId
+        }
+    }
+
+    private static func uniqueIds(_ ids: [String]?) -> [String] {
+        guard let ids else { return [] }
+        var seen = Set<String>()
+        var out: [String] = []
+        for id in ids {
+            let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty || seen.contains(trimmed) { continue }
+            seen.insert(trimmed)
+            out.append(trimmed)
+        }
+        return out
     }
 
     static func stagger(_ index: Int) -> Double {

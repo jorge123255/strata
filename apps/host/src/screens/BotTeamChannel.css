@@ -193,6 +193,10 @@ button.bot-room-reply-group-header:hover { color:var(--st-ink); }
 .bot-room-reply-row > button:hover:not(:disabled) { color:var(--st-ink); text-decoration:underline; }
 .bot-room-reply-row > button:focus-visible { outline:2px solid var(--st-focus); outline-offset:2px; border-radius:6px; }
 .bot-room-reply-row > button:disabled { opacity:.55; cursor:default; }
+.bot-room-reply-row.is-missing { grid-template-columns:28px minmax(0,1fr); }
+.bot-room-reply-row.is-missing .bot-room-message-face { opacity:.72; }
+.bot-room-reply-row.is-missing .bot-room-reply-row-copy strong,
+.bot-room-reply-row.is-missing .bot-room-reply-row-copy p { color:var(--st-ink-muted); font-weight:500; }
 @media (max-width:700px) {
   .bot-room-reply-group-header { margin-left:36px; }
   .bot-room-reply-row { padding-inline:0; }

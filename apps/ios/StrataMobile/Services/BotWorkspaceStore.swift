@@ -755,8 +755,11 @@ final class BotWorkspaceStore: ObservableObject {
         if !replacing && !older && value.messages.isEmpty, let previous = channels[teamId] {
             var merged = value
             merged.messages = previous.messages
+            merged.passes = mergePasses(previous.passes, value.passes, teamId: teamId)
             merged.hasMoreBefore = previous.hasMoreBefore
-            merged.nextSequence = channelCursors[teamId] ?? 0
+            let cursor = advancedChannelCursor(channelCursors[teamId] ?? 0, messages: merged.messages, passes: merged.passes)
+            channelCursors[teamId] = cursor
+            merged.nextSequence = cursor
             if channels[teamId] != merged { channels[teamId] = merged }
             return
         }
@@ -773,18 +776,36 @@ final class BotWorkspaceStore: ObservableObject {
         combined.sort { $0.sequence < $1.sequence }
         var merged = value
         merged.messages = combined
+        merged.passes = mergePasses(channels[teamId]?.passes ?? [], value.passes, teamId: teamId)
         // Forward polls report forward pagination; only the initial/backward
         // page determines whether the user can load earlier messages.
         if !replacing && !older { merged.hasMoreBefore = channels[teamId]?.hasMoreBefore }
         // A POST returns the newest window, which can jump ahead of the last
         // read page. Advance only through contiguous known entries so a busy
         // room cannot permanently skip the gap on its next incremental poll.
-        var cursor = replacing ? combined.last?.sequence ?? 0 : channelCursors[teamId] ?? 0
-        let sequences = Set(combined.map(\.sequence))
-        while cursor < Int.max - 1, sequences.contains(cursor + 1) { cursor += 1 }
+        // A pass keeps its sequence so the next poll can move past it.
+        let cursor = advancedChannelCursor(replacing ? combined.last?.sequence ?? 0 : channelCursors[teamId] ?? 0, messages: combined, passes: merged.passes)
         channelCursors[teamId] = cursor
         merged.nextSequence = cursor
         if channels[teamId] != merged { channels[teamId] = merged }
+    }
+
+    private func mergePasses(_ current: [TeamChannelPass], _ incoming: [TeamChannelPass], teamId: String) -> [TeamChannelPass] {
+        var map: [String: TeamChannelPass] = [:]
+        for row in current where row.isValid && row.teamId == teamId { map["\(row.botId)\u{0}\(row.replyGroupId)"] = row }
+        for row in incoming where row.isValid && row.teamId == teamId {
+            let key = "\(row.botId)\u{0}\(row.replyGroupId)"
+            if let previous = map[key], previous.at > row.at { continue }
+            map[key] = row
+        }
+        return map.values.sorted { ($0.replyGroupId, $0.botId, $0.at) < ($1.replyGroupId, $1.botId, $1.at) }
+    }
+
+    private func advancedChannelCursor(_ start: Int, messages: [BotTeamChannelMessage], passes: [TeamChannelPass]) -> Int {
+        let sequences = Set(messages.map(\.sequence) + passes.compactMap(\.sequence).filter { $0 > 0 })
+        var cursor = start
+        while cursor < Int.max - 1, sequences.contains(cursor + 1) { cursor += 1 }
+        return cursor
     }
 
     func postTeamMessage(_ team: BotTeam, draft: BotTeamChannelPost) async -> Bool {

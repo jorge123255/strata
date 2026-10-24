@@ -35,9 +35,14 @@ test('the sidebar still opens chat dialogs from a closed menu and lists bots and
   const channelCss = await readFile(new URL('../src/screens/BotTeamChannel.css', import.meta.url), 'utf8');
   const appCss = await readFile(new URL('../src/styles/app.css', import.meta.url), 'utf8');
   const desktop = await readFile(new URL('../../desktop/src-tauri/src/main.rs', import.meta.url), 'utf8');
-  assert.match(bots, /<strong title=\{bot\.name\}>/);
-  assert.match(bots, /<strong title=\{team\.name\}>/);
+  const rosterRows = await readFile(new URL('../src/screens/ConversationRoster.tsx', import.meta.url), 'utf8');
+  assert.match(rosterRows, /<strong title=\{name\}>/);
+  assert.match(bots, /ConversationRosterCopy name=\{bot\.name\}/);
+  assert.match(bots, /ConversationRosterCopy name=\{team\.name\}/);
+  assert.match(bots, /ConversationRosterFace/);
   assert.match(botsCss, /\.cua-roster-title strong \{[^}]*-webkit-line-clamp:\s*2/);
+  assert.match(botsCss, /\.cua-roster-title strong \{[^}]*overflow-wrap:\s*normal/);
+  assert.doesNotMatch(botsCss, /\.cua-roster-title strong \{[^}]*overflow-wrap:\s*anywhere/);
   assert.match(botsCss, /@media \(max-width: 760px\) \{[^}]*grid-template-columns:\s*52px minmax\(0,\s*1fr\)/);
   assert.match(channelCss, /\.error-notice \{[^}]*max-width:\s*100%/);
   assert.match(channelCss, /\.bot-room-composer-top \{[^}]*flex-wrap:\s*wrap/);
