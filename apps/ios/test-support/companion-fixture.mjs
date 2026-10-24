@@ -72,7 +72,7 @@ const compactAssignment = 'Implement a small project improvement and report the 
 const compactReport = 'Implementation and verification report.\n' + 'The isolated fixture preserves the complete report for review, including every verification detail. '.repeat(27) + 'REPORT END MARKER';
 const hostFolderMode = process.argv[2] === '--test-host-folder';
 let sharedHostFolder, folderVersion = '2026-10-21T00:00:00.000Z';
-const workspaceFlags = ['--test-team-plans', '--test-connection-routes', '--test-route-tls', '--test-team-follow', '--test-team-workflows', '--test-harness', '--test-created-tools', '--test-team-work-tools', '--test-team-work-overview', '--test-team-review', '--test-team-compact', '--test-continuous-teams', '--test-unrestricted-teams', '--test-host-folder', '--test-supervision', '--test-connector-accounts', '--test-connectors', '--test-devin-provider', '--test-direct-bots', '--test-team-settings', '--test-team-instructions', '--test-notifications', '--test-group-chat-layout', '--test-team-channel-layout', '--test-team-channel', '--test-bot-photos', '--test-bot-lifecycle', '--test-bot-avatar-states', '--test-workspace-skills', '--test-workspace-connections', '--test-workspace-teams', '--test-facelift'];
+const workspaceFlags = ['--test-team-plans', '--test-connection-routes', '--test-route-tls', '--test-team-follow', '--test-team-workflows', '--test-harness', '--test-created-tools', '--test-team-work-tools', '--test-team-work-overview', '--test-team-review', '--test-team-compact', '--test-continuous-teams', '--test-unrestricted-teams', '--test-host-folder', '--test-supervision', '--test-connector-accounts', '--test-connectors', '--test-devin-provider', '--test-direct-bots', '--test-team-settings', '--test-team-instructions', '--test-team-members', '--test-notifications', '--test-group-chat-layout', '--test-team-channel-layout', '--test-team-channel', '--test-bot-photos', '--test-bot-lifecycle', '--test-bot-avatar-states', '--test-workspace-skills', '--test-workspace-connections', '--test-workspace-teams', '--test-facelift'];
 const workspaceMode = workspaceFlags.includes(process.argv[2]);
 let teamConversation, savedTeam, teamRun;
 const teamLimits = { maxParallel: 2, maxDepth: 2, maxHops: 8, maxTurns: 24, maxDurationMs: 600000 };
@@ -238,8 +238,8 @@ if (lifecycleMode) {
 }
 // The new room acceptance uses the real durable bot/team/conversation services.
 // Only model output is scripted. No provider, shell, SSH, browser or VM exists.
-const teamSettingsMode = ['--test-team-settings', '--test-team-instructions'].includes(process.argv[2]);
-const teamChannelMode = ['--test-team-work-tools', '--test-team-work-overview', '--test-team-review', '--test-team-compact', '--test-continuous-teams', '--test-unrestricted-teams', '--test-team-settings', '--test-team-instructions', '--test-team-channel', '--test-team-channel-layout', '--test-group-chat-layout'].includes(process.argv[2]);
+const teamSettingsMode = ['--test-team-settings', '--test-team-instructions', '--test-team-members'].includes(process.argv[2]);
+const teamChannelMode = ['--test-team-work-tools', '--test-team-work-overview', '--test-team-review', '--test-team-compact', '--test-continuous-teams', '--test-unrestricted-teams', '--test-team-settings', '--test-team-instructions', '--test-team-members', '--test-team-channel', '--test-team-channel-layout', '--test-group-chat-layout'].includes(process.argv[2]);
 let roomBots, roomChats, roomTeam, roomEmptyTeam, roomExtraMember, roomMembers = [], roomTurns = [];
 let settingsHold;
 const teamSettingsActions = [];
@@ -315,7 +315,7 @@ if (teamChannelMode) {
   }
   roomTeam = roomBots.team.create({ name: 'Engineering', memberIds: roomMembers.map(bot => bot.id), coordinatorId: roomMembers[0].id, enabled: true }).team;
   if (teamSettingsMode) roomExtraMember = roomBots.create({ name: 'Remote helper', provider: 'codex', model: 'Fixture model', workspace: '/srv/fixture-project', execution: { kind: 'ssh', host: 'fixture.invalid', user: 'fixture', name: 'Fixture SSH computer' }, policy: 'manual' }).bot;
-  if (['--test-team-settings', '--test-team-instructions', '--test-team-channel-layout', '--test-group-chat-layout'].includes(process.argv[2])) {
+  if (['--test-team-settings', '--test-team-instructions', '--test-team-members', '--test-team-channel-layout', '--test-group-chat-layout'].includes(process.argv[2])) {
     // Layout-only UI reads an actual saved journal seeded by the inert fixture.
     // These setup turns have no provider or external tools and precede pairing.
     const until = async predicate => { const deadline = Date.now() + 5_000; while (!predicate()) { if (Date.now() > deadline) throw new Error('Inert layout seed did not settle'); await new Promise(resolve => setTimeout(resolve, 10)); } };
@@ -534,6 +534,23 @@ const host = {
       const route = new URL(path, 'http://fixture.invalid');
       const sharedComputer = /^\/api\/bots\/(bot_[a-f0-9-]+)\/computer$/.exec(route.pathname);
       if (teamSettingsMode && sharedComputer && roomMembers.some(member => member.id === sharedComputer[1]) && (options.method ?? 'GET') === 'GET') return computerState();
+      // The paired phone edits this team's roster through the companion members
+      // route; the same normalize()/update() validation as the host applies.
+      const companionMembers = /^\/api\/companion\/teams\/(team_[a-f0-9-]+)\/members$/.exec(route.pathname);
+      if (companionMembers) {
+        if (options.method === 'GET') {
+          const team = roomBots.team.list().teams.find(row => row.id === companionMembers[1]);
+          if (!team) throw Object.assign(new Error('This team is unavailable.'), { status: 404 });
+          const roster = (await roomBots.list()).bots.map(bot => ({ id: bot.id, name: bot.name, paused: bot.paused === true }));
+          const memberRows = team.memberIds.map(id => {
+            const bot = roster.find(row => row.id === id);
+            return { id, name: bot?.name ?? 'Unavailable teammate', role: team.briefing?.members?.find(row => row.botId === id)?.role ?? '', paused: bot?.paused === true, available: !!bot && !bot.paused };
+          });
+          return { team: { id: team.id, name: team.name, memberIds: [...team.memberIds], coordinatorId: team.coordinatorId, revision: team.revision }, members: memberRows, roster };
+        }
+        if (options.method === 'PATCH') return roomBots.team.update(companionMembers[1], options.body);
+        throw Object.assign(new Error('This companion team action is unavailable.'), { status: 405 });
+      }
       if (route.pathname === '/api/bots/teams') {
         if (options.method === 'POST') return roomBots.team.create(options.body);
         const snapshot = structuredClone(roomBots.team.list());
@@ -874,6 +891,10 @@ try {
           await roomBots.team.stop(roomTeam.id, settingsHold.run.id);
           teamSettingsActions.push('stopped-inert-routing-turn');
           break;
+        case '/team-members-change':
+          if (!teamSettingsMode) throw new Error('Team members fixture required');
+          roomBots.team.update(roomTeam.id, { expectedRevision: roomBots.team.list().teams.find(row => row.id === roomTeam.id).revision, name: 'Mac revised team' });
+          break;
         case '/team-room-state':
           break;
         case '/team-progress':
@@ -964,7 +985,7 @@ try {
         '-project', project, '-scheme', 'StrataMobile', '-destination', destination,
         '-derivedDataPath', derivedData,
         ...(process.env.STRATA_TEST_RESULT_BUNDLE ? ['-resultBundlePath', process.env.STRATA_TEST_RESULT_BUNDLE] : []),
-        ...(process.argv[2] === '--test-route-tls' ? ['-only-testing:StrataMobileTests/ConnectionRoutingTLSTests'] : ['-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test-team-plans': 'testDurableTeamPlanShowsRealControllerTasksAndRequiresOwnerReview', '--test-connection-routes': 'testManualMacAddressUpdatePreservesPairingHistoryAndRelaunch', '--test-team-follow': 'testTeamIncomingRepliesFollowAndUnreadPreservesReadingPosition', '--test-team-workflows': 'testTeamWorkflowRolesEvidenceOwnerReviewAndExplicitContinuation', '--test-harness': 'testHarnessReadinessDiagnosticsAndReviewWithoutExecutingWork', '--test-created-tools': 'testCreatedToolDraftReviewBotAndTeamAccessWithoutExecution', '--test-team-work-tools': 'testTeamWorkIntentRequiresExplicitSendAndKeepsChatCompatible', '--test-team-work-overview': 'testCurrentWorkOverviewKeepsActiveLegacyAndRequiresExplicitHistoryExpansion', '--test-team-review': 'testSubmittedTaskReviewAndExplicitRecoveryWithoutReplayingFinishedWork', '--test-team-compact': 'testCompactTeamAssignmentsAndReportsExpandWithoutChangingHistory', '--test-continuous-teams': 'testContinuousTeamWorkHasNoNumericStopLimits', '--test-unrestricted-teams': 'testLargeTeamCreationUsesAllAvailableTeammates', '--test-host-folder': 'testScopedHostFolderSettingsGrantAndRevokeWithoutStartingWork', '--test-supervision': 'testLiveBotSupervisionFiltersExactConversationAndLargeType', '--test-connector-accounts': 'testConnectorAccountsDiscoverBearerSetupAndMacSignInFallback', '--test-connectors': 'testConnectorsHTTPSetupTeamAccessToolsAndPersistence', '--test-devin-provider': 'testPhoneCreatesDevinBotWithHostModelsAndNoImplicitRun', '--test-direct-bots': 'testDirectBotRosterChatProfileNewConversationAndRelaunch', '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation', '--test-computer': 'testActualSampleAvatarAndIsolatedComputerControl', '--test-bot-photos': 'testPhotoLedBotsCreationAppearanceAndWorkspaceNavigation', '--test-bot-lifecycle': 'testPhoneBotCreationEditingCASAndApprovalModes', '--test-bot-avatar-states': 'testBotAvatarStatesInteractionAndRosterFilters', '--test-facelift': 'testFaceliftPrincipalScreensAndSharedHistory', '--test-workspace-skills': 'testReviewedSkillAssignmentAndWorkspaceNavigation', '--test-workspace-connections': 'testSavedConnectionCheckAndReviewedAccess', '--test-workspace-teams': 'testTeamExplicitTaskSharedThinkingStopAndActivity', '--test-team-channel': 'testNaturalTeamChannelPeersAssignmentsThinkingAndStop', '--test-team-channel-layout': 'testTeamChannelNormalDarkAndLargeTypeLayout', '--test-group-chat-layout': 'testGroupRosterAndRoomPhotoLayoutWithRealMenus', '--test-team-settings': 'testTeamMembershipSharedComputerFoldersConflictAndPersistence', '--test-team-instructions': 'testTeamPublicInstructionsRolesPersistenceAndConflict', '--test-notifications': 'testNotificationPreferencesPrivateInboxRoutingMuteAndRelaunch' })[process.argv[2]]]),
+        ...(process.argv[2] === '--test-route-tls' ? ['-only-testing:StrataMobileTests/ConnectionRoutingTLSTests'] : ['-only-testing:StrataMobileUITests/CompanionSmokeTests/' + ({ '--test-team-plans': 'testDurableTeamPlanShowsRealControllerTasksAndRequiresOwnerReview', '--test-connection-routes': 'testManualMacAddressUpdatePreservesPairingHistoryAndRelaunch', '--test-team-follow': 'testTeamIncomingRepliesFollowAndUnreadPreservesReadingPosition', '--test-team-workflows': 'testTeamWorkflowRolesEvidenceOwnerReviewAndExplicitContinuation', '--test-harness': 'testHarnessReadinessDiagnosticsAndReviewWithoutExecutingWork', '--test-created-tools': 'testCreatedToolDraftReviewBotAndTeamAccessWithoutExecution', '--test-team-work-tools': 'testTeamWorkIntentRequiresExplicitSendAndKeepsChatCompatible', '--test-team-work-overview': 'testCurrentWorkOverviewKeepsActiveLegacyAndRequiresExplicitHistoryExpansion', '--test-team-review': 'testSubmittedTaskReviewAndExplicitRecoveryWithoutReplayingFinishedWork', '--test-team-compact': 'testCompactTeamAssignmentsAndReportsExpandWithoutChangingHistory', '--test-continuous-teams': 'testContinuousTeamWorkHasNoNumericStopLimits', '--test-unrestricted-teams': 'testLargeTeamCreationUsesAllAvailableTeammates', '--test-host-folder': 'testScopedHostFolderSettingsGrantAndRevokeWithoutStartingWork', '--test-supervision': 'testLiveBotSupervisionFiltersExactConversationAndLargeType', '--test-connector-accounts': 'testConnectorAccountsDiscoverBearerSetupAndMacSignInFallback', '--test-connectors': 'testConnectorsHTTPSetupTeamAccessToolsAndPersistence', '--test-devin-provider': 'testPhoneCreatesDevinBotWithHostModelsAndNoImplicitRun', '--test-direct-bots': 'testDirectBotRosterChatProfileNewConversationAndRelaunch', '--test': 'testSharedMacHistoryLiveBrowserApprovalAndContinuation', '--test-downloads': 'testModelDownloadReviewProgressCancelRetryAndTargetSelection', '--test-bots': 'testBotsSharedHistoryThinkingAndNewConversation', '--test-computer': 'testActualSampleAvatarAndIsolatedComputerControl', '--test-bot-photos': 'testPhotoLedBotsCreationAppearanceAndWorkspaceNavigation', '--test-bot-lifecycle': 'testPhoneBotCreationEditingCASAndApprovalModes', '--test-bot-avatar-states': 'testBotAvatarStatesInteractionAndRosterFilters', '--test-facelift': 'testFaceliftPrincipalScreensAndSharedHistory', '--test-workspace-skills': 'testReviewedSkillAssignmentAndWorkspaceNavigation', '--test-workspace-connections': 'testSavedConnectionCheckAndReviewedAccess', '--test-workspace-teams': 'testTeamExplicitTaskSharedThinkingStopAndActivity', '--test-team-channel': 'testNaturalTeamChannelPeersAssignmentsThinkingAndStop', '--test-team-channel-layout': 'testTeamChannelNormalDarkAndLargeTypeLayout', '--test-group-chat-layout': 'testGroupRosterAndRoomPhotoLayoutWithRealMenus', '--test-team-members': 'testTeamMembersEditorAddRemoveCoordinatorPersistenceAndConflict', '--test-team-settings': 'testTeamMembershipSharedComputerFoldersConflictAndPersistence', '--test-team-instructions': 'testTeamPublicInstructionsRolesPersistenceAndConflict', '--test-notifications': 'testNotificationPreferencesPrivateInboxRoutingMuteAndRelaunch' })[process.argv[2]]]),
         '-parallel-testing-enabled', 'NO', 'test',
       ], { stdio: 'inherit', env: { ...process.env,
         TEST_RUNNER_STRATA_TEST_INVITATION: connection.invitation,

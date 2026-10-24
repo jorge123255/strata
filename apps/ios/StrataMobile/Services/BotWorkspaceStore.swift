@@ -8,6 +8,7 @@ import UIKit
 @MainActor
 final class BotWorkspaceStore: ObservableObject {
     @Published private(set) var teams: BotTeamsSnapshot?
+    @Published private(set) var teamMembers: [String: BotTeamMembersSnapshot] = [:]
     @Published private(set) var channels: [String: BotTeamChannel] = [:]
     @Published private(set) var activity: [BotWorkspaceActivity] = []
     @Published private(set) var activityLoaded = false
@@ -428,6 +429,7 @@ final class BotWorkspaceStore: ObservableObject {
                 else if key == "connections" { await refreshConnections() }
                 else if key == "teams" { await refreshTeams() }
                 else if key == "harnessActions" { await refreshHarnessActions(force: true) }
+                else if key.hasPrefix("teamMembers-") { await refreshTeamMembers(String(key.dropFirst("teamMembers-".count))) }
             }
             if isCurrent() { messages[key] = message }
             return nil
@@ -585,6 +587,58 @@ final class BotWorkspaceStore: ObservableObject {
         let saved = await updateTeam(original, draft: draft, retainedMemberIds: Set(original.memberIds))
         if !saved, isCurrent(), teams?.teams.first(where: { $0.id == original.id })?.memberIds == memberIds { teams = previous }
         return saved && isCurrent()
+    }
+    static func teamMembersKey(_ teamId: String) -> String { "teamMembers-" + teamId }
+    /// Reads one team's roster through the paired members route. The saved
+    /// snapshot keeps its own revision so the editor can save against it.
+    /// Returns whether a fresh snapshot was actually applied; a failed read
+    /// keeps the previous cache and surfaces its message instead.
+    @discardableResult func refreshTeamMembers(_ teamId: String) async -> Bool {
+        guard CompanionClient.isSafeIdentifier(teamId) else { return false }
+        let key = Self.teamMembersKey(teamId)
+        guard mutation != key, mutation?.hasPrefix("teamMembers-") != true else { return false }
+        var applied = false
+        await load(key, path: "/v1/bots/teams/\(teamId)/members") { (value: BotTeamMembersSnapshot) in
+            guard value.team.id == teamId, Set(value.team.memberIds).count == value.team.memberIds.count,
+                  value.team.memberIds.contains(value.team.coordinatorId),
+                  Set(value.members.map(\.id)).count == value.members.count,
+                  Set(value.roster.map(\.id)).count == value.roster.count else {
+                self.setMessage(key, "The Mac returned an unreadable team roster. Refresh before editing it.")
+                return
+            }
+            if self.teamMembers[teamId] != value { self.teamMembers[teamId] = value }
+            self.setMessage(key, nil)
+            applied = true
+        }
+        return applied
+    }
+    /// Saves the exact member and coordinator choice against the revision the
+    /// draft was adopted from. A conflict or lost reply never retries the save
+    /// implicitly, and a confirmed write is reported separately from its
+    /// follow-up read so the editor never adopts a stale cache as "saved".
+    func saveTeamMembers(_ teamId: String, memberIds: [String], coordinatorId: String, expectedRevision: Int) async -> BotTeamMembersSaveOutcome {
+        let key = Self.teamMembersKey(teamId)
+        guard let client, isCurrent(), !Task.isCancelled, mutation == nil, CompanionClient.isSafeIdentifier(teamId),
+              (2...12).contains(memberIds.count), Set(memberIds).count == memberIds.count,
+              memberIds.allSatisfy(CompanionClient.isSafeIdentifier), memberIds.contains(coordinatorId),
+              expectedRevision > 0 else { return .refused }
+        let path = try? CompanionClient.teamMembersPath(teamId)
+        guard let path else { return .refused }
+        struct Saved: Decodable { var team: BotTeamMembersSnapshot.Team }
+        let value: Saved? = await change(key, path: path, method: "PATCH",
+                                         body: BotTeamMembersPatch(memberIds: memberIds, coordinatorId: coordinatorId, expectedRevision: expectedRevision))
+        guard isCurrent(), !Task.isCancelled else { return .refused }
+        guard let saved = value, saved.team.id == teamId, saved.team.memberIds.contains(coordinatorId) else {
+            if value != nil { messages[key] = "The Mac did not confirm this exact roster. Refresh its members before saving again." }
+            return .refused
+        }
+        // The write took effect. The editor may adopt a fresh roster only when
+        // this confirmation read succeeds; a failed read leaves the confirmed
+        // roster visible with the read's error and keeps Save blocked.
+        let refreshed = await refreshTeamMembers(teamId)
+        await refreshTeams()
+        guard isCurrent(), !Task.isCancelled else { return .refused }
+        return .confirmed(team: saved.team, refreshed: refreshed)
     }
     private func validTeamExecution(_ draft: BotTeamDraft) -> Bool {
         guard let execution = draft.execution, execution.isShared else { return true }
