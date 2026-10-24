@@ -18,12 +18,19 @@ struct TeamMembersDraftState: Equatable {
         savedConfirmation = false
     }
 
+    mutating func rebaseIfFresh(_ refreshed: Bool, on snapshot: BotTeamMembersSnapshot?) {
+        guard refreshed, let snapshot else { return }
+        rebase(on: snapshot)
+    }
+
     /// A newer snapshot arrives while the screen is open. A dirty draft keeps
     /// its edits and its adopted revision; only an idle draft follows the
     /// newer roster.
     mutating func sync(with snapshot: BotTeamMembersSnapshot) {
         guard adoptedRevision == 0 || !changed(asOf: snapshot) else { return }
+        let confirmed = savedConfirmation
         rebase(on: snapshot)
+        savedConfirmation = confirmed
     }
 
     func changed(asOf snapshot: BotTeamMembersSnapshot) -> Bool {
@@ -56,8 +63,17 @@ struct TeamMembersDraftState: Equatable {
     /// confirms only the roster it actually submitted; a draft that differs
     /// from the submitted one stays dirty and is never clobbered.
     mutating func mergeConfirmation(_ team: BotTeamMembersSnapshot.Team, into submitted: TeamMembersDraftState) {
-        guard self == submitted else { return }
+        guard members == submitted.members, coordinator == submitted.coordinator else { return }
         confirm(team)
+    }
+}
+
+struct TeamMembersSaveButton: View {
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) { Text("Save changes") }
+            .buttonStyle(StrataPrimaryButtonStyle()).frame(maxWidth: .infinity)
+            .accessibilityIdentifier("saveTeamMembersButton")
     }
 }
 
@@ -141,9 +157,8 @@ struct TeamMembersEditorView: View {
                         Text(message).font(.caption).foregroundStyle(StrataTheme.warning).accessibilityIdentifier("teamMembersMessage")
                         Button("Reload latest members") { Task { await reload() } }.accessibilityIdentifier("reloadTeamMembersButton")
                     }
-                    Button { Task { await save() } } label: { Text("Save changes") }
-                        .buttonStyle(.borderedProminent).frame(maxWidth: .infinity)
-                        .disabled(!canSave).accessibilityIdentifier("saveTeamMembersButton")
+                    TeamMembersSaveButton { Task { await save() } }
+                        .disabled(!canSave)
                     if draft.savedConfirmation {
                         Label("Members saved", systemImage: "checkmark").font(.caption).foregroundStyle(StrataTheme.success)
                             .accessibilityIdentifier("teamMembersSavedMessage")
@@ -223,14 +238,14 @@ struct TeamMembersEditorView: View {
     }
 
     private func load() async {
-        await workspace.refreshTeamMembers(teamId)
-        if let snapshot { draft.rebase(on: snapshot) }
+        let refreshed = await workspace.refreshTeamMembers(teamId)
+        draft.rebaseIfFresh(refreshed, on: snapshot)
     }
     /// The explicit Reload adopts the freshest loaded roster, even when the
     /// draft held edits or a stale confirmed write.
     private func reload() async {
-        await workspace.refreshTeamMembers(teamId)
-        if let snapshot { draft.rebase(on: snapshot) }
+        let refreshed = await workspace.refreshTeamMembers(teamId)
+        draft.rebaseIfFresh(refreshed, on: snapshot)
     }
     private func save() async {
         guard canSave else { return }

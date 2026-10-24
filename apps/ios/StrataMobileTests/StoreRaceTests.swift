@@ -890,7 +890,11 @@ private final class StoreTransport {
     private var recordedRequests: [RecordedRequest] = []
     var requests: [RecordedRequest] { lock.lock(); defer { lock.unlock() }; return recordedRequests }
     private var responder: ((URLRequest) -> [String: Any]?)?
+    private var failures: [String: ([String: Any], Int)] = [:]
     func respond(_ value: @escaping (URLRequest) -> [String: Any]?) { lock.lock(); responder = value; lock.unlock() }
+    func failNext(_ method: String, _ path: String, json: [String: Any], status: Int = 503) {
+        lock.lock(); failures[method + " " + path] = (json, status); lock.unlock()
+    }
     private var session: URLSession?
     private(set) var deletedConnections = 0
     private(set) var savedConnections = 0
@@ -939,9 +943,13 @@ private final class StoreTransport {
         lock.lock()
         recordedRequests.append(RecordedRequest(path: path, method: request.request.httpMethod ?? "GET", body: body, jsonBody: jsonBody))
         let response = held[path]
+        let failureKey = (request.request.httpMethod ?? "GET") + " " + path
+        let failure = failures[failureKey]
+        failures.removeValue(forKey: failureKey)
         let responder = responder
         lock.unlock()
         if let response { response.receive(request); return }
+        if let failure { request.finishJSON(failure.0, status: failure.1); return }
         if let json = responder?(request.request) { request.finishJSON(json); return }
         switch path {
         case "/v1/status": request.finishJSON(Self.status)
@@ -4446,4 +4454,132 @@ final class TeamWorkPlanTests: XCTestCase {
         XCTAssertTrue(f.requests.allSatisfy { $0.method == "GET" }, "The real projections never authorize a mutation or replay.")
     }
 
+}
+
+@MainActor
+final class TeamMembersEditorTests: XCTestCase {
+    private let teamId = "team_fixture"
+    private var membersPath: String { "/v1/bots/teams/\(teamId)/members" }
+
+    private func snapshot(_ revision: Int, _ ids: [String] = ["bot_a", "bot_b"], coordinator: String = "bot_a") -> BotTeamMembersSnapshot {
+        BotTeamMembersSnapshot(
+            team: .init(id: teamId, name: "Team", memberIds: ids, coordinatorId: coordinator, revision: revision),
+            members: ids.map { .init(id: $0, name: $0, role: nil, paused: nil, available: true) },
+            roster: Array(Set(ids + ["bot_z"])).sorted().map { .init(id: $0, name: $0, paused: nil) }
+        )
+    }
+
+    private func json(_ snapshot: BotTeamMembersSnapshot) -> [String: Any] {
+        [
+            "team": [
+                "id": snapshot.team.id, "name": snapshot.team.name,
+                "memberIds": snapshot.team.memberIds, "coordinatorId": snapshot.team.coordinatorId,
+                "revision": snapshot.team.revision
+            ],
+            "members": snapshot.members.map { ["id": $0.id, "name": $0.name] },
+            "roster": snapshot.roster.map { ["id": $0.id, "name": $0.name] }
+        ]
+    }
+
+    func testConfirmedSaveAndFailedReloadKeepConfirmedDraftUntilFreshRead() async throws {
+        let initial = snapshot(1), confirmed = snapshot(2, ["bot_a", "bot_b", "bot_c"]), fresh = snapshot(3, ["bot_a", "bot_c", "bot_z"], coordinator: "bot_c")
+        var current = initial
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { request in
+            if request.url?.path == self.membersPath {
+                if request.httpMethod == "PATCH" { return ["team": self.json(confirmed)["team"]!] }
+                return self.json(current)
+            }
+            if request.url?.path == "/v1/bots/teams" { return ["teams": [], "runs": []] }
+            return nil
+        }
+        let store = fixture.makeStore(), workspace = store.botWorkspaceStore()
+        await workspace.refreshTeamMembers(teamId)
+        var draft = TeamMembersDraftState()
+        draft.rebase(on: initial)
+        draft.add("bot_c")
+
+        fixture.failNext("GET", membersPath, json: json(initial))
+        let submitted = draft
+        let outcome = await workspace.saveTeamMembers(teamId, memberIds: submitted.members, coordinatorId: submitted.coordinator, expectedRevision: submitted.saveRevision)
+        guard case .confirmed(let team, let refreshed) = outcome else { return XCTFail("The PATCH must succeed") }
+        XCTAssertFalse(refreshed)
+        draft.mergeConfirmation(team, into: submitted)
+        XCTAssertEqual(draft.members, confirmed.team.memberIds)
+        XCTAssertEqual(draft.adoptedRevision, 2)
+        XCTAssertTrue(draft.savedConfirmation)
+
+        fixture.failNext("GET", membersPath, json: json(initial))
+        let applied = await workspace.refreshTeamMembers(teamId)
+        draft.rebaseIfFresh(applied, on: workspace.teamMembers[teamId])
+        XCTAssertFalse(applied)
+        XCTAssertEqual(draft.members, confirmed.team.memberIds)
+        XCTAssertEqual(draft.adoptedRevision, 2)
+        XCTAssertNotNil(workspace.messages[BotWorkspaceStore.teamMembersKey(teamId)])
+
+        current = fresh
+        let recovered = await workspace.refreshTeamMembers(teamId)
+        draft.rebaseIfFresh(recovered, on: workspace.teamMembers[teamId])
+        XCTAssertTrue(recovered)
+        XCTAssertEqual(draft.members, fresh.team.memberIds)
+        XCTAssertEqual(draft.coordinator, "bot_c")
+        XCTAssertEqual(draft.adoptedRevision, 3)
+        XCTAssertNil(workspace.messages[BotWorkspaceStore.teamMembersKey(teamId)])
+    }
+
+    func testMembersSavedConfirmationSurvivesBothObserverOrderingsAndProtectsRealEdits() {
+        let initial = snapshot(1), confirmed = snapshot(2, ["bot_a", "bot_b", "bot_c"])
+        var submitted = TeamMembersDraftState()
+        submitted.rebase(on: initial)
+        submitted.add("bot_c")
+
+        var observerFirst = submitted
+        observerFirst.sync(with: confirmed)
+        observerFirst.mergeConfirmation(confirmed.team, into: submitted)
+        XCTAssertTrue(observerFirst.savedConfirmation)
+        XCTAssertEqual(observerFirst.adoptedRevision, 2)
+
+        var completionFirst = submitted
+        completionFirst.mergeConfirmation(confirmed.team, into: submitted)
+        completionFirst.sync(with: confirmed)
+        XCTAssertTrue(completionFirst.savedConfirmation)
+        XCTAssertEqual(completionFirst.adoptedRevision, 2)
+
+        var edited = completionFirst
+        edited.pickCoordinator("bot_b")
+        edited.mergeConfirmation(confirmed.team, into: submitted)
+        XCTAssertEqual(edited.coordinator, "bot_b")
+        XCTAssertNotEqual(edited, submitted)
+        XCTAssertEqual(edited.members, confirmed.team.memberIds)
+    }
+
+    func testMembersSaveButtonDarkRenderHasContrastingInkAndFill() throws {
+        let content = TeamMembersSaveButton { }
+            .frame(width: 240, height: 60)
+            .environment(\.colorScheme, .dark)
+        let renderer = ImageRenderer(content: content)
+        renderer.scale = 1
+        let image = try XCTUnwrap(renderer.uiImage)
+        let values = try luminances(image, in: CGRect(x: 20, y: 10, width: 200, height: 40))
+        XCTAssertGreaterThan(try XCTUnwrap(values.max()), 0.85, "The primary fill must remain light in dark mode")
+        XCTAssertLessThan(try XCTUnwrap(values.min()), 0.15, "The enabled Save text must be dark against that fill")
+    }
+
+    private func luminances(_ image: UIImage, in rect: CGRect) throws -> [Double] {
+        let cg = try XCTUnwrap(image.cgImage)
+        let data = try XCTUnwrap(cg.dataProvider?.data)
+        let bytes = CFDataGetBytePtr(data)!
+        let scale = image.size.width / CGFloat(cg.width)
+        var values: [Double] = []
+        for y in Int(rect.minY / scale)..<Int(rect.maxY / scale) {
+            for x in Int(rect.minX / scale)..<Int(rect.maxX / scale) {
+                let offset = y * cg.bytesPerRow + x * 4
+                let alpha = Double(bytes[offset + 3]) / 255
+                guard alpha > 0.9 else { continue }
+                let red = Double(bytes[offset]) / 255, green = Double(bytes[offset + 1]) / 255, blue = Double(bytes[offset + 2]) / 255
+                values.append(0.2126 * red + 0.7152 * green + 0.0722 * blue)
+            }
+        }
+        return values
+    }
 }
