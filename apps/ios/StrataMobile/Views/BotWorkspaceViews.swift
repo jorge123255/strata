@@ -724,6 +724,11 @@ struct BotTeamDetailView: View {
             BotConnectionsView(store: store, workspace: workspace, teamId: team.id)
         } label: { Label("Team connectors", systemImage: "link") }
             .accessibilityIdentifier("teamConnectorsButton")
+        NavigationLink {
+            TeamMembersEditorView(store: store, workspace: workspace, teamId: team.id)
+        } label: { Label("Edit members", systemImage: "person.2") }
+            .disabled(workspace.mutation != nil)
+            .accessibilityIdentifier("editTeamMembersScreen")
         Button("Edit team members & settings", systemImage: "person.2.badge.gearshape") { editingTeam = team }
             .disabled(workspace.teams?.teamSettingsSupported != true || team.revision == nil || workspace.mutation != nil || !activeRuns.isEmpty)
             .accessibilityIdentifier("editBotTeamButton")

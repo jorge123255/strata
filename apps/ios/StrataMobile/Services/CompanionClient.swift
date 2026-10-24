@@ -261,6 +261,17 @@ final class CompanionClient: @unchecked Sendable {
         return try JSONDecoder().decode(BotTeamChannel.self, from: data)
     }
 
+    /// Only a saved team ID can become the roster editor path. The bridge
+    /// rewrites this paired route to the Mac's guarded companion members route.
+    static func teamMembersPath(_ teamId: String) throws -> String {
+        guard isSafeIdentifier(teamId) else { throw CompanionError.server("Choose a saved team to edit.") }
+        return "/v1/bots/teams/\(teamId)/members"
+    }
+
+    func teamMembers(_ teamId: String) async throws -> BotTeamMembersSnapshot {
+        try await perform(try Self.teamMembersPath(teamId))
+    }
+
     /// Only a saved team/plan and a numeric task cursor can become this GET.
     /// General request paths still reject arbitrary query strings.
     func teamWorkPlan(teamId: String, planId: String, taskOffset: Int = 0) async throws -> BotTeamWorkPlan {

@@ -189,6 +189,45 @@ struct BotTeamComputer: Decodable, Identifiable, Equatable {
     }
 }
 
+/// One saved team's roster as the paired phone may read and edit it through the
+/// companion members route. The Mac keeps its own loopback guard and validation.
+struct BotTeamMembersSnapshot: Decodable, Equatable {
+    struct Team: Decodable, Equatable {
+        var id: String
+        var name: String
+        var memberIds: [String]
+        var coordinatorId: String
+        var revision: Int
+    }
+    struct Member: Decodable, Identifiable, Equatable {
+        var id: String
+        var name: String
+        var role: String?
+        var paused: Bool?
+        var available: Bool?
+        var statusLabel: String? {
+            if paused == true { return "Paused" }
+            if available == false { return "Unavailable" }
+            return nil
+        }
+    }
+    struct RosterBot: Decodable, Identifiable, Equatable {
+        var id: String
+        var name: String
+        var paused: Bool?
+    }
+    var team: Team
+    var members: [Member]
+    var roster: [RosterBot]
+}
+
+/// The exact saved roster choice, checked against the revision it was loaded from.
+struct BotTeamMembersPatch: Encodable, Equatable {
+    var memberIds: [String]
+    var coordinatorId: String
+    var expectedRevision: Int
+}
+
 struct BotTeamChannelPreview: Decodable, Equatable {
     var id: String
     var sequence: Int
