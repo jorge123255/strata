@@ -243,7 +243,7 @@ struct BotTeamEditor: View {
                         }
                         BotWorkspaceMessage(workspace: workspace, key: "teams")
                         Button(baseline == nil ? "Create team" : "Save changes") { save() }
-                            .buttonStyle(.borderedProminent).frame(maxWidth: .infinity).disabled(!canSave)
+                            .buttonStyle(StrataPrimaryButtonStyle()).frame(maxWidth: .infinity).disabled(!canSave)
                             .accessibilityIdentifier("confirmBotTeamButton")
                     }.padding(16).frame(maxWidth: .infinity).background(.regularMaterial)
                         .accessibilityElement(children: .contain).accessibilityIdentifier("teamEditorFooter")

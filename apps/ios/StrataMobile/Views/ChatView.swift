@@ -38,7 +38,7 @@ struct ChatView: View {
     private var header: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Chat").font(.title2.weight(.bold)).tracking(-0.5).foregroundStyle(StrataTheme.ink)
+                Text("Chat").font(.title2.weight(.semibold)).tracking(-0.3).foregroundStyle(StrataTheme.ink)
                 Text(chatSubtitle).font(.caption).foregroundStyle(StrataTheme.secondaryInk).lineLimit(1)
             }
             Spacer(minLength: 12)
@@ -104,7 +104,7 @@ struct ChatView: View {
             }
         }
         .padding(14)
-        .background(StrataTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: 18))
+        .background(StrataTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .padding(.horizontal, 16).padding(.bottom, 8)
     }
 
@@ -232,7 +232,7 @@ struct ChatView: View {
         VStack(alignment: .leading, spacing: 26) {
             StrataMark(size: 52).padding(.bottom, 5)
             Text("Pick up where\nyou left off.")
-                .font(.largeTitle.weight(.bold)).tracking(-0.8).foregroundStyle(StrataTheme.ink)
+                .font(.title.weight(.semibold)).tracking(-0.4).foregroundStyle(StrataTheme.ink)
             Text("Open a Mac conversation to see its history, continue the work, and follow browser and tool activity as it happens.")
                 .font(.subheadline).foregroundStyle(StrataTheme.secondaryInk).lineSpacing(4)
             if !store.conversations.isEmpty {
@@ -295,8 +295,8 @@ struct ChatView: View {
         let displayed = isUser ? text : text.trimmingCharacters(in: .newlines)
         return Text(.init(displayed)).font(.body).foregroundStyle(isUser ? StrataTheme.userBubbleInk : StrataTheme.ink).lineSpacing(4).textSelection(.enabled)
             .tint(isUser ? StrataTheme.userBubbleInk : StrataTheme.accentText)
-            .padding(15).frame(maxWidth: .infinity, alignment: .leading)
-            .background(isUser ? StrataTheme.userBubble : StrataTheme.assistantBubble, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+            .background(isUser ? StrataTheme.userBubble : StrataTheme.assistantBubble, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             .accessibilityIdentifier(isUser ? "userMessage" : "assistantMessage")
     }
 

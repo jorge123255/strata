@@ -14,8 +14,19 @@ struct NotificationsView: View {
                 }
                 Section("Recent notifications") {
                     if notifications.events.isEmpty {
-                        ContentUnavailableView("You’re all caught up", systemImage: "bell", description: Text("New bot replies, team messages, completed work and approvals appear here after notifications are enabled."))
-                            .accessibilityIdentifier("notificationInboxEmpty")
+                        VStack(spacing: 12) {
+                            Image(systemName: "bell")
+                                .font(.system(size: 26, weight: .regular))
+                                .foregroundStyle(StrataTheme.ink)
+                                .frame(width: 64, height: 64)
+                                .background(StrataTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            Text("You’re all caught up").font(.title3.weight(.semibold)).foregroundStyle(StrataTheme.ink)
+                            Text("New bot replies, team messages, completed work and approvals appear here after notifications are enabled.")
+                                .font(.subheadline).foregroundStyle(StrataTheme.secondaryInk).multilineTextAlignment(.center).lineSpacing(3)
+                        }
+                        .padding(24)
+                        .frame(maxWidth: .infinity)
+                        .accessibilityIdentifier("notificationInboxEmpty")
                     }
                     ForEach(notifications.events) { event in
                         Button {

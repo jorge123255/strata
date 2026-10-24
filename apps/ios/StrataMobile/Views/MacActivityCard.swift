@@ -54,8 +54,8 @@ struct MacActivityCard: View {
                 .font(.subheadline.weight(.semibold)).buttonStyle(.plain).disabled(deciding)
             }
         }
-        .padding(14).background(StrataTheme.surface, in: RoundedRectangle(cornerRadius: 18))
-        .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(awaitingApproval ? StrataTheme.warning : StrataTheme.line, lineWidth: 0.7))
+        .padding(16).background(StrataTheme.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(awaitingApproval ? StrataTheme.warning : StrataTheme.line, lineWidth: 1))
     }
 
     @ViewBuilder private var details: some View {

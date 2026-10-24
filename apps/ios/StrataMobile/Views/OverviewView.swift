@@ -93,7 +93,7 @@ struct OverviewView: View {
                 HStack(spacing: 12) { modelIdentity; Spacer(minLength: 4); engineStatus }
             }
             VStack(alignment: .leading, spacing: 6) {
-                Text("ACTIVE MODEL").font(.caption2.weight(.semibold)).tracking(1).foregroundStyle(StrataTheme.secondaryInk)
+                Text("ACTIVE MODEL").font(.caption2.weight(.semibold)).tracking(0.6).foregroundStyle(StrataTheme.secondaryInk)
                 Text(store.status?.modelName ?? "No model loaded").font(.title2.weight(.semibold)).foregroundStyle(StrataTheme.ink).fixedSize(horizontal: false, vertical: true)
             }
             if let status = store.status, status.hostConnected {

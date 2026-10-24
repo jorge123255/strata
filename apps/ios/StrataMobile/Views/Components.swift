@@ -61,8 +61,8 @@ struct StrataHeader: View {
         HStack(spacing: 7) {
             StrataMark()
             Text("strata")
-                .font(.system(.title2, weight: .bold))
-                .tracking(-1)
+                .font(.system(.title2, weight: .semibold))
+                .tracking(-0.6)
                 .foregroundStyle(StrataTheme.ink)
             Spacer()
             Button(action: onConnection) {
@@ -74,9 +74,9 @@ struct StrataHeader: View {
                         .font(.system(.caption, weight: .medium))
                 }
                 .foregroundStyle(StrataTheme.secondaryInk)
-                .padding(.horizontal, 11)
+                .padding(.horizontal, 12)
                 .frame(minHeight: 44)
-                .strataChrome(radius: 22)
+                .strataChrome(radius: 16)
             }
             .accessibilityIdentifier("connectionStatus")
             .accessibilityLabel("Connection: \(isOnline ? "connected" : isPaired ? "paired" : "not paired")")
@@ -90,21 +90,21 @@ struct PageHeading: View {
     var subtitle: String? = nil
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: 10) {
             Text(eyebrow.uppercased())
-                .font(.system(.caption2, weight: .bold))
-                .tracking(1.1)
+                .font(.system(.caption2, weight: .semibold))
+                .tracking(0.6)
                 .foregroundStyle(StrataTheme.secondaryInk)
             Text(title)
-                .font(.system(.largeTitle, weight: .bold))
-                .tracking(-0.8)
+                .font(.system(.title, weight: .semibold))
+                .tracking(-0.4)
                 .foregroundStyle(StrataTheme.ink)
                 .fixedSize(horizontal: false, vertical: true)
             if let subtitle {
                 Text(subtitle)
                     .font(.subheadline)
                     .foregroundStyle(StrataTheme.secondaryInk)
-                    .lineSpacing(4)
+                    .lineSpacing(3)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -182,20 +182,21 @@ struct ConnectionNeededView: View {
     let pair: () -> Void
 
     var body: some View {
-        VStack(spacing: 21) {
+        VStack(spacing: 22) {
             Image(systemName: icon)
-                .font(.system(size: 30, weight: .regular))
-                .foregroundStyle(StrataTheme.accentText)
-                .frame(width: 80, height: 80)
-                .background(StrataTheme.grouped, in: RoundedRectangle(cornerRadius: 22))
-            VStack(spacing: 9) {
+                .font(.system(size: 26, weight: .regular))
+                .foregroundStyle(StrataTheme.ink)
+                .frame(width: 64, height: 64)
+                .background(StrataTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            VStack(spacing: 8) {
                 Text(title)
-                    .font(.title2.weight(.bold))
+                    .font(.title3.weight(.semibold))
                     .foregroundStyle(StrataTheme.ink)
+                    .multilineTextAlignment(.center)
                 Text(message)
                     .font(.subheadline)
                     .foregroundStyle(StrataTheme.secondaryInk)
-                    .lineSpacing(4)
+                    .lineSpacing(3)
                     .multilineTextAlignment(.center)
             }
             Button(action: pair) {
@@ -204,7 +205,8 @@ struct ConnectionNeededView: View {
             .buttonStyle(StrataPrimaryButtonStyle())
             .accessibilityIdentifier("emptyStatePairButton")
         }
-        .padding(24)
+        .padding(.horizontal, 22)
+        .padding(.vertical, 28)
         .frame(maxWidth: .infinity)
         .strataCard(padding: 0)
     }
@@ -218,10 +220,10 @@ struct DetailRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 13) {
             Image(systemName: icon)
-                .font(.system(size: 17, weight: .medium))
-                .foregroundStyle(StrataTheme.accentText)
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(StrataTheme.ink)
                 .frame(width: 36, height: 36)
-                .background(StrataTheme.accentTint, in: RoundedRectangle(cornerRadius: 11))
+                .background(StrataTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             VStack(alignment: .leading, spacing: 4) {
                 Text(title).font(.system(.subheadline, weight: .semibold)).foregroundStyle(StrataTheme.ink)
                 Text(detail).font(.caption).foregroundStyle(StrataTheme.secondaryInk).lineSpacing(3)
@@ -858,7 +860,7 @@ struct RoomChoiceCard: View {
                 ForEach(options) { option in
                     Button(busy == option.id ? "Sending…" : option.label) { onChoose(option.id) }
                         .buttonStyle(.bordered)
-                        .tint(chosen == option.id ? Color.accentColor : (option.style == "danger" ? Color.red : Color.primary))
+                        .tint(chosen == option.id ? StrataTheme.accentText : (option.style == "danger" ? StrataTheme.destructive : StrataTheme.ink))
                         .disabled(locked)
                         .accessibilityIdentifier("teamRoomChoice-\(option.id)")
                         .accessibilityAddTraits(chosen == option.id ? .isSelected : [])
@@ -871,8 +873,8 @@ struct RoomChoiceCard: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(StrataTheme.surface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(chosen == nil ? StrataTheme.line.opacity(0.7) : Color.accentColor.opacity(0.7), lineWidth: 1))
+        .background(StrataTheme.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(chosen == nil ? StrataTheme.line : StrataTheme.accent.opacity(0.7), lineWidth: 1))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("teamRoomChoice")
         .offset(y: reduceMotion || shown ? 0 : CoucouMotion.messageRise)

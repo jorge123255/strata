@@ -192,7 +192,8 @@ struct BotsView: View {
     }
     private var emptyBots: some View {
         VStack(alignment: .leading, spacing: 13) {
-            Image(systemName: "sparkles.rectangle.stack").font(.system(size: 32, weight: .light)).foregroundStyle(StrataTheme.accentText)
+            Image(systemName: "sparkles.rectangle.stack").font(.system(size: 28, weight: .regular)).foregroundStyle(StrataTheme.ink)
+                .frame(width: 64, height: 64).background(StrataTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             Text(store.botCatalog?.lifecycleSupported == true ? "Create your first bot" : "Your team starts on Mac").font(.title3.weight(.semibold)).foregroundStyle(StrataTheme.ink)
             Text("Create a coding bot, a computer-control bot, or one that can do both. Its conversations will appear here.").font(.subheadline).foregroundStyle(StrataTheme.secondaryInk)
         }.frame(maxWidth: .infinity, alignment: .leading).strataCard(padding: 24).accessibilityIdentifier("botsEmptyState")
