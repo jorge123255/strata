@@ -264,9 +264,9 @@ final class ThinkingTimelineTests: XCTestCase {
         let members = ["bot_a", "bot_b", "bot_c"]
         let stacked = RoomReplyGroup.group(messages: [
             row("user", author: "user", content: "Please look"),
-            row("a", content: "On it", replyGroupId: "user"),
+            row("a", replyGroupId: "user", content: "On it"),
             row("side", author: "user", content: "A side note"),
-            row("b", content: "Me too", replyGroupId: " user "),
+            row("b", replyGroupId: " user ", content: "Me too"),
             row("c", replyGroupId: "other")
         ], memberIds: members)
         XCTAssertEqual(stacked, [.message("user"), .replies(id: "a", triggerId: "user", messageIds: ["a", "b"]), .message("side"), .message("c")])
