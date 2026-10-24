@@ -192,6 +192,10 @@ html[data-theme="dark"]:has(.connector-workspace),
    rule is more specific than Bots.css, so without this a long preview
    stays in the layout and stretches the row. */
 @container bots (max-width: 920px) {
+  /* Names are already hidden here. A later 248px track left each row as an empty band. */
+  .cua-bots-shell[data-list] {
+    grid-template-columns: 52px minmax(0, 1fr);
+  }
   .cua-bots-shell[data-list] > .cua-bots-sidebar {
     padding: 12px 6px;
   }
