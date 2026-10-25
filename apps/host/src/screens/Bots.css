@@ -372,6 +372,11 @@ button.cua-profile-row:disabled { opacity: .5; cursor: default; }
   .cua-bot-toolbar .select { max-width: 160px; }
   .cua-output-list > button > span { display: none; }
 }
+@container (max-width: 480px) {
+  /* A 300px pad beside the 300px overlay leaves a 24–67px composer at a 430px window. Cover the column. */
+  .cua-bot-detail:has(.cua-bot-profile.spring-pane[data-open]) .cua-bot-chat { padding-right: 0; }
+  .cua-bot-detail > .cua-bot-profile.spring-pane[data-open] { left: 0; right: auto; width: 100%; flex-basis: auto; }
+}
 @media (max-width: 1000px) {
   .bots-connection-layout { grid-template-columns: minmax(0,1fr); gap: 16px; }
   .bots-connection-list { flex-direction: row; flex-wrap: wrap; }
