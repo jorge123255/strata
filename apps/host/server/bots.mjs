@@ -283,12 +283,12 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
     };
     if (!picker || typeof modelRequest !== 'function') return offline();
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 18000);
+    const timer = setTimeout(() => controller.abort(), 60000);
     const roomRule = human
       ? 'The latest message is from the human. A greeting, @everyone, or @all needs 1 or 2 speakers. Do not answer with an empty list.'
       : 'The latest message is from a bot. Use an empty list when nobody has something new to add.';
     const prompt = `${roomRule}\nRecent room:\n${(input.history ?? []).map(row => `${row.authorName}: ${row.content}`).join('\n')}\nMembers:\n${members.map(member => `${member.id} ${member.name} role=${member.role || '-'} talkativeness=${member.talkativeness} available=${member.available}`).join('\n')}\nLast speaker: ${input.lastSpeakerId || 'none'}\nAddressed by a teammate: ${input.addressedBotId || 'none'}\nReply with JSON only: {"speakers":["bot_id"]}. Use 1 or 2 ids for a human greeting or a message to the whole room, otherwise 0 to 2, ordered. A speaker may be a member id or that member's exact name. Prefer the addressed teammate. Skip talkativeness 0 unless addressed. Do not pick the last speaker.`;
-    return modelRequest({ messages: [{ role: 'user', content: prompt.slice(0, 4000) }], tools: [], system: 'You pick who speaks next in a group chat. JSON only.' }, { id: picker.id, name: picker.name, provider: 'configured', modelSource: picker.modelSource, continuousTeam: false }, controller.signal).then(result => {
+    return modelRequest({ messages: [{ role: 'user', content: prompt.slice(0, 4000) }], tools: [], system: 'You pick who speaks next in a group chat. JSON only.', max_tokens: 64, reasoning_effort: 'none' }, { id: picker.id, name: picker.name, provider: 'configured', modelSource: picker.modelSource, continuousTeam: false }, controller.signal).then(result => {
       let speakers = [];
       try {
         const match = String(result?.text ?? '').match(/\{[\s\S]*\}/);
@@ -300,6 +300,7 @@ export function createBots({ directory, runtime, tools, conversations = () => nu
       return { speakers: speakers.slice(0, 2) };
     }).catch(error => {
       const speakers = chooseRoomSpeakers(input).speakers ?? [];
+      if (controller.signal.aborted) console.warn(`room selection warning · run ${input?.runId || 'unknown'} · picker ${picker.id} timed out after 60s; falling back to default picker`);
       logSelection(String(error?.message ?? error), speakers);
       return { speakers };
     }).finally(() => clearTimeout(timer));
