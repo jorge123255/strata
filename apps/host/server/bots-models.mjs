@@ -102,8 +102,10 @@ function anthropicContent(value, vision) {
   });
 }
 function payloadFor(protocol, model, request, continuousTeam = false, outputReserve = Infinity) {
-  const { messages, tools = [], system = '' } = request;
+  const { messages, tools = [], system = '', max_tokens: maxTokens, reasoning_effort: reasoningEffort } = request;
   if (!Array.isArray(messages) || (!continuousTeam && messages.length > 500) || !Array.isArray(tools) || tools.length > 100 || typeof system !== 'string') failure('The bot model request is invalid.');
+  if (maxTokens !== undefined && (!Number.isSafeInteger(maxTokens) || maxTokens < 1 || maxTokens > 16384)) failure('The bot model output limit is invalid.');
+  if (reasoningEffort !== undefined && reasoningEffort !== 'none') failure('The bot model reasoning setting is invalid.');
   if (protocol === 'anthropic') {
     const rows = [];
     for (const message of messages) {
@@ -114,7 +116,7 @@ function payloadFor(protocol, model, request, continuousTeam = false, outputRese
       if (!['assistant', 'user'].includes(row.role)) failure('The bot model request has an invalid message.');
       if (rows.at(-1)?.role === row.role) rows.at(-1).content.push(...row.content); else rows.push(row);
     }
-    return { model: model.id, system, messages: rows, stream: true, max_tokens: Math.min(model.maxOutput || 8192, 16384, outputReserve), ...(tools.length ? { tools: tools.map(t => ({ name: t.name, description: t.description, input_schema: t.inputSchema })) } : {}) };
+    return { model: model.id, system, messages: rows, stream: true, max_tokens: Math.min(model.maxOutput || 8192, 16384, outputReserve, maxTokens ?? Infinity), ...(reasoningEffort === 'none' ? { thinking: { type: 'disabled' } } : {}), ...(tools.length ? { tools: tools.map(t => ({ name: t.name, description: t.description, input_schema: t.inputSchema })) } : {}) };
   }
   if (protocol === 'openai-responses') {
     const input = [];
@@ -123,9 +125,9 @@ function payloadFor(protocol, model, request, continuousTeam = false, outputRese
       else if (message.role === 'assistant' && message.providerOutput?.protocol === protocol) input.push(...copy(message.providerOutput.items));
       else input.push({ role: message.role, content: typeof message.content === 'string' ? message.content : message.content.flatMap(part => part.type === 'text' ? [{ type: 'input_text', text: part.text }] : part.image_url && model.vision !== false ? [{ type: 'input_image', image_url: part.image_url.url }] : []) });
     }
-    return { model: model.id, instructions: system, input, stream: true, store: false, include: ['reasoning.encrypted_content'], ...(tools.length ? { tools: tools.map(t => ({ type: 'function', name: t.name, description: t.description, parameters: t.inputSchema, strict: false })) } : {}) };
+    return { model: model.id, instructions: system, input, stream: true, store: false, include: ['reasoning.encrypted_content'], ...(maxTokens !== undefined ? { max_output_tokens: maxTokens } : {}), ...(reasoningEffort === 'none' ? { reasoning: { effort: 'none' } } : {}), ...(tools.length ? { tools: tools.map(t => ({ type: 'function', name: t.name, description: t.description, parameters: t.inputSchema, strict: false })) } : {}) };
   }
-  return { model: model.id, messages: [{ role: 'system', content: system }, ...messages.map(({ providerOutput, isError, ...m }) => ({ ...m, ...(model.vision === false && Array.isArray(m.content) ? { content: textOf(m.content) } : {}) }))], stream: true, ...(tools.length ? { tools: tools.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.inputSchema } })) } : {}) };
+  return { model: model.id, messages: [{ role: 'system', content: system }, ...messages.map(({ providerOutput, isError, ...m }) => ({ ...m, ...(model.vision === false && Array.isArray(m.content) ? { content: textOf(m.content) } : {}) }))], stream: true, ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}), ...(reasoningEffort !== undefined ? { reasoning_effort: reasoningEffort } : {}), ...(tools.length ? { tools: tools.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.inputSchema } })) } : {}) };
 }
 
 async function* events(response, signal) {
