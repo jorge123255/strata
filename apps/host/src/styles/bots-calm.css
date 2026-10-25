@@ -180,9 +180,12 @@ html[data-theme="dark"]:has(.connector-workspace),
   font-size: 13px;
   line-height: 1.35;
 }
-.cua-bots-sidebar .cua-sidebar-item[data-selected] {
+/* The open row keeps this edge while the pointer is on it. A hover wash must not clear it. */
+.cua-bots-sidebar .cua-sidebar-item[data-selected],
+.cua-bots-sidebar .cua-sidebar-item[data-selected]:hover {
   background: var(--st-accent-tint);
   color: var(--st-ink);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-accent) 48%, transparent);
 }
 .cua-bots-sidebar .cua-roster-bot[data-selected] small {
   color: var(--st-ink-soft);
@@ -192,6 +195,11 @@ html[data-theme="dark"]:has(.connector-workspace),
    rule is more specific than Bots.css, so without this a long preview
    stays in the layout and stretches the row. */
 @container bots (max-width: 920px) {
+  /* Bots.css hides the conversation count at this width and asks for a 52px rail.
+     A later 248px track left the count off and the rail an empty band. */
+  .cua-bots-shell[data-list] {
+    grid-template-columns: 52px minmax(0, 1fr);
+  }
   .cua-bots-shell[data-list] > .cua-bots-sidebar {
     padding: 12px 6px;
   }
