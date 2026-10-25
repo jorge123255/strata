@@ -164,12 +164,15 @@
 .cua-bot-profile.spring-pane[data-open] {
   flex-basis: 300px;
   width: 300px;
+  min-height: 0;
+  max-height: 100%;
   padding: 14px 18px 28px;
   border-width: 1px;
   opacity: 1;
   transform: none;
   pointer-events: auto;
   overflow: auto;
+  scrollbar-gutter: stable;
   transition: flex-basis 0.3s var(--ease-pop), width 0.3s var(--ease-pop), padding 0.3s var(--ease-pop), opacity 0.24s var(--ease-out), transform 0.3s var(--ease-pop);
 }
 

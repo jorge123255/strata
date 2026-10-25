@@ -180,9 +180,12 @@ html[data-theme="dark"]:has(.connector-workspace),
   font-size: 13px;
   line-height: 1.35;
 }
-.cua-bots-sidebar .cua-sidebar-item[data-selected] {
+/* The open row keeps this edge while the pointer is on it. A hover wash must not clear it. */
+.cua-bots-sidebar .cua-sidebar-item[data-selected],
+.cua-bots-sidebar .cua-sidebar-item[data-selected]:hover {
   background: var(--st-accent-tint);
   color: var(--st-ink);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-accent) 48%, transparent);
 }
 .cua-bots-sidebar .cua-roster-bot[data-selected] small {
   color: var(--st-ink-soft);
