@@ -16,7 +16,8 @@
 
 .main__body:has(> .cua-bots-shell), .main__body:has(> .bots-workspace) { padding: 0; overflow: hidden; display: flex; }
 .bots-workspace { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; container-type: inline-size; container-name: bots; }
-.bots-destinations { display: flex; gap: 3px; align-items: center; padding: 8px 18px; border-bottom: 1px solid var(--st-line-soft); flex: none; overflow-x: auto; background: var(--st-bg); }
+/* Wrap inside the workspace. The old min size was the full label row, so a narrow window cut off the last label. */
+.bots-destinations { display: flex; flex-wrap: wrap; gap: 3px; align-items: center; padding: 8px 18px; border-bottom: 1px solid var(--st-line-soft); flex: none; min-width: 0; overflow-x: auto; background: var(--st-bg); }
 .bots-destinations > button { display: flex; align-items: center; justify-content: center; gap: 7px; min-height: 32px; padding: 7px 13px; border: 1px solid transparent; border-radius: var(--st-r-pill); background: transparent; color: var(--st-ink-muted); font: 500 12px var(--st-font); white-space: nowrap; cursor: pointer; }
 .bots-destinations > button:hover { background: var(--st-surface-2); color: var(--st-ink); }
 .bots-destinations > button[aria-current] { color: var(--st-ink); background: var(--st-surface); border-color: var(--st-line); }
