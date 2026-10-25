@@ -194,6 +194,36 @@ test('malformed Anthropic partial JSON has a safe error without leaking echoed c
   assert.equal(c.calls.length, 0);
 });
 
+test('picker generation controls reach the actual HTTP body for every protocol', async () => {
+  for (const protocol of ['openai-chat', 'openai-responses', 'anthropic']) {
+    const f = fixture(protocol, () => {
+      if (protocol === 'anthropic') return sse([
+        { type: 'message_start', message: { usage: { input_tokens: 1, output_tokens: 0 } } },
+        { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+        { type: 'content_block_delta', index: 0, delta: { text: '{"speakers":[]}' } },
+        { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 1 } }, { type: 'message_stop' },
+      ]);
+      if (protocol === 'openai-responses') return sse([
+        { type: 'response.output_text.delta', delta: '{"speakers":[]}' },
+        { type: 'response.completed', response: { status: 'completed', output: [], usage: { input_tokens: 1, output_tokens: 1 } } },
+      ]);
+      return finishedChat('{"speakers":[]}');
+    });
+    f.selected.models[0].maxOutput = 512;
+    await f.client({ messages: [{ role: 'user', content: 'Pick speakers' }], tools: [], system: 'JSON only.', max_tokens: 64, reasoning_effort: 'none' }, f.bot, new AbortController().signal);
+    assert.equal(f.requests.length, 1, protocol);
+    const payload = f.requests[0].payload;
+    if (protocol === 'openai-responses') {
+      assert.equal(payload.max_output_tokens, 64, protocol);
+      assert.deepEqual(payload.reasoning, { effort: 'none' }, protocol);
+    } else {
+      assert.equal(payload.max_tokens, 64, protocol);
+      if (protocol === 'anthropic') assert.deepEqual(payload.thinking, { type: 'disabled' }, protocol);
+      else assert.equal(payload.reasoning_effort, 'none', protocol);
+    }
+  }
+});
+
 test('Stop after inference resolves revokes tool execution before a mutation can run', async () => {
   const controller = new AbortController(); let executed = 0, saved = 0;
   await assert.rejects(runConfiguredBot({ bot: { instructions: '' }, history: [], message: 'Fixture', tools, signal: controller.signal, frame() {}, save() { saved++; },
